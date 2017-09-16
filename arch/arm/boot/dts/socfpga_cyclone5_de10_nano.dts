@@ -97,6 +97,14 @@
 	};
 };
 
+&i2c1 {
+	status = "okay";
+        rtc_at_68 {
+                compatible = "stm,m41t81";
+                reg = <0x68>;
+        };
+};
+
 &mmc0 {
 	vmmc-supply = <&regulator_3_3v>;
 	vqmmc-supply = <&regulator_3_3v>;
