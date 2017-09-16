@@ -100,8 +100,12 @@
 &i2c1 {
 	status = "okay";
         rtc_at_68 {
-                compatible = "stm,m41t81";
+                compatible = "m41t81";
                 reg = <0x68>;
+        };
+        rtc_at_6F {
+                compatible = "mcp7941x";
+                reg = <0x6F>;
         };
 };
 
