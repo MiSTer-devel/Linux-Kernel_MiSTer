@@ -596,7 +596,7 @@ i2c_dw_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 
 	/* Wait for tx to complete */
 	if (!wait_for_completion_timeout(&dev->cmd_complete, adap->timeout)) {
-		dev_err(dev->dev, "controller timed out\n");
+		dev_dbg(dev->dev, "controller timed out\n");
 		/* i2c_dw_init implicitly disables the adapter */
 		i2c_recover_bus(&dev->adapter);
 		i2c_dw_init_master(dev);

@@ -211,7 +211,7 @@ static int m41t80_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	err = i2c_smbus_read_i2c_block_data(client, M41T80_REG_SSEC,
 					    sizeof(buf), buf);
 	if (err < 0) {
-		dev_err(&client->dev, "Unable to read date\n");
+		dev_dbg(&client->dev, "Unable to read date\n");
 		return err;
 	}
 
