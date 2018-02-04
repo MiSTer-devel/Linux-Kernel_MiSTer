@@ -676,6 +676,7 @@
 		i2c1: i2c@ffc05000 {
 			#address-cells = <1>;
 			#size-cells = <0>;
+			clock-frequency = <100000>;
 			compatible = "snps,designware-i2c";
 			reg = <0xffc05000 0x1000>;
 			resets = <&rst I2C1_RESET>;
