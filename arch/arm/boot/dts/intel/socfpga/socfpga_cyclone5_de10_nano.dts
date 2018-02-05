@@ -47,7 +47,16 @@
 		hps0 {
 			label = "hps_led0";
 			gpios = <&portb 24 0>;
-			linux,default-trigger = "heartbeat";
+			linux,default-trigger = "mmc0";
+		};
+	};
+
+	ltcmode {
+		compatible = "gpio-leds";
+		ltcsw {
+			label = "ltc_sw";
+			gpios = <&portb 11 0>;
+			default-state = "off";
 		};
 	};
 };
@@ -107,6 +116,17 @@
                 compatible = "mcp7941x";
                 reg = <0x6F>;
         };
+};
+
+&spi1 {
+	status = "okay";
+	timeouts = <3>;
+	spibri {
+		status = "okay";
+		compatible = "altspi";
+		spi-max-frequency = <25000000>;
+		reg = <0>;
+	};
 };
 
 &mmc0 {
