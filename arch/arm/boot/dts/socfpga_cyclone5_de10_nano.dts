@@ -15,6 +15,7 @@
  */
 
 #include "socfpga_cyclone5.dtsi"
+#include <dt-bindings/gpio/gpio.h>
 
 / {
 	model = "Terasic DE10-nano";
@@ -50,13 +51,32 @@
 			linux,default-trigger = "mmc0";
 		};
 	};
-
+/*
 	ltcmode {
 		compatible = "gpio-leds";
 		ltcsw {
 			label = "ltc_sw";
 			gpios = <&portb 11 0>;
 			default-state = "off";
+		};
+	};
+*/
+
+	i2c_gpio {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		compatible = "i2c-gpio";
+		gpios = <&portb 22 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)
+                         &portb 23 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <2>;
+
+		rtc_at_68 {
+		        compatible = "m41t81";
+		        reg = <0x68>;
+		};
+		rtc_at_6F {
+		        compatible = "mcp7941x";
+		        reg = <0x6F>;
 		};
 	};
 };
@@ -104,18 +124,6 @@
 		interrupt-parent = <&portc>;
 		interrupts = <3 2>;
 	};
-};
-
-&i2c1 {
-	status = "okay";
-        rtc_at_68 {
-                compatible = "m41t81";
-                reg = <0x68>;
-        };
-        rtc_at_6F {
-                compatible = "mcp7941x";
-                reg = <0x6F>;
-        };
 };
 
 &spi1 {
