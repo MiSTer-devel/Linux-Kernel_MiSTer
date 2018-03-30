@@ -160,6 +160,10 @@
 	status = "okay";
 };
 
+&uart1 {
+	status = "okay";
+};
+
 &usb1 {
 	disable-over-current;
 	dr_mode = "host";
