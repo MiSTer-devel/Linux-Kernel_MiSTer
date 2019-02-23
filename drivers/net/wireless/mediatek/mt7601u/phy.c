@@ -589,7 +589,7 @@ void mt7601u_phy_recalibrate_after_assoc(struct mt7601u_dev *dev)
 	if (test_bit(MT7601U_STATE_REMOVED, &dev->state))
 		return;
 
-	mt7601u_mcu_calibrate(dev, MCU_CAL_DPD, dev->curr_temp);
+	// mt7601u_mcu_calibrate(dev, MCU_CAL_DPD, dev->curr_temp); 
 
 	mt7601u_rxdc_cal(dev);
 }
@@ -1156,13 +1156,16 @@ static int mt7601u_init_cal(struct mt7601u_dev *dev)
 	ret = mt7601u_mcu_calibrate(dev, MCU_CAL_TXIQ, 0);
 	if (ret)
 		return ret;
+		
+	/* remove this for testing--> spark2k06
 	ret = mt7601u_mcu_calibrate(dev, MCU_CAL_RXIQ, 0);
 	if (ret)
 		return ret;
 	ret = mt7601u_mcu_calibrate(dev, MCU_CAL_DPD, dev->dpd_temp);
 	if (ret)
 		return ret;
-
+        */ 
+        
 	mt7601u_rxdc_cal(dev);
 
 	mt7601u_tssi_dc_gain_cal(dev);
