@@ -1132,9 +1132,9 @@ static void dualshock4_parse_report(struct sony_sc *sc, u8 *rd, int size)
 		 * Note: we swap numerator 'x' and 'numer' in mult_frac for
 		 *       precision reasons so we don't need 64-bit.
 		 */
-		int calib_data = mult_frac(calib->sens_numer,
+		int calib_data = calib->sens_denom ? mult_frac(calib->sens_numer,
 					   raw_data - calib->bias,
-					   calib->sens_denom);
+					   calib->sens_denom) : 0;
 
 		input_report_abs(sc->sensor_dev, calib->abs_code, calib_data);
 		offset += 2;
