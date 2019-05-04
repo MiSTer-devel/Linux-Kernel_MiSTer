@@ -645,6 +645,7 @@ static void wiimote_modules_load(struct wiimote_data *wdata,
 
 		input_set_drvdata(wdata->input, wdata);
 		wdata->input->dev.parent = &wdata->hdev->dev;
+		wdata->input->uniq = wdata->hdev->uniq;
 		wdata->input->id.bustype = wdata->hdev->bus;
 		wdata->input->id.vendor = wdata->hdev->vendor;
 		wdata->input->id.product = wdata->hdev->product;
