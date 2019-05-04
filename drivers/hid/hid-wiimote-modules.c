@@ -491,6 +491,7 @@ static int wiimod_accel_probe(const struct wiimod_ops *ops,
 	wdata->accel->open = wiimod_accel_open;
 	wdata->accel->close = wiimod_accel_close;
 	wdata->accel->dev.parent = &wdata->hdev->dev;
+	wdata->accel->uniq = wdata->hdev->uniq;
 	wdata->accel->id.bustype = wdata->hdev->bus;
 	wdata->accel->id.vendor = wdata->hdev->vendor;
 	wdata->accel->id.product = wdata->hdev->product;
@@ -743,6 +744,7 @@ static int wiimod_ir_probe(const struct wiimod_ops *ops,
 	wdata->ir->open = wiimod_ir_open;
 	wdata->ir->close = wiimod_ir_close;
 	wdata->ir->dev.parent = &wdata->hdev->dev;
+	wdata->ir->uniq = wdata->hdev->uniq;
 	wdata->ir->id.bustype = wdata->hdev->bus;
 	wdata->ir->id.vendor = wdata->hdev->vendor;
 	wdata->ir->id.product = wdata->hdev->product;
@@ -938,6 +940,7 @@ static int wiimod_nunchuk_probe(const struct wiimod_ops *ops,
 	wdata->extension.input->open = wiimod_nunchuk_open;
 	wdata->extension.input->close = wiimod_nunchuk_close;
 	wdata->extension.input->dev.parent = &wdata->hdev->dev;
+	wdata->extension.input->uniq = wdata->hdev->uniq;
 	wdata->extension.input->id.bustype = wdata->hdev->bus;
 	wdata->extension.input->id.vendor = wdata->hdev->vendor;
 	wdata->extension.input->id.product = wdata->hdev->product;
@@ -1232,6 +1235,7 @@ static int wiimod_classic_probe(const struct wiimod_ops *ops,
 	wdata->extension.input->open = wiimod_classic_open;
 	wdata->extension.input->close = wiimod_classic_close;
 	wdata->extension.input->dev.parent = &wdata->hdev->dev;
+	wdata->extension.input->uniq = wdata->hdev->uniq;
 	wdata->extension.input->id.bustype = wdata->hdev->bus;
 	wdata->extension.input->id.vendor = wdata->hdev->vendor;
 	wdata->extension.input->id.product = wdata->hdev->product;
@@ -1510,6 +1514,7 @@ static int wiimod_bboard_probe(const struct wiimod_ops *ops,
 	wdata->extension.input->open = wiimod_bboard_open;
 	wdata->extension.input->close = wiimod_bboard_close;
 	wdata->extension.input->dev.parent = &wdata->hdev->dev;
+	wdata->extension.input->uniq = wdata->hdev->uniq;
 	wdata->extension.input->id.bustype = wdata->hdev->bus;
 	wdata->extension.input->id.vendor = wdata->hdev->vendor;
 	wdata->extension.input->id.product = wdata->hdev->product;
@@ -1898,6 +1903,7 @@ static int wiimod_pro_probe(const struct wiimod_ops *ops,
 	wdata->extension.input->open = wiimod_pro_open;
 	wdata->extension.input->close = wiimod_pro_close;
 	wdata->extension.input->dev.parent = &wdata->hdev->dev;
+	wdata->extension.input->uniq = wdata->hdev->uniq;
 	wdata->extension.input->id.bustype = wdata->hdev->bus;
 	wdata->extension.input->id.vendor = wdata->hdev->vendor;
 	wdata->extension.input->id.product = wdata->hdev->product;
@@ -2118,6 +2124,7 @@ static int wiimod_drums_probe(const struct wiimod_ops *ops,
 	wdata->extension.input->open = wiimod_drums_open;
 	wdata->extension.input->close = wiimod_drums_close;
 	wdata->extension.input->dev.parent = &wdata->hdev->dev;
+	wdata->extension.input->uniq = wdata->hdev->uniq;
 	wdata->extension.input->id.bustype = wdata->hdev->bus;
 	wdata->extension.input->id.vendor = wdata->hdev->vendor;
 	wdata->extension.input->id.product = wdata->hdev->product;
@@ -2348,6 +2355,7 @@ static int wiimod_guitar_probe(const struct wiimod_ops *ops,
 	wdata->extension.input->open = wiimod_guitar_open;
 	wdata->extension.input->close = wiimod_guitar_close;
 	wdata->extension.input->dev.parent = &wdata->hdev->dev;
+	wdata->extension.input->uniq = wdata->hdev->uniq;
 	wdata->extension.input->id.bustype = wdata->hdev->bus;
 	wdata->extension.input->id.vendor = wdata->hdev->vendor;
 	wdata->extension.input->id.product = wdata->hdev->product;
@@ -2583,6 +2591,7 @@ static int wiimod_mp_probe(const struct wiimod_ops *ops,
 	wdata->mp->open = wiimod_mp_open;
 	wdata->mp->close = wiimod_mp_close;
 	wdata->mp->dev.parent = &wdata->hdev->dev;
+	wdata->mp->uniq = wdata->hdev->uniq;
 	wdata->mp->id.bustype = wdata->hdev->bus;
 	wdata->mp->id.vendor = wdata->hdev->vendor;
 	wdata->mp->id.product = wdata->hdev->product;
