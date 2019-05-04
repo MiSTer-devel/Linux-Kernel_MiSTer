@@ -956,9 +956,9 @@ static int wiimod_nunchuk_probe(const struct wiimod_ops *ops,
 	set_bit(ABS_HAT0X, wdata->extension.input->absbit);
 	set_bit(ABS_HAT0Y, wdata->extension.input->absbit);
 	input_set_abs_params(wdata->extension.input,
-			     ABS_HAT0X, -120, 120, 2, 4);
+			     ABS_HAT0X, -100, 100, 2, 4);
 	input_set_abs_params(wdata->extension.input,
-			     ABS_HAT0Y, -120, 120, 2, 4);
+			     ABS_HAT0Y, -100, 100, 2, 4);
 	set_bit(ABS_RX, wdata->extension.input->absbit);
 	set_bit(ABS_RY, wdata->extension.input->absbit);
 	set_bit(ABS_RZ, wdata->extension.input->absbit);
@@ -1263,9 +1263,9 @@ static int wiimod_classic_probe(const struct wiimod_ops *ops,
 	input_set_abs_params(wdata->extension.input,
 			     ABS_HAT2Y, -30, 30, 1, 1);
 	input_set_abs_params(wdata->extension.input,
-			     ABS_HAT3X, -30, 30, 1, 1);
+			     ABS_HAT3X, 0, 62, 1, 1);
 	input_set_abs_params(wdata->extension.input,
-			     ABS_HAT3Y, -30, 30, 1, 1);
+			     ABS_HAT3Y, 0, 62, 1, 1);
 
 	ret = input_register_device(wdata->extension.input);
 	if (ret)
