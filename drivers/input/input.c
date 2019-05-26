@@ -139,6 +139,13 @@ static void input_pass_values(struct input_dev *dev,
 	handle = rcu_dereference(dev->grab);
 	if (handle) {
 		count = input_to_handler(handle, vals, count);
+		list_for_each_entry_rcu(handle, &dev->h_list, d_node)
+			if (handle->open) {
+				if(!strncmp(handle->name, "mouse", 5)) {
+					count = input_to_handler(handle, vals, count);
+					if (!count) break;
+				}
+			}
 	} else {
 		list_for_each_entry_rcu(handle, &dev->h_list, d_node)
 			if (handle->open) {
