@@ -59,6 +59,7 @@ struct mousedev {
 	int open;
 	struct input_handle handle;
 	wait_queue_head_t wait;
+	struct mousedev_client __rcu *grab;
 	struct list_head client_list;
 	spinlock_t client_lock; /* protects client_list */
 	struct mutex mutex;
@@ -260,62 +261,140 @@ static void mousedev_key_event(struct mousedev *mousedev,
 	}
 }
 
-static void mousedev_notify_readers(struct mousedev *mousedev,
+static int mousedev_notify_reader(struct mousedev_client *client, struct mousedev *mousedev,
 				    struct mousedev_hw_data *packet)
 {
-	struct mousedev_client *client;
 	struct mousedev_motion *p;
 	unsigned int new_head;
 	int wake_readers = 0;
 
-	rcu_read_lock();
-	list_for_each_entry_rcu(client, &mousedev->client_list, node) {
+	/* Just acquire the lock, interrupts already disabled */
+	spin_lock(&client->packet_lock);
 
-		/* Just acquire the lock, interrupts already disabled */
-		spin_lock(&client->packet_lock);
-
-		p = &client->packets[client->head];
-		if (client->ready && p->buttons != mousedev->packet.buttons) {
-			new_head = (client->head + 1) % PACKET_QUEUE_LEN;
-			if (new_head != client->tail) {
-				p = &client->packets[client->head = new_head];
-				memset(p, 0, sizeof(struct mousedev_motion));
-			}
-		}
-
-		if (packet->abs_event) {
-			p->dx += packet->x - client->pos_x;
-			p->dy += packet->y - client->pos_y;
-			client->pos_x = packet->x;
-			client->pos_y = packet->y;
-		}
-
-		client->pos_x += packet->dx;
-		client->pos_x = clamp_val(client->pos_x, 0, xres);
-
-		client->pos_y += packet->dy;
-		client->pos_y = clamp_val(client->pos_y, 0, yres);
-
-		p->dx += packet->dx;
-		p->dy += packet->dy;
-		p->dz += packet->dz;
-		p->buttons = mousedev->packet.buttons;
-
-		if (p->dx || p->dy || p->dz ||
-		    p->buttons != client->last_buttons)
-			client->ready = 1;
-
-		spin_unlock(&client->packet_lock);
-
-		if (client->ready) {
-			kill_fasync(&client->fasync, SIGIO, POLL_IN);
-			wake_readers = 1;
+	p = &client->packets[client->head];
+	if (client->ready && p->buttons != mousedev->packet.buttons) {
+		new_head = (client->head + 1) % PACKET_QUEUE_LEN;
+		if (new_head != client->tail) {
+			p = &client->packets[client->head = new_head];
+			memset(p, 0, sizeof(struct mousedev_motion));
 		}
 	}
+
+	if (packet->abs_event) {
+		p->dx += packet->x - client->pos_x;
+		p->dy += packet->y - client->pos_y;
+		client->pos_x = packet->x;
+		client->pos_y = packet->y;
+	}
+
+	client->pos_x += packet->dx;
+	client->pos_x = clamp_val(client->pos_x, 0, xres);
+
+	client->pos_y += packet->dy;
+	client->pos_y = clamp_val(client->pos_y, 0, yres);
+
+	p->dx += packet->dx;
+	p->dy += packet->dy;
+	p->dz += packet->dz;
+	p->buttons = mousedev->packet.buttons;
+
+	if (p->dx || p->dy || p->dz ||
+	    p->buttons != client->last_buttons)
+		client->ready = 1;
+
+	spin_unlock(&client->packet_lock);
+
+	if (client->ready) {
+		kill_fasync(&client->fasync, SIGIO, POLL_IN);
+		wake_readers = 1;
+	}
+
+	return wake_readers;
+}
+
+static void mousedev_notify_readers(struct mousedev *mousedev,
+				    struct mousedev_hw_data *packet)
+{
+	struct mousedev_client *client;
+	int wake_readers = 0;
+
+	rcu_read_lock();
+
+	client = rcu_dereference(mousedev->grab);
+	if(client)
+	{
+		wake_readers = mousedev_notify_reader(client, mousedev, packet);
+	}
+	else
+	{
+		list_for_each_entry_rcu(client, &mousedev->client_list, node)
+		{
+			if(mousedev_notify_reader(client, mousedev, packet)) wake_readers = 1;
+		}
+	}
+
 	rcu_read_unlock();
 
 	if (wake_readers)
 		wake_up_interruptible(&mousedev->wait);
+}
+
+static int mousedev_grab(struct mousedev *mousedev, struct mousedev_client *client)
+{
+	if (mousedev->grab) return -EBUSY;
+	rcu_assign_pointer(mousedev->grab, client);
+	return 0;
+}
+
+static int mousedev_ungrab(struct mousedev *mousedev, struct mousedev_client *client)
+{
+	struct mousedev_client *grab = rcu_dereference_protected(mousedev->grab,
+					lockdep_is_held(&mousedev->mutex));
+
+	if (grab != client) return  -EINVAL;
+	rcu_assign_pointer(mousedev->grab, NULL);
+	synchronize_rcu();
+	return 0;
+}
+
+static long mousedev_do_ioctl(struct file *file, unsigned int cmd,
+			   void __user *p, int compat_mode)
+{
+	struct mousedev_client *client = file->private_data;
+	struct mousedev *mousedev = client->mousedev;
+
+	if(cmd == EVIOCGRAB)
+	{
+		if (p)
+			return mousedev_grab(mousedev, client);
+		else
+			return mousedev_ungrab(mousedev, client);
+	}
+
+	return -EINVAL;
+}
+
+static long mousedev_ioctl_handler(struct file *file, unsigned int cmd,
+				void __user *p, int compat_mode)
+{
+	struct mousedev_client *client = file->private_data;
+	struct mousedev *mousedev = client->mousedev;
+	int retval;
+
+	retval = mutex_lock_interruptible(&mousedev->mutex);
+	if (retval)
+		return retval;
+
+	if (!mousedev->exist) {
+		retval = -ENODEV;
+		goto out;
+	}
+
+	retval = mousedev_do_ioctl(file, cmd, p, compat_mode);
+
+ out:
+	mutex_unlock(&mousedev->mutex);
+	return retval;
 }
 
 static void mousedev_touchpad_touch(struct mousedev *mousedev, int value)
@@ -529,6 +608,10 @@ static int mousedev_release(struct inode *inode, struct file *file)
 {
 	struct mousedev_client *client = file->private_data;
 	struct mousedev *mousedev = client->mousedev;
+
+	mutex_lock(&mousedev->mutex);
+	mousedev_ungrab(mousedev, client);
+	mutex_unlock(&mousedev->mutex);
 
 	mousedev_detach_client(mousedev, client);
 	kfree(client);
@@ -778,6 +861,19 @@ static __poll_t mousedev_poll(struct file *file, poll_table *wait)
 	return mask;
 }
 
+static long mousedev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	return mousedev_ioctl_handler(file, cmd, (void __user *)arg, 0);
+}
+
+#ifdef CONFIG_COMPAT
+static long mousedev_ioctl_compat(struct file *file,
+				unsigned int cmd, unsigned long arg)
+{
+	return mousedev_ioctl_handler(file, cmd, compat_ptr(arg), 1);
+}
+#endif
+
 static const struct file_operations mousedev_fops = {
 	.owner		= THIS_MODULE,
 	.read		= mousedev_read,
@@ -785,6 +881,10 @@ static const struct file_operations mousedev_fops = {
 	.poll		= mousedev_poll,
 	.open		= mousedev_open,
 	.release	= mousedev_release,
+	.unlocked_ioctl	= mousedev_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl	= mousedev_ioctl_compat,
+#endif
 	.fasync		= mousedev_fasync,
 	.llseek		= noop_llseek,
 };
