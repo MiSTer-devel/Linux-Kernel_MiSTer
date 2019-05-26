@@ -26,6 +26,7 @@
 #include <linux/kstrtox.h>
 #include <linux/mutex.h>
 #include <linux/rcupdate.h>
+#include <linux/string.h>
 #include "input-compat.h"
 #include "input-core-private.h"
 #include "input-poller.h"
@@ -120,6 +121,24 @@ static void input_pass_values(struct input_dev *dev,
 		handle = rcu_dereference(dev->grab);
 		if (handle) {
 			count = handle->handle_events(handle, vals, count);
+
+			/*
+			 * MiSTer: even when another handle has grabbed this
+			 * device via EVIOCGRAB, still deliver events to any
+			 * open mousedev handle so /dev/input/mouseX and
+			 * /dev/input/mice keep working (mousedev implements
+			 * its own, independent per-client EVIOCGRAB instead).
+			 */
+			list_for_each_entry_rcu(handle, &dev->h_list, d_node) {
+				if (handle->open &&
+				    !strncmp(handle->name, "mouse", 5)) {
+					count = handle->handle_events(handle,
+								       vals,
+								       count);
+					if (!count)
+						break;
+				}
+			}
 			break;
 		}
 
