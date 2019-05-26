@@ -48,6 +48,18 @@ static unsigned tap_time = 200;
 module_param(tap_time, uint, 0644);
 MODULE_PARM_DESC(tap_time, "Tap time for touchpads in absolute mode (msecs)");
 
+/*
+ * Game-controller touchpads for which tap-to-click emulation is suppressed.
+ * Values mirror drivers/hid/hid-ids.h (USB_VENDOR_ID_SONY and the DualShock 4 /
+ * DualSense product IDs); that header is private to drivers/hid, so the ids are
+ * repeated here rather than included across subsystems.
+ */
+#define MOUSEDEV_VENDOR_ID_SONY			0x054c
+#define MOUSEDEV_DEVICE_ID_SONY_PS4_CONTROLLER	0x05c4
+#define MOUSEDEV_DEVICE_ID_SONY_PS4_CONTROLLER_2	0x09cc
+#define MOUSEDEV_DEVICE_ID_SONY_PS4_CONTROLLER_DONGLE	0x0ba0
+#define MOUSEDEV_DEVICE_ID_SONY_PS5_CONTROLLER	0x0ce6
+
 struct mousedev_hw_data {
 	int dx, dy, dz;
 	int x, y;
@@ -59,6 +71,7 @@ struct mousedev {
 	int open;
 	struct input_handle handle;
 	wait_queue_head_t wait;
+	struct mousedev_client __rcu *grab;
 	struct list_head client_list;
 	spinlock_t client_lock; /* protects client_list */
 	struct mutex mutex;
@@ -74,6 +87,9 @@ struct mousedev {
 	int old_x[4], old_y[4];
 	int frac_dx, frac_dy;
 	unsigned long touch;
+
+	/* suppress tap-to-click emulation (game-controller touchpads) */
+	bool dis_t2c;
 
 	int (*open_device)(struct mousedev *mousedev);
 	void (*close_device)(struct mousedev *mousedev);
@@ -258,62 +274,106 @@ static void mousedev_key_event(struct mousedev *mousedev,
 	}
 }
 
+/* Returns true if the client has data pending and its readers must be woken. */
+static bool mousedev_notify_client(struct mousedev *mousedev,
+				   struct mousedev_client *client,
+				   struct mousedev_hw_data *packet)
+{
+	struct mousedev_motion *p;
+	unsigned int new_head;
+
+	/* Just acquire the lock, interrupts already disabled */
+	spin_lock(&client->packet_lock);
+
+	p = &client->packets[client->head];
+	if (client->ready && p->buttons != mousedev->packet.buttons) {
+		new_head = (client->head + 1) % PACKET_QUEUE_LEN;
+		if (new_head != client->tail) {
+			p = &client->packets[client->head = new_head];
+			memset(p, 0, sizeof(struct mousedev_motion));
+		}
+	}
+
+	if (packet->abs_event) {
+		p->dx += packet->x - client->pos_x;
+		p->dy += packet->y - client->pos_y;
+		client->pos_x = packet->x;
+		client->pos_y = packet->y;
+	}
+
+	client->pos_x += packet->dx;
+	client->pos_x = clamp_val(client->pos_x, 0, xres);
+
+	client->pos_y += packet->dy;
+	client->pos_y = clamp_val(client->pos_y, 0, yres);
+
+	p->dx += packet->dx;
+	p->dy += packet->dy;
+	p->dz += packet->dz;
+	p->buttons = mousedev->packet.buttons;
+
+	if (p->dx || p->dy || p->dz ||
+	    p->buttons != client->last_buttons)
+		client->ready = 1;
+
+	spin_unlock(&client->packet_lock);
+
+	if (!client->ready)
+		return false;
+
+	kill_fasync(&client->fasync, SIGIO, POLL_IN);
+	return true;
+}
+
 static void mousedev_notify_readers(struct mousedev *mousedev,
 				    struct mousedev_hw_data *packet)
 {
 	struct mousedev_client *client;
-	struct mousedev_motion *p;
-	unsigned int new_head;
-	int wake_readers = 0;
+	bool wake_readers = false;
 
 	rcu_read_lock();
-	list_for_each_entry_rcu(client, &mousedev->client_list, node) {
 
-		/* Just acquire the lock, interrupts already disabled */
-		spin_lock(&client->packet_lock);
-
-		p = &client->packets[client->head];
-		if (client->ready && p->buttons != mousedev->packet.buttons) {
-			new_head = (client->head + 1) % PACKET_QUEUE_LEN;
-			if (new_head != client->tail) {
-				p = &client->packets[client->head = new_head];
-				memset(p, 0, sizeof(struct mousedev_motion));
-			}
-		}
-
-		if (packet->abs_event) {
-			p->dx += packet->x - client->pos_x;
-			p->dy += packet->y - client->pos_y;
-			client->pos_x = packet->x;
-			client->pos_y = packet->y;
-		}
-
-		client->pos_x += packet->dx;
-		client->pos_x = clamp_val(client->pos_x, 0, xres);
-
-		client->pos_y += packet->dy;
-		client->pos_y = clamp_val(client->pos_y, 0, yres);
-
-		p->dx += packet->dx;
-		p->dy += packet->dy;
-		p->dz += packet->dz;
-		p->buttons = mousedev->packet.buttons;
-
-		if (p->dx || p->dy || p->dz ||
-		    p->buttons != client->last_buttons)
-			client->ready = 1;
-
-		spin_unlock(&client->packet_lock);
-
-		if (client->ready) {
-			kill_fasync(&client->fasync, SIGIO, POLL_IN);
-			wake_readers = 1;
-		}
+	client = rcu_dereference(mousedev->grab);
+	if (client) {
+		wake_readers = mousedev_notify_client(mousedev, client, packet);
+	} else {
+		list_for_each_entry_rcu(client, &mousedev->client_list, node)
+			if (mousedev_notify_client(mousedev, client, packet))
+				wake_readers = true;
 	}
+
 	rcu_read_unlock();
 
 	if (wake_readers)
 		wake_up_interruptible(&mousedev->wait);
+}
+
+static int mousedev_grab(struct mousedev *mousedev,
+			 struct mousedev_client *client)
+{
+	if (rcu_dereference_protected(mousedev->grab,
+				      lockdep_is_held(&mousedev->mutex)))
+		return -EBUSY;
+
+	rcu_assign_pointer(mousedev->grab, client);
+
+	return 0;
+}
+
+static int mousedev_ungrab(struct mousedev *mousedev,
+			   struct mousedev_client *client)
+{
+	struct mousedev_client *grab =
+		rcu_dereference_protected(mousedev->grab,
+					  lockdep_is_held(&mousedev->mutex));
+
+	if (grab != client)
+		return -EINVAL;
+
+	rcu_assign_pointer(mousedev->grab, NULL);
+	synchronize_rcu();
+
+	return 0;
 }
 
 static void mousedev_touchpad_touch(struct mousedev *mousedev, int value)
@@ -326,14 +386,24 @@ static void mousedev_touchpad_touch(struct mousedev *mousedev, int value)
 			 * Toggle left button to emulate tap.
 			 * We rely on the fact that mousedev_mix always has 0
 			 * motion packet so we won't mess current position.
+			 *
+			 * Game-controller touchpads (DS4/DualSense) opt out:
+			 * they are used as a plain pointing device and the
+			 * synthetic click is a misfire, not a feature.
 			 */
-			set_bit(0, &mousedev->packet.buttons);
-			set_bit(0, &mousedev_mix->packet.buttons);
+			if (!mousedev->dis_t2c) {
+				set_bit(0, &mousedev->packet.buttons);
+				set_bit(0, &mousedev_mix->packet.buttons);
+			}
+
 			mousedev_notify_readers(mousedev, &mousedev_mix->packet);
 			mousedev_notify_readers(mousedev_mix,
 						&mousedev_mix->packet);
-			clear_bit(0, &mousedev->packet.buttons);
-			clear_bit(0, &mousedev_mix->packet.buttons);
+
+			if (!mousedev->dis_t2c) {
+				clear_bit(0, &mousedev->packet.buttons);
+				clear_bit(0, &mousedev_mix->packet.buttons);
+			}
 		}
 		mousedev->touch = mousedev->pkt_count = 0;
 		mousedev->frac_dx = 0;
@@ -521,6 +591,10 @@ static int mousedev_release(struct inode *inode, struct file *file)
 {
 	struct mousedev_client *client = file->private_data;
 	struct mousedev *mousedev = client->mousedev;
+
+	mutex_lock(&mousedev->mutex);
+	mousedev_ungrab(mousedev, client);
+	mutex_unlock(&mousedev->mutex);
 
 	mousedev_detach_client(mousedev, client);
 	kfree(client);
@@ -770,6 +844,40 @@ static __poll_t mousedev_poll(struct file *file, poll_table *wait)
 	return mask;
 }
 
+static long mousedev_ioctl(struct file *file, unsigned int cmd,
+			   unsigned long arg)
+{
+	struct mousedev_client *client = file->private_data;
+	struct mousedev *mousedev = client->mousedev;
+	int retval;
+
+	retval = mutex_lock_interruptible(&mousedev->mutex);
+	if (retval)
+		return retval;
+
+	if (!mousedev->exist) {
+		retval = -ENODEV;
+		goto out;
+	}
+
+	switch (cmd) {
+	case EVIOCGRAB:
+		if (arg)
+			retval = mousedev_grab(mousedev, client);
+		else
+			retval = mousedev_ungrab(mousedev, client);
+		break;
+
+	default:
+		retval = -ENOTTY;
+		break;
+	}
+
+ out:
+	mutex_unlock(&mousedev->mutex);
+	return retval;
+}
+
 static const struct file_operations mousedev_fops = {
 	.owner		= THIS_MODULE,
 	.read		= mousedev_read,
@@ -777,6 +885,15 @@ static const struct file_operations mousedev_fops = {
 	.poll		= mousedev_poll,
 	.open		= mousedev_open,
 	.release	= mousedev_release,
+	.unlocked_ioctl	= mousedev_ioctl,
+#ifdef CONFIG_COMPAT
+	/*
+	 * EVIOCGRAB's argument is a truth value, not a pointer, so the
+	 * compat entry point needs no compat_ptr() translation and the
+	 * native handler can be used verbatim.
+	 */
+	.compat_ioctl	= mousedev_ioctl,
+#endif
 	.fasync		= mousedev_fasync,
 	.llseek		= noop_llseek,
 };
@@ -866,6 +983,12 @@ static struct mousedev *mousedev_create(struct input_dev *dev,
 	lockdep_set_subclass(&mousedev->mutex,
 			     mixdev ? SINGLE_DEPTH_NESTING : 0);
 	init_waitqueue_head(&mousedev->wait);
+
+	mousedev->dis_t2c = dev && dev->id.vendor == MOUSEDEV_VENDOR_ID_SONY &&
+		(dev->id.product == MOUSEDEV_DEVICE_ID_SONY_PS4_CONTROLLER ||
+		 dev->id.product == MOUSEDEV_DEVICE_ID_SONY_PS4_CONTROLLER_2 ||
+		 dev->id.product == MOUSEDEV_DEVICE_ID_SONY_PS4_CONTROLLER_DONGLE ||
+		 dev->id.product == MOUSEDEV_DEVICE_ID_SONY_PS5_CONTROLLER);
 
 	if (mixdev) {
 		dev_set_name(&mousedev->dev, "mice");
@@ -1054,6 +1177,7 @@ static struct input_handler mousedev_handler = {
 	.event		= mousedev_event,
 	.connect	= mousedev_connect,
 	.disconnect	= mousedev_disconnect,
+	.ignore_grab	= true,
 	.legacy_minors	= true,
 	.minor		= MOUSEDEV_MINOR_BASE,
 	.name		= "mousedev",

@@ -120,6 +120,26 @@ static void input_pass_values(struct input_dev *dev,
 		handle = rcu_dereference(dev->grab);
 		if (handle) {
 			count = handle->handle_events(handle, vals, count);
+
+			/*
+			 * An exclusive grab silences every other handle on the
+			 * device -- except handlers that asked to be exempt
+			 * (->ignore_grab, i.e. mousedev). They see the batch
+			 * the grabbing handle accepted, after it has seen it.
+			 * Their return value is deliberately discarded: an
+			 * exempt handler observes the stream, it does not get
+			 * to shorten it for the autorepeat pass below.
+			 */
+			if (count) {
+				list_for_each_entry_rcu(handle, &dev->h_list,
+							d_node) {
+					if (handle->open &&
+					    handle->handler->ignore_grab)
+						handle->handle_events(handle,
+								      vals,
+								      count);
+				}
+			}
 			break;
 		}
 

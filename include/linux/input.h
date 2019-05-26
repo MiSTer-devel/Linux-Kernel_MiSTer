@@ -290,6 +290,13 @@ struct input_handle;
  *	data stream from devices if there are other users present. Such
  *	drivers will not result in starting underlying hardware device
  *	when input_open_device() is called for their handles
+ * @ignore_grab: set to %true by handlers that must keep receiving events even
+ *	while another handler holds an exclusive grab (EVIOCGRAB) on the
+ *	device. Events are delivered to such a handler *after* the grabbing
+ *	handle has seen them, and its return value is ignored: it observes the
+ *	stream, it does not get to shorten it. Used by mousedev, because
+ *	userspace that grabs a mouse's evdev node may still be reading that
+ *	same mouse's /dev/input/mouseX node. See input_pass_values().
  * @legacy_minors: set to %true by drivers using legacy minor ranges
  * @minor: beginning of range of 32 legacy minors for devices this driver
  *	can provide
@@ -326,6 +333,7 @@ struct input_handler {
 	void (*start)(struct input_handle *handle);
 
 	bool passive_observer;
+	bool ignore_grab;
 	bool legacy_minors;
 	int minor;
 	const char *name;
