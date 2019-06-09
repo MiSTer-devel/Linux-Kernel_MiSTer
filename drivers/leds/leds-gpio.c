@@ -23,6 +23,7 @@ struct gpio_led_data {
 	struct gpio_desc *gpiod;
 	u8 can_sleep;
 	u8 blinking;
+	enum led_brightness prev_value;
 	gpio_blink_set_t platform_gpio_blink_set;
 };
 
@@ -53,6 +54,9 @@ static void gpio_led_set(struct led_classdev *led_cdev,
 		else
 			gpiod_set_value(led_dat->gpiod, level);
 	}
+
+	if(led_dat->prev_value != value) led_classdev_notify_brightness_hw_changed(led_cdev, value);
+	led_dat->prev_value = value;
 }
 
 static int gpio_led_set_blocking(struct led_classdev *led_cdev,
@@ -105,6 +109,8 @@ static int create_gpio_led(const struct gpio_led *template,
 		led_dat->cdev.flags |= LED_PANIC_INDICATOR;
 	if (template->retain_state_shutdown)
 		led_dat->cdev.flags |= LED_RETAIN_AT_SHUTDOWN;
+
+	led_dat->cdev.flags |= LED_BRIGHT_HW_CHANGED;
 
 	ret = gpiod_direction_output(led_dat->gpiod, state);
 	if (ret < 0)
