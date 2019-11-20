@@ -1098,6 +1098,7 @@ static int usbhid_start(struct hid_device *hid)
 			continue;
 
 		interval = endpoint->bInterval;
+		pr_info("HID usage: 0x%08X, original interval: %d\n", hid->collection->usage, interval);
 
 		/* Some vendors give fullspeed interval on highspeed devides */
 		if (hid->quirks & HID_QUIRK_FULLSPEED_INTERVAL &&
@@ -1116,14 +1117,18 @@ static int usbhid_start(struct hid_device *hid)
 				interval = hid_mousepoll_interval;
 			break;
 		case HID_GD_JOYSTICK:
+		case HID_GD_GAMEPAD:
 			if (hid_jspoll_interval > 0)
 				interval = hid_jspoll_interval;
+			pr_info("JS: endpoint->bInterval=%d, interval=%d\n", endpoint->bInterval, interval);
 			break;
 		case HID_GD_KEYBOARD:
 			if (hid_kbpoll_interval > 0)
 				interval = hid_kbpoll_interval;
 			break;
 		}
+
+		pr_info("HID usage: 0x%08X, applied interval: %d\n", hid->collection->usage, interval);
 
 		ret = -ENOMEM;
 		if (usb_endpoint_dir_in(endpoint)) {
