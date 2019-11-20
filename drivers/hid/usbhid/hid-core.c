@@ -1136,6 +1136,7 @@ static int usbhid_start(struct hid_device *hid)
 			if (hid_mousepoll_interval > 0)
 				interval = hid_mousepoll_interval;
 			break;
+		case HID_GD_GAMEPAD:
 		case HID_GD_JOYSTICK:
 			if (hid_jspoll_interval > 0)
 				interval = hid_jspoll_interval;
