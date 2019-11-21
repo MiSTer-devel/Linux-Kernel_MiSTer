@@ -84,6 +84,8 @@
 #define MAP_PADDLES			BIT(4)
 #define MAP_PROFILE_BUTTON		BIT(5)
 #define MAP_SHARE_OFFSET		BIT(6)
+#define MAP_VADER5			BIT(7)
+#define MAP_VADER4			BIT(8)
 
 #define DANCEPAD_MAP_CONFIG	(MAP_DPAD_TO_BUTTONS |			\
 				MAP_TRIGGERS_TO_BUTTONS | MAP_STICKS_TO_NULL)
@@ -123,11 +125,15 @@ static bool auto_poweroff = true;
 module_param(auto_poweroff, bool, S_IWUSR | S_IRUGO);
 MODULE_PARM_DESC(auto_poweroff, "Power off wireless controllers on suspend");
 
+static unsigned int cpoll;
+module_param(cpoll, uint, S_IWUSR | S_IRUGO);
+MODULE_PARM_DESC(cpoll, "Polling interval of XInput controllers");
+
 static const struct xpad_device {
 	u16 idVendor;
 	u16 idProduct;
 	char *name;
-	u8 mapping;
+	u16 mapping;
 	u8 xtype;
 	u8 flags;
 } xpad_device[] = {
@@ -158,14 +164,20 @@ static const struct xpad_device {
 	{ 0x045e, 0x028f, "Microsoft X-Box 360 pad v2", 0, XTYPE_XBOX360 },
 	{ 0x045e, 0x0291, "Xbox 360 Wireless Receiver (XBOX)", MAP_DPAD_TO_BUTTONS, XTYPE_XBOX360W },
 	{ 0x045e, 0x02a9, "Xbox 360 Wireless Receiver (Unofficial)", MAP_DPAD_TO_BUTTONS, XTYPE_XBOX360W },
-	{ 0x045e, 0x02d1, "Microsoft X-Box One pad", 0, XTYPE_XBOXONE },
-	{ 0x045e, 0x02dd, "Microsoft X-Box One pad (Firmware 2015)", 0, XTYPE_XBOXONE },
-	{ 0x045e, 0x02e3, "Microsoft X-Box One Elite pad", MAP_PADDLES, XTYPE_XBOXONE },
-	{ 0x045e, 0x02ea, "Microsoft X-Box One S pad", 0, XTYPE_XBOXONE },
+	/*
+	 * MiSTer: these are GIP-capable (Xbox One / Series) controllers. Leave
+	 * them unclaimed by xpad so the xone driver (package/xone) binds them
+	 * instead -- see the bInterfaceSubClass/Protocol check in xpad_probe()
+	 * below. xpad and xone must not fight over the same device.
+	 */
+//	{ 0x045e, 0x02d1, "Microsoft X-Box One pad", 0, XTYPE_XBOXONE },
+//	{ 0x045e, 0x02dd, "Microsoft X-Box One pad (Firmware 2015)", 0, XTYPE_XBOXONE },
+//	{ 0x045e, 0x02e3, "Microsoft X-Box One Elite pad", MAP_PADDLES, XTYPE_XBOXONE },
+//	{ 0x045e, 0x02ea, "Microsoft X-Box One S pad", 0, XTYPE_XBOXONE },
 	{ 0x045e, 0x0719, "Xbox 360 Wireless Receiver", MAP_DPAD_TO_BUTTONS, XTYPE_XBOX360W },
-	{ 0x045e, 0x0b00, "Microsoft X-Box One Elite 2 pad", MAP_PADDLES, XTYPE_XBOXONE },
+//	{ 0x045e, 0x0b00, "Microsoft X-Box One Elite 2 pad", MAP_PADDLES, XTYPE_XBOXONE },
 	{ 0x045e, 0x0b0a, "Microsoft X-Box Adaptive Controller", MAP_PROFILE_BUTTON, XTYPE_XBOXONE },
-	{ 0x045e, 0x0b12, "Microsoft Xbox Series S|X Controller", MAP_SHARE_BUTTON | MAP_SHARE_OFFSET, XTYPE_XBOXONE },
+//	{ 0x045e, 0x0b12, "Microsoft Xbox Series S|X Controller", MAP_SHARE_BUTTON | MAP_SHARE_OFFSET, XTYPE_XBOXONE },
 	{ 0x046d, 0xc21d, "Logitech Gamepad F310", 0, XTYPE_XBOX360 },
 	{ 0x046d, 0xc21e, "Logitech Gamepad F510", 0, XTYPE_XBOX360 },
 	{ 0x046d, 0xc21f, "Logitech Gamepad F710", 0, XTYPE_XBOX360 },
@@ -404,6 +416,8 @@ static const struct xpad_device {
 	{ 0x294b, 0x3303, "Snakebyte GAMEPAD BASE X", 0, XTYPE_XBOXONE },
 	{ 0x294b, 0x3404, "Snakebyte GAMEPAD RGB X", 0, XTYPE_XBOXONE },
 	{ 0x2993, 0x2001, "TECNO Pocket Go", 0, XTYPE_XBOX360 },
+	/* The left and right triggers share the same Z-axis on PC mode (XInput) = Xbox One */
+	{ 0x2c22, 0x2303, "Qanba Obsidian Arcade Joystick", 0, XTYPE_XBOX360 },  /* Works better in XBOX360 */
 	{ 0x2dc8, 0x2000, "8BitDo Pro 2 Wired Controller fox Xbox", 0, XTYPE_XBOXONE },
 	{ 0x2dc8, 0x200f, "8BitDo Ultimate 3-mode Controller for Xbox", MAP_SHARE_BUTTON, XTYPE_XBOXONE },
 	{ 0x2dc8, 0x3106, "8BitDo Ultimate Wireless / Pro 2 Wired Controller", 0, XTYPE_XBOX360 },
@@ -434,6 +448,7 @@ static const struct xpad_device {
 	{ 0x3651, 0x1000, "CRKD SG", 0, XTYPE_XBOX360 },
 	{ 0x366c, 0x0005, "ByoWave Proteus Controller", MAP_SHARE_BUTTON, XTYPE_XBOXONE, FLAG_DELAY_INIT },
 	{ 0x3767, 0x0101, "Fanatec Speedster 3 Forceshock Wheel", 0, XTYPE_XBOX },
+	{ 0x37d7, 0x2401, "Flydigi Vader 5 Pro pad", MAP_PADDLES | MAP_VADER5, XTYPE_XBOX360 },
 	{ 0x37d7, 0x2501, "Flydigi Apex 5", 0, XTYPE_XBOX360 },
 	{ 0x413d, 0x2104, "Black Shark Green Ghost Gamepad", 0, XTYPE_XBOX360 },
 	{ 0xffff, 0xffff, "Chinese-made Xbox Controller", 0, XTYPE_XBOX },
@@ -497,6 +512,22 @@ static const signed short xpad_btn_paddles[] = {
 	-1						/* terminating entry */
 };
 
+/* Flydigi Vader 3/4/5 Pro extra buttons */
+static const signed short xpad_btn_cz[] = {
+	BTN_C, BTN_Z,
+	-1
+};
+
+static const signed short xpad_btn_lmrm[] = {
+	BTN_TRIGGER_HAPPY1, BTN_TRIGGER_HAPPY2,
+	-1
+};
+
+static const signed short xpad_btn_circle_turbo[] = {
+	BTN_TRIGGER_HAPPY3, BTN_TRIGGER_HAPPY4,
+	-1
+};
+
 /*
  * Xbox 360 has a vendor-specific class, so we cannot match it with only
  * USB_INTERFACE_INFO (also specifically refused by USB subsystem), so we
@@ -529,6 +560,7 @@ static const struct usb_device_id xpad_table[] = {
 	 * macros - XPAD_XBOX360_VENDOR and XPAD_XBOXONE_VENDOR.
 	 */
 	{ USB_INTERFACE_INFO('X', 'B', 0) },	/* Xbox USB-IF not-approved class */
+	XPAD_XBOX360_VENDOR(0x2c22),		/* Qanba Joysticks */
 	XPAD_XBOX360_VENDOR(0x0079),		/* GPD Win 2 controller */
 	XPAD_XBOX360_VENDOR(0x0351),		/* CRKD Controllers */
 	XPAD_XBOX360_VENDOR(0x03eb),		/* Wooting Keyboards (Legacy) */
@@ -811,6 +843,16 @@ struct usb_xpad {
 	time64_t mode_btn_down_ts;
 	bool delay_init;		/* init packets should be delayed */
 	bool delayed_init_done;
+
+	/* Flydigi V2 (Vader 5 Pro raw/extended mode) */
+	bool flydigi_extended;
+	int flydigi_init_state;
+	u8 flydigi_prev_turbo;
+	struct urb *flydigi_irq_in;
+	unsigned char *flydigi_idata;
+	dma_addr_t flydigi_idata_dma;
+	struct work_struct flydigi_toggle_work;
+	struct delayed_work flydigi_work;
 };
 
 static int xpad_init_input(struct usb_xpad *xpad);
@@ -967,6 +1009,16 @@ static void xpad360_process_packet(struct usb_xpad *xpad, struct input_dev *dev,
 	} else {
 		input_report_abs(dev, ABS_Z, data[4]);
 		input_report_abs(dev, ABS_RZ, data[5]);
+	}
+
+	if (xpad->mapping & MAP_VADER4) {
+		input_report_key(dev, BTN_C,      data[19] & 0x01); /* C */
+		input_report_key(dev, BTN_Z,      data[19] & 0x02); /* Z */
+		input_report_key(dev, BTN_GRIPR2, data[19] & 0x04); /* M1 */
+		input_report_key(dev, BTN_GRIPL2, data[19] & 0x08); /* M2 */
+		input_report_key(dev, BTN_GRIPR,  data[19] & 0x10); /* M3 */
+		input_report_key(dev, BTN_GRIPL,  data[19] & 0x20); /* M4 */
+		input_report_key(dev, BTN_TRIGGER_HAPPY3, data[20] & 0x01);  /* Circle */
 	}
 
 	input_sync(dev);
@@ -1260,6 +1312,13 @@ static void xpad_irq_in(struct urb *urb)
 		goto exit;
 	}
 
+	/*
+	 * MiSTer: Flydigi Vader 5 Pro in extended mode gets its input from
+	 * flydigi_irq_in() on the controller's second USB interface instead.
+	 */
+	if (xpad->flydigi_extended)
+		goto exit;
+
 	switch (xpad->xtype) {
 	case XTYPE_XBOX360:
 		xpad360_process_packet(xpad, xpad->dev, 0, xpad->idata);
@@ -1425,6 +1484,7 @@ static int xpad_init_output(struct usb_interface *intf, struct usb_xpad *xpad,
 			struct usb_endpoint_descriptor *ep_irq_out)
 {
 	int error;
+	int interval;
 
 	if (xpad->xtype == XTYPE_UNKNOWN)
 		return 0;
@@ -1444,10 +1504,12 @@ static int xpad_init_output(struct usb_interface *intf, struct usb_xpad *xpad,
 		goto err_free_coherent;
 	}
 
+	interval = cpoll > 0 ? cpoll : ep_irq_out->bInterval;
+
 	usb_fill_int_urb(xpad->irq_out, xpad->udev,
 			 usb_sndintpipe(xpad->udev, ep_irq_out->bEndpointAddress),
 			 xpad->odata, XPAD_PKT_LEN,
-			 xpad_irq_out, xpad, ep_irq_out->bInterval);
+			 xpad_irq_out, xpad, interval);
 	xpad->irq_out->transfer_dma = xpad->odata_dma;
 	xpad->irq_out->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 
@@ -1804,6 +1866,242 @@ static int xpad_led_probe(struct usb_xpad *xpad) { return 0; }
 static void xpad_led_disconnect(struct usb_xpad *xpad) { }
 #endif
 
+/*
+ * Flydigi V2 support for Vader 5 Pro.
+ *
+ * The Vader 5 Pro exposes a second USB interface speaking a raw,
+ * checksum-framed protocol ("Flydigi V2"). Switching it into "extended"
+ * mode unlocks the C/Z/M1-M4/turbo buttons that XInput mode cannot report.
+ * MiSTer toggles extended mode by holding Circle+Turbo on the pad.
+ */
+#define FLYDIGI_V2_MAGIC1             0x5A
+#define FLYDIGI_V2_MAGIC2             0xA5
+#define FLYDIGI_V2_GET_INFO           0x01
+#define FLYDIGI_V2_GET_STATUS         0x10
+#define FLYDIGI_V2_SET_STATUS         0x11
+#define FLYDIGI_V2_SET_RUMBLE         0x12
+#define FLYDIGI_V2_INPUT_REPORT       0xEF
+
+static const u8 flydigi_status_data[] = {0xff, 0x1, 0xff, 0xff, 0xff};
+
+static int flydigi_send_command(struct usb_xpad *xpad, u8 cmd, u8 len, const u8 *param)
+{
+	u8 *buf;
+	u8 sum = 0;
+	int i = 2;
+	int ret, actual;
+
+	buf = kmalloc(32, GFP_KERNEL);
+	if (!buf) {
+		dev_warn(&xpad->intf->dev, "Flydigi: failed to allocate command buffer\n");
+		return -ENOMEM;
+	}
+
+	memset(buf, 0, 32);
+	if (len)
+		memcpy(buf + 4, param, len);
+	len += 2;
+
+	buf[0] = FLYDIGI_V2_MAGIC1;
+	buf[1] = FLYDIGI_V2_MAGIC2;
+	buf[2] = cmd;
+	buf[3] = len;
+
+	while (len--)
+		sum += buf[i++];
+	buf[i] = sum;
+
+	ret = usb_interrupt_msg(xpad->udev,
+	    usb_sndintpipe(xpad->udev, xpad->udev->actconfig->interface[1]->cur_altsetting->endpoint[1].desc.bEndpointAddress),
+	    buf, 32, &actual, 250);
+
+	kfree(buf);
+
+	if (ret < 0)
+		dev_warn(&xpad->intf->dev, "Flydigi: failed to send command %d: %d\n", cmd, ret);
+	return ret;
+}
+
+static void flydigi_rumble(struct usb_xpad *xpad, u8 left, u8 right, u8 left_trigger, u8 right_trigger)
+{
+	u8 data[] = {left, right, left_trigger, right_trigger};
+
+	flydigi_send_command(xpad, FLYDIGI_V2_SET_RUMBLE, sizeof(data), data);
+}
+
+static void flydigi_toggle_work_handler(struct work_struct *work)
+{
+	struct usb_xpad *xpad = container_of(work, struct usb_xpad, flydigi_toggle_work);
+
+	xpad->flydigi_extended = !xpad->flydigi_extended;
+
+	/* Rumble confirmation */
+	if (xpad->flydigi_extended) {
+		flydigi_rumble(xpad, 0, 255, 0, 255);
+		msleep(150);
+		flydigi_rumble(xpad, 0, 0, 0, 0);
+		dev_info(&xpad->intf->dev, "Switched to Extended Mode\n");
+	} else {
+		flydigi_rumble(xpad, 0, 255, 255, 0);
+		msleep(100);
+		flydigi_rumble(xpad, 0, 0, 0, 0);
+		msleep(150);
+		flydigi_rumble(xpad, 0, 255, 255, 0);
+		msleep(100);
+		flydigi_rumble(xpad, 0, 0, 0, 0);
+		dev_info(&xpad->intf->dev, "Switched to X360 Mode\n");
+	}
+}
+
+static void flydigi_work_handler(struct work_struct *work)
+{
+	struct usb_xpad *xpad = container_of(work, struct usb_xpad, flydigi_work.work);
+	unsigned long delay = msecs_to_jiffies(30000);
+
+	switch (xpad->flydigi_init_state) {
+	case 0:
+		flydigi_send_command(xpad, FLYDIGI_V2_GET_INFO, 0, NULL);
+		delay = msecs_to_jiffies(500);
+		break;
+
+	case 1:
+		flydigi_send_command(xpad, FLYDIGI_V2_SET_STATUS, sizeof(flydigi_status_data), flydigi_status_data);
+		break;
+
+	default:
+		flydigi_send_command(xpad, FLYDIGI_V2_GET_STATUS, 0, NULL);  /* Heartbeat, every 30 seconds */
+		break;
+	}
+
+	schedule_delayed_work(&xpad->flydigi_work, delay);
+}
+
+static void flydigi_irq_in(struct urb *urb)
+{
+	struct usb_xpad *xpad = urb->context;
+	struct input_dev *dev = xpad->dev;
+	u8 *buf = xpad->flydigi_idata;
+	u8 circle, turbo;
+	int retval;
+
+	if (urb->status == 0 && urb->actual_length >= 3 && buf[0] == FLYDIGI_V2_MAGIC1 && buf[1] == FLYDIGI_V2_MAGIC2) {
+		switch (xpad->flydigi_init_state) {
+		case 0:
+			if (buf[2] == FLYDIGI_V2_GET_INFO) {
+				xpad->flydigi_init_state++;
+				dev_info(&xpad->intf->dev, "Flydigi controller detected, scheduling init\n");
+			}
+			break;
+
+		case 1:
+			if (buf[2] == FLYDIGI_V2_SET_STATUS) {
+				xpad->flydigi_init_state++;
+				xpad->flydigi_extended = true;
+				dev_info(&xpad->intf->dev, "Flydigi Vader 5 Pro: raw mode enabled\n");
+			}
+			break;
+
+		case 2:
+			if (urb->actual_length < 17 || buf[2] != FLYDIGI_V2_INPUT_REPORT)
+				break;
+
+			circle = buf[14] & 0x01;
+			turbo  = buf[14] & 0x02;
+			if (circle && turbo && !xpad->flydigi_prev_turbo)
+				schedule_work(&xpad->flydigi_toggle_work);
+			xpad->flydigi_prev_turbo = turbo;
+
+			if (!xpad->flydigi_extended)
+				break;
+
+			/* Left Stick */
+			input_report_abs(dev, ABS_X, (s16)le16_to_cpup((__le16 *)&buf[3]));
+			input_report_abs(dev, ABS_Y, ~(s16)le16_to_cpup((__le16 *)&buf[5]));
+
+			/* Right Stick */
+			input_report_abs(dev, ABS_RX, (s16)le16_to_cpup((__le16 *)&buf[7]));
+			input_report_abs(dev, ABS_RY, ~(s16)le16_to_cpup((__le16 *)&buf[9]));
+
+			/* Triggers */
+			input_report_abs(dev, ABS_Z,  buf[15]);
+			input_report_abs(dev, ABS_RZ, buf[16]);
+
+			/* D-pad */
+			input_report_abs(dev, ABS_HAT0X, !!(buf[11] & 0x02) - !!(buf[11] & 0x08));
+			input_report_abs(dev, ABS_HAT0Y, !!(buf[11] & 0x04) - !!(buf[11] & 0x01));
+
+			/* Standard buttons */
+			input_report_key(dev, BTN_SOUTH,  buf[11] & 0x10);
+			input_report_key(dev, BTN_EAST,   buf[11] & 0x20);
+			input_report_key(dev, BTN_SELECT, buf[11] & 0x40);
+			input_report_key(dev, BTN_NORTH,  buf[11] & 0x80);
+			input_report_key(dev, BTN_WEST,   buf[12] & 0x01);
+			input_report_key(dev, BTN_START,  buf[12] & 0x02);
+			input_report_key(dev, BTN_TL,     buf[12] & 0x04);
+			input_report_key(dev, BTN_TR,     buf[12] & 0x08);
+			input_report_key(dev, BTN_THUMBL, buf[12] & 0x40);
+			input_report_key(dev, BTN_THUMBR, buf[12] & 0x80);
+
+			/* Extra buttons */
+			input_report_key(dev, BTN_C,              buf[13] & 0x01);
+			input_report_key(dev, BTN_Z,              buf[13] & 0x02);
+			input_report_key(dev, BTN_GRIPR,          buf[13] & 0x04); /* M1 */
+			input_report_key(dev, BTN_GRIPL,          buf[13] & 0x08); /* M2 */
+			input_report_key(dev, BTN_GRIPR2,         buf[13] & 0x10); /* M3 */
+			input_report_key(dev, BTN_GRIPL2,         buf[13] & 0x20); /* M4 */
+			input_report_key(dev, BTN_TRIGGER_HAPPY1, buf[13] & 0x40); /* LM */
+			input_report_key(dev, BTN_TRIGGER_HAPPY2, buf[13] & 0x80); /* RM */
+			input_report_key(dev, BTN_TRIGGER_HAPPY3, buf[14] & 0x01); /* Circle */
+			input_report_key(dev, BTN_TRIGGER_HAPPY4, buf[14] & 0x02); /* Turbo */
+			input_report_key(dev, BTN_MODE,           buf[14] & 0x08); /* Home */
+
+			input_sync(dev);
+			break;
+		}
+	}
+
+	retval = usb_submit_urb(urb, GFP_ATOMIC);
+	if (retval)
+		dev_err(&xpad->intf->dev, "Flydigi URB resubmit failed: %d\n", retval);
+}
+
+static void flydigi_init(struct usb_xpad *xpad)
+{
+	struct usb_device *udev = xpad->udev;
+
+	xpad->flydigi_idata = usb_alloc_coherent(udev, XPAD_PKT_LEN,
+					    GFP_KERNEL, &xpad->flydigi_idata_dma);
+	if (!xpad->flydigi_idata) {
+		dev_err(&xpad->intf->dev, "flydigi_init: failed to allocate input buffer\n");
+		return;
+	}
+
+	xpad->flydigi_irq_in = usb_alloc_urb(0, GFP_KERNEL);
+	if (!xpad->flydigi_irq_in) {
+		dev_err(&xpad->intf->dev, "flydigi_init: failed to allocate URB\n");
+		usb_free_coherent(udev, XPAD_PKT_LEN, xpad->flydigi_idata, xpad->flydigi_idata_dma);
+		xpad->flydigi_idata = NULL;
+		return;
+	}
+
+	usb_fill_int_urb(xpad->flydigi_irq_in, udev, 0,
+			 xpad->flydigi_idata, XPAD_PKT_LEN,
+			 flydigi_irq_in, xpad, 1);
+
+	xpad->flydigi_irq_in->transfer_dma = xpad->flydigi_idata_dma;
+	xpad->flydigi_irq_in->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+
+	INIT_WORK(&xpad->flydigi_toggle_work, flydigi_toggle_work_handler);
+	INIT_DELAYED_WORK(&xpad->flydigi_work, flydigi_work_handler);
+
+	xpad->flydigi_irq_in->pipe = usb_rcvintpipe(udev,
+		udev->actconfig->interface[1]->cur_altsetting->endpoint[0].desc.bEndpointAddress);
+	if (usb_submit_urb(xpad->flydigi_irq_in, GFP_KERNEL))
+		dev_err(&xpad->intf->dev, "Failed to submit flydigi URB\n");
+
+	schedule_delayed_work(&xpad->flydigi_work, 0);
+}
+
 static int xpad_start_input(struct usb_xpad *xpad)
 {
 	int error;
@@ -2023,6 +2321,22 @@ static int xpad_init_input(struct usb_xpad *xpad)
 			input_set_capability(input_dev, EV_KEY, xpad_btn_paddles[i]);
 	}
 
+	if (xpad->mapping & MAP_VADER5) {
+		for (i = 0; xpad_btn_cz[i] >= 0; i++)
+			input_set_capability(input_dev, EV_KEY, xpad_btn_cz[i]);
+		for (i = 0; xpad_btn_lmrm[i] >= 0; i++)
+			input_set_capability(input_dev, EV_KEY, xpad_btn_lmrm[i]);
+		for (i = 0; xpad_btn_circle_turbo[i] >= 0; i++)
+			input_set_capability(input_dev, EV_KEY, xpad_btn_circle_turbo[i]);
+	}
+
+	if (xpad->mapping & MAP_VADER4) {
+		for (i = 0; xpad_btn_cz[i] >= 0; i++)
+			input_set_capability(input_dev, EV_KEY, xpad_btn_cz[i]);
+		for (i = 0; xpad_btn_circle_turbo[i] >= 0; i++)
+			input_set_capability(input_dev, EV_KEY, xpad_btn_circle_turbo[i]);
+	}
+
 	/*
 	 * This should be a simple else block. However historically
 	 * xbox360w has mapped DPAD to buttons while xbox360 did not. This
@@ -2075,9 +2389,24 @@ err_free_input:
 static int xpad_probe(struct usb_interface *intf, const struct usb_device_id *id)
 {
 	struct usb_device *udev = interface_to_usbdev(intf);
+	struct usb_interface_descriptor *idesc = &intf->cur_altsetting->desc;
 	struct usb_xpad *xpad;
 	struct usb_endpoint_descriptor *ep_irq_in, *ep_irq_out;
 	int i, error;
+	int interval;
+
+	/*
+	 * MiSTer: if the device uses Xbox GIP (bInterfaceSubClass 0x47,
+	 * bInterfaceProtocol 0xd0), ignore it so the xone driver (which
+	 * understands GIP) can bind it instead -- see the matching
+	 * xpad_device[] exclusions above.
+	 */
+	if (idesc->bInterfaceClass == USB_CLASS_VENDOR_SPEC &&
+	    idesc->bInterfaceSubClass == 0x47 &&
+	    idesc->bInterfaceProtocol == 0xd0) {
+		dev_info(&intf->dev, "Ignoring GIP device to allow xone to bind\n");
+		return -ENODEV;
+	}
 
 	if (intf->cur_altsetting->desc.bNumEndpoints != 2)
 		return -ENODEV;
@@ -2113,6 +2442,14 @@ static int xpad_probe(struct usb_interface *intf, const struct usb_device_id *id
 	xpad->mapping = xpad_device[i].mapping;
 	xpad->xtype = xpad_device[i].xtype;
 	xpad->name = xpad_device[i].name;
+
+	/* Flydigi Vader 3/4 Pro identify themselves generically; go by product string */
+	if (udev->product &&
+	    (strstr(udev->product, "VADER3") || strstr(udev->product, "VADER4"))) {
+		xpad->name = udev->product;
+		xpad->mapping |= MAP_PADDLES | MAP_VADER4;
+	}
+
 	if (xpad_device[i].flags & FLAG_DELAY_INIT)
 		xpad->delay_init = true;
 
@@ -2173,10 +2510,12 @@ static int xpad_probe(struct usb_interface *intf, const struct usb_device_id *id
 	if (error)
 		goto err_free_in_urb;
 
+	interval = cpoll > 0 ? cpoll : ep_irq_in->bInterval;
+
 	usb_fill_int_urb(xpad->irq_in, udev,
 			 usb_rcvintpipe(udev, ep_irq_in->bEndpointAddress),
 			 xpad->idata, XPAD_PKT_LEN, xpad_irq_in,
-			 xpad, ep_irq_in->bInterval);
+			 xpad, interval);
 	xpad->irq_in->transfer_dma = xpad->idata_dma;
 	xpad->irq_in->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 
@@ -2238,6 +2577,10 @@ static int xpad_probe(struct usb_interface *intf, const struct usb_device_id *id
 		if (error)
 			goto err_deinit_output;
 	}
+
+	if (xpad->mapping & MAP_VADER5)
+		flydigi_init(xpad);
+
 	return 0;
 
 err_deinit_output:
@@ -2254,6 +2597,15 @@ err_free_mem:
 static void xpad_disconnect(struct usb_interface *intf)
 {
 	struct usb_xpad *xpad = usb_get_intfdata(intf);
+
+	if (xpad->flydigi_irq_in) {
+		cancel_work_sync(&xpad->flydigi_toggle_work);
+		cancel_delayed_work_sync(&xpad->flydigi_work);
+		usb_kill_urb(xpad->flydigi_irq_in);
+		usb_free_urb(xpad->flydigi_irq_in);
+		usb_free_coherent(xpad->udev, XPAD_PKT_LEN,
+				  xpad->flydigi_idata, xpad->flydigi_idata_dma);
+	}
 
 	if (xpad->xtype == XTYPE_XBOX360W)
 		xpad360w_stop_input(xpad);
