@@ -123,6 +123,10 @@ static bool auto_poweroff = true;
 module_param(auto_poweroff, bool, S_IWUSR | S_IRUGO);
 MODULE_PARM_DESC(auto_poweroff, "Power off wireless controllers on suspend");
 
+static unsigned int cpoll = 0;
+module_param(cpoll, uint, S_IWUSR | S_IRUGO);
+MODULE_PARM_DESC(cpoll, "Polling interval of XInput controllers");
+
 static const struct xpad_device {
 	u16 idVendor;
 	u16 idProduct;
@@ -404,6 +408,7 @@ static const struct xpad_device {
 	{ 0x294b, 0x3303, "Snakebyte GAMEPAD BASE X", 0, XTYPE_XBOXONE },
 	{ 0x294b, 0x3404, "Snakebyte GAMEPAD RGB X", 0, XTYPE_XBOXONE },
 	{ 0x2993, 0x2001, "TECNO Pocket Go", 0, XTYPE_XBOX360 },
+	{ 0x2c22, 0x2303, "Qanba Obsidian Arcade Joystick", 0, XTYPE_XBOX360 },
 	{ 0x2dc8, 0x2000, "8BitDo Pro 2 Wired Controller fox Xbox", 0, XTYPE_XBOXONE },
 	{ 0x2dc8, 0x200f, "8BitDo Ultimate 3-mode Controller for Xbox", MAP_SHARE_BUTTON, XTYPE_XBOXONE },
 	{ 0x2dc8, 0x3106, "8BitDo Ultimate Wireless / Pro 2 Wired Controller", 0, XTYPE_XBOX360 },
@@ -1425,6 +1430,7 @@ static int xpad_init_output(struct usb_interface *intf, struct usb_xpad *xpad,
 			struct usb_endpoint_descriptor *ep_irq_out)
 {
 	int error;
+	unsigned int interval;
 
 	if (xpad->xtype == XTYPE_UNKNOWN)
 		return 0;
@@ -1444,10 +1450,11 @@ static int xpad_init_output(struct usb_interface *intf, struct usb_xpad *xpad,
 		goto err_free_coherent;
 	}
 
+	interval = cpoll > 0 ? cpoll : ep_irq_out->bInterval;
 	usb_fill_int_urb(xpad->irq_out, xpad->udev,
 			 usb_sndintpipe(xpad->udev, ep_irq_out->bEndpointAddress),
 			 xpad->odata, XPAD_PKT_LEN,
-			 xpad_irq_out, xpad, ep_irq_out->bInterval);
+			 xpad_irq_out, xpad, interval);
 	xpad->irq_out->transfer_dma = xpad->odata_dma;
 	xpad->irq_out->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 
@@ -2078,6 +2085,7 @@ static int xpad_probe(struct usb_interface *intf, const struct usb_device_id *id
 	struct usb_xpad *xpad;
 	struct usb_endpoint_descriptor *ep_irq_in, *ep_irq_out;
 	int i, error;
+	unsigned int interval;
 
 	if (intf->cur_altsetting->desc.bNumEndpoints != 2)
 		return -ENODEV;
@@ -2173,10 +2181,11 @@ static int xpad_probe(struct usb_interface *intf, const struct usb_device_id *id
 	if (error)
 		goto err_free_in_urb;
 
+	interval = cpoll > 0 ? cpoll : ep_irq_in->bInterval;
 	usb_fill_int_urb(xpad->irq_in, udev,
 			 usb_rcvintpipe(udev, ep_irq_in->bEndpointAddress),
 			 xpad->idata, XPAD_PKT_LEN, xpad_irq_in,
-			 xpad, ep_irq_in->bInterval);
+			 xpad, interval);
 	xpad->irq_in->transfer_dma = xpad->idata_dma;
 	xpad->irq_in->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 
