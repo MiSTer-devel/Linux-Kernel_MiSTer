@@ -70,6 +70,10 @@
                          &portb 23 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)>;
 		i2c-gpio,delay-us = <2>;
 
+		rtc_at_51 {
+                	compatible = "pcf8563";
+                	reg = <0x51>;
+		};
 		rtc_at_68 {
 		        compatible = "m41t81";
 		        reg = <0x68>;
