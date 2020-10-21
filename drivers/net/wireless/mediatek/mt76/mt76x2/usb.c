@@ -23,8 +23,11 @@ static const struct usb_device_id mt76x2u_device_table[] = {
 	{ USB_DEVICE(0x2c4e, 0x0103) },	/* Mercury UD13 */
 	{ USB_DEVICE(0x0846, 0x9014) },	/* Netgear WNDA3100v3 */
 	{ USB_DEVICE(0x0846, 0x9053) },	/* Netgear A6210 */
-	{ USB_DEVICE(0x045e, 0x02e6) },	/* XBox One Wireless Adapter */
-	{ USB_DEVICE(0x045e, 0x02fe) },	/* XBox One Wireless Adapter */
+	/*
+	 * MiSTer: XBox One Wireless Adapter (045e:02e6, 045e:02fe) intentionally
+	 * NOT claimed here -- leave them for the xone driver (package/xone),
+	 * which implements the actual Xbox GIP wireless-adapter protocol.
+	 */
 	{ USB_DEVICE(0x2357, 0x0137) },	/* TP-Link TL-WDN6200 */
 	{ },
 };
