@@ -133,6 +133,12 @@
 	};
 };
 
+&i2c2 {
+	status = "okay";
+	clock-frequency = <100000>;
+	speed-mode = <0>;
+};
+
 &spi0 {
 	status = "okay";
 	timeouts = <3>;
