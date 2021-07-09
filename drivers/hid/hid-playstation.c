@@ -216,7 +216,7 @@ struct dualsense {
 	/* Player leds */
 	bool update_player_leds;
 	u8 player_leds_state;
-	struct led_classdev player_leds[5];
+	struct led_classdev led; /* player leds */
 
 	struct work_struct output_worker;
 	bool output_worker_initialized;
@@ -1210,35 +1210,6 @@ static int dualsense_lightbar_set_brightness(struct led_classdev *cdev,
 	return 0;
 }
 
-static enum led_brightness dualsense_player_led_get_brightness(struct led_classdev *led)
-{
-	struct hid_device *hdev = to_hid_device(led->dev->parent);
-	struct dualsense *ds = hid_get_drvdata(hdev);
-
-	return !!(ds->player_leds_state & BIT(led - ds->player_leds));
-}
-
-static int dualsense_player_led_set_brightness(struct led_classdev *led, enum led_brightness value)
-{
-	struct hid_device *hdev = to_hid_device(led->dev->parent);
-	struct dualsense *ds = hid_get_drvdata(hdev);
-	unsigned int led_index;
-
-	scoped_guard(spinlock_irqsave, &ds->base.lock) {
-		led_index = led - ds->player_leds;
-		if (value == LED_OFF)
-			ds->player_leds_state &= ~BIT(led_index);
-		else
-			ds->player_leds_state |= BIT(led_index);
-
-		ds->update_player_leds = true;
-	}
-
-	dualsense_schedule_work(ds);
-
-	return 0;
-}
-
 static void dualsense_init_output_report(struct dualsense *ds,
 					 struct dualsense_output_report *rp, void *buf)
 {
@@ -1690,7 +1661,7 @@ static void dualsense_set_lightbar(struct dualsense *ds, u8 red, u8 green, u8 bl
 	dualsense_schedule_work(ds);
 }
 
-static void dualsense_set_player_leds(struct dualsense *ds)
+static void dualsense_set_player_leds(struct dualsense *ds, uint8_t player_id)
 {
 	/*
 	 * The DualSense controller has a row of 5 LEDs used for player ids.
@@ -1698,7 +1669,8 @@ static void dualsense_set_player_leds(struct dualsense *ds)
 	 * across the LEDs, so e.g. player 1 would be "--x--" with x being 'on'.
 	 * Follow a similar mapping here.
 	 */
-	static const int player_ids[5] = {
+	static const int player_ids[6] = {
+		0,
 		BIT(2),
 		BIT(3) | BIT(1),
 		BIT(4) | BIT(2) | BIT(0),
@@ -1706,11 +1678,52 @@ static void dualsense_set_player_leds(struct dualsense *ds)
 		BIT(4) | BIT(3) | BIT(2) | BIT(1) | BIT(0)
 	};
 
-	u8 player_id = ds->base.player_id % ARRAY_SIZE(player_ids);
-
+	if(player_id > 5) player_id = 0;
 	ds->update_player_leds = true;
 	ds->player_leds_state = player_ids[player_id];
 	dualsense_schedule_work(ds);
+}
+
+static int dualsense_player_led_brightness_set(struct led_classdev *led, enum led_brightness brightness)
+{
+	struct device *dev = led->dev->parent;
+	struct hid_device *hdev = to_hid_device(dev);
+	struct dualsense *ds = hid_get_drvdata(hdev);
+
+	if (!ds) {
+		hid_err(hdev, "No controller data\n");
+		return -ENODEV;
+	}
+
+	dualsense_set_player_leds(ds, brightness);
+	return 0;
+}
+
+static int ds_leds_create(struct dualsense *ds)
+{
+	struct hid_device *hdev = ds->base.hdev;
+	struct device *dev = &hdev->dev;
+	int ret;
+
+	dualsense_set_player_leds(ds, 0);
+
+	/* configure the player LEDs */
+	ds->led.name = devm_kasprintf(dev, GFP_KERNEL,"%s:player_id", dev_name(dev));
+	if (!ds->led.name) return -ENOMEM;
+
+	ds->led.brightness = 0;
+	ds->led.max_brightness = 5;
+	ds->led.brightness_set_blocking = dualsense_player_led_brightness_set;
+	ds->led.flags = LED_CORE_SUSPENDRESUME | LED_HW_PLUGGABLE;
+
+	ret = devm_led_classdev_register(&hdev->dev, &ds->led);
+	if (ret)
+	{
+		hid_err(hdev, "Failed registering %s LED\n", ds->led.name);
+		return ret;
+	}
+
+	return 0;
 }
 
 static struct ps_device *dualsense_create(struct hid_device *hdev)
@@ -1718,20 +1731,7 @@ static struct ps_device *dualsense_create(struct hid_device *hdev)
 	struct dualsense *ds;
 	struct ps_device *ps_dev;
 	u8 max_output_report_size;
-	int i, ret;
-
-	static const struct ps_led_info player_leds_info[] = {
-		{ LED_FUNCTION_PLAYER1, "white", 1, dualsense_player_led_get_brightness,
-				dualsense_player_led_set_brightness },
-		{ LED_FUNCTION_PLAYER2, "white", 1, dualsense_player_led_get_brightness,
-				dualsense_player_led_set_brightness },
-		{ LED_FUNCTION_PLAYER3, "white", 1, dualsense_player_led_get_brightness,
-				dualsense_player_led_set_brightness },
-		{ LED_FUNCTION_PLAYER4, "white", 1, dualsense_player_led_get_brightness,
-				dualsense_player_led_set_brightness },
-		{ LED_FUNCTION_PLAYER5, "white", 1, dualsense_player_led_get_brightness,
-				dualsense_player_led_set_brightness }
-	};
+	int ret;
 
 	ds = devm_kzalloc(&hdev->dev, sizeof(*ds), GFP_KERNEL);
 	if (!ds)
@@ -1847,14 +1847,6 @@ static struct ps_device *dualsense_create(struct hid_device *hdev)
 	/* Set default lightbar color. */
 	dualsense_set_lightbar(ds, 0, 0, 128); /* blue */
 
-	for (i = 0; i < ARRAY_SIZE(player_leds_info); i++) {
-		const struct ps_led_info *led_info = &player_leds_info[i];
-
-		ret = ps_led_register(ps_dev, &ds->player_leds[i], led_info);
-		if (ret < 0)
-			goto err;
-	}
-
 	ret = ps_device_set_player_id(ps_dev);
 	if (ret) {
 		hid_err(hdev, "Failed to assign player id for DualSense: %d\n", ret);
@@ -1862,7 +1854,10 @@ static struct ps_device *dualsense_create(struct hid_device *hdev)
 	}
 
 	/* Set player LEDs to our player id. */
-	dualsense_set_player_leds(ds);
+	//dualsense_set_player_leds(ds);
+	ret = ds_leds_create(ds);
+	if (ret)
+		goto err;
 
 	/*
 	 * Reporting hardware and firmware is important as there are frequent updates, which
