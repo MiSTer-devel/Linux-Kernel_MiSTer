@@ -130,6 +130,7 @@ struct dualsense {
 	struct input_dev *touchpad;
 
 	struct led_classdev led; /* player leds */
+	struct led_classdev rgbled[3]; /* lightbar */
 
 	/* Calibration data for accelerometer and gyroscope. */
 	struct ps_calibration_data accel_calib_data[3];
@@ -1160,6 +1161,55 @@ static int ds_leds_create(struct dualsense *ds)
 	return 0;
 }
 
+static int dualsense_lightbar_brightness_set(struct led_classdev *led, enum led_brightness brightness)
+{
+	struct device *dev = led->dev->parent;
+	struct hid_device *hdev = to_hid_device(dev);
+	struct dualsense *ds = hid_get_drvdata(hdev);
+
+	if (!ds) {
+		hid_err(hdev, "No controller data\n");
+		return -ENODEV;
+	}
+
+	ds->update_lightbar = true;
+	if(led == &ds->rgbled[0]) ds->lightbar_red = brightness;
+	if(led == &ds->rgbled[1]) ds->lightbar_green = brightness;
+	if(led == &ds->rgbled[2]) ds->lightbar_blue = brightness;
+
+	schedule_work(&ds->output_worker);
+	return 0;
+}
+
+static int ds_lightbar_create(struct dualsense *ds)
+{
+	struct hid_device *hdev = ds->base.hdev;
+	struct device *dev = &hdev->dev;
+	int ret, i;
+
+	dualsense_set_lightbar(ds, 0, 0, 128); /* blue */
+
+	for(i=0; i<3; i++)
+	{
+		ds->rgbled[i].name = devm_kasprintf(dev, GFP_KERNEL, "%s:%s", dev_name(dev), (i==0) ? "red" : (i==1) ? "green" : "blue");
+		if (!ds->rgbled[i].name) return -ENOMEM;
+
+		ds->rgbled[i].brightness = 0;
+		ds->rgbled[i].max_brightness = 255;
+		ds->rgbled[i].brightness_set_blocking = dualsense_lightbar_brightness_set;
+		ds->rgbled[i].flags = LED_CORE_SUSPENDRESUME | LED_HW_PLUGGABLE;
+
+		ret = devm_led_classdev_register(&hdev->dev, &ds->rgbled[i]);
+		if (ret)
+		{
+			hid_err(hdev, "Failed registering %s LED\n", ds->rgbled[i].name);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
 static struct ps_device *dualsense_create(struct hid_device *hdev)
 {
 	struct dualsense *ds;
@@ -1246,7 +1296,9 @@ static struct ps_device *dualsense_create(struct hid_device *hdev)
 	if (ret)
 		goto err;
 
-	dualsense_set_lightbar(ds, 0, 0, 128); /* blue */
+	ret = ds_lightbar_create(ds);
+	if (ret)
+		goto err;
 
 	/* Set player LEDs to our player id. */
 	//dualsense_set_player_leds(ds);
