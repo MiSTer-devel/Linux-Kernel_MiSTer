@@ -12,6 +12,7 @@
 #include <linux/idr.h>
 #include <linux/input/mt.h>
 #include <linux/module.h>
+#include <linux/leds.h>
 
 #include <asm/unaligned.h>
 
@@ -21,8 +22,6 @@
 static DEFINE_MUTEX(ps_devices_lock);
 static LIST_HEAD(ps_devices_list);
 
-static DEFINE_IDA(ps_player_id_allocator);
-
 #define HID_PLAYSTATION_VERSION_PATCH 0x8000
 
 /* Base class for playstation devices. */
@@ -30,8 +29,6 @@ struct ps_device {
 	struct list_head list;
 	struct hid_device *hdev;
 	spinlock_t lock;
-
-	uint32_t player_id;
 
 	struct power_supply_desc battery_desc;
 	struct power_supply *battery;
@@ -131,6 +128,8 @@ struct dualsense {
 	struct input_dev *gamepad;
 	struct input_dev *sensors;
 	struct input_dev *touchpad;
+
+	struct led_classdev led; /* player leds */
 
 	/* Calibration data for accelerometer and gyroscope. */
 	struct ps_calibration_data accel_calib_data[3];
@@ -318,24 +317,6 @@ static int ps_devices_list_remove(struct ps_device *dev)
 	list_del(&dev->list);
 	mutex_unlock(&ps_devices_lock);
 	return 0;
-}
-
-static int ps_device_set_player_id(struct ps_device *dev)
-{
-	int ret = ida_alloc(&ps_player_id_allocator, GFP_KERNEL);
-
-	if (ret < 0)
-		return ret;
-
-	dev->player_id = ret;
-	return 0;
-}
-
-static void ps_device_release_player_id(struct ps_device *dev)
-{
-	ida_free(&ps_player_id_allocator, dev->player_id);
-
-	dev->player_id = U32_MAX;
 }
 
 static struct input_dev *ps_allocate_input_dev(struct hid_device *hdev, const char *name_suffix)
@@ -1114,7 +1095,7 @@ static void dualsense_set_lightbar(struct dualsense *ds, uint8_t red, uint8_t gr
 	schedule_work(&ds->output_worker);
 }
 
-static void dualsense_set_player_leds(struct dualsense *ds)
+static void dualsense_set_player_leds(struct dualsense *ds, uint8_t player_id)
 {
 	/*
 	 * The DualSense controller has a row of 5 LEDs used for player ids.
@@ -1122,7 +1103,8 @@ static void dualsense_set_player_leds(struct dualsense *ds)
 	 * across the LEDs, so e.g. player 1 would be "--x--" with x being 'on'.
 	 * Follow a similar mapping here.
 	 */
-	static const int player_ids[5] = {
+	static const int player_ids[6] = {
+		0,
 		BIT(2),
 		BIT(3) | BIT(1),
 		BIT(4) | BIT(2) | BIT(0),
@@ -1130,11 +1112,52 @@ static void dualsense_set_player_leds(struct dualsense *ds)
 		BIT(4) | BIT(3) | BIT(2) | BIT(1) | BIT(0)
 	};
 
-	uint8_t player_id = ds->base.player_id % ARRAY_SIZE(player_ids);
-
+	if(player_id > 5) player_id = 0;
 	ds->update_player_leds = true;
 	ds->player_leds_state = player_ids[player_id];
 	schedule_work(&ds->output_worker);
+}
+
+static int dualsense_player_led_brightness_set(struct led_classdev *led, enum led_brightness brightness)
+{
+	struct device *dev = led->dev->parent;
+	struct hid_device *hdev = to_hid_device(dev);
+	struct dualsense *ds = hid_get_drvdata(hdev);
+
+	if (!ds) {
+		hid_err(hdev, "No controller data\n");
+		return -ENODEV;
+	}
+
+	dualsense_set_player_leds(ds, brightness);
+	return 0;
+}
+
+static int ds_leds_create(struct dualsense *ds)
+{
+	struct hid_device *hdev = ds->base.hdev;
+	struct device *dev = &hdev->dev;
+	int ret;
+
+	dualsense_set_player_leds(ds, 0);
+
+	/* configure the player LEDs */
+	ds->led.name = devm_kasprintf(dev, GFP_KERNEL,"%s:player_id", dev_name(dev));
+	if (!ds->led.name) return -ENOMEM;
+
+	ds->led.brightness = 0;
+	ds->led.max_brightness = 5;
+	ds->led.brightness_set_blocking = dualsense_player_led_brightness_set;
+	ds->led.flags = LED_CORE_SUSPENDRESUME | LED_HW_PLUGGABLE;
+
+	ret = devm_led_classdev_register(&hdev->dev, &ds->led);
+	if (ret)
+	{
+		hid_err(hdev, "Failed registering %s LED\n", ds->led.name);
+		return ret;
+	}
+
+	return 0;
 }
 
 static struct ps_device *dualsense_create(struct hid_device *hdev)
@@ -1225,14 +1248,11 @@ static struct ps_device *dualsense_create(struct hid_device *hdev)
 
 	dualsense_set_lightbar(ds, 0, 0, 128); /* blue */
 
-	ret = ps_device_set_player_id(ps_dev);
-	if (ret) {
-		hid_err(hdev, "Failed to assign player id for DualSense: %d\n", ret);
-		goto err;
-	}
-
 	/* Set player LEDs to our player id. */
-	dualsense_set_player_leds(ds);
+	//dualsense_set_player_leds(ds);
+	ret = ds_leds_create(ds);
+	if (ret)
+		goto err;
 
 	/*
 	 * Reporting hardware and firmware is important as there are frequent updates, which
@@ -1311,7 +1331,6 @@ static void ps_remove(struct hid_device *hdev)
 	struct ps_device *dev = hid_get_drvdata(hdev);
 
 	ps_devices_list_remove(dev);
-	ps_device_release_player_id(dev);
 
 	hid_hw_close(hdev);
 	hid_hw_stop(hdev);
@@ -1340,7 +1359,6 @@ static int __init ps_init(void)
 static void __exit ps_exit(void)
 {
 	hid_unregister_driver(&ps_driver);
-	ida_destroy(&ps_player_id_allocator);
 }
 
 module_init(ps_init);
