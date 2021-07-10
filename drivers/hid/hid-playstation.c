@@ -211,7 +211,7 @@ struct dualsense {
 	/* Microphone */
 	bool update_mic_mute;
 	bool mic_muted;
-	bool last_btn_mic_state;
+	struct led_classdev mute_led;
 
 	/* Player leds */
 	bool update_player_leds;
@@ -1404,7 +1404,6 @@ static int dualsense_parse_report(struct ps_device *ps_dev, struct hid_report *r
 	u8 battery_data, battery_capacity, charging_status, value;
 	int battery_status;
 	u32 sensor_timestamp;
-	bool btn_mic_state;
 	int i;
 
 	/*
@@ -1457,24 +1456,14 @@ static int dualsense_parse_report(struct ps_device *ps_dev, struct hid_report *r
 	input_report_key(ds->gamepad, BTN_THUMBL, ds_report->buttons[1] & DS_BUTTONS1_L3);
 	input_report_key(ds->gamepad, BTN_THUMBR, ds_report->buttons[1] & DS_BUTTONS1_R3);
 	input_report_key(ds->gamepad, BTN_MODE,   ds_report->buttons[2] & DS_BUTTONS2_PS_HOME);
-	input_sync(ds->gamepad);
-
 	/*
-	 * The DualSense has an internal microphone, which can be muted through a mute button
-	 * on the device. The driver is expected to read the button state and program the device
-	 * to mute/unmute audio at the hardware level.
+	 * Stock MiSTer reports the mic-mute button to userspace as BTN_Z
+	 * (an extra mappable button) instead of toggling the microphone
+	 * in-kernel; the mute LED is owned by userspace via the ":mute"
+	 * LED class device registered in dualsense_create().
 	 */
-	btn_mic_state = !!(ds_report->buttons[2] & DS_BUTTONS2_MIC_MUTE);
-	if (btn_mic_state && !ds->last_btn_mic_state) {
-		scoped_guard(spinlock_irqsave, &ps_dev->lock) {
-			ds->update_mic_mute = true;
-			ds->mic_muted = !ds->mic_muted; /* toggle */
-		}
-
-		/* Schedule updating of microphone state at hardware level. */
-		dualsense_schedule_work(ds);
-	}
-	ds->last_btn_mic_state = btn_mic_state;
+	input_report_key(ds->gamepad, BTN_Z, ds_report->buttons[2] & DS_BUTTONS2_MIC_MUTE);
+	input_sync(ds->gamepad);
 
 	/*
 	 * Parse HP/MIC plugged state data for USB use case, since Bluetooth
@@ -1699,6 +1688,20 @@ static int dualsense_player_id_led_set_brightness(struct led_classdev *led,
 	return 0;
 }
 
+static int dualsense_mute_led_set_brightness(struct led_classdev *led,
+					     enum led_brightness brightness)
+{
+	struct hid_device *hdev = to_hid_device(led->dev->parent);
+	struct dualsense *ds = hid_get_drvdata(hdev);
+
+	scoped_guard(spinlock_irqsave, &ds->base.lock) {
+		ds->update_mic_mute = true;
+		ds->mic_muted = !!brightness;
+	}
+	dualsense_schedule_work(ds);
+	return 0;
+}
+
 static struct ps_device *dualsense_create(struct hid_device *hdev)
 {
 	struct dualsense *ds;
@@ -1775,6 +1778,9 @@ static struct ps_device *dualsense_create(struct hid_device *hdev)
 		ret = PTR_ERR(ds->gamepad);
 		goto err;
 	}
+
+	/* Extra mappable button: mic-mute reported as BTN_Z (stock MiSTer). */
+	input_set_capability(ds->gamepad, EV_KEY, BTN_Z);
 	/* Use gamepad input device name as primary device name for e.g. LEDs */
 	ps_dev->input_dev_name = dev_name(&ds->gamepad->dev);
 
@@ -1836,6 +1842,21 @@ static struct ps_device *dualsense_create(struct hid_device *hdev)
 	ds->player_id_led.brightness_set_blocking = dualsense_player_id_led_set_brightness;
 	ds->player_id_led.flags = LED_CORE_SUSPENDRESUME | LED_HW_PLUGGABLE;
 	ret = devm_led_classdev_register(&hdev->dev, &ds->player_id_led);
+	if (ret)
+		goto err;
+
+	/* Mute button LED, owned by userspace like on stock MiSTer. */
+	ds->mute_led.name = devm_kasprintf(&hdev->dev, GFP_KERNEL, "%s:mute",
+					   dev_name(&hdev->dev));
+	if (!ds->mute_led.name) {
+		ret = -ENOMEM;
+		goto err;
+	}
+	ds->mute_led.brightness = 0;
+	ds->mute_led.max_brightness = 1;
+	ds->mute_led.brightness_set_blocking = dualsense_mute_led_set_brightness;
+	ds->mute_led.flags = LED_CORE_SUSPENDRESUME | LED_HW_PLUGGABLE;
+	ret = devm_led_classdev_register(&hdev->dev, &ds->mute_led);
 	if (ret)
 		goto err;
 
