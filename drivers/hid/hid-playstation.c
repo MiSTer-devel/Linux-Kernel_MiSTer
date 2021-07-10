@@ -211,12 +211,12 @@ struct dualsense {
 	/* Microphone */
 	bool update_mic_mute;
 	bool mic_muted;
-	bool last_btn_mic_state;
 
 	/* Player leds */
 	bool update_player_leds;
 	u8 player_leds_state;
 	struct led_classdev led; /* player leds */
+	struct led_classdev muteled; /* mute led */
 
 	struct work_struct output_worker;
 	bool output_worker_initialized;
@@ -565,6 +565,7 @@ static const int ps_gamepad_buttons[] = {
 	BTN_THUMBL, /* L3 */
 	BTN_THUMBR, /* R3 */
 	BTN_MODE, /* PS Home */
+	BTN_Z
 };
 
 static const struct {int x; int y; } ps_gamepad_hat_mapping[] = {
@@ -1404,7 +1405,6 @@ static int dualsense_parse_report(struct ps_device *ps_dev, struct hid_report *r
 	u8 battery_data, battery_capacity, charging_status, value;
 	int battery_status;
 	u32 sensor_timestamp;
-	bool btn_mic_state;
 	int i;
 
 	/*
@@ -1457,24 +1457,8 @@ static int dualsense_parse_report(struct ps_device *ps_dev, struct hid_report *r
 	input_report_key(ds->gamepad, BTN_THUMBL, ds_report->buttons[1] & DS_BUTTONS1_L3);
 	input_report_key(ds->gamepad, BTN_THUMBR, ds_report->buttons[1] & DS_BUTTONS1_R3);
 	input_report_key(ds->gamepad, BTN_MODE,   ds_report->buttons[2] & DS_BUTTONS2_PS_HOME);
+	input_report_key(ds->gamepad, BTN_Z,      ds_report->buttons[2] & DS_BUTTONS2_MIC_MUTE);
 	input_sync(ds->gamepad);
-
-	/*
-	 * The DualSense has an internal microphone, which can be muted through a mute button
-	 * on the device. The driver is expected to read the button state and program the device
-	 * to mute/unmute audio at the hardware level.
-	 */
-	btn_mic_state = !!(ds_report->buttons[2] & DS_BUTTONS2_MIC_MUTE);
-	if (btn_mic_state && !ds->last_btn_mic_state) {
-		scoped_guard(spinlock_irqsave, &ps_dev->lock) {
-			ds->update_mic_mute = true;
-			ds->mic_muted = !ds->mic_muted; /* toggle */
-		}
-
-		/* Schedule updating of microphone state at hardware level. */
-		dualsense_schedule_work(ds);
-	}
-	ds->last_btn_mic_state = btn_mic_state;
 
 	/*
 	 * Parse HP/MIC plugged state data for USB use case, since Bluetooth
@@ -1726,6 +1710,49 @@ static int ds_leds_create(struct dualsense *ds)
 	return 0;
 }
 
+static int dualsense_muteled_brightness_set(struct led_classdev *led, enum led_brightness brightness)
+{
+	struct device *dev = led->dev->parent;
+	struct hid_device *hdev = to_hid_device(dev);
+	struct dualsense *ds = hid_get_drvdata(hdev);
+
+	if (!ds) {
+		hid_err(hdev, "No controller data\n");
+		return -ENODEV;
+	}
+
+
+	ds->update_mic_mute = true;
+	ds->mic_muted = brightness;
+	dualsense_schedule_work(ds);
+	return 0;
+}
+
+static int ds_muteled_create(struct dualsense *ds)
+{
+	struct hid_device *hdev = ds->base.hdev;
+	struct device *dev = &hdev->dev;
+	int ret;
+
+	/* configure the player LEDs */
+	ds->muteled.name = devm_kasprintf(dev, GFP_KERNEL,"%s:mute", dev_name(dev));
+	if (!ds->muteled.name) return -ENOMEM;
+
+	ds->muteled.brightness = 0;
+	ds->muteled.max_brightness = 1;
+	ds->muteled.brightness_set_blocking = dualsense_muteled_brightness_set;
+	ds->muteled.flags = LED_CORE_SUSPENDRESUME | LED_HW_PLUGGABLE;
+
+	ret = devm_led_classdev_register(&hdev->dev, &ds->muteled);
+	if (ret)
+	{
+		hid_err(hdev, "Failed registering %s LED\n", ds->muteled.name);
+		return ret;
+	}
+
+	return 0;
+}
+
 static struct ps_device *dualsense_create(struct hid_device *hdev)
 {
 	struct dualsense *ds;
@@ -1856,6 +1883,10 @@ static struct ps_device *dualsense_create(struct hid_device *hdev)
 	/* Set player LEDs to our player id. */
 	//dualsense_set_player_leds(ds);
 	ret = ds_leds_create(ds);
+	if (ret)
+		goto err;
+
+	ret = ds_muteled_create(ds);
 	if (ret)
 		goto err;
 
