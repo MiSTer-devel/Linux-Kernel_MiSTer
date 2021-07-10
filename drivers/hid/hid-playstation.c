@@ -1088,16 +1088,17 @@ static void dualsense_set_player_leds(struct dualsense *ds, uint8_t player_id)
 	 * across the LEDs, so e.g. player 1 would be "--x--" with x being 'on'.
 	 * Follow a similar mapping here.
 	 */
-	static const int player_ids[6] = {
+	static const int player_ids[7] = {
 		0,
 		BIT(2),
 		BIT(3) | BIT(1),
 		BIT(4) | BIT(2) | BIT(0),
 		BIT(4) | BIT(3) | BIT(1) | BIT(0),
-		BIT(4) | BIT(3) | BIT(2) | BIT(1) | BIT(0)
+		BIT(4) | BIT(3) | BIT(2) | BIT(1) | BIT(0),
+		BIT(4) | BIT(0)
 	};
 
-	if(player_id > 5) player_id = 0;
+	if(player_id > 6) player_id = 0;
 	ds->update_player_leds = true;
 	ds->player_leds_state = player_ids[player_id];
 	schedule_work(&ds->output_worker);
@@ -1131,7 +1132,7 @@ static int ds_leds_create(struct dualsense *ds)
 	if (!ds->led.name) return -ENOMEM;
 
 	ds->led.brightness = 0;
-	ds->led.max_brightness = 5;
+	ds->led.max_brightness = 6;
 	ds->led.brightness_set_blocking = dualsense_player_led_brightness_set;
 	ds->led.flags = LED_CORE_SUSPENDRESUME | LED_HW_PLUGGABLE;
 
