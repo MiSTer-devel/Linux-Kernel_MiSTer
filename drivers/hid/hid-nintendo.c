@@ -762,8 +762,8 @@ static int joycon_read_stick_calibration(struct joycon_ctlr *ctlr, u16 cal_addr,
 	return 0;
 }
 
-static const u16 DFLT_STICK_CAL_CEN = 2000;
-static const u16 DFLT_STICK_CAL_MAX = 3500;
+static const u16 DFLT_STICK_CAL_CEN = 2048;
+static const u16 DFLT_STICK_CAL_MAX = 3595;
 static const u16 DFLT_STICK_CAL_MIN = 500;
 static int joycon_request_calibration(struct joycon_ctlr *ctlr)
 {
@@ -792,7 +792,7 @@ static int joycon_request_calibration(struct joycon_ctlr *ctlr)
 					    &ctlr->left_stick_cal_x,
 					    &ctlr->left_stick_cal_y,
 					    true);
-	if (ret) {
+	if (ret || ctlr->left_stick_cal_x.max == ctlr->left_stick_cal_x.min || ctlr->left_stick_cal_y.max == ctlr->left_stick_cal_y.min) {
 		hid_warn(ctlr->hdev,
 			 "Failed to read left stick cal, using dflts; e=%d\n",
 			 ret);
@@ -811,7 +811,7 @@ static int joycon_request_calibration(struct joycon_ctlr *ctlr)
 					    &ctlr->right_stick_cal_x,
 					    &ctlr->right_stick_cal_y,
 					    false);
-	if (ret) {
+	if (ret || ctlr->right_stick_cal_x.max == ctlr->right_stick_cal_x.min || ctlr->right_stick_cal_y.max == ctlr->right_stick_cal_y.min) {
 		hid_warn(ctlr->hdev,
 			 "Failed to read right stick cal, using dflts; e=%d\n",
 			 ret);
