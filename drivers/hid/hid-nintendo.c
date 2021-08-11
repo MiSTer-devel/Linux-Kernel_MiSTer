@@ -2319,7 +2319,7 @@ home_led:
 		ret = devm_led_classdev_register(&hdev->dev, led);
 		if (ret) {
 			hid_err(hdev, "Failed to register home LED; ret=%d\n", ret);
-			return ret;
+			//return ret;
 		}
 	}
 
