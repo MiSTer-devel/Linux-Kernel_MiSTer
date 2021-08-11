@@ -1886,14 +1886,14 @@ static int joycon_leds_create(struct joycon_ctlr *ctlr)
 		ret = devm_led_classdev_register(&hdev->dev, led);
 		if (ret) {
 			hid_err(hdev, "Failed registering home led\n");
-			return ret;
+			//return ret;
 		}
 		/* Set the home LED to 0 as default state */
 		ret = joycon_home_led_brightness_set(led, 0);
 		if (ret) {
 			hid_err(hdev, "Failed to set home LED dflt; ret=%d\n",
 									ret);
-			return ret;
+			//return ret;
 		}
 	}
 
