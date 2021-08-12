@@ -2395,8 +2395,13 @@ home_led:
 
 		ret = devm_led_classdev_register(&hdev->dev, led);
 		if (ret) {
-			hid_err(hdev, "Failed to register home LED; ret=%d\n", ret);
-			return ret;
+			/*
+			 * Some Pro Controller clones lack the home LED; failing
+			 * the whole probe over it leaves the pad dead (stock
+			 * MiSTer tolerates this).
+			 */
+			hid_warn(hdev, "Failed to register home LED, continuing without it; ret=%d\n", ret);
+			return 0;
 		}
 	}
 
