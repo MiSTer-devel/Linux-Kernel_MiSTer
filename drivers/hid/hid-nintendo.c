@@ -416,6 +416,7 @@ struct joycon_ctlr {
 	struct input_dev *input;
 	struct led_classdev leds[JC_NUM_LEDS]; /* player leds */
 	struct led_classdev home_led;
+	struct led_classdev combo_led;
 	enum joycon_ctlr_state ctlr_state;
 	spinlock_t lock;
 	u8 mac_addr[6];
@@ -1110,10 +1111,10 @@ static void joycon_parse_imu_report(struct joycon_ctlr *ctlr,
 				ctlr->imu_avg_delta_ms;
 		ctlr->imu_timestamp_us += 1000 * ctlr->imu_avg_delta_ms;
 		if (dropped_pkts > JC_IMU_DROPPED_PKT_WARNING) {
-			hid_warn(ctlr->hdev,
+			hid_dbg(ctlr->hdev,
 				 "compensating for %u dropped IMU reports\n",
 				 dropped_pkts);
-			hid_warn(ctlr->hdev,
+			hid_dbg(ctlr->hdev,
 				 "delta=%u avg_delta=%u\n",
 				 delta, ctlr->imu_avg_delta_ms);
 		}
@@ -1824,6 +1825,12 @@ static int joycon_home_led_brightness_set(struct led_classdev *led,
 	return ret;
 }
 
+static int joycon_combo_led_brightness_set(struct led_classdev *led,
+					  enum led_brightness brightness)
+{
+	return 0;
+}
+
 static DEFINE_MUTEX(joycon_input_num_mutex);
 static int joycon_leds_create(struct joycon_ctlr *ctlr)
 {
@@ -1895,6 +1902,20 @@ static int joycon_leds_create(struct joycon_ctlr *ctlr)
 									ret);
 			//return ret;
 		}
+	}
+
+	if (ctlr->ctlr_type == JOYCON_CTLR_TYPE_JCL || ctlr->ctlr_type == JOYCON_CTLR_TYPE_JCR)
+	{
+		name = devm_kasprintf(dev, GFP_KERNEL, "%s:combo",d_name);
+		if (!name) return -ENOMEM;
+
+		led = &ctlr->combo_led;
+		led->name = name;
+		led->brightness = 0;
+		led->max_brightness = 255;
+		led->brightness_set_blocking = joycon_combo_led_brightness_set;
+		led->flags = LED_CORE_SUSPENDRESUME | LED_HW_PLUGGABLE;
+		devm_led_classdev_register(&hdev->dev, led);
 	}
 
 	return 0;
