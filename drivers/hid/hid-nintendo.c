@@ -592,6 +592,7 @@ struct joycon_ctlr {
 	u32 player_id;
 	struct led_classdev leds[JC_NUM_LEDS]; /* player leds */
 	struct led_classdev home_led;
+	struct led_classdev combo_led;
 	enum joycon_ctlr_state ctlr_state;
 	spinlock_t lock;
 	u8 mac_addr[6];
@@ -1487,10 +1488,10 @@ static void joycon_parse_imu_report(struct joycon_ctlr *ctlr,
 				ctlr->imu_avg_delta_ms;
 		ctlr->imu_timestamp_us += 1000 * ctlr->imu_avg_delta_ms;
 		if (dropped_pkts > JC_IMU_DROPPED_PKT_WARNING) {
-			hid_warn_ratelimited(ctlr->hdev,
+			hid_dbg(ctlr->hdev,
 				 "compensating for %u dropped IMU reports\n",
 				 dropped_pkts);
-			hid_warn_ratelimited(ctlr->hdev,
+			hid_dbg(ctlr->hdev,
 				 "delta=%u avg_delta=%u\n",
 				 delta, ctlr->imu_avg_delta_ms);
 		}
@@ -2270,6 +2271,16 @@ static int joycon_home_led_brightness_set(struct led_classdev *led,
 	return ret;
 }
 
+static int joycon_combo_led_brightness_set(struct led_classdev *led,
+					    enum led_brightness brightness)
+{
+	/*
+	 * Virtual LED with no hardware behind it: userspace (Main_MiSTer)
+	 * uses it as a mailbox to combine two Joy-Cons into one controller.
+	 */
+	return 0;
+}
+
 static DEFINE_IDA(nintendo_player_id_allocator);
 
 static int joycon_leds_create(struct joycon_ctlr *ctlr)
@@ -2331,6 +2342,31 @@ static int joycon_leds_create(struct joycon_ctlr *ctlr)
 	}
 
 home_led:
+	/*
+	 * Virtual combo LED: Joy-Con pairing mailbox for userspace.
+	 * Registered before the home LED, whose failure paths return
+	 * early and would otherwise skip this node, silently breaking
+	 * Joy-Con pairing.
+	 */
+	if (ctlr->ctlr_type == JOYCON_CTLR_TYPE_JCL ||
+	    ctlr->ctlr_type == JOYCON_CTLR_TYPE_JCR) {
+		name = devm_kasprintf(dev, GFP_KERNEL, "%s:combo", d_name);
+		if (!name)
+			return -ENOMEM;
+
+		led = &ctlr->combo_led;
+		led->name = name;
+		led->brightness = 0;
+		led->max_brightness = 255;
+		led->brightness_set_blocking = joycon_combo_led_brightness_set;
+		led->flags = LED_CORE_SUSPENDRESUME | LED_HW_PLUGGABLE;
+		ret = devm_led_classdev_register(&hdev->dev, led);
+		if (ret) {
+			hid_warn(hdev, "Failed to register combo LED; ret=%d\n", ret);
+			return 0;
+		}
+	}
+
 	/* configure the home LED */
 	if (jc_type_has_right(ctlr)) {
 		name = devm_kasprintf(dev, GFP_KERNEL, "%s:%s:%s",
