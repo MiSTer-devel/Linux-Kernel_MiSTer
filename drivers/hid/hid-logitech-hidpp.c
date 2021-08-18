@@ -3337,6 +3337,7 @@ static int m560_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 
 struct k400_private_data {
 	u8 feature_index;
+	u8 fn_feature_index;
 };
 
 static int k400_disable_tap_to_click(struct hidpp_device *hidpp)
@@ -3361,6 +3362,49 @@ static int k400_disable_tap_to_click(struct hidpp_device *hidpp)
 	return 0;
 }
 
+#define FEATURE_FN_INVERSION     0x40A0
+#define FEATURE_NEW_FN_INVERSION 0x40A2
+
+static int hidpp_fn_set(struct hidpp_device *hidpp, u8 feature_index, u8 enable)
+{
+	struct hidpp_report response;
+	int ret;
+
+	ret = hidpp_send_fap_command_sync(hidpp, feature_index, 0x10, &enable, 1, &response);
+	if (ret > 0) {
+		hid_err(hidpp->hid_dev, "%s: received protocol error 0x%02x\n",
+			__func__, ret);
+		return -EPROTO;
+	}
+
+	return ret;
+}
+
+/*
+ * MiSTer: disable the Fn-key swap on Logitech K400r / K400 Plus keyboards,
+ * so media keys work without holding Fn. Uses its own cached feature index
+ * (fn_feature_index) -- NOT k400->feature_index, which is
+ * k400_disable_tap_to_click()'s cache for a different HID++ feature page.
+ * Sharing one cache field between the two would make whichever call runs
+ * second skip its own feature lookup and reuse the wrong index.
+ */
+static int k400_enable_fn(struct hidpp_device *hidpp)
+{
+	struct k400_private_data *k400 = hidpp->private_data;
+	int ret;
+
+	if (!k400->fn_feature_index) {
+		ret = hidpp_root_get_feature(hidpp,
+			FEATURE_NEW_FN_INVERSION,
+			&k400->fn_feature_index);
+		if (ret)
+			/* means that the device is not powered up */
+			return ret;
+	}
+
+	return hidpp_fn_set(hidpp, k400->fn_feature_index, 0);
+}
+
 static int k400_allocate(struct hid_device *hdev)
 {
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
@@ -3379,6 +3423,8 @@ static int k400_allocate(struct hid_device *hdev)
 static int k400_connect(struct hid_device *hdev)
 {
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
+
+	k400_enable_fn(hidpp);
 
 	if (!disable_tap_to_click)
 		return 0;
@@ -4559,6 +4605,8 @@ static const struct hid_device_id hidpp_devices[] = {
 	{ /* Keyboard logitech K400 */
 	  LDJ_DEVICE(0x4024),
 	  .driver_data = HIDPP_QUIRK_CLASS_K400 },
+	{ /* Keyboard logitech K400 plus */
+	  LDJ_DEVICE(0x404D), .driver_data = HIDPP_QUIRK_CLASS_K400 },
 	{ /* Solar Keyboard Logitech K750 */
 	  LDJ_DEVICE(0x4002),
 	  .driver_data = HIDPP_QUIRK_CLASS_K750 },
