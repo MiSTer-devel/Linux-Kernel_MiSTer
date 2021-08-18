@@ -3097,6 +3097,44 @@ static int k400_disable_tap_to_click(struct hidpp_device *hidpp)
 	return 0;
 }
 
+#define FEATURE_FN_INVERSION     0x40A0
+#define FEATURE_NEW_FN_INVERSION 0x40A2
+
+static int hidpp_fn_set(struct hidpp_device *hidpp, u8 feature_index, u8 enable)
+{
+	struct hidpp_report response;
+	int ret;
+
+	ret = hidpp_send_fap_command_sync(hidpp, feature_index,	0x10, &enable, 1, &response);
+
+	if (ret > 0)
+	{
+		hid_err(hidpp->hid_dev, "%s: received protocol error 0x%02x\n",
+			__func__, ret);
+		return -EPROTO;
+	}
+
+	return ret;
+}
+
+static int k400_enable_Fn(struct hidpp_device *hidpp)
+{
+	struct k400_private_data *k400 = hidpp->private_data;
+	int ret;
+	u8 feature_type;
+
+	if (!k400->feature_index) {
+		ret = hidpp_root_get_feature(hidpp,
+			FEATURE_NEW_FN_INVERSION,
+			&k400->feature_index, &feature_type);
+		if (ret)
+			/* means that the device is not powered up */
+			return ret;
+	}
+
+	return hidpp_fn_set(hidpp, k400->feature_index, 0);
+}
+
 static int k400_allocate(struct hid_device *hdev)
 {
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
@@ -3115,6 +3153,8 @@ static int k400_allocate(struct hid_device *hdev)
 static int k400_connect(struct hid_device *hdev, bool connected)
 {
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
+
+        k400_enable_Fn(hidpp);
 
 	if (!disable_tap_to_click)
 		return 0;
