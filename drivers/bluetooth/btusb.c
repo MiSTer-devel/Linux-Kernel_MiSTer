@@ -2522,6 +2522,13 @@ static int btusb_setup_csr(struct hci_dev *hdev)
 		 rp->hci_ver == BLUETOOTH_VER_2_0)
 		is_fake = true;
 
+	/* Barrot 8041a02-based clones self-report a consistent LMP
+	 * subversion of 0x2512 -- above every legitimate CSR build
+	 * number -- so the ranged checks above never catch them.
+	 */
+	else if (le16_to_cpu(rp->lmp_subver) == 0x2512)
+		is_fake = true;
+
 	if (is_fake) {
 		bt_dev_warn(hdev, "CSR: Unbranded CSR clone detected; adding workarounds and force-suspending once...");
 
