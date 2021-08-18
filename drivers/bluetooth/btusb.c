@@ -1889,6 +1889,11 @@ static int btusb_setup_csr(struct hci_dev *hdev)
 		 le16_to_cpu(rp->hci_ver) == BLUETOOTH_VER_2_0)
 		is_fake = true;
 
+	else if (le16_to_cpu(rp->lmp_subver) == 0x2512)
+		is_fake = true;
+
+	bt_dev_err(hdev, "lmp_subver = %X, hci_ver = %X, bcdDevice = %X is_fake = %d", le16_to_cpu(rp->lmp_subver), le16_to_cpu(rp->hci_ver), bcdDevice,  is_fake);
+
 	if (is_fake) {
 		bt_dev_warn(hdev, "CSR: Unbranded CSR clone detected; adding workarounds...");
 
@@ -1922,10 +1927,11 @@ static int btusb_setup_csr(struct hci_dev *hdev)
 		 * will still be autosuspended when it is not open.
 		 */
 		if (bcdDevice == 0x8891 &&
-		    le16_to_cpu(rp->lmp_subver) == 0x1012 &&
+		    ((le16_to_cpu(rp->lmp_subver) == 0x2512) || 
+		    (le16_to_cpu(rp->lmp_subver) == 0x1012 &&
 		    le16_to_cpu(rp->hci_rev) == 0x0810 &&
-		    le16_to_cpu(rp->hci_ver) == BLUETOOTH_VER_4_0) {
-			bt_dev_warn(hdev, "CSR: detected a fake CSR dongle using a Barrot 8041a02 chip, this chip is very buggy and may have issues");
+		    le16_to_cpu(rp->hci_ver) == BLUETOOTH_VER_4_0))) {
+			bt_dev_err(hdev, "CSR: detected a fake CSR dongle using a Barrot 8041a02 chip, this chip is very buggy and may have issues");
 
 			pm_runtime_allow(&data->udev->dev);
 
