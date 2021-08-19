@@ -75,6 +75,8 @@ struct mousedev {
 	int frac_dx, frac_dy;
 	unsigned long touch;
 
+	int dis_t2c;
+
 	int (*open_device)(struct mousedev *mousedev);
 	void (*close_device)(struct mousedev *mousedev);
 };
@@ -327,13 +329,19 @@ static void mousedev_touchpad_touch(struct mousedev *mousedev, int value)
 			 * We rely on the fact that mousedev_mix always has 0
 			 * motion packet so we won't mess current position.
 			 */
-			set_bit(0, &mousedev->packet.buttons);
-			set_bit(0, &mousedev_mix->packet.buttons);
+			if(!mousedev->dis_t2c) {
+				set_bit(0, &mousedev->packet.buttons);
+				set_bit(0, &mousedev_mix->packet.buttons);
+			}
+
 			mousedev_notify_readers(mousedev, &mousedev_mix->packet);
 			mousedev_notify_readers(mousedev_mix,
 						&mousedev_mix->packet);
-			clear_bit(0, &mousedev->packet.buttons);
-			clear_bit(0, &mousedev_mix->packet.buttons);
+
+			if(!mousedev->dis_t2c) {
+				clear_bit(0, &mousedev->packet.buttons);
+				clear_bit(0, &mousedev_mix->packet.buttons);
+			}
 		}
 		mousedev->touch = mousedev->pkt_count = 0;
 		mousedev->frac_dx = 0;
@@ -866,6 +874,9 @@ static struct mousedev *mousedev_create(struct input_dev *dev,
 	lockdep_set_subclass(&mousedev->mutex,
 			     mixdev ? SINGLE_DEPTH_NESTING : 0);
 	init_waitqueue_head(&mousedev->wait);
+
+	mousedev->dis_t2c = (dev && dev->id.vendor == 0x054c && 
+		(dev->id.product == 0x05c4 || dev->id.product == 0x09cc || dev->id.product == 0x0ba0 || dev->id.product == 0x0ce6));
 
 	if (mixdev) {
 		dev_set_name(&mousedev->dev, "mice");
