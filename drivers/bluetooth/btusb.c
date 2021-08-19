@@ -2522,6 +2522,12 @@ static int btusb_setup_csr(struct hci_dev *hdev)
 		 rp->hci_ver == BLUETOOTH_VER_2_0)
 		is_fake = true;
 
+	else if (le16_to_cpu(rp->lmp_subver) == 0x2512)
+		is_fake = true;
+
+	bt_dev_err(hdev, "lmp_subver = %X, hci_ver = %X, bcdDevice = %X is_fake = %d",
+		   le16_to_cpu(rp->lmp_subver), rp->hci_ver, bcdDevice, is_fake);
+
 	if (is_fake) {
 		bt_dev_warn(hdev, "CSR: Unbranded CSR clone detected; adding workarounds and force-suspending once...");
 
