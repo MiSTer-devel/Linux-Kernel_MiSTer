@@ -58,7 +58,13 @@ static int mixer_volume_level_max = USE_MIXER_VOLUME_LEVEL_MAX;
 #ifdef CONFIG_HIGH_RES_TIMERS
 static bool hrtimer = 1;
 #endif
-static bool fake_buffer = 1;
+/*
+ * MiSTer: stock ships this as 0 (fork commit 333d49b95); keep it 0 for parity.
+ * With fake_buffer=1 snd-dummy allocates no real ring: it uses
+ * dummy_pcm_ops_no_buf, whose .copy discards and whose .page hands out one
+ * shared page for every offset.  With 0 it gets a real (if discarded) buffer.
+ */
+static bool fake_buffer = 0;
 
 module_param_array(index, int, NULL, 0444);
 MODULE_PARM_DESC(index, "Index value for dummy soundcard.");
@@ -210,6 +216,33 @@ static const struct dummy_model model_ca0106 = {
 	.rates = SNDRV_PCM_RATE_48000|SNDRV_PCM_RATE_96000|SNDRV_PCM_RATE_192000,
 	.rate_min = 48000,
 	.rate_max = 192000,
+};
+
+/*
+ * MiSTer: force-selected as the default model in snd_dummy_probe() below.
+ *
+ * /etc/asound.conf makes the ALSA default PCM
+ *     plug -> rate(S16_LE, 48000) -> file("/dev/MrAudio") -> hw:0
+ * where hw:0 is this card.  The "file" plugin tees the raw stream into
+ * /dev/MrAudio, and MiSTer-audio-spi.c hands those bytes to the FPGA as
+ * 4-byte S16_LE *stereo* frames (see its "userBufLen & ~3").
+ *
+ * asound.conf pins the format and the rate, but it does NOT pin the channel
+ * count -- that is negotiated against hw:0.  Stock snd-dummy advertises
+ * channels 1..2, so a mono client would negotiate 1ch all the way down and tee
+ * MONO into /dev/MrAudio, which the FPGA would misinterpret.  Pinning
+ * channels_min = channels_max = 2 here forces the top-level "plug" to convert
+ * everything to stereo, so /dev/MrAudio always sees S16_LE/48000/2ch.
+ */
+static const struct dummy_model model_MiSTer = {
+	.name = "MiSTer",
+	.buffer_bytes_max = 32768,
+	.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	.channels_min = 2,
+	.channels_max = 2,
+	.rates = SNDRV_PCM_RATE_48000,
+	.rate_min = 48000,
+	.rate_max = 48000,
 };
 
 static const struct dummy_model *dummy_models[] = {
@@ -1023,6 +1056,10 @@ static int snd_dummy_probe(struct platform_device *devptr)
 		return err;
 	dummy = card->private_data;
 	dummy->card = card;
+
+	/* MiSTer: default to the MiSTer model; an explicit model= param still wins. */
+	dummy->model = m = &model_MiSTer;
+
 	for (mdl = dummy_models; *mdl && model[dev]; mdl++) {
 		if (strcmp(model[dev], (*mdl)->name) == 0) {
 			pr_info("snd-dummy: Using model '%s' for card %i\n",
