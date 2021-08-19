@@ -157,10 +157,14 @@
 };
 
 &uart0 {
+	/delete-property/dmas;
+	/delete-property/dma-names;
 	status = "okay";
 };
 
 &uart1 {
+	/delete-property/dmas;
+	/delete-property/dma-names;
 	status = "okay";
 };
 
