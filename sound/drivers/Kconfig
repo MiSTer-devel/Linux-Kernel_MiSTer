@@ -38,6 +38,12 @@ config SND_AC97_CODEC
 	select AC97_BUS
 	select SND_VMASTER
 
+config SND_MISTER_AUDIO
+        tristate "MiSTer Audio (SPI)"
+        default n
+        help
+          Support for MiSTer audio through SPI.
+
 menuconfig SND_DRIVERS
 	bool "Generic sound devices"
 	default y
