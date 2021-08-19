@@ -53,7 +53,7 @@ static int pcm_substreams[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 8};
 #ifdef CONFIG_HIGH_RES_TIMERS
 static bool hrtimer = 1;
 #endif
-static bool fake_buffer = 1;
+static bool fake_buffer = 0;
 
 module_param_array(index, int, NULL, 0444);
 MODULE_PARM_DESC(index, "Index value for dummy soundcard.");
@@ -201,6 +201,17 @@ static const struct dummy_model model_ca0106 = {
 	.rates = SNDRV_PCM_RATE_48000|SNDRV_PCM_RATE_96000|SNDRV_PCM_RATE_192000,
 	.rate_min = 48000,
 	.rate_max = 192000,
+};
+
+static struct dummy_model model_MiSTer = {
+	.name = "MiSTer",
+	.buffer_bytes_max = 32768,
+	.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	.channels_min = 2,
+	.channels_max = 2,
+	.rates = SNDRV_PCM_RATE_48000,
+	.rate_min = 48000,
+	.rate_max = 48000,
 };
 
 static const struct dummy_model *dummy_models[] = {
@@ -1031,6 +1042,8 @@ static int snd_dummy_probe(struct platform_device *devptr)
 		return err;
 	dummy = card->private_data;
 	dummy->card = card;
+	dummy->model = m = &model_MiSTer;
+
 	for (mdl = dummy_models; *mdl && model[dev]; mdl++) {
 		if (strcmp(model[dev], (*mdl)->name) == 0) {
 			printk(KERN_INFO

@@ -20,5 +20,6 @@ obj-$(CONFIG_SND_SERIAL_U16550) += snd-serial-u16550.o
 obj-$(CONFIG_SND_MTPAV) += snd-mtpav.o
 obj-$(CONFIG_SND_MTS64) += snd-mts64.o
 obj-$(CONFIG_SND_PORTMAN2X4) += snd-portman2x4.o
+obj-$(CONFIG_SND_MISTER_AUDIO) += MiSTer-audio-spi.o
 
 obj-$(CONFIG_SND) += opl3/ opl4/ mpu401/ vx/ pcsp/
