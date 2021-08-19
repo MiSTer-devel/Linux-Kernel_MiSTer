@@ -126,6 +126,19 @@
 	};
 };
 
+&spi0 {
+	status = "okay";
+	timeouts = <3>;
+	spiusb {
+		compatible = "MiSTer,spi-audio";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+		spi-cpha;
+		spi-cpol;
+		status = "okay";
+	};
+};
+
 &spi1 {
 	status = "okay";
 	timeouts = <3>;
