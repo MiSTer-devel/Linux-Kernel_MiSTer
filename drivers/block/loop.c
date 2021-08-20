@@ -133,6 +133,13 @@ static void loop_global_unlock(struct loop_device *lo, bool global)
 static int max_part;
 static int part_shift;
 
+int loop_max_part(void)
+{
+	return max_part;
+}
+
+EXPORT_SYMBOL(loop_max_part);
+
 static int transfer_xor(struct loop_device *lo, int cmd,
 			struct page *raw_page, unsigned raw_off,
 			struct page *loop_page, unsigned loop_off,

@@ -26,9 +26,11 @@
 #include <linux/raid/detect.h>
 #include <uapi/linux/mount.h>
 
+#include <linux/loop.h>
+
 #include "do_mounts.h"
 
-int root_mountflags = MS_RDONLY | MS_SILENT;
+int root_mountflags = MS_RDONLY | MS_SILENT | MS_NOATIME | MS_NODIRATIME;
 static char * __initdata root_device_name;
 static char __initdata saved_root_name[64];
 static int root_wait;
@@ -338,6 +340,16 @@ __setup("rootflags=", root_data_setup);
 __setup("rootfstype=", fs_names_setup);
 __setup("rootdelay=", root_delay_setup);
 
+static char * __initdata loop_name = 0;
+static int __init set_loop_name(char *str)
+{
+	loop_name = str;
+	return 1;
+}
+
+__setup("loop=", set_loop_name);
+
+
 static void __init get_fs_names(char *page)
 {
 	char *s = page;
@@ -530,6 +542,43 @@ static int __init mount_cifs_root(void)
 }
 #endif
 
+int loop_setup(const char *file, const char *device)
+{
+  int file_fd = sys_open(file, O_RDWR | O_LARGEFILE, 0);
+  int device_fd = -1; 
+
+  if(file_fd < 0)
+  {
+    printk("Failed to open backing file (%s).\n", file);
+    goto error;
+  }
+
+  if((device_fd = sys_open(device, O_RDWR | O_LARGEFILE, 0)) < 0) {
+    printk("Failed to open device (%s) %d.\n", device, device_fd);
+    goto error;
+  }
+
+  if(sys_ioctl(device_fd, LOOP_SET_FD, (long)file_fd) < 0) {
+    printk("Failed to set fd.\n");
+    goto error;
+  }
+
+  sys_close(file_fd);
+  sys_close(device_fd);
+  return 0;
+
+  error:
+    if(file_fd >= 0) {
+      sys_close(file_fd);
+    }   
+    if(device_fd >= 0) {
+      sys_ioctl(device_fd, LOOP_CLR_FD, 0); 
+      sys_close(device_fd);
+    }   
+    return 1;
+}
+
+extern int loop_max_part(void);
 void __init mount_root(void)
 {
 #ifdef CONFIG_ROOT_NFS
@@ -549,10 +598,32 @@ void __init mount_root(void)
 #ifdef CONFIG_BLOCK
 	{
 		int err = create_dev("/dev/root", ROOT_DEV);
+		if (err < 0) pr_emerg("Failed to create /dev/root: %d\n", err);
 
-		if (err < 0)
-			pr_emerg("Failed to create /dev/root: %d\n", err);
-		mount_block_root("/dev/root", root_mountflags);
+		if(loop_name)
+		{
+			char lname[32];
+			err = sys_mkdir("/root2", 0777);
+			if (err) pr_emerg("Failed mkdir /root2: %d\n", err); 
+
+			err = sys_mount("/dev/root", "/root2", "exfat", MS_DIRSYNC | MS_SYNCHRONOUS | MS_NOATIME | MS_NODIRATIME, "");
+			if (err) pr_emerg("Failed to mount /dev/root as VFAT or exFAT: %d\n", err); 
+
+			err = create_dev("/dev/loop8", MKDEV(7, (loop_max_part()+1)*8));
+			if (err < 0) pr_emerg("Failed to create /dev/loop8: %d\n", err);
+
+			sprintf(lname, "/root2/%s", loop_name);
+			err = loop_setup(lname, "/dev/loop8");
+			if (err) pr_emerg("Failed to loop_setup: %d\n", err);
+
+			mount_block_root("/dev/loop8", root_mountflags);
+			err = sys_mount("/root2", "/root/media/fat", "", MS_BIND, "");
+			if (err) pr_emerg("Failed to bind-mount /dev/%s to /root/media/fat : %d\n", root_device_name, err);
+		}
+		else
+		{
+			mount_block_root("/dev/root", root_mountflags);
+		}
 	}
 #endif
 }
