@@ -190,3 +190,16 @@
 	dr_mode = "host";
 	status = "okay";
 };
+
+&fpga_bridge0 {
+	status = "okay";
+};
+
+&fpga_bridge1 {
+	status = "okay";
+};
+
+&fpga_bridge2 {
+	status = "okay";
+};
+
