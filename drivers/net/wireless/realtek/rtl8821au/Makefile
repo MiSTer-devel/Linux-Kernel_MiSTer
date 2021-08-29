@@ -1,5 +1,5 @@
 EXTRA_CFLAGS += $(USER_EXTRA_CFLAGS)
-EXTRA_CFLAGS += -O1 -Wno-vla -Wno-type-limits
+EXTRA_CFLAGS += -O1 -Wno-vla -Wno-type-limits -Wno-cast-function-type -Wno-enum-conversion
 #EXTRA_CFLAGS += -O3
 EXTRA_CFLAGS += -Wall
 EXTRA_CFLAGS += -Wextra
