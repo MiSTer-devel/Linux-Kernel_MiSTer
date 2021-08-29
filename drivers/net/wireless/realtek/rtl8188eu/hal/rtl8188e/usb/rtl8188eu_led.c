@@ -1,6 +1,6 @@
 /******************************************************************************
  *
- * Copyright(c) 2007 - 2011 Realtek Corporation. All rights reserved.
+ * Copyright(c) 2007 - 2017 Realtek Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of version 2 of the GNU General Public License as
@@ -11,15 +11,11 @@
  * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
  * more details.
  *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110, USA
- *
- *
- ******************************************************************************/
+ *****************************************************************************/
 
 #include <drv_types.h>
 #include <rtl8188e_hal.h>
+#ifdef CONFIG_RTW_SW_LED
 
 /* ********************************************************************************
  * LED object.
@@ -45,13 +41,17 @@ SwLedOn_8188EU(
 	PLED_USB		pLed
 )
 {
-	u8	LedCfg;
+	u8	LedCfg, gpio_mode;
+	u32 gpio_value;
 	/* HAL_DATA_TYPE	*pHalData = GET_HAL_DATA(padapter); */
 
 	if (RTW_CANNOT_RUN(padapter))
 		return;
 
 	LedCfg = rtw_read8(padapter, REG_LEDCFG2);
+	gpio_mode = rtw_read8(padapter, 0x40);
+	gpio_value = rtw_read32(padapter, 0x44);
+#if 0
 	switch (pLed->LedPin) {
 	case LED_PIN_LED0:
 		rtw_write8(padapter, REG_LEDCFG2, (LedCfg & 0xf0) | BIT5 | BIT6); /* SW control led0 on. */
@@ -64,6 +64,13 @@ SwLedOn_8188EU(
 	default:
 		break;
 	}
+#endif
+	rtw_write8(padapter, REG_LEDCFG2, LedCfg & (~BIT5));
+	rtw_write8(padapter, 0x40, gpio_mode & (~(BIT0 | BIT1)));
+	gpio_value |= (BIT5 << 24);
+	gpio_value |= (BIT5 << 16);
+	gpio_value &= (~(BIT5 << 8));
+	rtw_write32(padapter, 0x44, gpio_value);
 
 	pLed->bLedOn = _TRUE;
 }
@@ -79,7 +86,8 @@ SwLedOff_8188EU(
 	PLED_USB		pLed
 )
 {
-	u8	LedCfg;
+	u8	LedCfg, gpio_mode;
+	u32 gpio_value;
 	HAL_DATA_TYPE	*pHalData = GET_HAL_DATA(padapter);
 
 	if (RTW_CANNOT_RUN(padapter))
@@ -88,6 +96,9 @@ SwLedOff_8188EU(
 
 	LedCfg = rtw_read8(padapter, REG_LEDCFG2);/* 0x4E */
 
+	gpio_mode = rtw_read8(padapter, 0x40);
+	gpio_value = rtw_read32(padapter, 0x44);
+#if 0
 	switch (pLed->LedPin) {
 	case LED_PIN_LED0:
 		if (pHalData->bLedOpenDrain == _TRUE) { /* Open-drain arrangement for controlling the LED) */
@@ -108,6 +119,14 @@ SwLedOff_8188EU(
 	default:
 		break;
 	}
+#endif
+	rtw_write8(padapter, REG_LEDCFG2, LedCfg & (~BIT5));
+	rtw_write8(padapter, 0x40, gpio_mode & (~(BIT0 | BIT1)));
+	gpio_value |= (BIT5 << 24);
+	gpio_value |= (BIT5 << 16);
+	gpio_value |= (BIT5 << 8);
+	rtw_write32(padapter, 0x44, gpio_value);
+
 exit:
 	pLed->bLedOn = _FALSE;
 
@@ -131,7 +150,7 @@ rtl8188eu_InitSwLeds(
 	_adapter	*padapter
 )
 {
-	struct led_priv *pledpriv = &(padapter->ledpriv);
+	struct led_priv *pledpriv = adapter_to_led(padapter);
 
 	pledpriv->LedControlHandler = LedControlUSB;
 
@@ -153,8 +172,9 @@ rtl8188eu_DeInitSwLeds(
 	_adapter	*padapter
 )
 {
-	struct led_priv	*ledpriv = &(padapter->ledpriv);
+	struct led_priv	*ledpriv = adapter_to_led(padapter);
 
 	DeInitLed(&(ledpriv->SwLed0));
 	DeInitLed(&(ledpriv->SwLed1));
 }
+#endif
