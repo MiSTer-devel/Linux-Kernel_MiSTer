@@ -805,7 +805,7 @@ static void create_le_conn_complete(struct hci_dev *hdev, u8 status, u16 opcode)
 		hci_req_resume_adv_instances(hdev);
 
 	if (!status) {
-		hci_connect_le_scan_cleanup(conn);
+		if(conn) hci_connect_le_scan_cleanup(conn);
 		goto done;
 	}
 
