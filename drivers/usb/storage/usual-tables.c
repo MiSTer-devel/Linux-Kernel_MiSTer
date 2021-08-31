@@ -82,6 +82,11 @@ static const struct ignore_entry ignore_ids[] = {
 #	include "unusual_sddr09.h"
 #	include "unusual_sddr55.h"
 #	include "unusual_usbat.h"
+
+	UNUSUAL_DEV(0x0bda, 0x1a2b, 0x0000, 0x9999,
+		"Realtek", "USB WiFi driver storage",
+		0, 0, 0, 0),
+
 	{ }		/* Terminating entry */
 };
 
