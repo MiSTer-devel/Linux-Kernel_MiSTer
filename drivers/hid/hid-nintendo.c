@@ -434,8 +434,8 @@ static const struct joycon_ctlr_button_mapping procon_button_mappings[] = {
 };
 
 static const struct joycon_ctlr_button_mapping nescon_button_mappings[] = {
-	{ BTN_SOUTH,	JC_BTN_A,	},
-	{ BTN_EAST,	JC_BTN_B,	},
+	{ BTN_EAST,	JC_BTN_A,	},
+	{ BTN_SOUTH,	JC_BTN_B,	},
 	{ BTN_TL,	JC_BTN_L,	},
 	{ BTN_TR,	JC_BTN_R,	},
 	{ BTN_SELECT,	JC_BTN_MINUS,	},
