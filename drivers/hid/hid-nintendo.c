@@ -436,8 +436,8 @@ static const struct joycon_ctlr_button_mapping procon_button_mappings[] = {
 };
 
 static const struct joycon_ctlr_button_mapping nescon_button_mappings[] = {
-	{ BTN_SOUTH,	JC_BTN_A,	},
-	{ BTN_EAST,	JC_BTN_B,	},
+	{ BTN_EAST,	JC_BTN_A,	},
+	{ BTN_SOUTH,	JC_BTN_B,	},
 	{ BTN_TL,	JC_BTN_L,	},
 	{ BTN_TR,	JC_BTN_R,	},
 	{ BTN_SELECT,	JC_BTN_MINUS,	},
@@ -454,12 +454,13 @@ static const struct joycon_ctlr_button_mapping nescon_button_mappings[] = {
  * declares the buttons it actually has: without an entry here, the bit is never
  * reported, and a phantom SELECT/START would be a lie about the hardware.
  *
- * A/B follow the positional convention the rest of this driver uses, matching
- * nescon: "A" -> BTN_SOUTH, "B" -> BTN_EAST.
+ * A/B use the stock-MiSTer assignment ("A" -> BTN_EAST, "B" -> BTN_SOUTH,
+ * same as snescon): user .map files created on stock kernels encode these
+ * codes, so changing them silently breaks existing mappings.
  */
 static const struct joycon_ctlr_button_mapping famicom_r_button_mappings[] = {
-	{ BTN_SOUTH,	JC_BTN_A,	},
-	{ BTN_EAST,	JC_BTN_B,	},
+	{ BTN_EAST,	JC_BTN_A,	},
+	{ BTN_SOUTH,	JC_BTN_B,	},
 	{ BTN_TL,	JC_BTN_L,	},
 	{ BTN_TR,	JC_BTN_R,	},
 	{ /* sentinel */ },
