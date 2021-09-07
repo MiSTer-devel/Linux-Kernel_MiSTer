@@ -208,6 +208,8 @@ static const struct hid_device_id pl_devices[] = {
 		.driver_data = 1 }, /* Twin USB Joystick */
 	{ HID_USB_DEVICE(USB_VENDOR_ID_GREENASIA, 0x0003), },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_JESS2, USB_DEVICE_ID_JESS2_COLOR_RUMBLE_PAD), },
+	{ HID_BLUETOOTH_DEVICE(0x1209, 0xFACA),
+		.driver_data = 1 }, /* Twin USB Joystick */
 	{ }
 };
 MODULE_DEVICE_TABLE(hid, pl_devices);
