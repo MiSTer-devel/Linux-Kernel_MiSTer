@@ -400,6 +400,11 @@ static u8 Hal_ReadRFEType(PADAPTER adapter, u8 *map, u8 mapvalid)
 		hal->rfe_type = map[EEPROM_RFE_OPTION_8821C];
 		if (0xFF != hal->rfe_type)
 			goto exit;
+
+		// fix for bad EFUSE in EDUP EP-AC1661
+		hal->rfe_type = map[EEPROM_RFE_OPTION_8821C-1];
+		if (0xFF != hal->rfe_type)
+			goto exit;
 	}
 
 	/* error handle */
