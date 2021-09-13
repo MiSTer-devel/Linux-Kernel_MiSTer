@@ -1590,77 +1590,55 @@ static int exfat_get_block(struct inode *inode, sector_t iblock,
 
 static int exfat_readpage(struct file *file, struct page *page)
 {
-	int ret;
-	ret =  mpage_readpage(page, exfat_get_block);
-	return ret;
+	return mpage_readpage(page, exfat_get_block);
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
 static void exfat_readahead(struct readahead_control *rac)
 {
 	mpage_readahead(rac, exfat_get_block);
 }
-#else
-static int exfat_readpages(struct file *file, struct address_space *mapping,
-				   struct list_head *pages, unsigned nr_pages)
-{
-	int ret;
-	ret =  mpage_readpages(mapping, pages, nr_pages, exfat_get_block);
-	return ret;
-}
-#endif
 
 static int exfat_writepage(struct page *page, struct writeback_control *wbc)
 {
-	int ret;
-	ret = block_write_full_page(page, exfat_get_block, wbc);
-	return ret;
+	return block_write_full_page(page, exfat_get_block, wbc);
 }
 
 static int exfat_writepages(struct address_space *mapping,
 						struct writeback_control *wbc)
 {
-	int ret;
-	ret = mpage_writepages(mapping, wbc, exfat_get_block);
-	return ret;
+	return mpage_writepages(mapping, wbc, exfat_get_block);
 }
 
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,34)
 static void exfat_write_failed(struct address_space *mapping, loff_t to)
 {
 	struct inode *inode = mapping->host;
 	if (to > i_size_read(inode)) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,12,0)
 		truncate_pagecache(inode, i_size_read(inode));
-#else
-		truncate_pagecache(inode, to, i_size_read(inode));
-#endif
 		EXFAT_I(inode)->fid.size = i_size_read(inode);
 		_exfat_truncate(inode, i_size_read(inode));
 	}
 }
-#endif
 
 static int exfat_write_begin(struct file *file, struct address_space *mapping,
-				 loff_t pos, unsigned len, unsigned flags,
-					 struct page **pagep, void **fsdata)
+		loff_t pos, unsigned int len, unsigned int flags,
+		struct page **pagep, void **fsdata)
 {
 	int ret;
+
 	*pagep = NULL;
 	ret = cont_write_begin(file, mapping, pos, len, flags, pagep, fsdata,
-				   exfat_get_block,
-				   &EXFAT_I(mapping->host)->mmu_private);
+			       exfat_get_block,
+			       &EXFAT_I(mapping->host)->mmu_private);
 
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,34)
 	if (ret < 0)
 		exfat_write_failed(mapping, pos+len);
-#endif
+
 	return ret;
 }
 
 static int exfat_write_end(struct file *file, struct address_space *mapping,
-				   loff_t pos, unsigned len, unsigned copied,
-					   struct page *pagep, void *fsdata)
+		loff_t pos, unsigned int len, unsigned int copied,
+		struct page *pagep, void *fsdata)
 {
 	struct inode *inode = mapping->host;
 	FILE_ID_T *fid = &(EXFAT_I(inode)->fid);
@@ -1668,136 +1646,77 @@ static int exfat_write_end(struct file *file, struct address_space *mapping,
 
 	err = generic_write_end(file, mapping, pos, len, copied, pagep, fsdata);
 
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,34)
+	if (EXFAT_I(inode)->mmu_private < i_size_read(inode)) {
+		printk("[EXFAT] invalid size(size(%llu) > aligned(%llu)\n", i_size_read(inode), EXFAT_I(inode)->mmu_private);
+		fs_error(inode->i_sb);
+		return -EIO;
+	}
+
 	if (err < len)
 		exfat_write_failed(mapping, pos+len);
-#endif
 
 	if (!(err < 0) && !(fid->attr & ATTR_ARCHIVE)) {
 		inode->i_mtime = inode->i_ctime = current_time(inode);
 		fid->attr |= ATTR_ARCHIVE;
 		mark_inode_dirty(inode);
 	}
+
 	return err;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,16,0)
-#ifdef CONFIG_AIO_OPTIMIZATION
-static ssize_t exfat_direct_IO(int rw, struct kiocb *iocb,
-						struct iov_iter *iter, loff_t offset)
-#else
-static ssize_t exfat_direct_IO(int rw, struct kiocb *iocb,
-					   const struct iovec *iov,
-					   loff_t offset, unsigned long nr_segs)
-#endif
-#elif LINUX_VERSION_CODE < KERNEL_VERSION(4,2,0)
-static ssize_t exfat_direct_IO(int rw, struct kiocb *iocb,
-					   struct iov_iter *iter, loff_t offset)
-#elif LINUX_VERSION_CODE < KERNEL_VERSION(4,7,0)
-static ssize_t exfat_direct_IO(struct kiocb *iocb,
-					   struct iov_iter *iter, loff_t offset)
-#else /* >= 4.7.x */
 static ssize_t exfat_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
-#endif
 {
-	struct inode *inode = iocb->ki_filp->f_mapping->host;
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,34)
 	struct address_space *mapping = iocb->ki_filp->f_mapping;
-#endif
+	struct inode *inode = mapping->host;
+	loff_t size = iocb->ki_pos + iov_iter_count(iter);
+	int rw = iov_iter_rw(iter);
 	ssize_t ret;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,2,0)
-	int rw;
-
-	rw = iov_iter_rw(iter);
-#endif
 
 	if (rw == WRITE) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,16,0)
-#ifdef CONFIG_AIO_OPTIMIZATION
-		if (EXFAT_I(inode)->mmu_private <
-					(offset + iov_iter_count(iter)))
-#else
-		if (EXFAT_I(inode)->mmu_private < (offset + iov_length(iov, nr_segs)))
-#endif
-#elif LINUX_VERSION_CODE < KERNEL_VERSION(4,7,0)
-		if (EXFAT_I(inode)->mmu_private < (offset + iov_iter_count(iter)))
-#else
-		if (EXFAT_I(inode)->mmu_private < iov_iter_count(iter))
-#endif
+		/*
+		 * FIXME: blockdev_direct_IO() doesn't use ->write_begin(),
+		 * so we need to update the ->mmu_private to block boundary.
+		 *
+		 * But we must fill the remaining area or hole by nul for
+		 * updating ->mmu_private
+		 *
+		 * Return 0, and fallback to normal buffered write.
+		 */
+		if (EXFAT_I(inode)->mmu_private < size)
 			return 0;
 	}
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,7,0)
-	ret = blockdev_direct_IO(iocb, inode, iter, exfat_get_block);
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4,1,0)
-	ret = blockdev_direct_IO(iocb, inode, iter,
-					offset, exfat_get_block);
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(3,16,0)
-	ret = blockdev_direct_IO(rw, iocb, inode, iter,
-					offset, exfat_get_block);
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(3,1,0)
-#ifdef CONFIG_AIO_OPTIMIZATION
-	ret = blockdev_direct_IO(rw, iocb, inode, iter,
-					offset, exfat_get_block);
-#else
-	ret = blockdev_direct_IO(rw, iocb, inode, iov,
-					offset, nr_segs, exfat_get_block);
-#endif
-#else
-        ret = blockdev_direct_IO(rw, iocb, inode, inode->i_sb->s_bdev, iov,
-					offset, nr_segs, exfat_get_block, NULL);
-#endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,7,0)
-	if ((ret < 0) && (rw & WRITE))
-		exfat_write_failed(mapping, iov_iter_count(iter));
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(3,16,0)
-	if ((ret < 0) && (rw & WRITE))
-		exfat_write_failed(mapping, offset+iov_iter_count(iter));
-#elif LINUX_VERSION_CODE > KERNEL_VERSION(2,6,34)
-	if ((ret < 0) && (rw & WRITE))
-#ifdef CONFIG_AIO_OPTIMIZATION
-		exfat_write_failed(mapping, offset+iov_iter_count(iter));
-#else
-		exfat_write_failed(mapping, offset+iov_length(iov, nr_segs));
-#endif
-#endif
+	/*
+	 * Need to use the DIO_LOCKING for avoiding the race
+	 * condition of exfat_get_block() and ->truncate().
+	 */
+	ret = blockdev_direct_IO(iocb, inode, iter, exfat_get_block);
+	if (ret < 0 && (rw & WRITE))
+		exfat_write_failed(mapping, size);
 	return ret;
 }
 
-static sector_t _exfat_bmap(struct address_space *mapping, sector_t block)
+static sector_t exfat_aop_bmap(struct address_space *mapping, sector_t block)
 {
 	sector_t blocknr;
 
 	/* exfat_get_cluster() assumes the requested blocknr isn't truncated. */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,4,00)
 	down_read(&EXFAT_I(mapping->host)->truncate_lock);
 	blocknr = generic_block_bmap(mapping, block, exfat_get_block);
 	up_read(&EXFAT_I(mapping->host)->truncate_lock);
-#else
-	down_read(&EXFAT_I(mapping->host)->i_alloc_sem);
-	blocknr = generic_block_bmap(mapping, block, exfat_get_block);
-	up_read(&EXFAT_I(mapping->host)->i_alloc_sem);
-#endif
-
 	return blocknr;
 }
 
 const struct address_space_operations exfat_aops = {
-	.readpage    = exfat_readpage,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-	.readahead	= exfat_readahead,
-#else
-	.readpages	 = exfat_readpages,
-#endif	
-	.writepage   = exfat_writepage,
-	.writepages  = exfat_writepages,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,39)
-	.sync_page   = block_sync_page,
-#endif
-	.write_begin = exfat_write_begin,
-	.write_end   = exfat_write_end,
-	.direct_IO   = exfat_direct_IO,
-	.bmap        = _exfat_bmap
+	.set_page_dirty	= __set_page_dirty_buffers,
+	.readpage       = exfat_readpage,
+	.readahead      = exfat_readahead,
+	.writepage      = exfat_writepage,
+	.writepages     = exfat_writepages,
+	.write_begin    = exfat_write_begin,
+	.write_end      = exfat_write_end,
+	.direct_IO      = exfat_direct_IO,
+	.bmap           = exfat_aop_bmap
 };
 
 /*======================================================================*/
