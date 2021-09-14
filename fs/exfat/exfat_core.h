@@ -45,11 +45,7 @@
 #include "exfat_api.h"
 #include "exfat_cache.h"
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
-#define EXFAT_IS_SB_RDONLY(sb) ((sb)->s_flags & MS_RDONLY)
-#else
 #define EXFAT_IS_SB_RDONLY(sb) ((sb)->s_flags & SB_RDONLY)
-#endif
 
 #ifdef CONFIG_EXFAT_KERNEL_DEBUG
   /* For Debugging Purpose */
