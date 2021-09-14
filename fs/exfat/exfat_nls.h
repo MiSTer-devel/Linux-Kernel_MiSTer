@@ -38,7 +38,6 @@
 #include <linux/types.h>
 #include <linux/nls.h>
 
-#include "exfat_config.h"
 #include "exfat_api.h"
 
 /*----------------------------------------------------------------------*/

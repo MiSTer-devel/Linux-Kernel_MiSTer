@@ -32,8 +32,6 @@
 /*                                                                      */
 /************************************************************************/
 
-#include "exfat_config.h"
-
 #include "exfat_nls.h"
 
 const u8 uni_upcase[NUM_UPCASE<<1] = {

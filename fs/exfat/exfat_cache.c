@@ -33,7 +33,6 @@
 /*                                                                      */
 /************************************************************************/
 
-#include "exfat_config.h"
 #include "exfat_data.h"
 
 #include "exfat_cache.h"

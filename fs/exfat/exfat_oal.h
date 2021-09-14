@@ -37,7 +37,6 @@
 #define _EXFAT_OAL_H
 
 #include <linux/semaphore.h>
-#include "exfat_config.h"
 #include <linux/version.h>
 
 /*----------------------------------------------------------------------*/

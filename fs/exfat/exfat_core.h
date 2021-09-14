@@ -35,7 +35,6 @@
 #ifndef _EXFAT_H
 #define _EXFAT_H
 
-#include "exfat_config.h"
 #include "exfat_data.h"
 #include "exfat_oal.h"
 
@@ -196,7 +195,7 @@
 #define UTBL_ROW_COUNT (1<<LOW_INDEX_BIT)
 #define UTBL_COL_COUNT (1<<HIGH_INDEX_BIT)
 
-#if CONFIG_EXFAT_DEBUG_MSG
+#ifdef CONFIG_EXFAT_DEBUG_MSG
 #define DPRINTK(...)			\
 	do {								\
 		printk("[EXFAT] " __VA_ARGS__);	\

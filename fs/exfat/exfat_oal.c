@@ -48,7 +48,6 @@
 typedef time64_t    time_t;
 #endif
 
-#include "exfat_config.h"
 #include "exfat_api.h"
 #include "exfat_oal.h"
 

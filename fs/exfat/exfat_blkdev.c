@@ -34,7 +34,6 @@
 
 #include <linux/blkdev.h>
 #include <linux/log2.h>
-#include "exfat_config.h"
 #include "exfat_blkdev.h"
 #include "exfat_data.h"
 #include "exfat_api.h"

@@ -37,7 +37,6 @@
 #include <linux/init.h>
 
 #include "exfat_version.h"
-#include "exfat_config.h"
 #include "exfat_data.h"
 #include "exfat_oal.h"
 
