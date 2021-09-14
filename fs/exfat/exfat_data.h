@@ -35,8 +35,6 @@
 #ifndef _EXFAT_DATA_H
 #define _EXFAT_DATA_H
 
-#include "exfat_config.h"
-
 /*======================================================================*/
 /*                                                                      */
 /*                        FFS CONFIGURATIONS                            */

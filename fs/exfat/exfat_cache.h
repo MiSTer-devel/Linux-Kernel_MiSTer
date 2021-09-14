@@ -38,7 +38,6 @@
 
 #include <linux/fs.h>
 #include <linux/types.h>
-#include "exfat_config.h"
 
 /*----------------------------------------------------------------------*/
 /*  Constant & Macro Definitions                                        */

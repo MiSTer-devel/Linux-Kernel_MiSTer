@@ -36,7 +36,6 @@
 #define _EXFAT_BLKDEV_H
 
 #include <linux/fs.h>
-#include "exfat_config.h"
 
 /*----------------------------------------------------------------------*/
 /*  Constant & Macro Definitions (Non-Configurable)                     */

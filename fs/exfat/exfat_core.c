@@ -46,7 +46,6 @@
 #include <linux/log2.h>
 
 #include "exfat_bitmap.h"
-#include "exfat_config.h"
 #include "exfat_data.h"
 #include "exfat_oal.h"
 #include "exfat_blkdev.h"
