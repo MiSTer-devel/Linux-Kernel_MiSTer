@@ -58,11 +58,7 @@ typedef time64_t    time_t;
 /*                                                                      */
 /*======================================================================*/
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,36)
-DECLARE_MUTEX(z_sem);
-#else
 DEFINE_SEMAPHORE(z_sem);
-#endif
 
 s32 sm_init(struct semaphore *sm)
 {
@@ -117,25 +113,11 @@ extern struct timezone sys_tz;
 
 TIMESTAMP_T *tm_current(TIMESTAMP_T *tp)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,20,0)
 	struct timespec64 ts;
-#else
-	struct timespec ts;
-#endif
 	time_t second;
 	struct tm tm;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,8,0)
-	ts = CURRENT_TIME_SEC;
-#else
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,20,0)
 	ktime_get_real_ts64(&ts);
-#else
-	ktime_get_real_ts(&ts);
-#endif
-
-#endif
 
 	second = ts.tv_sec;
 	second -= sys_tz.tz_minuteswest * SECS_PER_MIN;

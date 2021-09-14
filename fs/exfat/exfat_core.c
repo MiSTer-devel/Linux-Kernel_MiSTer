@@ -61,12 +61,8 @@
 
 static void __set_sb_dirty(struct super_block *sb)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,7,0)
-	sb->s_dirt = 1;
-#else
 	struct exfat_sb_info *sbi = EXFAT_SB(sb);
 	sbi->s_dirt = 1;
-#endif
 }
 
 /*----------------------------------------------------------------------*/
@@ -1758,11 +1754,7 @@ void fs_error(struct super_block *sb)
 	if (opts->errors == EXFAT_ERRORS_PANIC)
 		panic("[EXFAT] Filesystem panic from previous error\n");
 	else if ((opts->errors == EXFAT_ERRORS_RO) && !EXFAT_IS_SB_RDONLY(sb)) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
-		sb->s_flags |= MS_RDONLY;
-#else
 		sb->s_flags |= SB_RDONLY;
-#endif
 		printk(KERN_ERR "[EXFAT] Filesystem has been set read-only\n");
 	}
 }
@@ -2257,11 +2249,7 @@ s32 clr_alloc_bitmap(struct super_block *sb, u32 clu)
 
 #ifdef CONFIG_EXFAT_DISCARD
 	if (opts->discard) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,37)
-		ret = sb_issue_discard(sb, START_SECTOR(clu), (1 << p_fs->sectors_per_clu_bits));
-#else
 		ret = sb_issue_discard(sb, START_SECTOR(clu), (1 << p_fs->sectors_per_clu_bits), GFP_NOFS, 0);
-#endif
 		if (ret == -EOPNOTSUPP) {
 			printk(KERN_WARNING "discard not supported by device, disabling");
 			opts->discard = 0;

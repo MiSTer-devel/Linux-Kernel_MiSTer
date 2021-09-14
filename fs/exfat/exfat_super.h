@@ -46,13 +46,8 @@
 #define EXFAT_IOCTL_GET_VOLUME_ID _IOR('r', 0x12, __u32)
 
 struct exfat_mount_options {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,5,0)
 	kuid_t fs_uid;
 	kgid_t fs_gid;
-#else
-	uid_t fs_uid;
-	gid_t fs_gid;
-#endif
 	unsigned short fs_fmask;
 	unsigned short fs_dmask;
 	unsigned short allow_utime; /* permission for setting the [am]time */
@@ -77,10 +72,8 @@ struct exfat_sb_info {
 
 	struct exfat_mount_options options;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,00)
 	int s_dirt;
 	struct mutex s_lock;
-#endif
 	struct nls_table *nls_disk; /* Codepage used on disk */
 	struct nls_table *nls_io;   /* Charset used for input and display */
 
@@ -103,9 +96,7 @@ struct exfat_inode_info {
 	loff_t mmu_private;         /* physically allocated size */
 	loff_t i_pos;               /* on-disk position of directory entry or 0 */
 	struct hlist_node i_hash_fat;	/* hash by i_location */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,4,00)
 	struct rw_semaphore truncate_lock;
-#endif
 	struct inode vfs_inode;
 	struct rw_semaphore i_alloc_sem; /* protect bmap against truncate */
 };
