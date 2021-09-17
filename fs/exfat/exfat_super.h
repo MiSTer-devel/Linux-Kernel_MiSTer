@@ -135,7 +135,7 @@ static inline mode_t exfat_make_mode(struct exfat_sb_info *sbi,
 
 	if (attr & ATTR_SUBDIR)
 		return (mode & ~sbi->options.fs_dmask) | S_IFDIR;
-	else if (attr & ATTR_SYMLINK)
+	else if (attr & (ATTR_SYMLINK | ATTR_SYMLINK_OLD))
 		return (mode & ~sbi->options.fs_dmask) | S_IFLNK;
 	else
 		return (mode & ~sbi->options.fs_fmask) | S_IFREG;

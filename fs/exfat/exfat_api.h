@@ -62,17 +62,17 @@
 #define ATTR_NORMAL             0x0000
 #define ATTR_READONLY           0x0001
 #define ATTR_HIDDEN             0x0002
-#define ATTR_SYSTEM             0x0004
+#define ATTR_SYMLINK            0x0004
 #define ATTR_VOLUME             0x0008
 #define ATTR_SUBDIR             0x0010
 #define ATTR_ARCHIVE            0x0020
-#define ATTR_SYMLINK            0x0040
+#define ATTR_SYMLINK_OLD        0x0040
 #define ATTR_EXTEND             0x000F
 #define ATTR_RWMASK             0x007E
 
 /* file creation modes */
-#define FM_REGULAR              0x00
-#define FM_SYMLINK              0x40
+#define FM_REGULAR              ATTR_NORMAL
+#define FM_SYMLINK              ATTR_SYMLINK
 
 /* return values */
 #define FFS_SUCCESS             0
