@@ -35,7 +35,7 @@
 #include <linux/uaccess.h>
 #include <linux/blk-mq.h>
 #include <linux/spinlock.h>
-#include <uapi/linux/loop.h>
+#include <linux/loop.h>
 
 /* Possible states of device */
 enum {
@@ -136,6 +136,20 @@ static void loop_global_unlock(struct loop_device *lo, bool global)
 
 static int max_part;
 static int part_shift;
+
+/*
+ * Exported for init/do_mounts.c only.  A caller that has to create the loop
+ * device node itself, before udev or even devtmpfs exists, cannot look the
+ * minor number up in sysfs; it has to compute it the way loop_add() does
+ * (disk->first_minor = i << part_shift), and part_shift is derived from
+ * max_part.  Returning max_part rather than part_shift keeps this in the same
+ * units as the module parameter a user would have set.
+ */
+int loop_max_part(void)
+{
+	return max_part;
+}
+EXPORT_SYMBOL(loop_max_part);
 
 static loff_t lo_calculate_size(struct loop_device *lo, struct file *file)
 {
@@ -1775,6 +1789,60 @@ static const struct block_device_operations lo_fops = {
 #endif
 	.free_disk =	lo_free_disk,
 };
+
+/*
+ * In-kernel equivalent of ioctl(lo_fd, LOOP_SET_FD, backing_fd), for callers
+ * that have no userspace to issue the ioctl from -- specifically the `loop=`
+ * boot parameter handled in init/do_mounts.c.
+ *
+ * It cannot be done from init/ any other way.  The old trick of calling
+ * sys_ioctl() out of init code stopped working when the in-init syscall
+ * wrappers were withdrawn in favour of the explicit helpers in fs/init.c
+ * (init_mount(), init_mkdir(), init_dup(), ...).  There is no init_ioctl()
+ * among them, and there cannot usefully be one: an ioctl is driver-defined,
+ * so there is nothing generic to wrap.  vfs_ioctl() is static to fs/ioctl.c and
+ * do_vfs_ioctl() is documented there as "not for drivers and not intended to
+ * be EXPORT_SYMBOL()'d".  Reaching through file_bdev(f)->bd_disk->fops->ioctl
+ * from init would skip blkdev_ioctl()'s checks and hard-code this driver's
+ * dispatch table into init/, so the driver exports the operation instead.
+ *
+ * The body is exactly lo_ioctl()'s LOOP_SET_FD case: a zeroed loop_config
+ * carrying only the backing descriptor, which selects the default geometry.
+ * @lo_file must be an open file on the loop device node -- open() is also what
+ * instantiates loopN via loop_probe(), so by the time we are called the node
+ * has a gendisk behind it.  BLK_OPEN_READ|BLK_OPEN_WRITE mirrors the O_RDWR
+ * open() losetup(8) does, and the absence of BLK_OPEN_EXCL makes
+ * loop_configure() take the bd_prepare_to_claim() path -- the same path an
+ * ioctl on a non-exclusive fd takes, so the claim semantics are not quietly
+ * different from the userspace route.
+ *
+ * On failure nothing is bound: loop_configure() unwinds its own partial state
+ * and leaves lo_state == Lo_unbound, so the caller has no LOOP_CLR_FD to do.
+ */
+int loop_set_backing_fd(struct file *lo_file, int backing_fd)
+{
+	struct block_device *bdev;
+	struct loop_config config;
+
+	/*
+	 * Fail closed on anything that is not a loop device: file_bdev() and
+	 * bd_disk->private_data would otherwise reinterpret some other
+	 * driver's private pointer as a struct loop_device.
+	 */
+	if (!is_loop_device(lo_file))
+		return -ENOTBLK;
+
+	bdev = file_bdev(lo_file);
+	if (bdev->bd_disk->fops != &lo_fops)
+		return -ENOTBLK;
+
+	memset(&config, 0, sizeof(config));
+	config.fd = backing_fd;
+
+	return loop_configure(bdev->bd_disk->private_data,
+			      BLK_OPEN_READ | BLK_OPEN_WRITE, bdev, &config);
+}
+EXPORT_SYMBOL(loop_set_backing_fd);
 
 /*
  * And now the modules code and kernel interface.

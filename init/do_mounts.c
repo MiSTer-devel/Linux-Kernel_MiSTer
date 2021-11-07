@@ -26,9 +26,18 @@
 #include <linux/raid/detect.h>
 #include <uapi/linux/mount.h>
 
+#include <linux/fdtable.h>
+#include <linux/file.h>
+#include <linux/loop.h>
+
 #include "do_mounts.h"
 
-int root_mountflags = MS_RDONLY | MS_SILENT;
+/*
+ * MS_NOATIME|MS_NODIRATIME are in the default set because MiSTer's root lives
+ * on an SD card: an atime update is a read-modify-write of an erase block, and
+ * nothing on the system ever reads the result back.
+ */
+int root_mountflags = MS_RDONLY | MS_SILENT | MS_NOATIME | MS_NODIRATIME;
 static char __initdata saved_root_name[64];
 static int root_wait;
 
@@ -40,6 +49,27 @@ static int __init load_ramdisk(char *str)
 	return 1;
 }
 __setup("load_ramdisk=", load_ramdisk);
+
+/*
+ * loop=<path>
+ *
+ * Path, relative to the root of the exFAT filesystem on the root= device, of a
+ * disk image to loop-mount as the real root.  Set, mount_block_root() mounts
+ * root= at /root2 as exFAT, attaches <path> to /dev/loop8, mounts that as
+ * /root, and bind-mounts /root2 back onto /root/media/fat.  Unset, the root=
+ * device is mounted directly and none of that code runs.
+ *
+ * This is what lets a MiSTer ship its whole system as one file
+ * (linux/linux.img) on a card that is otherwise a plain exFAT data partition
+ * the user manages from a PC.
+ */
+static char * __initdata loop_name;
+static int __init set_loop_name(char *str)
+{
+	loop_name = str;
+	return 1;
+}
+__setup("loop=", set_loop_name);
 
 static int __init readonly(char *str)
 {
@@ -371,13 +401,168 @@ static int __init mount_nodev_root(char *root_device_name)
 }
 
 #ifdef CONFIG_BLOCK
+/*
+ * The loop= path needs loop_set_backing_fd()/loop_max_part() resolved at
+ * vmlinux link time.  IS_BUILTIN(), not IS_ENABLED(): with
+ * CONFIG_BLK_DEV_LOOP=m those symbols live in a module that cannot possibly
+ * be loaded before the root filesystem is mounted, and referencing them from
+ * here would break the vmlinux link of every =m configuration in the world,
+ * allmodconfig included.
+ */
+#if IS_BUILTIN(CONFIG_BLK_DEV_LOOP)
+/*
+ * Attach @file to the loop device node @device -- the in-kernel equivalent of
+ *
+ *	losetup /dev/loop8 /root2/linux/linux.img
+ *
+ * The ioctl half is a driver export because there is no init_ioctl(); see
+ * loop_set_backing_fd() in drivers/block/loop.c.  The descriptor half has to
+ * happen here, because loop_configure() fget()s config.fd.
+ *
+ * Note that fs/init.c's init_dup() cannot be used for this: despite the name it
+ * does not return a descriptor.  It allocates one, fd_install()s a reference of
+ * its own, and then returns 0 -- it exists for console_on_rootfs(), whose
+ * callers only care whether it succeeded.  Using it here would silently bind
+ * fd 0, which by this point in the boot is /dev/console (console_on_rootfs()
+ * runs in kernel_init_freeable() before prepare_namespace()), so the loop
+ * device would be handed a character device and refuse it.  So the descriptor
+ * is allocated directly.
+ *
+ * fd_install() consumes the filp_open() reference: from that point the
+ * descriptor owns it, and close_fd() below is what drops it.  On success
+ * loop_configure() has taken a reference of its own via fget(), so the loop
+ * device keeps the backing file alive after we close our descriptor.
+ */
+static int __init loop_setup(const char *file, const char *device)
+{
+	struct file *backing, *lo_file;
+	int backing_fd, err;
+
+	backing = filp_open(file, O_RDWR | O_LARGEFILE, 0);
+	if (IS_ERR(backing)) {
+		pr_emerg("Failed to open backing file (%s): %ld\n",
+			 file, PTR_ERR(backing));
+		return PTR_ERR(backing);
+	}
+
+	backing_fd = get_unused_fd_flags(0);
+	if (backing_fd < 0) {
+		pr_emerg("Failed to get a descriptor for (%s): %d\n",
+			 file, backing_fd);
+		fput(backing);
+		return backing_fd;
+	}
+	fd_install(backing_fd, backing);
+
+	/*
+	 * Opening the node is not merely how we name the device: it is what
+	 * brings the device into existence.  loop8 is one past
+	 * CONFIG_BLK_DEV_LOOP_MIN_COUNT's default of 8 devices, so the driver
+	 * has not instantiated it; blkdev_get_no_open() finds no inode and
+	 * falls through to blk_request_module() -> blk_probe_dev() ->
+	 * loop_probe(), which loop_add()s it.
+	 *
+	 * That fallthrough is gated on CONFIG_BLOCK_LEGACY_AUTOLOAD, which is
+	 * `default y` but is documented as deprecated and prints a
+	 * pr_warn_ratelimited() saying it "will be removed".  When it goes,
+	 * this open starts returning -ENXIO and this boot method needs a
+	 * different way to instantiate the device -- hence the explicit second
+	 * message below, so that day produces an actionable panic and not a
+	 * puzzle.  (The block Kconfig help text calls out exactly this case:
+	 * "scripts that manually create device nodes and then call losetup".)
+	 */
+	lo_file = filp_open(device, O_RDWR | O_LARGEFILE, 0);
+	if (IS_ERR(lo_file)) {
+		pr_emerg("Failed to open device (%s): %ld\n",
+			 device, PTR_ERR(lo_file));
+		pr_emerg("loop= instantiates %s by opening it, which needs CONFIG_BLOCK_LEGACY_AUTOLOAD=y\n",
+			 device);
+		close_fd(backing_fd);
+		return PTR_ERR(lo_file);
+	}
+
+	err = loop_set_backing_fd(lo_file, backing_fd);
+	if (err)
+		pr_emerg("Failed to set fd: %d\n", err);
+
+	fput(lo_file);
+	close_fd(backing_fd);
+	return err;
+}
+
+static void __init mount_loop_root(char *root_device_name)
+{
+	char *lname;
+	int err;
+
+	err = init_mkdir("/root2", 0777);
+	if (err)
+		pr_emerg("Failed mkdir /root2: %d\n", err);
+
+	err = init_mount("/dev/root", "/root2", "exfat",
+			 MS_DIRSYNC | MS_SYNCHRONOUS | MS_NOATIME |
+			 MS_NODIRATIME, "");
+	if (err)
+		pr_emerg("Failed to mount /dev/root as exFAT: %d\n", err);
+
+	/*
+	 * /dev is still the rootfs one -- devtmpfs is not mounted until
+	 * prepare_namespace() is done with us -- so the node has to be made by
+	 * hand, with the minor computed the way loop_add() does it.
+	 */
+	err = create_dev("/dev/loop8",
+			 MKDEV(LOOP_MAJOR, (loop_max_part() + 1) * 8));
+	if (err < 0)
+		pr_emerg("Failed to create /dev/loop8: %d\n", err);
+
+	/*
+	 * kasprintf() rather than sprintf() into a fixed buffer: loop_name
+	 * points straight into the kernel command line and is bounded only by
+	 * COMMAND_LINE_SIZE, so any fixed-size buffer here is a stack overflow
+	 * waiting for a long enough loop= argument.
+	 */
+	lname = kasprintf(GFP_KERNEL, "/root2/%s", loop_name);
+	if (!lname)
+		panic("VFS: out of memory building the loop= backing path");
+
+	err = loop_setup(lname, "/dev/loop8");
+	if (err)
+		pr_emerg("Failed to loop_setup: %d\n", err);
+	kfree(lname);
+
+	mount_root_generic("/dev/loop8", "/dev/loop8", root_mountflags);
+
+	err = init_mount("/root2", "/root/media/fat", "", MS_BIND, "");
+	if (err)
+		pr_emerg("Failed to bind-mount %s to /root/media/fat : %d\n",
+			 root_device_name, err);
+}
+#else
+static void __init mount_loop_root(char *root_device_name)
+{
+	/*
+	 * Fail loudly.  Falling through to mounting root= directly would try to
+	 * boot the exFAT data partition as the root filesystem: no /sbin/init,
+	 * no recognisable rootfs, and a panic several confusing steps further
+	 * on -- or worse, a successful mount of something that is not the
+	 * system the user asked for.
+	 */
+	panic("VFS: loop=%s needs CONFIG_BLK_DEV_LOOP=y (it is not built in)",
+	      loop_name);
+}
+#endif /* IS_BUILTIN(CONFIG_BLK_DEV_LOOP) */
+
 static void __init mount_block_root(char *root_device_name)
 {
 	int err = create_dev("/dev/root", ROOT_DEV);
 
 	if (err < 0)
 		pr_emerg("Failed to create /dev/root: %d\n", err);
-	mount_root_generic("/dev/root", root_device_name, root_mountflags);
+	if (loop_name)
+		mount_loop_root(root_device_name);
+	else
+		mount_root_generic("/dev/root", root_device_name,
+				   root_mountflags);
 }
 #else
 static inline void mount_block_root(char *root_device_name)
