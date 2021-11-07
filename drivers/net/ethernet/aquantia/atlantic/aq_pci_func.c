@@ -119,16 +119,10 @@ static int aq_pci_func_init(struct pci_dev *pdev)
 {
 	int err;
 
-	err = pci_set_dma_mask(pdev, DMA_BIT_MASK(64));
-	if (!err)
-		err = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
+	err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
+	if (err)
+		err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
 	if (err) {
-		err = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
-		if (!err)
-			err = pci_set_consistent_dma_mask(pdev,
-							  DMA_BIT_MASK(32));
-	}
-	if (err != 0) {
 		err = -ENOSR;
 		goto err_exit;
 	}
@@ -419,13 +413,13 @@ static int atl_resume_common(struct device *dev, bool deep)
 	if (deep) {
 		/* Reinitialize Nic/Vecs objects */
 		aq_nic_deinit(nic, !nic->aq_hw->aq_nic_cfg->wol);
-
-		ret = aq_nic_init(nic);
-		if (ret)
-			goto err_exit;
 	}
 
 	if (netif_running(nic->ndev)) {
+		ret = aq_nic_init(nic);
+		if (ret)
+			goto err_exit;
+
 		ret = aq_nic_start(nic);
 		if (ret)
 			goto err_exit;
