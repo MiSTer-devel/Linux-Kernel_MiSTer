@@ -4316,8 +4316,9 @@ static const struct hid_device_id hidpp_devices[] = {
 	{ /* Mouse Logitech Performance MX */
 	  LDJ_DEVICE(0x101a), .driver_data = HIDPP_QUIRK_HI_RES_SCROLL_1P0 },
 	{ /* Keyboard logitech K400 */
-	  LDJ_DEVICE(0x4024),
-	  .driver_data = HIDPP_QUIRK_CLASS_K400 },
+	  LDJ_DEVICE(0x4024), .driver_data = HIDPP_QUIRK_CLASS_K400 },
+	{ /* Keyboard logitech K400 plus*/
+	  LDJ_DEVICE(0x404D), .driver_data = HIDPP_QUIRK_CLASS_K400 },
 	{ /* Solar Keyboard Logitech K750 */
 	  LDJ_DEVICE(0x4002),
 	  .driver_data = HIDPP_QUIRK_CLASS_K750 },
