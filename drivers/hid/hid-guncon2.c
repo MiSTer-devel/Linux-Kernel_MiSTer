@@ -31,10 +31,10 @@
 #define GUNCON2_BTN_SELECT BIT(6)
 
 // default calibration, can be updated with evdev-joystick
-#define X_MIN 175
-#define X_MAX 720
-#define Y_MIN 20
-#define Y_MAX 240
+#define X_MIN 145
+#define X_MAX 700
+#define Y_MIN 25
+#define Y_MAX 245
 
 struct guncon2 {
     struct input_dev *input_device;
