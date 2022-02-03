@@ -382,6 +382,12 @@ config HID_GLORIOUS
 	  Support for Glorious PC Gaming Race mice such as
 	  the Glorious Model O, O- and D.
 
+config HID_GUNCON2
+	tristate "Namco GunCon 2"
+	depends on USB_HID
+	help
+	Support for the Namco GunCon2 lightgun
+
 config HID_HOLTEK
 	tristate "Holtek HID devices"
 	depends on USB_HID
