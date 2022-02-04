@@ -113,10 +113,10 @@ static void guncon2_usb_irq(struct urb *urb) {
         input_report_abs(guncon2->input_device, ABS_HAT0Y, hat_y);
 
         // main buttons
-        input_report_key(guncon2->input_device, BTN_LEFT, buttons & GUNCON2_TRIGGER);
+        input_report_key(guncon2->input_device, BTN_X, buttons & GUNCON2_TRIGGER);
         input_report_key(guncon2->input_device, BTN_A, buttons & GUNCON2_BTN_A);
         input_report_key(guncon2->input_device, BTN_B, buttons & GUNCON2_BTN_B);
-        input_report_key(guncon2->input_device, BTN_RIGHT, buttons & GUNCON2_BTN_C);
+        input_report_key(guncon2->input_device, BTN_Y, buttons & GUNCON2_BTN_C);
         input_report_key(guncon2->input_device, BTN_START, buttons & GUNCON2_BTN_START);
         input_report_key(guncon2->input_device, BTN_SELECT, buttons & GUNCON2_BTN_SELECT);
 
@@ -247,8 +247,6 @@ static int guncon2_probe(struct usb_interface *intf,
 
     usb_to_input_id(udev, &guncon2->input_device->id);
 
-    input_set_capability(guncon2->input_device, EV_KEY, BTN_LEFT);
-    input_set_capability(guncon2->input_device, EV_KEY, BTN_RIGHT);
     input_set_capability(guncon2->input_device, EV_ABS, ABS_X);
     input_set_capability(guncon2->input_device, EV_ABS, ABS_Y);
 
@@ -257,6 +255,8 @@ static int guncon2_probe(struct usb_interface *intf,
 
     input_set_capability(guncon2->input_device, EV_KEY, BTN_A);
     input_set_capability(guncon2->input_device, EV_KEY, BTN_B);
+    input_set_capability(guncon2->input_device, EV_KEY, BTN_X);
+    input_set_capability(guncon2->input_device, EV_KEY, BTN_Y);
     input_set_capability(guncon2->input_device, EV_KEY, BTN_START);
     input_set_capability(guncon2->input_device, EV_KEY, BTN_SELECT);
 
