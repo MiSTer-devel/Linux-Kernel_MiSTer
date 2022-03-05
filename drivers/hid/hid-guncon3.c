@@ -35,6 +35,8 @@ MODULE_PARM_DESC(debug, "Enable Debugging");
 #define DRIVER_DESC "USB GunCon3 Driver"
 #define DRIVER_LICENSE "GPL"
 
+// Note: Also includes decode fixes from pcnimdock (https://github.com/pcnimdock/guncon3)
+
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE(DRIVER_LICENSE);
@@ -566,7 +568,3 @@ static void __exit usb_guncon3_exit(void)
 
 module_init(usb_guncon3_init);
 module_exit(usb_guncon3_exit);
-
-MODULE_AUTHOR("beardypig <beardypig@protonmail.com>");
-MODULE_DESCRIPTION("Namco GunCon 3");
-MODULE_LICENSE("GPL v2");
