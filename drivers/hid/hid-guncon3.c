@@ -201,7 +201,8 @@ static void usb_guncon3_irq(struct urb *urb)
 	udata+= data[5];
 	temp_aim = ((__s16) udata);
 //	temp_aim= __le16_to_cpu( ((u16)data[6])*256 + ((u16)data[5]));
-	input_report_abs(dev, ABS_Y, temp_aim);
+//	NOTE: negated here for compatibility with MiSTer framework
+	input_report_abs(dev, ABS_Y, -temp_aim);
     // Z axis (data[8] << 8) + data[7]
 
 	/* joystick a/b */
@@ -481,7 +482,7 @@ static int usb_guncon3_probe(struct usb_interface *intf, const struct usb_device
 
 		switch (t) {
 			case ABS_X: input_set_abs_params(input_dev, t, -32768, 32767, 16, 128); break;
-			case ABS_Y: input_set_abs_params(input_dev, t, 32767, -32768, 16, 128); break;
+			case ABS_Y: input_set_abs_params(input_dev, t, -32768, 32767, 16, 128); break;
 			case ABS_RX:
 		    case ABS_RY:
 				input_set_abs_params(input_dev, t, 0, 255, 4, 8);
