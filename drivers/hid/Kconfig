@@ -388,6 +388,12 @@ config HID_GUNCON2
 	help
 	Support for the Namco GunCon2 lightgun
 
+config HID_GUNCON3
+	tristate "Namco GunCon 3"
+	depends on USB_HID
+	help
+	Support for the Namco GunCon3 IR gun controller
+
 config HID_HOLTEK
 	tristate "Holtek HID devices"
 	depends on USB_HID
