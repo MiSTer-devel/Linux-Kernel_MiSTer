@@ -311,6 +311,13 @@ config ARM_STI_CPUFREQ
 	  this config option if you wish to add CPUFreq support for STi based
 	  SoCs.
 
+config ARM_SOCFPGA_CPUFREQ
+	tristate "socfpga CPUFreq support"
+	depends on CPU_FREQ && ARCH_INTEL_SOCFPGA
+	help
+	  This adds the CPUFreq driver support for ARM socfpga. Currently
+	  assumes DE10 Nano board.
+
 config ARM_TEGRA20_CPUFREQ
 	tristate "Tegra20/30 CPUFreq support"
 	depends on ARCH_TEGRA && CPUFREQ_DT
