@@ -203,7 +203,6 @@ static inline void set_vco_freq(struct socfpga_clock_data * clock_data) {
         wait_for_fsm();
 }
 
-
 static int socfpga_target_index(struct cpufreq_policy *policy,
         unsigned int index)
 {
