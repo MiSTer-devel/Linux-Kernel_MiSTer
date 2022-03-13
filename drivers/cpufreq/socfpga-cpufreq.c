@@ -54,9 +54,9 @@ static const struct socfpga_clock_data clock_data_1300000 = {
         .vco_numer = 103, // 25 MHz * (103 + 1) / (0 + 1) = 2600 MHz
         .vco_denom = 0,
         .alteragrp_mpuclk = 1, // 2600 MHz / (1 + 1) = 1300 MHz
-        .alteragrp_mainclk = 6, // 2600 MHz / (5 + 1) = 433 MHz
-        .alteragrp_dbgatclk = 6, // 2600 MHz / (5 + 1) = 433 MHz
-        .mainpll_cfgs2fuser0clk = 27, // 2600 MHz / (25 + 1) = 100 MHz
+        .alteragrp_mainclk = 5, // 2600 MHz / (5 + 1) = 433 MHz
+        .alteragrp_dbgatclk = 5, // 2600 MHz / (5 + 1) = 433 MHz
+        .mainpll_cfgs2fuser0clk = 25, // 2600 MHz / (25 + 1) = 100 MHz
 };
 
 // 1200 MHz overclock
