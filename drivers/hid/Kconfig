@@ -1258,6 +1258,8 @@ config HID_MCP2221
 	To compile this driver as a module, choose M here: the module
 	will be called hid-mcp2221.ko.
 
+source "drivers/hid/xone/Kconfig"
+
 endmenu
 
 endif # HID

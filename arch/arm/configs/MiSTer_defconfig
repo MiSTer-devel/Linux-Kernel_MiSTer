@@ -2715,6 +2715,7 @@ CONFIG_HID_ZEROPLUS=y
 # CONFIG_HID_SENSOR_HUB is not set
 # CONFIG_HID_ALPS is not set
 # CONFIG_HID_MCP2221 is not set
+CONFIG_JOYSTICK_XONE=m
 # end of Special HID drivers
 
 #
