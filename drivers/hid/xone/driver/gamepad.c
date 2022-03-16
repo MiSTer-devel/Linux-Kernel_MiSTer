@@ -201,6 +201,7 @@ static int gip_gamepad_init_input(struct gip_gamepad *gamepad)
 	}
 
 	spin_lock_init(&gamepad->rumble.lock);
+	gamepad->rumble.last = jiffies;
 	timer_setup(&gamepad->rumble.timer, gip_gamepad_send_rumble, 0);
 
 	return 0;
