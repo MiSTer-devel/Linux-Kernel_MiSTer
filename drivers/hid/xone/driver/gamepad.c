@@ -85,7 +85,6 @@ struct gip_gamepad {
 	struct gip_gamepad_rumble {
 		/* serializes access to rumble packet */
 		spinlock_t lock;
-		bool queued;
 		unsigned long last;
 		struct timer_list timer;
 		struct gip_gamepad_pkt_rumble pkt;
@@ -135,6 +134,21 @@ static int gip_gamepad_queue_rumble(struct input_dev *dev, void *data,
 	return 0;
 }
 
+static int gip_gamepad_init_rumble(struct gip_gamepad *gamepad)
+{
+	struct gip_gamepad_rumble *rumble = &gamepad->rumble;
+	struct input_dev *dev = gamepad->input.dev;
+
+	spin_lock_init(&rumble->lock);
+	timer_setup(&rumble->timer, gip_gamepad_send_rumble, 0);
+	rumble->last = jiffies;
+
+	input_set_capability(dev, EV_FF, FF_RUMBLE);
+	input_set_drvdata(dev, rumble);
+
+	return input_ff_create_memless(dev, NULL, gip_gamepad_queue_rumble);
+}
+
 static bool gip_gamepad_is_series_xs(struct gip_client *client)
 {
 	struct gip_hardware *hw = &client->hardware;
@@ -175,7 +189,6 @@ static int gip_gamepad_init_input(struct gip_gamepad *gamepad)
 	input_set_capability(dev, EV_KEY, BTN_TR);
 	input_set_capability(dev, EV_KEY, BTN_THUMBL);
 	input_set_capability(dev, EV_KEY, BTN_THUMBR);
-	input_set_capability(dev, EV_FF, FF_RUMBLE);
 	input_set_abs_params(dev, ABS_X, -32768, 32767, 16, 128);
 	input_set_abs_params(dev, ABS_RX, -32768, 32767, 16, 128);
 	input_set_abs_params(dev, ABS_Y, -32768, 32767, 16, 128);
@@ -184,27 +197,27 @@ static int gip_gamepad_init_input(struct gip_gamepad *gamepad)
 	input_set_abs_params(dev, ABS_RZ, 0, 1023, 0, 0);
 	input_set_abs_params(dev, ABS_HAT0X, -1, 1, 0, 0);
 	input_set_abs_params(dev, ABS_HAT0Y, -1, 1, 0, 0);
-	input_set_drvdata(dev, &gamepad->rumble);
 
-	err = input_ff_create_memless(dev, NULL, gip_gamepad_queue_rumble);
+	err = gip_gamepad_init_rumble(gamepad);
 	if (err) {
-		dev_err(&gamepad->client->dev, "%s: create FF failed: %d\n",
+		dev_err(&gamepad->client->dev, "%s: init rumble failed: %d\n",
 			__func__, err);
-		return err;
+		goto err_delete_timer;
 	}
 
 	err = input_register_device(dev);
 	if (err) {
 		dev_err(&gamepad->client->dev, "%s: register failed: %d\n",
 			__func__, err);
-		return err;
+		goto err_delete_timer;
 	}
 
-	spin_lock_init(&gamepad->rumble.lock);
-	gamepad->rumble.last = jiffies;
-	timer_setup(&gamepad->rumble.timer, gip_gamepad_send_rumble, 0);
-
 	return 0;
+
+err_delete_timer:
+	del_timer_sync(&gamepad->rumble.timer);
+
+	return err;
 }
 
 static int gip_gamepad_op_battery(struct gip_client *client,
@@ -282,19 +295,11 @@ static int gip_gamepad_probe(struct gip_client *client)
 
 	gamepad->client = client;
 
-	err = gip_init_input(&gamepad->input, client, GIP_GP_NAME);
-	if (err)
-		return err;
-
-	err = gip_gamepad_init_input(gamepad);
+	err = gip_set_power_mode(client, GIP_PWR_ON);
 	if (err)
 		return err;
 
 	err = gip_init_battery(&gamepad->battery, client, GIP_GP_NAME);
-	if (err)
-		return err;
-
-	err = gip_set_power_mode(client, GIP_PWR_ON);
 	if (err)
 		return err;
 
@@ -303,6 +308,14 @@ static int gip_gamepad_probe(struct gip_client *client)
 		return err;
 
 	err = gip_complete_authentication(client);
+	if (err)
+		return err;
+
+	err = gip_init_input(&gamepad->input, client, GIP_GP_NAME);
+	if (err)
+		return err;
+
+	err = gip_gamepad_init_input(gamepad);
 	if (err)
 		return err;
 
