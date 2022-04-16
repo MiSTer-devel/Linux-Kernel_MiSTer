@@ -158,6 +158,8 @@ static int guncon3_decode(unsigned char *data, const unsigned char *key) {
 
 static void usb_guncon3_irq(struct urb *urb)
 {
+        __s16 temp_aim;
+        uint16_t udata;
         struct usb_guncon3 *guncon3 = urb->context;
         unsigned char *data = guncon3->odata;
         struct input_dev *dev = guncon3->dev;
@@ -191,8 +193,6 @@ static void usb_guncon3_irq(struct urb *urb)
 
         /* aim */
         //(__s16) le16_to_cpup((__le16 *)(data + 12))
-        __s16 temp_aim;
-        uint16_t udata;
         udata = data[4];
         udata*=256;
         udata+= data[3];
@@ -516,10 +516,10 @@ static int usb_guncon3_probe(struct usb_interface *intf, const struct usb_device
 
         guncon3_send_key(guncon3);
 
-        input_register_device(guncon3->dev);
+        error = input_register_device(guncon3->dev);
 
         if (debug)
-                printk(KERN_INFO "guncon3: input: %s on %s\n", guncon3->name, path);
+                printk(KERN_INFO "guncon3: input: %s on %s, error %d\n", guncon3->name, path, error);
 
         return 0;
 

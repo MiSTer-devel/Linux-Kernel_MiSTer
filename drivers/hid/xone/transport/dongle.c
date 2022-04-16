@@ -22,6 +22,9 @@
 
 #define XONE_DONGLE_MAX_CLIENTS 16
 
+/* autosuspend delay in ms */
+#define XONE_DONGLE_SUSPEND_DELAY 60000
+
 #define XONE_DONGLE_PWR_OFF_TIMEOUT msecs_to_jiffies(5000)
 
 enum xone_dongle_queue {
@@ -140,7 +143,7 @@ static int xone_dongle_get_buffer(struct gip_adapter *adap,
 
 	buf->context = skb;
 	buf->data = skb->data;
-	buf->length = skb->len;
+	buf->length = skb_tailroom(skb);
 
 	return 0;
 }
@@ -187,22 +190,35 @@ static struct gip_adapter_ops xone_dongle_adapter_ops = {
 
 static int xone_dongle_toggle_pairing(struct xone_dongle *dongle, bool enable)
 {
+	struct usb_interface *intf = to_usb_interface(dongle->mt.dev);
+	enum xone_mt76_led_mode led;
 	int err = 0;
 
 	mutex_lock(&dongle->pairing_lock);
 
 	/* pairing is already enabled */
-	if (dongle->pairing && enable)
+	if (dongle->pairing == enable)
 		goto err_unlock;
 
 	err = xone_mt76_set_pairing(&dongle->mt, enable);
 	if (err)
 		goto err_unlock;
 
-	err = xone_mt76_set_led_mode(&dongle->mt, enable ? XONE_MT_LED_BLINK :
-						  XONE_MT_LED_OFF);
+	if (enable)
+		led = XONE_MT_LED_BLINK;
+	else if (atomic_read(&dongle->client_count))
+		led = XONE_MT_LED_ON;
+	else
+		led = XONE_MT_LED_OFF;
+
+	err = xone_mt76_set_led_mode(&dongle->mt, led);
 	if (err)
 		goto err_unlock;
+
+	if (enable)
+		usb_autopm_get_interface(intf);
+	else
+		usb_autopm_put_interface(intf);
 
 	dev_dbg(dongle->mt.dev, "%s: enabled=%d\n", __func__, enable);
 	dongle->pairing = enable;
@@ -303,9 +319,11 @@ static int xone_dongle_add_client(struct xone_dongle *dongle, u8 *addr)
 	if (err)
 		goto err_free_client;
 
-	err = xone_mt76_set_led_mode(&dongle->mt, XONE_MT_LED_ON);
-	if (err)
-		goto err_free_client;
+	if (!dongle->pairing) {
+		err = xone_mt76_set_led_mode(&dongle->mt, XONE_MT_LED_ON);
+		if (err)
+			goto err_free_client;
+	}
 
 	dev_dbg(dongle->mt.dev, "%s: wcid=%d, address=%pM\n",
 		__func__, client->wcid, addr);
@@ -315,6 +333,7 @@ static int xone_dongle_add_client(struct xone_dongle *dongle, u8 *addr)
 	spin_unlock_irqrestore(&dongle->clients_lock, flags);
 
 	atomic_inc(&dongle->client_count);
+	usb_autopm_get_interface(to_usb_interface(dongle->mt.dev));
 
 	return 0;
 
@@ -351,11 +370,11 @@ static int xone_dongle_remove_client(struct xone_dongle *dongle, u8 wcid)
 			__func__, err);
 
 	/* turn off LED if all clients have disconnected */
-	if (atomic_read(&dongle->client_count) == 1)
+	if (atomic_dec_and_test(&dongle->client_count) && !dongle->pairing)
 		err = xone_mt76_set_led_mode(&dongle->mt, XONE_MT_LED_OFF);
 
-	atomic_dec(&dongle->client_count);
 	wake_up(&dongle->disconnect_wait);
+	usb_autopm_put_interface(to_usb_interface(dongle->mt.dev));
 
 	return err;
 }
@@ -867,9 +886,6 @@ static int xone_dongle_probe(struct usb_interface *intf,
 
 	usb_reset_device(dongle->mt.udev);
 
-	/* enable USB remote wakeup feature */
-	device_wakeup_enable(&dongle->mt.udev->dev);
-
 	dongle->event_wq = alloc_ordered_workqueue("xone_dongle", 0);
 	if (!dongle->event_wq)
 		return -ENOMEM;
@@ -879,16 +895,26 @@ static int xone_dongle_probe(struct usb_interface *intf,
 	init_waitqueue_head(&dongle->disconnect_wait);
 
 	err = xone_dongle_init(dongle);
-	if (err) {
-		xone_dongle_destroy(dongle);
-		return err;
-	}
+	if (err)
+		goto err_destroy_dongle;
 
 	usb_set_intfdata(intf, dongle);
 
 	err = device_add_groups(&intf->dev, xone_dongle_groups);
 	if (err)
-		xone_dongle_destroy(dongle);
+		goto err_destroy_dongle;
+
+	/* enable USB remote wakeup and autosuspend */
+	intf->needs_remote_wakeup = true;
+	device_wakeup_enable(&dongle->mt.udev->dev);
+	pm_runtime_set_autosuspend_delay(&dongle->mt.udev->dev,
+					 XONE_DONGLE_SUSPEND_DELAY);
+	usb_enable_autosuspend(dongle->mt.udev);
+
+	return 0;
+
+err_destroy_dongle:
+	xone_dongle_destroy(dongle);
 
 	return err;
 }
@@ -973,8 +999,9 @@ static struct usb_driver xone_dongle_driver = {
 	.resume = xone_dongle_resume,
 	.id_table = xone_dongle_id_table,
 	.drvwrap.driver.shutdown = xone_dongle_shutdown,
-	.soft_unbind = 1,
-	.disable_hub_initiated_lpm = 1,
+	.supports_autosuspend = true,
+	.disable_hub_initiated_lpm = true,
+	.soft_unbind = true,
 };
 
 module_usb_driver(xone_dongle_driver);
