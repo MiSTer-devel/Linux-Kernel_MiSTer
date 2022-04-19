@@ -47,7 +47,8 @@ obj-$(CONFIG_HID_ELECOM)	+= hid-elecom.o
 obj-$(CONFIG_HID_ELO)		+= hid-elo.o
 obj-$(CONFIG_HID_EZKEY)		+= hid-ezkey.o
 obj-$(CONFIG_HID_FT260)		+= hid-ft260.o
-obj-$(CONFIG_HID_FTEC)      += hid-ftec.o hid-ftecff.o
+obj-$(CONFIG_HID_FTEC)		+= hid-fanatec.o
+hid-fanatec-$(CONFIG_HID_FTEC)	+= hid-ftec.o hid-ftecff.o
 obj-$(CONFIG_HID_GEMBIRD)	+= hid-gembird.o
 obj-$(CONFIG_HID_GFRM)		+= hid-gfrm.o
 obj-$(CONFIG_HID_GLORIOUS)  += hid-glorious.o
@@ -155,4 +156,3 @@ obj-$(CONFIG_AMD_SFH_HID)       += amd-sfh-hid/
 obj-$(CONFIG_SURFACE_HID_CORE)  += surface-hid/
 
 obj-$(CONFIG_JOYSTICK_XONE)		+= xone/
-
