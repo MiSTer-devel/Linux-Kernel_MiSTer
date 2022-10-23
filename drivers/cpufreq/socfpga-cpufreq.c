@@ -49,16 +49,6 @@ struct socfpga_clock_data {
         u32 mainpll_cfgs2fuser0clk; // Divides the VCO frequency by the value+1
 };
 
-// 1300 MHz overclock
-static const struct socfpga_clock_data clock_data_1300000 = {
-        .vco_numer = 103, // 25 MHz * (103 + 1) / (0 + 1) = 2600 MHz
-        .vco_denom = 0,
-        .alteragrp_mpuclk = 1, // 2600 MHz / (1 + 1) = 1300 MHz
-        .alteragrp_mainclk = 5, // 2600 MHz / (5 + 1) = 433 MHz
-        .alteragrp_dbgatclk = 5, // 2600 MHz / (5 + 1) = 433 MHz
-        .mainpll_cfgs2fuser0clk = 25, // 2600 MHz / (25 + 1) = 100 MHz
-};
-
 // 1200 MHz overclock
 static const struct socfpga_clock_data clock_data_1200000 = {
         .vco_numer = 95, // 25 MHz * (95 + 1) / (0 + 1) = 2400 MHz
@@ -108,8 +98,8 @@ static const struct socfpga_clock_data clock_data_400000 = {
 
 
 static struct cpufreq_frequency_table freq_table[] = {
-        // Mark OC rows as boost freq to prevent cpufreq from setting them
-        SOCFPGA_CPUFREQ_ROW(1300000, CPUFREQ_BOOST_FREQ),
+        // Mark OC rows as boost freq to prevent cpufreq from setting them on
+	// boot. The user should have control of this.
         SOCFPGA_CPUFREQ_ROW(1200000, CPUFREQ_BOOST_FREQ),
         SOCFPGA_CPUFREQ_ROW(1000000, CPUFREQ_BOOST_FREQ),
         SOCFPGA_CPUFREQ_ROW(800000, 0),
