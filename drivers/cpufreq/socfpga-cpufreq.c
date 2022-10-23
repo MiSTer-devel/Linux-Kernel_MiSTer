@@ -238,7 +238,7 @@ static int socfpga_cpu_init(struct cpufreq_policy *policy)
 
         policy->cur = socfpga_get(policy->cpu);
         policy->cpuinfo.transition_latency = 1000000;
-        policy->cpuinfo.max_freq = 1300000;
+        policy->cpuinfo.max_freq = 1200000;
         policy->cpuinfo.min_freq = 400000;
         policy->freq_table = freq_table;
         cpumask_setall(policy->cpus);
