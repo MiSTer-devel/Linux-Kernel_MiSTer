@@ -12,9 +12,6 @@ MODULE_DESCRIPTION(DRIVER_DESCRIPTION);
 MODULE_VERSION(DRIVER_VERSION);
 MODULE_LICENSE("GPL");
 
-// Input clock is 25 MHz for DE10 Nano by default
-#define OSC1_HZ 25000000;
-
 // Address offsets
 #define CLKMGR_GEN5_BYPASS     0x04
 #define CLKMGR_STAT            0x14
@@ -39,6 +36,8 @@ MODULE_LICENSE("GPL");
 static DEFINE_MUTEX(socfpga_cpufreq_mutex);
 
 void __iomem *socfpga_cpufreq_clk_mgr_base_addr;
+
+static u32 socfpga_cpufreq_osc1_hz;
 
 struct socfpga_clock_data {
         u32 vco_numer; // Numerator for calculating VCO register
@@ -99,7 +98,7 @@ static const struct socfpga_clock_data clock_data_400000 = {
 
 static struct cpufreq_frequency_table freq_table[] = {
         // Mark OC rows as boost freq to prevent cpufreq from setting them on
-	// boot. The user should have control of this.
+        // boot. The user should have control of this.
         SOCFPGA_CPUFREQ_ROW(1200000, CPUFREQ_BOOST_FREQ),
         SOCFPGA_CPUFREQ_ROW(1000000, CPUFREQ_BOOST_FREQ),
         SOCFPGA_CPUFREQ_ROW(800000, 0),
@@ -118,7 +117,7 @@ static inline u32 calculate_vco_reg(u32 numer, u32 denom) {
 }
 
 static inline u64 calculate_vco_clock_hz(u32 numer, u32 denom) {
-        u64 vco_freq = OSC1_HZ;
+        u64 vco_freq = socfpga_cpufreq_osc1_hz;
         vco_freq *= (numer + 1);
         do_div(vco_freq, (denom + 1));
         return vco_freq;
@@ -174,6 +173,11 @@ static unsigned int socfpga_get(unsigned int cpu) {
 }
 
 static inline void set_dividers(struct socfpga_clock_data * clock_data) {
+        // Put main PLL into bypass
+        writel(CLKMGR_BYPASS_MAINPLL, socfpga_cpufreq_clk_mgr_base_addr +
+                CLKMGR_GEN5_BYPASS);
+        wait_for_fsm();
+
         // Hardware-managed clocks
         writel(clock_data->alteragrp_mpuclk,
                 socfpga_cpufreq_clk_mgr_base_addr + ALTR_MPUCLK);
@@ -187,6 +191,10 @@ static inline void set_dividers(struct socfpga_clock_data * clock_data) {
                 socfpga_cpufreq_clk_mgr_base_addr + MAINPLL_CFGS2FUSER0CLK);
 
         // Other affected clocks are driven by peripheral PLL on DE10 Nano
+
+        // Put main PLL out of bypass
+        writel(0, socfpga_cpufreq_clk_mgr_base_addr + CLKMGR_GEN5_BYPASS);
+        wait_for_fsm();
 }
 
 static inline void set_vco_freq(struct socfpga_clock_data * clock_data) {
@@ -235,7 +243,6 @@ static int socfpga_target_index(struct cpufreq_policy *policy,
 
 static int socfpga_cpu_init(struct cpufreq_policy *policy)
 {
-
         policy->cur = socfpga_get(policy->cpu);
         policy->cpuinfo.transition_latency = 1000000;
         policy->cpuinfo.max_freq = 1200000;
@@ -272,10 +279,16 @@ static struct cpufreq_driver socfpga_cpufreq_driver = {
 
 static int __init socfpga_cpufreq_init(void)
 {
-        struct device_node *clkmgr_np;
+        const __be32 *osc1_hz;
+        struct device_node *clkmgr_np, *osc1_np;
 
         clkmgr_np = of_find_compatible_node(NULL, NULL, "altr,clk-mgr");
         socfpga_cpufreq_clk_mgr_base_addr = of_iomap(clkmgr_np, 0);
+        osc1_np = of_get_child_by_name(
+                of_get_child_by_name(clkmgr_np, "clocks"), "osc1");
+        osc1_hz = of_get_property(osc1_np, "clock-frequency", NULL);
+        socfpga_cpufreq_osc1_hz = be32_to_cpup(osc1_hz);
+        of_node_put(osc1_np);
         of_node_put(clkmgr_np);
         return cpufreq_register_driver(&socfpga_cpufreq_driver);
 }
