@@ -183,11 +183,6 @@ void phydm_ccapar_8821c(struct dm_struct *dm)
 	odm_set_bb_reg(dm, R_0x82c, MASKDWORD, reg82c);
 	odm_set_bb_reg(dm, R_0x830, MASKDWORD, reg830);
 	odm_set_bb_reg(dm, R_0x838, MASKDWORD, reg838);
-
-	PHYDM_DBG(dm, ODM_PHY_CONFIG,
-		  "[%s]: Update CCA parameters for Bcut (Pkt%d, Intf%d, RFE%d), row = %d, col = %d\n",
-		  __func__, dm->package_type, dm->support_interface,
-		  dm->rfe_type, row, col);
 #endif
 }
 
@@ -231,8 +226,6 @@ void phydm_ccapar_by_bw_8821c(struct dm_struct *dm,
 	}
 
 	odm_set_bb_reg(dm, R_0x82c, MASKDWORD, reg82c);
-	PHYDM_DBG(dm, ODM_PHY_CONFIG, "[%s]: Update CCA parameters for Acut\n",
-		  __func__);
 #endif
 }
 
@@ -260,8 +253,6 @@ void phydm_ccapar_by_rxpath_8821c(struct dm_struct *dm)
 		/* 838[27:24] = 7 */
 		odm_set_bb_reg(dm, R_0x838, 0x0ffffff0, 0x776633);
 	}
-	PHYDM_DBG(dm, ODM_PHY_CONFIG, "[%s]: Update CCA parameters for Acut\n",
-		  __func__);
 #endif
 }
 
@@ -371,6 +362,14 @@ void phydm_init_hw_info_by_rfe_type_8821c(struct dm_struct *dm)
 		dm->default_ant_num_8821c = SWITCH_TO_ANT2;
 	else
 		dm->default_ant_num_8821c = SWITCH_TO_ANT1;
+
+	if (dm->package_type == 1 && dm->rfe_type_expand <= 0x2f &&
+	    dm->rfe_type_expand >= 0x28)
+		odm_set_bb_reg(dm, R_0xcb4, MASKDWORD, 0x00000073);
+	else if (dm->rfe_type_expand == 4)
+		odm_set_bb_reg(dm, R_0xcb4, MASKDWORD, 0x20000077);
+	else
+		odm_set_bb_reg(dm, R_0xcb4, MASKDWORD, 0x10000077);
 
 	dm->is_init_hw_info_by_rfe = true;
 	PHYDM_DBG(dm, ODM_PHY_CONFIG, "%s: RFE type (%d), rf set (%s)\n",
@@ -973,6 +972,7 @@ boolean
 config_phydm_switch_bandwidth_8821c(struct dm_struct *dm, u8 primary_ch_idx,
 				    enum channel_width bandwidth)
 {
+	struct phydm_api_stuc *api = &dm->api_table;
 	u32 rf_reg18;
 	boolean rf_reg_status = true;
 	u32 bb_reg8ac;
@@ -997,6 +997,7 @@ config_phydm_switch_bandwidth_8821c(struct dm_struct *dm, u8 primary_ch_idx,
 		bandwidth = CHANNEL_WIDTH_20;
 
 	bw_8821c = bandwidth;
+	api->pri_ch_idx = primary_ch_idx;
 	rf_reg18 = config_phydm_read_rf_reg_8821c(dm, RF_PATH_A, 0x18, RFREGOFFSETMASK);
 	rf_reg_status = rf_reg_status & config_phydm_read_rf_check_8821c(rf_reg18);
 
@@ -1173,6 +1174,12 @@ config_phydm_switch_bandwidth_8821c(struct dm_struct *dm, u8 primary_ch_idx,
 	/* Dynamic spur detection by PSD and NBI mask */
 	if (*dm->mp_mode)
 		phydm_dynamic_spur_det_eliminate_8821c(dm);
+
+	/*fix bw setting*/
+	#ifdef CONFIG_BW_INDICATION
+	if (!(*dm->mp_mode))
+		phydm_bw_fixed_setting(dm);
+	#endif
 
 	PHYDM_DBG(dm, ODM_PHY_CONFIG,
 		  "[%s]: Success to switch bandwidth (bw: %d, primary ch: %d)\n",

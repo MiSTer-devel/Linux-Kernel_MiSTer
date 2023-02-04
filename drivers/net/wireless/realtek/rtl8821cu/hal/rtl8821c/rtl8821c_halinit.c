@@ -28,12 +28,13 @@ void init_hal_spec_rtl8821c(PADAPTER adapter)
 	hal_spec->ic_name = "rtl8821c";
 	hal_spec->macid_num = 128;
 	/* hal_spec->sec_cam_ent_num follow halmac setting */
-	hal_spec->sec_cap = SEC_CAP_CHK_BMC;
+	hal_spec->sec_cap = SEC_CAP_CHK_BMC | SEC_CAP_CHK_EXTRA_SEC;
 	hal_spec->macid_cap = MACID_DROP;
 
 	hal_spec->rfpath_num_2g = 2;
 	hal_spec->rfpath_num_5g = 1;
-	hal_spec->rf_reg_path_num = 1;
+	hal_spec->rf_reg_path_num = hal_spec->rf_reg_path_avail_num = 1;
+	hal_spec->rf_reg_trx_path_bmp = 0x11;
 	hal_spec->max_tx_cnt = 1;
 
 	hal_spec->tx_nss_num = 1;
@@ -53,9 +54,7 @@ void init_hal_spec_rtl8821c(PADAPTER adapter)
 			    | WL_FUNC_TDLS
 			    ;
 
-#if CONFIG_TX_AC_LIFETIME
 	hal_spec->tx_aclt_unit_factor = 8;
-#endif
 
 	hal_spec->rx_tsf_filter = 1;
 
@@ -328,9 +327,6 @@ void rtl8821c_init_default_value(PADAPTER adapter)
 
 	/* init default value */
 	hal->fw_ractrl = _FALSE;
-
-	if (!adapter_to_pwrctl(adapter)->bkeepfwalive)
-		hal->LastHMEBoxNum = 0;
 
 	/* init phydm default value */
 	hal->bIQKInitialized = _FALSE;

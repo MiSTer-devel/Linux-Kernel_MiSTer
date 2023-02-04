@@ -104,6 +104,7 @@ u32 rtl8821cu_hal_deinit(PADAPTER padapter)
 
 u32 rtl8821cu_inirp_init(PADAPTER padapter)
 {
+	struct registry_priv *regsty = adapter_to_regsty(padapter);
 	u8 i, status;
 	struct recv_buf *precvbuf;
 	struct dvobj_priv *pdev = adapter_to_dvobj(padapter);
@@ -125,7 +126,7 @@ u32 rtl8821cu_inirp_init(PADAPTER padapter)
 
 	/* issue Rx irp to receive data */
 	precvbuf = (struct recv_buf *)precvpriv->precv_buf;
-	for (i = 0; i < NR_RECVBUFF; i++) {
+	for (i = 0; i < regsty->recvbuf_nr; i++) {
 		if (_read_port(pintfhdl, precvpriv->ff_hwaddr, 0, (u8 *)precvbuf) == _FALSE) {
 			status = _FAIL;
 			goto exit;
@@ -158,9 +159,19 @@ exit:
 
 u32 rtl8821cu_inirp_deinit(PADAPTER padapter)
 {
+	struct recv_priv	*precvpriv = &padapter->recvpriv;
+	_pkt			*pskb;
 
 	rtw_read_port_cancel(padapter);
 
+	while (NULL != (pskb = skb_dequeue(&precvpriv->rx_skb_queue))) {
+		skb_reset_tail_pointer(pskb);
+		pskb->len = 0;
+		skb_queue_tail(&precvpriv->free_recv_skb_queue, pskb);
+	}
+
+	/* Clean pending recv buf */
+	while (rtw_dequeue_recvbuf(&precvpriv->recv_buf_pending_queue));
 
 	return _SUCCESS;
 }

@@ -76,9 +76,7 @@ u8 rtl8821c_sc_mapping(PADAPTER, struct pkt_attrib *);
 void rtl8821c_cal_txdesc_chksum(PADAPTER, u8 *ptxdesc);
 void rtl8821c_update_txdesc(struct xmit_frame *, u8 *pbuf);
 void rtl8821c_dbg_dump_tx_desc(PADAPTER, int frame_tag, u8 *ptxdesc);
-#if defined(CONFIG_CONCURRENT_MODE)
 void fill_txdesc_force_bmc_camid(struct pkt_attrib *pattrib, u8 *ptxdesc);
-#endif
 void fill_txdesc_bmc_tx_rate(struct pkt_attrib *pattrib, u8 *ptxdesc);
 
 /* rx */
@@ -87,8 +85,13 @@ void rtl8821c_query_rx_desc(union recv_frame *, u8 *pdesc);
 
 /* rtl8821c_cmd.c */
 s32 rtl8821c_fillh2ccmd(PADAPTER, u8 id, u32 buf_len, u8 *pbuf);
-void rtl8821c_set_FwPwrMode_cmd(PADAPTER, u8 psmode);
+void _rtl8821c_set_FwPwrMode_cmd(PADAPTER adapter, u8 psmode, u8 rfon_ctrl);
+void rtl8821c_set_FwPwrMode_cmd(PADAPTER adapter, u8 psmode);
+void rtl8821c_set_FwPwrMode_rfon_ctrl_cmd(PADAPTER adapter, u8 rfon_ctrl);
 void rtl8821c_set_FwPwrModeInIPS_cmd(PADAPTER adapter, u8 cmd_param);
+#ifdef CONFIG_WOWLAN
+void rtl8821c_set_fw_pwrmode_inips_cmd_wowlan(PADAPTER padapter, u8 ps_mode);
+#endif /* CONFIG_WOWLAN */
 void c2h_handler_rtl8821c(_adapter *adapter, u8 *pbuf, u16 length);
 void c2h_pre_handler_rtl8821c(_adapter *adapter, u8 *pbuf, s32 length);
 #ifdef CONFIG_BT_COEXIST
