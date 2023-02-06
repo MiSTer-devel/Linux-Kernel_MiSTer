@@ -1,5 +1,5 @@
 config RTL8821AU
-	tristate "Realtek 8812A/8821A USB WiFi"
+	tristate "Realtek 8821A USB WiFi"
 	depends on USB
 	help
 	  Help message of RTL8821AU
