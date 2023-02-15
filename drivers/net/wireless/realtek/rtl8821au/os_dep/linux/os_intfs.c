@@ -143,7 +143,7 @@ int rtw_early_mode = 1;
 #endif
 
 #ifdef CONFIG_SW_LED
-int rtw_led_ctrl = 1; // default to normal blink
+int rtw_led_ctrl = 1; // default to normal blinking
 #endif
 
 int rtw_usb_rxagg_mode = 2;/* RX_AGG_DMA=1, RX_AGG_USB=2 */
