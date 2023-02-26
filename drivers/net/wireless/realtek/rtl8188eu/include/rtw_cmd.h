@@ -1,6 +1,6 @@
 /******************************************************************************
  *
- * Copyright(c) 2007 - 2017 Realtek Corporation.
+ * Copyright(c) 2007 - 2011 Realtek Corporation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of version 2 of the GNU General Public License as
@@ -11,12 +11,23 @@
  * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
  * more details.
  *
- *****************************************************************************/
+ * You should have received a copy of the GNU General Public License along with
+ * this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110, USA
+ *
+ *
+ ******************************************************************************/
 #ifndef __RTW_CMD_H_
 #define __RTW_CMD_H_
 
+#include <wlan_bssdef.h>
+#include <rtw_rf.h>
+#include <rtw_led.h>
 
 #define C2H_MEM_SZ (16*1024)
+
+#include <osdep_service.h>
+#include <ieee80211.h> /*  <ieee80211/ieee80211.h> */
 
 #define FREE_CMDOBJ_SZ	128
 
@@ -27,197 +38,81 @@
 #define CMDBUFF_ALIGN_SZ 512
 
 struct cmd_obj {
-	_adapter *padapter;
+	struct adapter *padapter;
 	u16	cmdcode;
 	u8	res;
 	u8	*parmbuf;
 	u32	cmdsz;
 	u8	*rsp;
 	u32	rspsz;
-	struct submit_ctx *sctx;
-	u8 no_io;
-	/* _sema 	cmd_sem; */
-	_list	list;
-};
-
-/* cmd flags */
-enum {
-	RTW_CMDF_DIRECTLY = BIT0,
-	RTW_CMDF_WAIT_ACK = BIT1,
+	struct list_head list;
 };
 
 struct cmd_priv {
-	_sema	cmd_queue_sema;
-	/* _sema	cmd_done_sema; */
-	_sema	start_cmdthread_sema;
-
-	_queue	cmd_queue;
+	struct semaphore cmd_queue_sema;
+	struct semaphore terminate_cmdthread_sema;
+	struct __queue cmd_queue;
 	u8	cmd_seq;
 	u8	*cmd_buf;	/* shall be non-paged, and 4 bytes aligned */
 	u8	*cmd_allocated_buf;
-	u8	*rsp_buf;	/* shall be non-paged, and 4 bytes aligned		 */
+	u8	*rsp_buf;	/* shall be non-paged, and 4 bytes aligned */
 	u8	*rsp_allocated_buf;
 	u32	cmd_issued_cnt;
 	u32	cmd_done_cnt;
 	u32	rsp_cnt;
-	ATOMIC_T cmdthd_running;
-	/* u8 cmdthd_running; */
-
-	_adapter *padapter;
-	_mutex sctx_mutex;
+	u8 cmdthd_running;
+	struct adapter *padapter;
 };
-
-#ifdef CONFIG_EVENT_THREAD_MODE
-struct evt_obj {
-	u16	evtcode;
-	u8	res;
-	u8	*parmbuf;
-	u32	evtsz;
-	_list	list;
-};
-#endif
 
 struct	evt_priv {
-#ifdef CONFIG_EVENT_THREAD_MODE
-	_sema	evt_notify;
-
-	_queue	evt_queue;
-#endif
-
-#ifdef CONFIG_FW_C2H_REG
-	#define CONFIG_C2H_WK
-#endif
-
-#ifdef CONFIG_C2H_WK
-	_workitem c2h_wk;
+	struct work_struct c2h_wk;
 	bool c2h_wk_alive;
 	struct rtw_cbuf *c2h_queue;
 	#define C2H_QUEUE_MAX_LEN 10
-#endif
-
-#ifdef CONFIG_H2CLBK
-	_sema	lbkevt_done;
-	u8	lbkevt_limit;
-	u8	lbkevt_num;
-	u8	*cmdevt_parm;
-#endif
 	ATOMIC_T event_seq;
-	u8	*evt_buf;	/* shall be non-paged, and 4 bytes aligned		 */
+	u8	*evt_buf;	/* shall be non-paged, and 4 bytes aligned */
 	u8	*evt_allocated_buf;
 	u32	evt_done_cnt;
-#if defined(CONFIG_SDIO_HCI) || defined(CONFIG_GSPI_HCI)
-	u8	*c2h_mem;
-	u8	*allocated_c2h_mem;
-#endif
-
 };
 
 #define init_h2fwcmd_w_parm_no_rsp(pcmd, pparm, code) \
-	do {\
-		_rtw_init_listhead(&pcmd->list);\
-		pcmd->cmdcode = code;\
-		pcmd->parmbuf = (u8 *)(pparm);\
-		pcmd->cmdsz = sizeof (*pparm);\
-		pcmd->rsp = NULL;\
-		pcmd->rspsz = 0;\
-	} while (0)
+do {\
+	INIT_LIST_HEAD(&pcmd->list);\
+	pcmd->cmdcode = code;\
+	pcmd->parmbuf = (u8 *)(pparm);\
+	pcmd->cmdsz = sizeof(*pparm);\
+	pcmd->rsp = NULL;\
+	pcmd->rspsz = 0;\
+} while (0)
 
-#define init_h2fwcmd_w_parm_no_parm_rsp(pcmd, code) \
-	do {\
-		_rtw_init_listhead(&pcmd->list);\
-		pcmd->cmdcode = code;\
-		pcmd->parmbuf = NULL;\
-		pcmd->cmdsz = 0;\
-		pcmd->rsp = NULL;\
-		pcmd->rspsz = 0;\
-	} while (0)
-
-struct P2P_PS_Offload_t {
-	u8 Offload_En:1;
-	u8 role:1; /* 1: Owner, 0: Client */
-	u8 CTWindow_En:1;
-	u8 NoA0_En:1;
-	u8 NoA1_En:1;
-	u8 AllStaSleep:1; /* Only valid in Owner */
-	u8 discovery:1;
-	u8 rsvd:1;
-#ifdef CONFIG_P2P_PS_NOA_USE_MACID_SLEEP
-	u8 p2p_macid:7;
-	u8 disable_close_rf:1; /*1: not close RF but just pause p2p_macid when NoA duration*/
-#endif /* CONFIG_P2P_PS_NOA_USE_MACID_SLEEP */
+struct c2h_evt_hdr {
+	u8 id:4;
+	u8 plen:4;
+	u8 seq;
+	u8 payload[0];
 };
 
-struct P2P_PS_CTWPeriod_t {
-	u8 CTWPeriod;	/* TU */
-};
+#define c2h_evt_exist(c2h_evt) ((c2h_evt)->id || (c2h_evt)->plen)
 
-#ifdef CONFIG_P2P_WOWLAN
+u32 rtw_enqueue_cmd(struct cmd_priv *pcmdpriv, struct cmd_obj *obj);
+struct cmd_obj *rtw_dequeue_cmd(struct cmd_priv *pcmdpriv);
+void rtw_free_cmd_obj(struct cmd_obj *pcmd);
 
-struct P2P_WoWlan_Offload_t {
-	u8 Disconnect_Wkup_Drv:1;
-	u8 role:2;
-	u8 Wps_Config[2];
-};
+int rtw_cmd_thread(void *context);
 
-#endif /* CONFIG_P2P_WOWLAN */
+u32 rtw_init_cmd_priv(struct cmd_priv *pcmdpriv);
+void rtw_free_cmd_priv(struct cmd_priv *pcmdpriv);
 
-extern u32 rtw_enqueue_cmd(struct cmd_priv *pcmdpriv, struct cmd_obj *obj);
-extern struct cmd_obj *rtw_dequeue_cmd(struct cmd_priv *pcmdpriv);
-extern void rtw_free_cmd_obj(struct cmd_obj *pcmd);
-
-#ifdef CONFIG_EVENT_THREAD_MODE
-extern u32 rtw_enqueue_evt(struct evt_priv *pevtpriv, struct evt_obj *obj);
-extern struct evt_obj *rtw_dequeue_evt(_queue *queue);
-extern void rtw_free_evt_obj(struct evt_obj *pcmd);
-#endif
-
-void rtw_stop_cmd_thread(_adapter *adapter);
-thread_return rtw_cmd_thread(thread_context context);
-
-extern u32 rtw_init_cmd_priv(struct cmd_priv *pcmdpriv);
-extern void rtw_free_cmd_priv(struct cmd_priv *pcmdpriv);
-
-extern u32 rtw_init_evt_priv(struct evt_priv *pevtpriv);
-extern void rtw_free_evt_priv(struct evt_priv *pevtpriv);
-extern void rtw_cmd_clr_isr(struct cmd_priv *pcmdpriv);
-extern void rtw_evt_notify_isr(struct evt_priv *pevtpriv);
-#ifdef CONFIG_P2P
-u8 p2p_protocol_wk_cmd(_adapter *padapter, int intCmdType);
-
-#ifdef CONFIG_IOCTL_CFG80211
-struct p2p_roch_parm {
-	u64 cookie;
-	struct wireless_dev *wdev;
-	struct ieee80211_channel ch;
-	enum nl80211_channel_type ch_type;
-	unsigned int duration;
-};
-
-u8 p2p_roch_cmd(_adapter *adapter
-	, u64 cookie, struct wireless_dev *wdev
-	, struct ieee80211_channel *ch, enum nl80211_channel_type ch_type
-	, unsigned int duration
-	, u8 flags
-);
-u8 p2p_cancel_roch_cmd(_adapter *adapter, u64 cookie, struct wireless_dev *wdev, u8 flags);
-
-#endif /* CONFIG_IOCTL_CFG80211 */
-#endif /* CONFIG_P2P */
-
-#ifdef CONFIG_IOCTL_CFG80211 
-u8 rtw_mgnt_tx_cmd(_adapter *adapter, u8 tx_ch, u8 no_cck, const u8 *buf, size_t len, int wait_ack, u8 flags);
-struct mgnt_tx_parm {
-	u8 tx_ch;
-	u8 no_cck;
-	const u8 *buf;
-	size_t len;
-	int wait_ack;
-};
-#endif
+u32 rtw_init_evt_priv(struct evt_priv *pevtpriv);
+void rtw_free_evt_priv(struct evt_priv *pevtpriv);
+void rtw_cmd_clr_isr(struct cmd_priv *pcmdpriv);
+void rtw_evt_notify_isr(struct evt_priv *pevtpriv);
+#ifdef CONFIG_88EU_P2P
+u8 p2p_protocol_wk_cmd(struct adapter *padapter, int intCmdType);
+#endif /* CONFIG_88EU_P2P */
 
 enum rtw_drvextra_cmd_id {
 	NONE_WK_CID,
-	STA_MSTATUS_RPT_WK_CID,
 	DYNAMIC_CHK_WK_CID,
 	DM_CTRL_WK_CID,
 	PBC_POLLING_WK_CID,
@@ -227,33 +122,9 @@ enum rtw_drvextra_cmd_id {
 	P2P_PS_WK_CID,
 	P2P_PROTO_WK_CID,
 	CHECK_HIQ_WK_CID,/* for softap mode, check hi queue if empty */
+	INTEl_WIDI_WK_CID,
 	C2H_WK_CID,
 	RTP_TIMER_CFG_WK_CID,
-	RESET_SECURITYPRIV, /* add for CONFIG_IEEE80211W, none 11w also can use */
-	FREE_ASSOC_RESOURCES, /* add for CONFIG_IEEE80211W, none 11w also can use */
-	DM_IN_LPS_WK_CID,
-	DM_RA_MSK_WK_CID, /* add for STA update RAMask when bandwith change. */
-	BEAMFORMING_WK_CID,
-	LPS_CHANGE_DTIM_CID,
-	BTINFO_WK_CID,
-	BTC_REDUCE_WL_TXPWR_CID,
-	DFS_RADAR_DETECT_WK_CID,
-	DFS_RADAR_DETECT_EN_DEC_WK_CID,
-	SESSION_TRACKER_WK_CID,
-	EN_HW_UPDATE_TSF_WK_CID,
-	PERIOD_TSF_UPDATE_END_WK_CID,
-	TEST_H2C_CID,
-	MP_CMD_WK_CID,
-	CUSTOMER_STR_WK_CID,
-#ifdef CONFIG_RTW_REPEATER_SON
-	RSON_SCAN_WK_CID,
-#endif
-	MGNT_TX_WK_CID,
-	REQ_PER_CMD_WK_CID,
-	SSMPS_WK_CID,
-#ifdef CONFIG_CTRL_TXSS_BY_TP
-	TXSS_WK_CID,
-#endif
 	MAX_WK_CID
 };
 
@@ -264,18 +135,6 @@ enum LPS_CTRL_TYPE {
 	LPS_CTRL_DISCONNECT = 3,
 	LPS_CTRL_SPECIAL_PACKET = 4,
 	LPS_CTRL_LEAVE = 5,
-	LPS_CTRL_TRAFFIC_BUSY = 6,
-	LPS_CTRL_TX_TRAFFIC_LEAVE = 7,
-	LPS_CTRL_RX_TRAFFIC_LEAVE = 8,
-	LPS_CTRL_ENTER = 9,
-	LPS_CTRL_LEAVE_CFG80211_PWRMGMT = 10,
-	LPS_CTRL_LEAVE_SET_LEVEL = 11,
-};
-
-enum STAKEY_TYPE {
-	GROUP_KEY		= 0,
-	UNICAST_KEY		= 1,
-	TDLS_KEY		= 2,
 };
 
 enum RFINTFS {
@@ -293,7 +152,7 @@ Command Mode
 
 */
 struct usb_suspend_parm {
-	u32 action;/* 1: sleep, 0:resume */
+	u32 action;/*  1: sleep, 0:resume */
 };
 
 /*
@@ -314,7 +173,7 @@ Command Event Mode
 
 */
 struct joinbss_parm {
-	WLAN_BSSID_EX network;
+	struct wlan_bssid_ex network;
 };
 
 /*
@@ -337,30 +196,8 @@ Notes: To create a BSS
 Command Mode
 */
 struct createbss_parm {
-	bool adhoc;
-
-	/* used by AP/Mesh mode now */
-	u8 ifbmp;
-	u8 excl_ifbmp;
-	s16 req_ch;
-	s8 req_bw;
-	s8 req_offset;
+	struct wlan_bssid_ex network;
 };
-
-#if 0
-/* Caller Mode: AP, Ad-HoC, Infra */
-/* Notes: To set the NIC mode of RTL8711 */
-/* Command Mode */
-/* The definition of mode: */
-
-#define IW_MODE_AUTO	0	/*  Let the driver decides which AP to join */
-#define IW_MODE_ADHOC	1	/*  Single cell network (Ad-Hoc Clients) */
-#define IW_MODE_INFRA	2	/*  Multi cell network, roaming, .. */
-#define IW_MODE_MASTER	3	/*  Synchronisation master or Access Point */
-#define IW_MODE_REPEAT	4	/*  Wireless Repeater (forwarder) */
-#define IW_MODE_SECOND	5	/*  Secondary master/repeater (backup) */
-#define IW_MODE_MONITOR	6	/*  Passive monitor (listen only) */
-#endif
 
 struct	setopmode_parm {
 	u8	mode;
@@ -376,20 +213,14 @@ Command-Event Mode
 
 */
 
-#define RTW_SSID_SCAN_AMOUNT 9 /* for WEXT_CSCAN_AMOUNT 9 */
+#define RTW_SSID_SCAN_AMOUNT 9 /*  for WEXT_CSCAN_AMOUNT 9 */
 #define RTW_CHANNEL_SCAN_AMOUNT (14+37)
 struct sitesurvey_parm {
-	sint scan_mode;	/* active: 1, passive: 0 */
-	/* sint bsslimit;	// 1 ~ 48 */
+	int scan_mode;	/* active: 1, passive: 0 */
 	u8 ssid_num;
 	u8 ch_num;
-	NDIS_802_11_SSID ssid[RTW_SSID_SCAN_AMOUNT];
+	struct ndis_802_11_ssid ssid[RTW_SSID_SCAN_AMOUNT];
 	struct rtw_ieee80211_channel ch[RTW_CHANNEL_SCAN_AMOUNT];
-
-	u32 token; 	/* 80211k use it to identify caller */
-	u16 duration;	/* 0: use default, otherwise: channel scan time */
-	u8 igi;		/* 0: use defalut */
-	u8 bw;		/* 0: use default */
 };
 
 /*
@@ -419,8 +250,10 @@ when 802.1x ==> keyid > 2 ==> unicast key
 
 */
 struct setkey_parm {
-	u8	algorithm;	/* encryption algorithm, could be none, wep40, TKIP, CCMP, wep104 */
+	u8	algorithm;	/* could be none, wep40, TKIP, CCMP, wep104 */
 	u8	keyid;
+	u8	grpkey;		/* 1: this is the grpkey for 802.1x.
+				 * 0: this is the unicast key for 802.1x */
 	u8	set_tx;		/* 1: main tx key for wep. 0: other key. */
 	u8	key[16];	/* this could be 40 or 104 */
 };
@@ -435,11 +268,11 @@ when shared key ==> algorithm/keyid
 
 */
 struct set_stakey_parm {
-	u8 addr[ETH_ALEN];
-	u8 algorithm;
-	u8 keyid;
-	u8 key[16];
-	u8 gk;
+	u8	addr[ETH_ALEN];
+	u8	algorithm;
+	u8	id;/* currently for erasing cam entry if
+		    * algorithm == _NO_PRIVACY_ */
+	u8	key[16];
 };
 
 struct set_stakey_rsp {
@@ -469,9 +302,13 @@ struct set_assocsta_rsp {
 
 /*
 	Caller Ad-Hoc/AP
+
 	Command mode
+
 	This is to force fw to del an sta_data entry per driver's request
+
 	FW will invalidate the cam entry associated with it.
+
 */
 struct del_assocsta_parm {
 	u8	addr[ETH_ALEN];
@@ -528,12 +365,8 @@ Command Mode
 
 */
 struct setdatarate_parm {
-#ifdef MP_FIRMWARE_OFFLOAD
-	u32	curr_rateidx;
-#else
 	u8	mac_id;
 	u8	datarates[NumRates];
-#endif
 };
 
 /*
@@ -550,6 +383,33 @@ struct getdatarate_parm {
 };
 struct getdatarate_rsp {
 	u8 datarates[NumRates];
+};
+
+/*
+Caller Mode: Any
+AP: AP can use the info for the contents of beacon frame
+Infra: STA can use the info when sitesurveying
+Ad-HoC(M): Like AP
+Ad-HoC(C): Like STA
+
+Notes: To set the phy capability of the NIC
+
+Command Mode
+
+*/
+
+struct	setphyinfo_parm {
+	struct regulatory_class class_sets[NUM_REGULATORYS];
+	u8	status;
+};
+
+struct	getphyinfo_parm {
+	u32 rsvd;
+};
+
+struct	getphyinfo_rsp {
+	struct regulatory_class class_sets[NUM_REGULATORYS];
+	u8	status;
 };
 
 /*
@@ -597,11 +457,6 @@ struct readTSSI_rsp {
 	u8	value;
 };
 
-struct readMAC_parm {
-	u8 len;
-	u32	addr;
-};
-
 struct writeBB_parm {
 	u8	offset;
 	u8	value;
@@ -623,9 +478,9 @@ struct getrfintfs_parm {
 	u8	rfintfs;
 };
 
-
-struct Tx_Beacon_param {
-	WLAN_BSSID_EX network;
+struct Tx_Beacon_param
+{
+	struct wlan_bssid_ex network;
 };
 
 /*
@@ -663,7 +518,7 @@ struct Tx_Beacon_param {
 	event:			parm:
 		mac[0]  =   mac[5];
 		mac[1]  =   mac[4];
-		mac[2]  =   event's sequence number, starting from 1 to parm's marc[3]
+		mac[2]  =   event's seq no, starting from 1 to parm's marc[3]
 		mac[3]  =   mac[2];
 		mac[4]  =   mac[1];
 		mac[5]  =   mac[0];
@@ -676,47 +531,13 @@ struct Tx_Beacon_param {
 		w1		=	swap32(w1) - event.mac[2];
 
 		parm->mac[3] is the total event counts that host requested.
-
-
 	event will be the same with the cmd's param.
-
 */
 
-#ifdef CONFIG_H2CLBK
-
-struct seth2clbk_parm {
-	u8 mac[6];
-	u16	s0;
-	u16	s1;
-	u32	w0;
-	u8	b0;
-	u16  s2;
-	u8	b1;
-	u32	w1;
-};
-
-struct geth2clbk_parm {
-	u32 rsv;
-};
-
-struct geth2clbk_rsp {
-	u8	mac[6];
-	u16	s0;
-	u16	s1;
-	u32	w0;
-	u8	b0;
-	u16	s2;
-	u8	b1;
-	u32	w1;
-};
-
-#endif	/* CONFIG_H2CLBK */
-
-/* CMD param Formart for driver extra cmd handler */
+/*  CMD param Format for driver extra cmd handler */
 struct drvextra_cmd_parm {
 	int ec_id; /* extra cmd id */
-	int type; /* Can use this field as the type id or command size */
-	int size; /* buffer size */
+	int type_size; /*  Can use this field as the type id or command size */
 	unsigned char *pbuf;
 };
 
@@ -745,9 +566,8 @@ struct gettxagctbl_rsp {
 };
 
 struct setagcctrl_parm {
-	u32	agcctrl;		/* 0: pure hw, 1: fw */
+	u32	agcctrl;		/*  0: pure hw, 1: fw */
 };
-
 
 struct setssup_parm	{
 	u32	ss_ForceUp[MAX_RATES_LENGTH];
@@ -756,10 +576,10 @@ struct setssup_parm	{
 struct getssup_parm	{
 	u32 rsvd;
 };
+
 struct getssup_rsp	{
 	u8	ss_ForceUp[MAX_RATES_LENGTH];
 };
-
 
 struct setssdlevel_parm	{
 	u8	ss_DLevel[MAX_RATES_LENGTH];
@@ -768,6 +588,7 @@ struct setssdlevel_parm	{
 struct getssdlevel_parm	{
 	u32 rsvd;
 };
+
 struct getssdlevel_rsp	{
 	u8	ss_DLevel[MAX_RATES_LENGTH];
 };
@@ -779,10 +600,10 @@ struct setssulevel_parm	{
 struct getssulevel_parm	{
 	u32 rsvd;
 };
+
 struct getssulevel_rsp	{
 	u8	ss_ULevel[MAX_RATES_LENGTH];
 };
-
 
 struct	setcountjudge_parm {
 	u8	count_judge[MAX_RATES_LENGTH];
@@ -791,10 +612,10 @@ struct	setcountjudge_parm {
 struct	getcountjudge_parm {
 	u32 rsvd;
 };
+
 struct	getcountjudge_rsp {
 	u8	count_judge[MAX_RATES_LENGTH];
 };
-
 
 struct setratable_parm {
 	u8 ss_ForceUp[NumRates];
@@ -804,20 +625,22 @@ struct setratable_parm {
 };
 
 struct getratable_parm {
-	uint rsvd;
-};
-struct getratable_rsp {
-	u8 ss_ForceUp[NumRates];
-	u8 ss_ULevel[NumRates];
-	u8 ss_DLevel[NumRates];
-	u8 count_judge[NumRates];
+                uint rsvd;
 };
 
+struct getratable_rsp {
+        u8 ss_ForceUp[NumRates];
+        u8 ss_ULevel[NumRates];
+        u8 ss_DLevel[NumRates];
+        u8 count_judge[NumRates];
+};
 
 /* to get TX,RX retry count */
+
 struct gettxretrycnt_parm {
 	unsigned int rsvd;
 };
+
 struct gettxretrycnt_rsp {
 	unsigned long tx_retrycnt;
 };
@@ -825,6 +648,7 @@ struct gettxretrycnt_rsp {
 struct getrxretrycnt_parm {
 	unsigned int rsvd;
 };
+
 struct getrxretrycnt_rsp {
 	unsigned long rx_retrycnt;
 };
@@ -833,6 +657,7 @@ struct getrxretrycnt_rsp {
 struct getbcnokcnt_parm {
 	unsigned int rsvd;
 };
+
 struct getbcnokcnt_rsp {
 	unsigned long  bcnokcnt;
 };
@@ -840,15 +665,16 @@ struct getbcnokcnt_rsp {
 struct getbcnerrcnt_parm {
 	unsigned int rsvd;
 };
+
 struct getbcnerrcnt_rsp {
 	unsigned long bcnerrcnt;
 };
 
-/* to get current TX power level */
+/*  to get current TX power level */
 struct getcurtxpwrlevel_parm {
 	unsigned int rsvd;
 };
-struct getcurtxpwrlevel_rsp {
+struct getcurtxpwrlevel_rspi {
 	unsigned short tx_power;
 };
 
@@ -876,18 +702,9 @@ struct setassocrspextraie_parm {
 	unsigned char ie[0];
 };
 
-
 struct addBaReq_parm {
 	unsigned int tid;
 	u8	addr[ETH_ALEN];
-};
-
-struct addBaRsp_parm {
-	unsigned int tid;
-	unsigned int start_seq;
-	u8 addr[ETH_ALEN];
-	u8 status;
-	u8 size;
 };
 
 /*H2C Handler index: 46 */
@@ -897,327 +714,174 @@ struct set_ch_parm {
 	u8 ch_offset;
 };
 
-#ifdef MP_FIRMWARE_OFFLOAD
-/*H2C Handler index: 47 */
-struct SetTxPower_parm {
-	u8 TxPower;
-};
-
-/*H2C Handler index: 48 */
-struct SwitchAntenna_parm {
-	u16 antenna_tx;
-	u16 antenna_rx;
-	/*	R_ANTENNA_SELECT_CCK cck_txrx; */
-	u8 cck_txrx;
-};
-
-/*H2C Handler index: 49 */
-struct SetCrystalCap_parm {
-	u32 curr_crystalcap;
-};
-
-/*H2C Handler index: 50 */
-struct SetSingleCarrierTx_parm {
-	u8 bStart;
-};
-
-/*H2C Handler index: 51 */
-struct SetSingleToneTx_parm {
-	u8 bStart;
-	u8 curr_rfpath;
-};
-
-/*H2C Handler index: 52 */
-struct SetCarrierSuppressionTx_parm {
-	u8 bStart;
-	u32 curr_rateidx;
-};
-
-/*H2C Handler index: 53 */
-struct SetContinuousTx_parm {
-	u8 bStart;
-	u8 CCK_flag; /*1:CCK 2:OFDM*/
-	u32 curr_rateidx;
-};
-
-/*H2C Handler index: 54 */
-struct SwitchBandwidth_parm {
-	u8 curr_bandwidth;
-};
-
-#endif	/* MP_FIRMWARE_OFFLOAD */
-
 /*H2C Handler index: 59 */
-struct SetChannelPlan_param {
-	const struct country_chplan *country_ent;
+struct SetChannelPlan_param
+{
 	u8 channel_plan;
 };
 
 /*H2C Handler index: 60 */
-struct LedBlink_param {
-	void *pLed;
+struct LedBlink_param
+{
+	struct LED_871x *pLed;
+};
+
+/*H2C Handler index: 61 */
+struct SetChannelSwitch_param
+{
+	u8 new_ch_no;
 };
 
 /*H2C Handler index: 62 */
-struct TDLSoption_param {
+struct TDLSoption_param
+{
 	u8 addr[ETH_ALEN];
 	u8 option;
 };
 
-/*H2C Handler index: 64 */
-struct RunInThread_param {
-	void (*func)(void *);
-	void *context;
-};
-
-
 #define GEN_CMD_CODE(cmd)	cmd ## _CMD_
-
 
 /*
 
 Result:
 0x00: success
-0x01: sucess, and check Response.
+0x01: success, and check Response.
 0x02: cmd ignored due to duplicated sequcne number
 0x03: cmd dropped due to invalid cmd code
 0x04: reserved.
 
 */
 
-#define H2C_RSP_OFFSET			512
+#define H2C_RSP_OFFSET		512
 
-#define H2C_SUCCESS			0x00
-#define H2C_SUCCESS_RSP			0x01
-#define H2C_DUPLICATED			0x02
-#define H2C_DROPPED			0x03
-#define H2C_PARAMETERS_ERROR		0x04
-#define H2C_REJECTED			0x05
-#define H2C_CMD_OVERFLOW		0x06
-#define H2C_RESERVED			0x07
-#define H2C_ENQ_HEAD			0x08
-#define H2C_ENQ_HEAD_FAIL		0x09
-#define H2C_CMD_FAIL			0x0A
+#define H2C_SUCCESS		0x00
+#define H2C_SUCCESS_RSP		0x01
+#define H2C_DUPLICATED		0x02
+#define H2C_DROPPED		0x03
+#define H2C_PARAMETERS_ERROR	0x04
+#define H2C_REJECTED		0x05
+#define H2C_CMD_OVERFLOW	0x06
+#define H2C_RESERVED		0x07
 
-extern u8 rtw_setassocsta_cmd(_adapter  *padapter, u8 *mac_addr);
-extern u8 rtw_setstandby_cmd(_adapter *padapter, uint action);
-void rtw_init_sitesurvey_parm(_adapter *padapter, struct sitesurvey_parm *pparm);
-u8 rtw_sitesurvey_cmd(_adapter *padapter, struct sitesurvey_parm *pparm);
-u8 rtw_create_ibss_cmd(_adapter *adapter, int flags);
-u8 rtw_startbss_cmd(_adapter *adapter, int flags);
+u8 rtw_setassocsta_cmd(struct adapter  *padapter, u8 *mac_addr);
+u8 rtw_setstandby_cmd(struct adapter *padapter, uint action);
+u8 rtw_sitesurvey_cmd(struct adapter  *padapter, struct ndis_802_11_ssid *ssid,
+		      int ssid_num, struct rtw_ieee80211_channel *ch,
+		      int ch_num);
+u8 rtw_createbss_cmd(struct adapter  *padapter);
+u8 rtw_createbss_cmd_ex(struct adapter  *padapter, unsigned char *pbss,
+			       unsigned int sz);
+u8 rtw_setphy_cmd(struct adapter  *padapter, u8 modem, u8 ch);
+u8 rtw_setstakey_cmd(struct adapter *padapter, u8 *psta, u8 unicast_key);
+u8 rtw_clearstakey_cmd(struct adapter *padapter, u8 *psta, u8 entry, u8 enqueue);
+u8 rtw_joinbss_cmd(struct adapter  *padapter, struct wlan_network* pnetwork);
+u8 rtw_disassoc_cmd(struct adapter *padapter, u32 deauth_timeout_ms, bool enqueue);
+u8 rtw_setopmode_cmd(struct adapter  *padapter, enum ndis_802_11_network_infra networktype);
+u8 rtw_setdatarate_cmd(struct adapter  *padapter, u8 *rateset);
+u8 rtw_setbasicrate_cmd(struct adapter  *padapter, u8 *rateset);
+u8 rtw_setbbreg_cmd(struct adapter * padapter, u8 offset, u8 val);
+u8 rtw_setrfreg_cmd(struct adapter * padapter, u8 offset, u32 val);
+u8 rtw_getbbreg_cmd(struct adapter * padapter, u8 offset, u8 * pval);
+u8 rtw_getrfreg_cmd(struct adapter * padapter, u8 offset, u8 * pval);
+u8 rtw_setrfintfs_cmd(struct adapter  *padapter, u8 mode);
+u8 rtw_setrttbl_cmd(struct adapter  *padapter, struct setratable_parm *prate_table);
+u8 rtw_getrttbl_cmd(struct adapter  *padapter, struct getratable_rsp *pval);
 
-#define REQ_CH_NONE		-1
-#define REQ_BW_NONE		-1
-#define REQ_BW_ORI		-2
-#define REQ_OFFSET_NONE	-1
+u8 rtw_gettssi_cmd(struct adapter  *padapter, u8 offset,u8 *pval);
+u8 rtw_setfwdig_cmd(struct adapter*padapter, u8 type);
+u8 rtw_setfwra_cmd(struct adapter*padapter, u8 type);
 
-u8 rtw_change_bss_chbw_cmd(_adapter *adapter, int flags
-	, u8 ifbmp, u8 excl_ifbmp, s16 req_ch, s8 req_bw, s8 req_offset);
+u8 rtw_addbareq_cmd(struct adapter*padapter, u8 tid, u8 *addr);
 
-extern u8 rtw_setphy_cmd(_adapter  *padapter, u8 modem, u8 ch);
+u8 rtw_dynamic_chk_wk_cmd(struct adapter *adapter);
 
-struct sta_info;
-extern u8 rtw_setstakey_cmd(_adapter  *padapter, struct sta_info *sta, u8 key_type, bool enqueue);
-extern u8 rtw_clearstakey_cmd(_adapter *padapter, struct sta_info *sta, u8 enqueue);
+u8 rtw_lps_ctrl_wk_cmd(struct adapter*padapter, u8 lps_ctrl_type, u8 enqueue);
+u8 rtw_rpt_timer_cfg_cmd(struct adapter*padapter, u16 minRptTime);
 
-extern u8 rtw_joinbss_cmd(_adapter  *padapter, struct wlan_network *pnetwork);
-u8 rtw_disassoc_cmd(_adapter *padapter, u32 deauth_timeout_ms, int flags);
-extern u8 rtw_setopmode_cmd(_adapter  *padapter, NDIS_802_11_NETWORK_INFRASTRUCTURE networktype, u8 flags);
-extern u8 rtw_setdatarate_cmd(_adapter  *padapter, u8 *rateset);
-extern u8 rtw_setbasicrate_cmd(_adapter  *padapter, u8 *rateset);
-extern u8 rtw_getmacreg_cmd(_adapter *padapter, u8 len, u32 addr);
-extern void rtw_usb_catc_trigger_cmd(_adapter *padapter, const char *caller);
-extern u8 rtw_setbbreg_cmd(_adapter *padapter, u8 offset, u8 val);
-extern u8 rtw_setrfreg_cmd(_adapter *padapter, u8 offset, u32 val);
-extern u8 rtw_getbbreg_cmd(_adapter *padapter, u8 offset, u8 *pval);
-extern u8 rtw_getrfreg_cmd(_adapter *padapter, u8 offset, u8 *pval);
-extern u8 rtw_setrfintfs_cmd(_adapter  *padapter, u8 mode);
-extern u8 rtw_setrttbl_cmd(_adapter  *padapter, struct setratable_parm *prate_table);
-extern u8 rtw_getrttbl_cmd(_adapter  *padapter, struct getratable_rsp *pval);
+ u8 rtw_antenna_select_cmd(struct adapter*padapter, u8 antenna,u8 enqueue);
+u8 rtw_ps_cmd(struct adapter*padapter);
 
-extern u8 rtw_gettssi_cmd(_adapter  *padapter, u8 offset, u8 *pval);
-extern u8 rtw_setfwdig_cmd(_adapter *padapter, u8 type);
-extern u8 rtw_setfwra_cmd(_adapter *padapter, u8 type);
-
-extern u8 rtw_addbareq_cmd(_adapter *padapter, u8 tid, u8 *addr);
-extern u8 rtw_addbarsp_cmd(_adapter *padapter, u8 *addr, u16 tid, u8 status, u8 size, u16 start_seq);
-/* add for CONFIG_IEEE80211W, none 11w also can use */
-extern u8 rtw_reset_securitypriv_cmd(_adapter *padapter);
-extern u8 rtw_free_assoc_resources_cmd(_adapter *padapter, u8 lock_scanned_queue, int flags);
-extern u8 rtw_dynamic_chk_wk_cmd(_adapter *adapter);
-
-u8 rtw_lps_ctrl_wk_cmd(_adapter *padapter, u8 lps_ctrl_type, u8 flags);
-u8 rtw_lps_ctrl_leave_set_level_cmd(_adapter *adapter, u8 lps_level, u8 flags);
-u8 rtw_dm_in_lps_wk_cmd(_adapter *padapter);
-u8 rtw_lps_change_dtim_cmd(_adapter *padapter, u8 dtim);
-
-#if (RATE_ADAPTIVE_SUPPORT == 1)
-u8 rtw_rpt_timer_cfg_cmd(_adapter *padapter, u16 minRptTime);
+#ifdef CONFIG_88EU_AP_MODE
+u8 rtw_chk_hi_queue_cmd(struct adapter*padapter);
 #endif
 
-#ifdef CONFIG_ANTENNA_DIVERSITY
-extern  u8 rtw_antenna_select_cmd(_adapter *padapter, u8 antenna, u8 enqueue);
-#endif
+u8 rtw_set_ch_cmd(struct adapter*padapter, u8 ch, u8 bw, u8 ch_offset, u8 enqueue);
+u8 rtw_set_chplan_cmd(struct adapter*padapter, u8 chplan, u8 enqueue);
+u8 rtw_led_blink_cmd(struct adapter*padapter, struct LED_871x * pLed);
+u8 rtw_set_csa_cmd(struct adapter*padapter, u8 new_ch_no);
+u8 rtw_tdls_cmd(struct adapter *padapter, u8 *addr, u8 option);
 
-u8 rtw_dm_ra_mask_wk_cmd(_adapter *padapter, u8 *psta);
+u8 rtw_c2h_wk_cmd(struct adapter *padapter, u8 *c2h_evt);
 
-extern u8 rtw_ps_cmd(_adapter *padapter);
+u8 rtw_drvextra_cmd_hdl(struct adapter *padapter, unsigned char *pbuf);
 
-#ifdef CONFIG_DFS
-void rtw_dfs_ch_switch_hdl(struct dvobj_priv *dvobj);
-#endif
+void rtw_survey_cmd_callback(struct adapter *padapter, struct cmd_obj *pcmd);
+void rtw_disassoc_cmd_callback(struct adapter *padapter, struct cmd_obj *pcmd);
+void rtw_joinbss_cmd_callback(struct adapter *padapter, struct cmd_obj *pcmd);
+void rtw_createbss_cmd_callback(struct adapter *adapt, struct cmd_obj *pcmd);
+void rtw_getbbrfreg_cmdrsp_callback(struct adapter *adapt, struct cmd_obj *cmd);
+void rtw_readtssi_cmdrsp_callback(struct adapter *adapt,  struct cmd_obj *cmd);
 
-#ifdef CONFIG_AP_MODE
-u8 rtw_chk_hi_queue_cmd(_adapter *padapter);
-#ifdef CONFIG_DFS_MASTER
-u8 rtw_dfs_rd_cmd(_adapter *adapter, bool enqueue);
-void rtw_dfs_rd_timer_hdl(void *ctx);
-void rtw_dfs_rd_en_decision(_adapter *adapter, u8 mlme_act, u8 excl_ifbmp);
-u8 rtw_dfs_rd_en_decision_cmd(_adapter *adapter);
-#endif /* CONFIG_DFS_MASTER */
-#endif /* CONFIG_AP_MODE */
-
-#ifdef CONFIG_BT_COEXIST
-u8 rtw_btinfo_cmd(PADAPTER padapter, u8 *pbuf, u16 length);
-u8 rtw_btc_reduce_wl_txpwr_cmd(_adapter *adapter, u32 val);
-#endif
-
-u8 rtw_test_h2c_cmd(_adapter *adapter, u8 *buf, u8 len);
-
-u8 rtw_enable_hw_update_tsf_cmd(_adapter *padapter);
-u8 rtw_periodic_tsf_update_end_cmd(_adapter *adapter);
-
-u8 rtw_set_chbw_cmd(_adapter *padapter, u8 ch, u8 bw, u8 ch_offset, u8 flags);
-
-u8 rtw_set_chplan_cmd(_adapter *adapter, int flags, u8 chplan, u8 swconfig);
-u8 rtw_set_country_cmd(_adapter *adapter, int flags, const char *country_code, u8 swconfig);
-
-extern u8 rtw_led_blink_cmd(_adapter *padapter, void *pLed);
-extern u8 rtw_set_csa_cmd(_adapter *adapter);
-extern u8 rtw_tdls_cmd(_adapter *padapter, u8 *addr, u8 option);
-
-u8 rtw_mp_cmd(_adapter *adapter, u8 mp_cmd_id, u8 flags);
-
-#ifdef CONFIG_RTW_CUSTOMER_STR
-u8 rtw_customer_str_req_cmd(_adapter *adapter);
-u8 rtw_customer_str_write_cmd(_adapter *adapter, const u8 *cstr);
-#endif
-
-#ifdef CONFIG_FW_C2H_REG
-u8 rtw_c2h_reg_wk_cmd(_adapter *adapter, u8 *c2h_evt);
-#endif
-#ifdef CONFIG_FW_C2H_PKT
-u8 rtw_c2h_packet_wk_cmd(_adapter *adapter, u8 *c2h_evt, u16 length);
-#endif
-
-#ifdef CONFIG_RTW_REPEATER_SON
-#define RSON_SCAN_PROCESS		10
-#define RSON_SCAN_DISABLE		11
-u8 rtw_rson_scan_wk_cmd(_adapter *adapter, int op);
-#endif
-
-u8 rtw_run_in_thread_cmd(PADAPTER padapter, void (*func)(void *), void *context);
-
-struct ssmps_cmd_parm {
-	struct sta_info *sta;
-	u8 smps;
-};
-u8 rtw_ssmps_wk_cmd(_adapter *adapter, struct sta_info *sta, u8 smps, u8 enqueue);
-
-u8 session_tracker_chk_cmd(_adapter *adapter, struct sta_info *sta);
-u8 session_tracker_add_cmd(_adapter *adapter, struct sta_info *sta, u8 *local_naddr, u8 *local_port, u8 *remote_naddr, u8 *remote_port);
-u8 session_tracker_del_cmd(_adapter *adapter, struct sta_info *sta, u8 *local_naddr, u8 *local_port, u8 *remote_naddr, u8 *remote_port);
-
-#if defined(CONFIG_RTW_MESH) && defined(RTW_PER_CMD_SUPPORT_FW)
-u8 rtw_req_per_cmd(_adapter * adapter);
-#endif
-
-#ifdef CONFIG_CTRL_TXSS_BY_TP
-struct txss_cmd_parm {
-	struct sta_info *sta;
-	bool tx_1ss;
-};
-
-void rtw_ctrl_txss_update_mimo_type(_adapter *adapter, struct sta_info *sta);
-u8 rtw_ctrl_txss(_adapter *adapter, struct sta_info *sta, bool tx_1ss);
-void rtw_ctrl_tx_ss_by_tp(_adapter *adapter, u8 from_timer);
-
-#ifdef DBG_CTRL_TXSS
-void dbg_ctrl_txss(_adapter *adapter, bool tx_1ss);
-#endif
-#endif
-
-u8 rtw_drvextra_cmd_hdl(_adapter *padapter, unsigned char *pbuf);
-
-extern void rtw_survey_cmd_callback(_adapter  *padapter, struct cmd_obj *pcmd);
-extern void rtw_disassoc_cmd_callback(_adapter  *padapter, struct cmd_obj *pcmd);
-extern void rtw_joinbss_cmd_callback(_adapter  *padapter, struct cmd_obj *pcmd);
-void rtw_create_ibss_post_hdl(_adapter *padapter, int status);
-extern void rtw_getbbrfreg_cmdrsp_callback(_adapter  *padapter, struct cmd_obj *pcmd);
-extern void rtw_readtssi_cmdrsp_callback(_adapter	*padapter,  struct cmd_obj *pcmd);
-
-extern void rtw_setstaKey_cmdrsp_callback(_adapter  *padapter,  struct cmd_obj *pcmd);
-extern void rtw_setassocsta_cmdrsp_callback(_adapter  *padapter,  struct cmd_obj *pcmd);
-extern void rtw_getrttbl_cmdrsp_callback(_adapter  *padapter,  struct cmd_obj *pcmd);
-extern void rtw_getmacreg_cmdrsp_callback(_adapter *padapter,  struct cmd_obj *pcmd);
-
+void rtw_setstaKey_cmdrsp_callback(struct adapter *adapt, struct cmd_obj *cmd);
+void rtw_setassocsta_cmdrsp_callback(struct adapter *adapt, struct cmd_obj *cm);
+void rtw_getrttbl_cmdrsp_callback(struct adapter *adapt, struct cmd_obj *cmd);
 
 struct _cmd_callback {
 	u32	cmd_code;
-	void (*callback)(_adapter  *padapter, struct cmd_obj *cmd);
+	void (*callback)(struct adapter  *padapter, struct cmd_obj *cmd);
 };
 
 enum rtw_h2c_cmd {
-	GEN_CMD_CODE(_Read_MACREG) ,	/*0*/
-	GEN_CMD_CODE(_Write_MACREG) ,
-	GEN_CMD_CODE(_Read_BBREG) ,
-	GEN_CMD_CODE(_Write_BBREG) ,
-	GEN_CMD_CODE(_Read_RFREG) ,
-	GEN_CMD_CODE(_Write_RFREG) , /*5*/
-	GEN_CMD_CODE(_Read_EEPROM) ,
-	GEN_CMD_CODE(_Write_EEPROM) ,
-	GEN_CMD_CODE(_Read_EFUSE) ,
-	GEN_CMD_CODE(_Write_EFUSE) ,
+	GEN_CMD_CODE(_Read_MACREG),	/*0*/
+	GEN_CMD_CODE(_Write_MACREG),
+	GEN_CMD_CODE(_Read_BBREG),
+	GEN_CMD_CODE(_Write_BBREG),
+	GEN_CMD_CODE(_Read_RFREG),
+	GEN_CMD_CODE(_Write_RFREG), /*5*/
+	GEN_CMD_CODE(_Read_EEPROM),
+	GEN_CMD_CODE(_Write_EEPROM),
+	GEN_CMD_CODE(_Read_EFUSE),
+	GEN_CMD_CODE(_Write_EFUSE),
 
-	GEN_CMD_CODE(_Read_CAM) ,	/*10*/
-	GEN_CMD_CODE(_Write_CAM) ,
+	GEN_CMD_CODE(_Read_CAM),	/*10*/
+	GEN_CMD_CODE(_Write_CAM),
 	GEN_CMD_CODE(_setBCNITV),
 	GEN_CMD_CODE(_setMBIDCFG),
 	GEN_CMD_CODE(_JoinBss),   /*14*/
-	GEN_CMD_CODE(_DisConnect) , /*15*/
-	GEN_CMD_CODE(_CreateBss) ,
-	GEN_CMD_CODE(_SetOpMode) ,
+	GEN_CMD_CODE(_DisConnect), /*15*/
+	GEN_CMD_CODE(_CreateBss),
+	GEN_CMD_CODE(_SetOpMode),
 	GEN_CMD_CODE(_SiteSurvey),  /*18*/
-	GEN_CMD_CODE(_SetAuth) ,
+	GEN_CMD_CODE(_SetAuth),
 
-	GEN_CMD_CODE(_SetKey) ,	/*20*/
-	GEN_CMD_CODE(_SetStaKey) ,
-	GEN_CMD_CODE(_SetAssocSta) ,
-	GEN_CMD_CODE(_DelAssocSta) ,
-	GEN_CMD_CODE(_SetStaPwrState) ,
-	GEN_CMD_CODE(_SetBasicRate) , /*25*/
-	GEN_CMD_CODE(_GetBasicRate) ,
-	GEN_CMD_CODE(_SetDataRate) ,
-	GEN_CMD_CODE(_GetDataRate) ,
-	GEN_CMD_CODE(_SetPhyInfo) ,
+	GEN_CMD_CODE(_SetKey),	/*20*/
+	GEN_CMD_CODE(_SetStaKey),
+	GEN_CMD_CODE(_SetAssocSta),
+	GEN_CMD_CODE(_DelAssocSta),
+	GEN_CMD_CODE(_SetStaPwrState),
+	GEN_CMD_CODE(_SetBasicRate), /*25*/
+	GEN_CMD_CODE(_GetBasicRate),
+	GEN_CMD_CODE(_SetDataRate),
+	GEN_CMD_CODE(_GetDataRate),
+	GEN_CMD_CODE(_SetPhyInfo),
 
-	GEN_CMD_CODE(_GetPhyInfo) ,	/*30*/
-	GEN_CMD_CODE(_SetPhy) ,
-	GEN_CMD_CODE(_GetPhy) ,
-	GEN_CMD_CODE(_readRssi) ,
-	GEN_CMD_CODE(_readGain) ,
-	GEN_CMD_CODE(_SetAtim) , /*35*/
-	GEN_CMD_CODE(_SetPwrMode) ,
+	GEN_CMD_CODE(_GetPhyInfo),	/*30*/
+	GEN_CMD_CODE(_SetPhy),
+	GEN_CMD_CODE(_GetPhy),
+	GEN_CMD_CODE(_readRssi),
+	GEN_CMD_CODE(_readGain),
+	GEN_CMD_CODE(_SetAtim), /*35*/
+	GEN_CMD_CODE(_SetPwrMode),
 	GEN_CMD_CODE(_JoinbssRpt),
-	GEN_CMD_CODE(_SetRaTable) ,
-	GEN_CMD_CODE(_GetRaTable) ,
+	GEN_CMD_CODE(_SetRaTable),
+	GEN_CMD_CODE(_GetRaTable),
 
 	GEN_CMD_CODE(_GetCCXReport), /*40*/
 	GEN_CMD_CODE(_GetDTMReport),
 	GEN_CMD_CODE(_GetTXRateStatistics),
 	GEN_CMD_CODE(_SetUsbSuspend),
 	GEN_CMD_CODE(_SetH2cLbk),
-	GEN_CMD_CODE(_AddBAReq) , /*45*/
+	GEN_CMD_CODE(_AddBAReq), /*45*/
 	GEN_CMD_CODE(_SetChannel), /*46*/
 	GEN_CMD_CODE(_SetTxPower),
 	GEN_CMD_CODE(_SwitchAntenna),
@@ -1239,25 +903,19 @@ enum rtw_h2c_cmd {
 
 	GEN_CMD_CODE(_SetChannelSwitch), /*61*/
 	GEN_CMD_CODE(_TDLS), /*62*/
-	GEN_CMD_CODE(_ChkBMCSleepq), /*63*/
-
-	GEN_CMD_CODE(_RunInThreadCMD), /*64*/
-	GEN_CMD_CODE(_AddBARsp) , /*65*/
-	GEN_CMD_CODE(_RM_POST_EVENT), /*66*/
 
 	MAX_H2CCMD
 };
 
-#define _GetMACReg_CMD_ _Read_MACREG_CMD_
-#define _SetMACReg_CMD_ _Write_MACREG_CMD_
 #define _GetBBReg_CMD_		_Read_BBREG_CMD_
 #define _SetBBReg_CMD_		_Write_BBREG_CMD_
 #define _GetRFReg_CMD_		_Read_RFREG_CMD_
 #define _SetRFReg_CMD_		_Write_RFREG_CMD_
 
 #ifdef _RTW_CMD_C_
-struct _cmd_callback	rtw_cmd_callback[] = {
-	{GEN_CMD_CODE(_Read_MACREG), &rtw_getmacreg_cmdrsp_callback}, /*0*/
+static struct _cmd_callback	rtw_cmd_callback[] =
+{
+	{GEN_CMD_CODE(_Read_MACREG), NULL}, /*0*/
 	{GEN_CMD_CODE(_Write_MACREG), NULL},
 	{GEN_CMD_CODE(_Read_BBREG), &rtw_getbbrfreg_cmdrsp_callback},
 	{GEN_CMD_CODE(_Write_BBREG), NULL},
@@ -1274,7 +932,7 @@ struct _cmd_callback	rtw_cmd_callback[] = {
 	{GEN_CMD_CODE(_setMBIDCFG), NULL},
 	{GEN_CMD_CODE(_JoinBss), &rtw_joinbss_cmd_callback},  /*14*/
 	{GEN_CMD_CODE(_DisConnect), &rtw_disassoc_cmd_callback}, /*15*/
-	{GEN_CMD_CODE(_CreateBss), NULL},
+	{GEN_CMD_CODE(_CreateBss), &rtw_createbss_cmd_callback},
 	{GEN_CMD_CODE(_SetOpMode), NULL},
 	{GEN_CMD_CODE(_SiteSurvey), &rtw_survey_cmd_callback}, /*18*/
 	{GEN_CMD_CODE(_SetAuth), NULL},
@@ -1299,7 +957,7 @@ struct _cmd_callback	rtw_cmd_callback[] = {
 	{GEN_CMD_CODE(_SetPwrMode), NULL},
 	{GEN_CMD_CODE(_JoinbssRpt), NULL},
 	{GEN_CMD_CODE(_SetRaTable), NULL},
-	{GEN_CMD_CODE(_GetRaTable) , NULL},
+	{GEN_CMD_CODE(_GetRaTable), NULL},
 
 	{GEN_CMD_CODE(_GetCCXReport), NULL}, /*40*/
 	{GEN_CMD_CODE(_GetDTMReport),	NULL},
@@ -1327,18 +985,7 @@ struct _cmd_callback	rtw_cmd_callback[] = {
 
 	{GEN_CMD_CODE(_SetChannelSwitch), NULL},/*61*/
 	{GEN_CMD_CODE(_TDLS), NULL},/*62*/
-	{GEN_CMD_CODE(_ChkBMCSleepq), NULL}, /*63*/
-
-	{GEN_CMD_CODE(_RunInThreadCMD), NULL},/*64*/
-	{GEN_CMD_CODE(_AddBARsp), NULL}, /*65*/
-	{GEN_CMD_CODE(_RM_POST_EVENT), NULL}, /*66*/
 };
 #endif
 
-#define CMD_FMT "cmd=%d,%d,%d"
-#define CMD_ARG(cmd) \
-	(cmd)->cmdcode, \
-	(cmd)->cmdcode == GEN_CMD_CODE(_Set_Drv_Extra) ? ((struct drvextra_cmd_parm *)(cmd)->parmbuf)->ec_id : ((cmd)->cmdcode == GEN_CMD_CODE(_Set_MLME_EVT) ? ((struct C2HEvent_Header *)(cmd)->parmbuf)->ID : 0), \
-	(cmd)->cmdcode == GEN_CMD_CODE(_Set_Drv_Extra) ? ((struct drvextra_cmd_parm *)(cmd)->parmbuf)->type : 0
-
-#endif /* _CMD_H_ */
+#endif /*  _CMD_H_ */
