@@ -29,7 +29,7 @@ s32	rtl8188fu_init_xmit_priv(_adapter *padapter)
 
 #ifdef PLATFORM_LINUX
 	tasklet_init(&pxmitpriv->xmit_tasklet,
-				 (void(*)(unsigned long))rtl8188fu_xmit_tasklet,
+				 (void *)rtl8188fu_xmit_tasklet,
 				 (unsigned long)padapter);
 #endif
 	return _SUCCESS;

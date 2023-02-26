@@ -249,9 +249,7 @@
 //	ODM_CMNINFO_INTERFACE
 typedef enum tag_ODM_Support_Interface_Definition
 {
-	ODM_ITRF_PCIE 	=	0x1,
 	ODM_ITRF_USB 	=	0x2,
-	ODM_ITRF_SDIO 	=	0x4,
 	ODM_ITRF_ALL 	=	0x7,
 }ODM_INTERFACE_E;
 
@@ -294,13 +292,11 @@ typedef enum tag_ODM_Support_IC_Type_Definition
 #endif
 
 #define ODM_IC_11N_SERIES_SUPPORT			1
-#define ODM_CONFIG_BT_COEXIST				0
 
 #elif (DM_ODM_SUPPORT_TYPE == ODM_WIN)
 
 #define ODM_IC_11AC_SERIES_SUPPORT		1
 #define ODM_IC_11N_SERIES_SUPPORT			1
-#define ODM_CONFIG_BT_COEXIST				1
 
 #else 
 
@@ -312,12 +308,6 @@ typedef enum tag_ODM_Support_IC_Type_Definition
 #else
 #define ODM_IC_11N_SERIES_SUPPORT			0
 #define ODM_IC_11AC_SERIES_SUPPORT		1
-#endif
-
-#ifdef CONFIG_BT_COEXIST
-#define ODM_CONFIG_BT_COEXIST				1
-#else
-#define ODM_CONFIG_BT_COEXIST				0
 #endif
 
 #endif

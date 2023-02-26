@@ -26,19 +26,9 @@
 #include "phydm_precomp.h"
 
 #define READ_AND_CONFIG_MP(ic, txt) (ODM_ReadAndConfig_MP_##ic##txt(pDM_Odm))
-#define READ_AND_CONFIG_TC(ic, txt) (ODM_ReadAndConfig_TC_##ic##txt(pDM_Odm))
 
 
-#if (PHYDM_TESTCHIP_SUPPORT == 1)
-#define READ_AND_CONFIG(ic, txt) do {\
-                                            if (pDM_Odm->bIsMPChip)\
-                                    		    READ_AND_CONFIG_MP(ic,txt);\
-                                            else\
-                                                READ_AND_CONFIG_TC(ic,txt);\
-                                    } while(0)
-#else
   #define READ_AND_CONFIG     READ_AND_CONFIG_MP
-#endif
 						
 #define GET_VERSION_MP(ic, txt) 		(ODM_GetVersion_MP_##ic##txt())
 #define GET_VERSION_TC(ic, txt) 		(ODM_GetVersion_TC_##ic##txt())
@@ -241,7 +231,7 @@ odm_SignalScaleMapping_92CSeries(
 #endif
 
 #if ((DEV_BUS_TYPE == RT_USB_INTERFACE) ||(DEV_BUS_TYPE == RT_SDIO_INTERFACE))
-	if((pDM_Odm->SupportInterface  == ODM_ITRF_USB) || (pDM_Odm->SupportInterface  == ODM_ITRF_SDIO))
+	if((pDM_Odm->SupportInterface  == ODM_ITRF_USB))
 	{
 		if(CurrSig >= 51 && CurrSig <= 100)
 		{
@@ -2270,8 +2260,6 @@ ODM_ConfigRFWithTxPwrTrackHeaderFile(
 	if (pDM_Odm->SupportICType == ODM_RTL8188F) {
 		if (pDM_Odm->SupportInterface == ODM_ITRF_USB)
 			READ_AND_CONFIG_MP(8188F, _TxPowerTrack_USB);
-		else if (pDM_Odm->SupportInterface == ODM_ITRF_SDIO)
-			READ_AND_CONFIG_MP(8188F, _TxPowerTrack_SDIO);
 	}
 #endif
 

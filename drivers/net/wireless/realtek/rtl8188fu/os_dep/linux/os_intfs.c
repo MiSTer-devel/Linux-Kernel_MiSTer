@@ -85,14 +85,6 @@ int rtw_busy_thresh = 40;
 //int qos_enable = 0; //*
 int rtw_ack_policy = NORMAL_ACK;
 
-int rtw_mp_mode = 0;
-
-#if defined(CONFIG_MP_INCLUDED) && defined(CONFIG_RTW_CUSTOMER_STR)
-uint rtw_mp_customer_str = 0;
-module_param(rtw_mp_customer_str, uint, 0644);
-MODULE_PARM_DESC(rtw_mp_customer_str, "Whether or not to enable customer str support on MP mode");
-#endif
-
 int rtw_software_encrypt = 0;
 int rtw_software_decrypt = 0;
 
@@ -171,18 +163,6 @@ But Softap must be SHUT DOWN once P2P decide to set up connection and become a G
 int rtw_full_ch_in_p2p_handshake = 1; /* reply full channel list*/
 #else
 int rtw_full_ch_in_p2p_handshake = 0; /* reply only softap channel*/
-#endif
-
-#ifdef CONFIG_BT_COEXIST
-int rtw_btcoex_enable = 1;
-module_param(rtw_btcoex_enable, int, 0644);
-MODULE_PARM_DESC(rtw_btcoex_enable, "Enable BT co-existence mechanism");
-int rtw_bt_iso = 2;// 0:Low, 1:High, 2:From Efuse
-int rtw_bt_sco = 3;// 0:Idle, 1:None-SCO, 2:SCO, 3:From Counter, 4.Busy, 5.OtherBusy
-int rtw_bt_ampdu =1 ;// 0:Disable BT control A-MPDU, 1:Enable BT control A-MPDU.
-int rtw_ant_num = -1; // <0: undefined, >0: Antenna number
-module_param(rtw_ant_num, int, 0644);
-MODULE_PARM_DESC(rtw_ant_num, "Antenna number setting");
 #endif
 
 int rtw_AcceptAddbaReq = _TRUE;// 0:Reject AP's Add BA req, 1:Accept AP's Add BA req.
@@ -270,7 +250,6 @@ module_param(rtw_rfintfs, int, 0644);
 module_param(rtw_lbkmode, int, 0644);
 module_param(rtw_network_mode, int, 0644);
 module_param(rtw_channel, int, 0644);
-module_param(rtw_mp_mode, int, 0644);
 module_param(rtw_wmm_enable, int, 0644);
 module_param(rtw_vrtl_carrier_sense, int, 0644);
 module_param(rtw_vcs_type, int, 0644);
@@ -487,26 +466,6 @@ module_param_array(rtw_target_tx_pwr_5g_d, int, &rtw_target_tx_pwr_5g_d_num, 064
 MODULE_PARM_DESC(rtw_target_tx_pwr_5g_d, "5G target tx power (unit:dBm) of RF path D for each rate section, should match the real calibrate power, -1: undefined");
 #endif /* CONFIG_IEEE80211_BAND_5GHZ */
 
-#ifdef CONFIG_LOAD_PHY_PARA_FROM_FILE
-char *rtw_phy_file_path = REALTEK_CONFIG_PATH;
-module_param(rtw_phy_file_path, charp, 0644);
-MODULE_PARM_DESC(rtw_phy_file_path, "The path of phy parameter");
-// PHY FILE Bit Map
-// BIT0 - MAC,				0: non-support, 1: support
-// BIT1 - BB,					0: non-support, 1: support
-// BIT2 - BB_PG,				0: non-support, 1: support
-// BIT3 - BB_MP,				0: non-support, 1: support
-// BIT4 - RF,					0: non-support, 1: support
-// BIT5 - RF_TXPWR_TRACK,	0: non-support, 1: support
-// BIT6 - RF_TXPWR_LMT,		0: non-support, 1: support
-int rtw_load_phy_file = (BIT2|BIT6);
-module_param(rtw_load_phy_file, int, 0644);
-MODULE_PARM_DESC(rtw_load_phy_file,"PHY File Bit Map");
-int rtw_decrypt_phy_file = 0;
-module_param(rtw_decrypt_phy_file, int, 0644);
-MODULE_PARM_DESC(rtw_decrypt_phy_file,"Enable Decrypt PHY File");
-#endif
-
 int _netdev_open(struct net_device *pnetdev);
 int netdev_open (struct net_device *pnetdev);
 static int netdev_close (struct net_device *pnetdev);
@@ -596,10 +555,6 @@ _func_enter_;
   	registry_par->busy_thresh = (u16)rtw_busy_thresh;
   	//registry_par->qos_enable = (u8)rtw_qos_enable;
 	registry_par->ack_policy = (u8)rtw_ack_policy;
-	registry_par->mp_mode = (u8)rtw_mp_mode;
-#if defined(CONFIG_MP_INCLUDED) && defined(CONFIG_RTW_CUSTOMER_STR)
-	registry_par->mp_customer_str = (u8)rtw_mp_customer_str;
-#endif
 	registry_par->software_encrypt = (u8)rtw_software_encrypt;
 	registry_par->software_decrypt = (u8)rtw_software_decrypt;
 
@@ -661,13 +616,6 @@ _func_enter_;
 	registry_par->special_rf_path = (u8)rtw_special_rf_path;
 
 	registry_par->full_ch_in_p2p_handshake = (u8)rtw_full_ch_in_p2p_handshake;
-#ifdef CONFIG_BT_COEXIST
-	registry_par->btcoex = (u8)rtw_btcoex_enable;
-	registry_par->bt_iso = (u8)rtw_bt_iso;
-	registry_par->bt_sco = (u8)rtw_bt_sco;
-	registry_par->bt_ampdu = (u8)rtw_bt_ampdu;
-	registry_par->ant_num = (s8)rtw_ant_num;
-#endif
 
 	registry_par->bAcceptAddbaReq = (u8)rtw_AcceptAddbaReq;
 
@@ -735,10 +683,6 @@ _func_enter_;
 	registry_par->AmplifierType_2G = (u8)rtw_amplifier_type_2g;
 	registry_par->AmplifierType_5G = (u8)rtw_amplifier_type_5g;
 	registry_par->GLNA_Type = (u8)rtw_GLNA_type;
-#ifdef CONFIG_LOAD_PHY_PARA_FROM_FILE
-	registry_par->load_phy_file = (u8)rtw_load_phy_file;
-	registry_par->RegDecryptCustomFile = (u8)rtw_decrypt_phy_file;
-#endif
 	registry_par->qos_opt_enable = (u8)rtw_qos_opt_enable;
 
 	registry_par->hiq_filter = (u8)rtw_hiq_filter;
@@ -811,7 +755,11 @@ static int rtw_net_set_mac_address(struct net_device *pnetdev, void *addr)
 	}
 
 	_rtw_memcpy(adapter_mac_addr(padapter), sa->sa_data, ETH_ALEN); /* set mac addr to adapter */
-	_rtw_memcpy(pnetdev->dev_addr, sa->sa_data, ETH_ALEN); /* set mac addr to net_device */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
+	_rtw_memcpy((void *)pnetdev->dev_addr, sa->sa_data, ETH_ALEN); /* set mac addr to net_device */
+#else
+        dev_addr_set(pnetdev, sa->sa_data);
+#endif  
 
 	rtw_ps_deny(padapter, PS_DENY_IOCTL);
 	LeaveAllPowerSaveModeDirect(padapter); /* leave PS mode for guaranteeing to access hw register successfully */
@@ -885,8 +833,10 @@ static u16 rtw_select_queue(struct net_device *dev, struct sk_buff *skb
 #else
 				, void *accel_priv
 #endif
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0) 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 				, select_queue_fallback_t fallback
+#endif
 #endif
 
 #endif
@@ -963,12 +913,6 @@ static int rtw_ndev_notifier_call(struct notifier_block * nb, unsigned long stat
 
 	DBG_871X_LEVEL(_drv_info_, FUNC_NDEV_FMT" state:%lu\n", FUNC_NDEV_ARG(dev), state);
 
-	switch (state) {
-	case NETDEV_CHANGENAME:
-		rtw_adapter_proc_replace(dev);
-		break;
-	}
-
 	return NOTIFY_DONE;
 }
 
@@ -995,7 +939,6 @@ int rtw_ndev_init(struct net_device *dev)
 		, FUNC_ADPT_ARG(adapter), (adapter->iface_id+1), MAC_ARG(dev->dev_addr));
 	strncpy(adapter->old_ifname, dev->name, IFNAMSIZ);
 	adapter->old_ifname[IFNAMSIZ-1] = '\0';
-	rtw_adapter_proc_init(dev);
 
 	return 0;
 }
@@ -1006,7 +949,6 @@ void rtw_ndev_uninit(struct net_device *dev)
 
 	DBG_871X_LEVEL(_drv_always_, FUNC_ADPT_FMT" if%d\n"
 		, FUNC_ADPT_ARG(adapter), (adapter->iface_id+1));
-	rtw_adapter_proc_deinit(dev);
 }
 
 #if (LINUX_VERSION_CODE>=KERNEL_VERSION(2,6,29))
@@ -1197,7 +1139,11 @@ int rtw_os_ndev_register(_adapter *adapter, char *name)
 	/* alloc netdev name */
 	rtw_init_netdev_name(ndev, name);
 
-	_rtw_memcpy(ndev->dev_addr, adapter_mac_addr(adapter), ETH_ALEN);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
+	_rtw_memcpy((void *)ndev->dev_addr, adapter_mac_addr(adapter), ETH_ALEN);
+#else
+	dev_addr_set(ndev, adapter_mac_addr(adapter));
+#endif  
 
 	/* Tell the network stack we exist */
 	if (register_netdev(ndev) != 0) {
@@ -2243,7 +2189,11 @@ int _netdev_if2_open(struct net_device *pnetdev)
 
 		_rtw_memcpy(adapter_mac_addr(padapter), mac, ETH_ALEN);
 		rtw_init_wifidirect_addrs(padapter, adapter_mac_addr(padapter), adapter_mac_addr(padapter));
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
 		_rtw_memcpy(pnetdev->dev_addr, adapter_mac_addr(padapter), ETH_ALEN);
+#else
+		dev_addr_set(pnetdev, adapter_mac_addr(padapter));
+#endif  
 	}
 #endif //CONFIG_PLATFORM_INTEL_BYT
 
@@ -2687,9 +2637,6 @@ int _netdev_open(struct net_device *pnetdev)
 	uint status;
 	_adapter *padapter = (_adapter *)rtw_netdev_priv(pnetdev);
 	struct pwrctrl_priv *pwrctrlpriv = adapter_to_pwrctl(padapter);
-#ifdef CONFIG_BT_COEXIST_SOCKET_TRX
-	HAL_DATA_TYPE		*pHalData = GET_HAL_DATA(padapter);
-#endif //CONFIG_BT_COEXIST_SOCKET_TRX
 
 	RT_TRACE(_module_os_intfs_c_,_drv_info_,("+871x_drv - dev_open\n"));
 	DBG_871X("+871x_drv - drv_open, bup=%d\n", padapter->bup);
@@ -2710,7 +2657,11 @@ int _netdev_open(struct net_device *pnetdev)
 #ifdef CONFIG_PLATFORM_INTEL_BYT
 		rtw_macaddr_cfg(adapter_mac_addr(padapter),  get_hal_mac_addr(padapter));
 		rtw_init_wifidirect_addrs(padapter, adapter_mac_addr(padapter), adapter_mac_addr(padapter));
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
 		_rtw_memcpy(pnetdev->dev_addr, adapter_mac_addr(padapter), ETH_ALEN);
+#else
+		dev_addr_set(pnetdev, adapter_mac_addr(padapter));
+#endif  
 #endif //CONFIG_PLATFORM_INTEL_BYT
 
 		rtw_clr_surprise_removed(padapter);
@@ -2751,9 +2702,6 @@ int _netdev_open(struct net_device *pnetdev)
 		pwrctrlpriv->bips_processing = _FALSE;
 
 #ifdef CONFIG_PLATFORM_INTEL_BYT
-#ifdef CONFIG_BT_COEXIST	
-		rtw_btcoex_IpsNotify(padapter, IPS_NONE);
-#endif // CONFIG_BT_COEXIST
 #endif //CONFIG_PLATFORM_INTEL_BYT		
 	}
 	padapter->net_closed = _FALSE;
@@ -2770,18 +2718,6 @@ int _netdev_open(struct net_device *pnetdev)
 #ifdef CONFIG_BR_EXT
 	netdev_br_init(pnetdev);
 #endif	// CONFIG_BR_EXT
-
-#ifdef CONFIG_BT_COEXIST_SOCKET_TRX
-	if(is_primary_adapter(padapter) &&  _TRUE == pHalData->EEPROMBluetoothCoexist)
-	{
-		rtw_btcoex_init_socket(padapter);
-		padapter->coex_info.BtMgnt.ExtConfig.HCIExtensionVer = 0x04;
-		rtw_btcoex_SetHciVersion(padapter,0x04);
-	}
-	else
-		DBG_871X("CONFIG_BT_COEXIST: SECONDARY_ADAPTER\n");
-#endif //CONFIG_BT_COEXIST_SOCKET_TRX
-
 
 netdev_open_normal_process:
 
@@ -2965,9 +2901,6 @@ static int netdev_close(struct net_device *pnetdev)
 	_adapter *padapter = (_adapter *)rtw_netdev_priv(pnetdev);
 	struct pwrctrl_priv *pwrctl = adapter_to_pwrctl(padapter);
 	struct mlme_priv	*pmlmepriv = &padapter->mlmepriv;
-#ifdef CONFIG_BT_COEXIST_SOCKET_TRX
-	HAL_DATA_TYPE		*pHalData = GET_HAL_DATA(padapter);
-#endif //CONFIG_BT_COEXIST_SOCKET_TRX
 
 	RT_TRACE(_module_os_intfs_c_,_drv_info_,("+871x_drv - drv_close\n"));
 
@@ -3037,12 +2970,6 @@ static int netdev_close(struct net_device *pnetdev)
 #ifdef CONFIG_WAPI_SUPPORT
 	rtw_wapi_disable_tx(padapter);
 #endif
-#ifdef CONFIG_BT_COEXIST_SOCKET_TRX
-	if(is_primary_adapter(padapter) &&  _TRUE == pHalData->EEPROMBluetoothCoexist)
-		rtw_btcoex_close_socket(padapter);
-	else
-		DBG_871X("CONFIG_BT_COEXIST: SECONDARY_ADAPTER\n");
-#endif //CONFIG_BT_COEXIST_SOCKET_TRX
 #else //!CONFIG_PLATFORM_INTEL_BYT
 
 	if (pwrctl->bInSuspend == _TRUE)
@@ -3143,9 +3070,7 @@ static int route_dump(u32 *gw_addr ,int* gw_index)
 	struct msghdr msg;
 	struct iovec iov;
 	struct sockaddr_nl nladdr;
-#ifdef set_fs
 	mm_segment_t oldfs;
-#endif
 	char *pg;
 	int size = 0;
 
@@ -3185,18 +3110,13 @@ static int route_dump(u32 *gw_addr ,int* gw_index)
 	msg.msg_controllen = 0;
 	msg.msg_flags = MSG_DONTWAIT;
 
-#ifdef set_fs
-	oldfs = get_fs();
-	set_fs(KERNEL_DS);
-#endif
+	oldfs = get_fs(); set_fs(KERNEL_DS);
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0))
 	err = sock_sendmsg(sock, &msg);
 #else
 	err = sock_sendmsg(sock, &msg, sizeof(req));
 #endif
-#ifdef set_fs
 	set_fs(oldfs);
-#endif
 
 	if (err < 0)
 		goto out_sock;
@@ -3222,14 +3142,9 @@ restart:
 		iov_iter_init(&msg.msg_iter, READ, &iov, 1, PAGE_SIZE);
 #endif
 
-#ifdef set_fs
-		oldfs = get_fs();
-		set_fs(KERNEL_DS);
-#endif
+		oldfs = get_fs(); set_fs(KERNEL_DS);
 		err = sock_recvmsg(sock, &msg, PAGE_SIZE, MSG_DONTWAIT);
-#ifdef set_fs
 		set_fs(oldfs);
-#endif
 
 		if (err < 0)
 			goto out_sock_pg;
@@ -3305,18 +3220,13 @@ done:
 		msg.msg_controllen = 0;
 		msg.msg_flags=MSG_DONTWAIT;
 
-#ifdef set_fs
-		oldfs = get_fs();
-		set_fs(KERNEL_DS);
-#endif
+		oldfs = get_fs(); set_fs(KERNEL_DS);
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0))
 		err = sock_sendmsg(sock, &msg);
 #else
 		err = sock_sendmsg(sock, &msg, sizeof(req));
 #endif
-#ifdef set_fs
 		set_fs(oldfs);
-#endif
 
 		if (err > 0)
 			goto restart;
@@ -3463,9 +3373,6 @@ void rtw_dev_unload(PADAPTER padapter)
 		}
 
 		if (!rtw_is_surprise_removed(padapter)) {
-#ifdef CONFIG_BT_COEXIST
-			rtw_btcoex_IpsNotify(padapter, pwrctl->ips_mode_req);
-#endif
 			{
 				//amy modify 20120221 for power seq is different between driver open and ips
 				rtw_hal_deinit(padapter);
@@ -3657,22 +3564,6 @@ int rtw_suspend_common(_adapter *padapter)
 
 	rtw_stop_cmd_thread(padapter);
 	
-#ifdef CONFIG_BT_COEXIST
-	// wait for the latest FW to remove this condition.
-	if (check_fwstate(pmlmepriv, WIFI_AP_STATE) == _TRUE) {
-		rtw_btcoex_SuspendNotify(padapter, 0);
-		DBG_871X("WIFI_AP_STATE\n");
-#ifdef CONFIG_CONCURRENT_MODE
-	} else if (check_buddy_fwstate(padapter, WIFI_AP_STATE)) {
-		rtw_btcoex_SuspendNotify(padapter, 0);
-		DBG_871X("P2P_ROLE_GO\n");
-#endif //CONFIG_CONCURRENT_MODE
-	} else if (check_fwstate(pmlmepriv, WIFI_STATION_STATE) == _TRUE) {
-		rtw_btcoex_SuspendNotify(padapter, 1);
-		DBG_871X("STATION\n");
-	}
-#endif // CONFIG_BT_COEXIST
-
 	rtw_ps_deny_cancel(padapter, PS_DENY_SUSPEND);
 
 	if (check_fwstate(pmlmepriv,WIFI_STATION_STATE) == _TRUE
@@ -3867,10 +3758,6 @@ int rtw_resume_common(_adapter *padapter)
 	} else {
 		rtw_resume_process_normal(padapter);
 	}
-
-	#ifdef CONFIG_BT_COEXIST
-	rtw_btcoex_SuspendNotify(padapter, 0);
-	#endif // CONFIG_BT_COEXIST
 
 	if (pwrpriv) {
 		pwrpriv->bInSuspend = _FALSE;

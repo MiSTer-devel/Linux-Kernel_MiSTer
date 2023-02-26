@@ -1287,10 +1287,6 @@ void rtw_getbbrfreg_cmdrsp_callback(_adapter*	padapter,  struct cmd_obj *pcmd)
 	rtw_mfree((unsigned char*) pcmd->parmbuf, pcmd->cmdsz);
 	rtw_mfree((unsigned char*) pcmd, sizeof(struct cmd_obj));
 	
-#ifdef CONFIG_MP_INCLUDED
-	if (padapter->registrypriv.mp_mode == 1)
-		padapter->mppriv.workparam.bcompleted= _TRUE;
-#endif	
 _func_exit_;		
 }
 
@@ -1301,10 +1297,6 @@ void rtw_readtssi_cmdrsp_callback(_adapter*	padapter,  struct cmd_obj *pcmd)
 	rtw_mfree((unsigned char*) pcmd->parmbuf, pcmd->cmdsz);
 	rtw_mfree((unsigned char*) pcmd, sizeof(struct cmd_obj));
 	
-#ifdef CONFIG_MP_INCLUDED
-	if (padapter->registrypriv.mp_mode == 1)
-		padapter->mppriv.workparam.bcompleted= _TRUE;
-#endif
 
 _func_exit_;
 }
@@ -2545,12 +2537,6 @@ u8 traffic_status_watchdog(_adapter *padapter, u8 from_timer)
 
 	RT_LINK_DETECT_T * link_detect = &pmlmepriv->LinkDetectInfo;
 
-#ifdef CONFIG_BT_COEXIST
-	if (padapter->registrypriv.wifi_spec != 1) {
-		BusyThresholdHigh = 25;
-		BusyThresholdLow = 10;
-	} else
-#endif /* CONFIG_BT_COEXIST */
 	{
 		BusyThresholdHigh = 100;
 		BusyThresholdLow = 75;
@@ -2809,14 +2795,6 @@ void dynamic_chk_wk_hdl(_adapter *padapter)
 
 	//check_hw_pbc(padapter, pdrvextra_cmd->pbuf, pdrvextra_cmd->type);
 
-#ifdef CONFIG_BT_COEXIST
-	//
-	// BT-Coexist
-	//
-	rtw_btcoex_Handler(padapter);
-#endif
-
-	
 #ifdef CONFIG_IPS_CHECK_IN_WD
 	//always call rtw_ps_processor() at last one.
 	if (is_primary_adapter(padapter))
@@ -2845,9 +2823,6 @@ _func_enter_;
 	{
 		case LPS_CTRL_SCAN:
 			//DBG_871X("LPS_CTRL_SCAN \n");
-#ifdef CONFIG_BT_COEXIST
-			rtw_btcoex_ScanNotify(padapter, _TRUE);
-#endif // CONFIG_BT_COEXIST
 			if (check_fwstate(pmlmepriv, _FW_LINKED) == _TRUE)
 			{
 				// connect
@@ -2864,25 +2839,16 @@ _func_enter_;
 			// Reset LPS Setting
 			pwrpriv->LpsIdleCount = 0;
 			rtw_hal_set_hwreg(padapter, HW_VAR_H2C_FW_JOINBSSRPT, (u8 *)(&mstatus));
-#ifdef CONFIG_BT_COEXIST
-			rtw_btcoex_MediaStatusNotify(padapter, mstatus);
-#endif // CONFIG_BT_COEXIST
 			break;
 		case LPS_CTRL_DISCONNECT:
 			//DBG_871X("LPS_CTRL_DISCONNECT \n");
 			mstatus = 0;//disconnect
-#ifdef CONFIG_BT_COEXIST
-			rtw_btcoex_MediaStatusNotify(padapter, mstatus);
-#endif // CONFIG_BT_COEXIST
 			LPS_Leave(padapter, "LPS_CTRL_DISCONNECT");
 			rtw_hal_set_hwreg(padapter, HW_VAR_H2C_FW_JOINBSSRPT, (u8 *)(&mstatus));
 			break;
 		case LPS_CTRL_SPECIAL_PACKET:
 			//DBG_871X("LPS_CTRL_SPECIAL_PACKET \n");
 			pwrpriv->DelayLPSLastTimeStamp = rtw_get_current_time();
-#ifdef CONFIG_BT_COEXIST
-			rtw_btcoex_SpecialPacketNotify(padapter, PACKET_DHCP);
-#endif // CONFIG_BT_COEXIST
 			LPS_Leave(padapter, "LPS_CTRL_SPECIAL_PACKET");
 			break;
 		case LPS_CTRL_LEAVE:
@@ -3008,10 +2974,6 @@ void rtw_lps_change_dtim_hdl(_adapter *padapter, u8 dtim)
 	if(dtim <=0 || dtim > 16)
 		return;
 
-#ifdef CONFIG_BT_COEXIST
-	if (rtw_btcoex_IsBtControlLps(padapter) == _TRUE)
-		return;
-#endif
 
 #ifdef CONFIG_LPS_LCLK
 	_enter_pwrlock(&pwrpriv->lock);
@@ -3683,160 +3645,6 @@ apply:
 
 #endif /* CONFIG_AP_MODE */
 
-#ifdef CONFIG_BT_COEXIST
-struct btinfo {
-	u8 cid;
-	u8 len;
-
-	u8 bConnection:1;
-	u8 bSCOeSCO:1;
-	u8 bInQPage:1;
-	u8 bACLBusy:1;
-	u8 bSCOBusy:1;
-	u8 bHID:1;
-	u8 bA2DP:1;
-	u8 bFTP:1;
-
-	u8 retry_cnt:4;
-	u8 rsvd_34:1;
-	u8 rsvd_35:1;
-	u8 rsvd_36:1;
-	u8 rsvd_37:1;
-
-	u8 rssi;
-
-	u8 rsvd_50:1;
-	u8 rsvd_51:1;
-	u8 rsvd_52:1;
-	u8 rsvd_53:1;
-	u8 rsvd_54:1;
-	u8 rsvd_55:1;
-	u8 eSCO_SCO:1;
-	u8 Master_Slave:1;
-
-	u8 rsvd_6;
-	u8 rsvd_7;
-};
-
-void btinfo_evt_dump(void *sel, void *buf)
-{
-	struct btinfo *info = (struct btinfo *)buf;
-	
-	DBG_871X_SEL_NL(sel, "cid:0x%02x, len:%u\n", info->cid, info->len);
-
-	if (info->len > 2)
-		DBG_871X_SEL_NL(sel, "byte2:%s%s%s%s%s%s%s%s\n"
-			, info->bConnection?"bConnection ":""
-			, info->bSCOeSCO?"bSCOeSCO ":""
-			, info->bInQPage?"bInQPage ":""
-			, info->bACLBusy?"bACLBusy ":""
-			, info->bSCOBusy?"bSCOBusy ":""
-			, info->bHID?"bHID ":""
-			, info->bA2DP?"bA2DP ":""
-			, info->bFTP?"bFTP":""
-		);
-
-	if (info->len > 3)
-		DBG_871X_SEL_NL(sel, "retry_cnt:%u\n", info->retry_cnt);
-
-	if (info->len > 4)
-		DBG_871X_SEL_NL(sel, "rssi:%u\n", info->rssi);
-
-	if (info->len > 5)
-		DBG_871X_SEL_NL(sel, "byte5:%s%s\n"
-			, info->eSCO_SCO?"eSCO_SCO ":""
-			, info->Master_Slave?"Master_Slave ":""
-		);
-}
-
-static void rtw_btinfo_hdl(_adapter *adapter, u8 *buf, u16 buf_len)
-{
-	#define BTINFO_WIFI_FETCH 0x23
-	#define BTINFO_BT_AUTO_RPT 0x27
-#ifdef CONFIG_BT_COEXIST_SOCKET_TRX
-	struct btinfo_8761ATV *info = (struct btinfo_8761ATV *)buf;
-#else //!CONFIG_BT_COEXIST_SOCKET_TRX
-	struct btinfo *info = (struct btinfo *)buf;
-#endif //CONFIG_BT_COEXIST_SOCKET_TRX
-	u8 cmd_idx;
-	u8 len;
-
-	cmd_idx = info->cid;
-
-	if (info->len > buf_len-2) {
-		rtw_warn_on(1);
-		len = buf_len-2;
-	} else {
-		len = info->len;
-	}
-
-//#define DBG_PROC_SET_BTINFO_EVT
-#ifdef DBG_PROC_SET_BTINFO_EVT
-#ifdef CONFIG_BT_COEXIST_SOCKET_TRX
-	DBG_871X("%s: btinfo[0]=%x,btinfo[1]=%x,btinfo[2]=%x,btinfo[3]=%x btinfo[4]=%x,btinfo[5]=%x,btinfo[6]=%x,btinfo[7]=%x\n"
-				, __func__, buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
-#else//!CONFIG_BT_COEXIST_SOCKET_TRX
-	btinfo_evt_dump(RTW_DBGDUMP, info);
-#endif //CONFIG_BT_COEXIST_SOCKET_TRX
-#endif // DBG_PROC_SET_BTINFO_EVT
-
-	/* transform BT-FW btinfo to WiFI-FW C2H format and notify */
-	if (cmd_idx == BTINFO_WIFI_FETCH)
-		buf[1] = 0;
-	else if (cmd_idx == BTINFO_BT_AUTO_RPT)
-		buf[1] = 2;
-#ifdef CONFIG_BT_COEXIST_SOCKET_TRX
-	else if(0x01 == cmd_idx || 0x02 == cmd_idx)
-		buf[1] = buf[0];
-#endif //CONFIG_BT_COEXIST_SOCKET_TRX
-	rtw_btcoex_BtInfoNotify(adapter ,len+1, &buf[1]);
-}
-
-u8 rtw_btinfo_cmd(_adapter *adapter, u8 *buf, u16 len)
-{
-	struct cmd_obj *ph2c;
-	struct drvextra_cmd_parm *pdrvextra_cmd_parm;
-	u8 *btinfo;
-	struct cmd_priv *pcmdpriv = &adapter->cmdpriv;
-	u8	res = _SUCCESS;
-
-	ph2c = (struct cmd_obj*)rtw_zmalloc(sizeof(struct cmd_obj));
-	if (ph2c == NULL) {
-		res = _FAIL;
-		goto exit;
-	}
-
-	pdrvextra_cmd_parm = (struct drvextra_cmd_parm*)rtw_zmalloc(sizeof(struct drvextra_cmd_parm));
-	if (pdrvextra_cmd_parm == NULL) {
-		rtw_mfree((u8*)ph2c, sizeof(struct cmd_obj));
-		res = _FAIL;
-		goto exit;
-	}
-
-	btinfo = rtw_zmalloc(len);
-	if (btinfo == NULL) {
-		rtw_mfree((u8*)ph2c, sizeof(struct cmd_obj));
-		rtw_mfree((u8*)pdrvextra_cmd_parm, sizeof(struct drvextra_cmd_parm));
-		res = _FAIL;
-		goto exit;
-	}
-
-	pdrvextra_cmd_parm->ec_id = BTINFO_WK_CID;
-	pdrvextra_cmd_parm->type = 0;
-	pdrvextra_cmd_parm->size = len;
-	pdrvextra_cmd_parm->pbuf = btinfo;
-
-	_rtw_memcpy(btinfo, buf, len);
-
-	init_h2fwcmd_w_parm_no_rsp(ph2c, pdrvextra_cmd_parm, GEN_CMD_CODE(_Set_Drv_Extra));
-
-	res = rtw_enqueue_cmd(pcmdpriv, ph2c);
-
-exit:
-	return res;
-}
-#endif //CONFIG_BT_COEXIST
-
 //#ifdef CONFIG_C2H_PACKET_EN
 u8 rtw_c2h_packet_wk_cmd(PADAPTER padapter, u8 *pbuf, u16 length)
 {
@@ -3876,149 +3684,6 @@ u8 rtw_c2h_packet_wk_cmd(PADAPTER padapter, u8 *pbuf, u16 length)
 	init_h2fwcmd_w_parm_no_rsp(ph2c, pdrvextra_cmd_parm, GEN_CMD_CODE(_Set_Drv_Extra));
 
 	res = rtw_enqueue_cmd(pcmdpriv, ph2c);
-
-exit:
-	return res;
-}
-
-static s32 rtw_mp_cmd_hdl(_adapter *padapter, u8 mp_cmd_id)
-{
-	HAL_DATA_TYPE	*pHalData = GET_HAL_DATA(padapter);
-	int ret = H2C_SUCCESS;
-	u8 rfreg0;
-
-	if (mp_cmd_id == MP_START) {
-		if (padapter->registrypriv.mp_mode == 0) {
-			rtw_hal_deinit(padapter);
-			padapter->registrypriv.mp_mode = 1;
-#ifdef CONFIG_RF_POWER_TRIM
-			if (!IS_HARDWARE_TYPE_8814A(padapter) && !IS_HARDWARE_TYPE_8822B(padapter)) {
-				padapter->registrypriv.RegPwrTrimEnable = 1;
-				rtw_hal_read_chip_info(padapter);
-			}
-#endif /*CONFIG_RF_POWER_TRIM*/
-			rtw_hal_init(padapter);
-		}
-
-		if (padapter->registrypriv.mp_mode == 0) {
-			ret = H2C_REJECTED;
-			goto exit;
-		}
-
-		if (padapter->mppriv.mode == MP_OFF) {
-			if (mp_start_test(padapter) == _FAIL) {
-				ret = H2C_REJECTED;
-				goto exit;
-			}
-			padapter->mppriv.mode = MP_ON;
-			MPT_PwrCtlDM(padapter, 0);
-		}
-		padapter->mppriv.bmac_filter = _FALSE;
-#ifdef CONFIG_RTL8723B
-#ifdef CONFIG_USB_HCI
-		rtw_write32(padapter, 0x765, 0x0000);
-		rtw_write32(padapter, 0x948, 0x0280);
-#else
-		rtw_write32(padapter, 0x765, 0x0000);
-		rtw_write32(padapter, 0x948, 0x0000);
-#endif
-#ifdef CONFIG_FOR_RTL8723BS_VQ0
-		rtw_write32(padapter, 0x765, 0x0000);
-		rtw_write32(padapter, 0x948, 0x0280);
-#endif
-		rtw_write8(padapter, 0x66, 0x27); /*Open BT uart Log*/
-		rtw_write8(padapter, 0xc50, 0x20); /*for RX init Gain*/
-#endif
-		ODM_Write_DIG(&pHalData->odmpriv, 0x20);
-
-#ifdef CONFIG_RTL8188F
-		DBG_871X("Set reg 0x88c, 0x58, 0x00\n");
-		rfreg0 = PHY_QueryRFReg(padapter, RF_PATH_A, 0x0, 0x1f);
-		PHY_SetBBReg(padapter, 0x88c, BIT21|BIT20, 0x3);
-		PHY_SetRFReg(padapter, RF_PATH_A, 0x58, BIT1, 0x1);
-		PHY_SetRFReg(padapter, RF_PATH_A, 0x0, 0xF001f, 0x2001f);
-		rtw_msleep_os(200);
-		PHY_SetRFReg(padapter, RF_PATH_A, 0x0, 0xF001f, 0x30000 | rfreg0);
-		PHY_SetRFReg(padapter, RF_PATH_A, 0x58, BIT1, 0x0);
-		PHY_SetBBReg(padapter, 0x88c, BIT21|BIT20, 0x0);
-		rtw_msleep_os(1000);
-#endif
-
-	} else if (mp_cmd_id == MP_STOP) {
-		if (padapter->registrypriv.mp_mode == 1) {
-			MPT_DeInitAdapter(padapter);
-			rtw_hal_deinit(padapter);
-			padapter->registrypriv.mp_mode = 0;
-			rtw_hal_init(padapter);
-		}
-
-		if (padapter->mppriv.mode != MP_OFF) {
-			mp_stop_test(padapter);
-			padapter->mppriv.mode = MP_OFF;
-		}
-
-	} else {
-		DBG_871X(FUNC_ADPT_FMT"invalid id:%d\n", FUNC_ADPT_ARG(padapter), mp_cmd_id);
-		ret = H2C_PARAMETERS_ERROR;
-		rtw_warn_on(1);
-	}
-
-exit:
-	return ret;
-}
-
-u8 rtw_mp_cmd(_adapter *adapter, u8 mp_cmd_id, u8 flags)
-{
-	struct cmd_obj *cmdobj;
-	struct drvextra_cmd_parm *parm;
-	struct cmd_priv *pcmdpriv = &adapter->cmdpriv;
-	struct submit_ctx sctx;
-	u8	res = _SUCCESS;
-
-	parm = (struct drvextra_cmd_parm *)rtw_zmalloc(sizeof(struct drvextra_cmd_parm));
-	if (parm == NULL) {
-		res = _FAIL;
-		goto exit;
-	}
-
-	parm->ec_id = MP_CMD_WK_CID;
-	parm->type = mp_cmd_id;
-	parm->size = 0;
-	parm->pbuf = NULL;
-
-	if (flags & RTW_CMDF_DIRECTLY) {
-		/* no need to enqueue, do the cmd hdl directly and free cmd parameter */
-		if (H2C_SUCCESS != rtw_mp_cmd_hdl(adapter, mp_cmd_id))
-			res = _FAIL;
-		rtw_mfree((u8 *)parm, sizeof(*parm));
-	} else {
-		/* need enqueue, prepare cmd_obj and enqueue */
-		cmdobj = (struct cmd_obj *)rtw_zmalloc(sizeof(*cmdobj));
-		if (cmdobj == NULL) {
-			res = _FAIL;
-			rtw_mfree((u8 *)parm, sizeof(*parm));
-			goto exit;
-		}
-
-		init_h2fwcmd_w_parm_no_rsp(cmdobj, parm, GEN_CMD_CODE(_Set_Drv_Extra));
-
-		if (flags & RTW_CMDF_WAIT_ACK) {
-			cmdobj->sctx = &sctx;
-			rtw_sctx_init(&sctx, 10 * 1000);
-		}
-
-		res = rtw_enqueue_cmd(pcmdpriv, cmdobj);
-
-		if (res == _SUCCESS && (flags & RTW_CMDF_WAIT_ACK)) {
-			rtw_sctx_wait(&sctx, __func__);
-			_enter_critical_mutex(&pcmdpriv->sctx_mutex, NULL);
-			if (sctx.status == RTW_SCTX_SUBMITTED)
-				cmdobj->sctx = NULL;
-			_exit_critical_mutex(&pcmdpriv->sctx_mutex, NULL);
-			if (sctx.status != RTW_SCTX_DONE_SUCCESS)
-				res = _FAIL;
-		}
-	}
 
 exit:
 	return res;
@@ -4630,11 +4295,6 @@ u8 rtw_drvextra_cmd_hdl(_adapter *padapter, unsigned char *pbuf)
 		case DM_RA_MSK_WK_CID:
 			rtw_dm_ra_mask_hdl(padapter, (struct sta_info *)pdrvextra_cmd->pbuf);
 			break;
-#ifdef CONFIG_BT_COEXIST
-		case BTINFO_WK_CID:
-			rtw_btinfo_hdl(padapter, pdrvextra_cmd->pbuf, pdrvextra_cmd->size);
-			break;
-#endif
 #ifdef CONFIG_DFS_MASTER
 		case DFS_MASTER_WK_CID:
 			rtw_dfs_master_hdl(padapter);
@@ -4647,15 +4307,6 @@ u8 rtw_drvextra_cmd_hdl(_adapter *padapter, unsigned char *pbuf)
 	case EN_HW_UPDATE_TSF_WK_CID:
 		rtw_hal_set_hwreg(padapter, HW_VAR_EN_HW_UPDATE_TSF, NULL);
 		break;
-
-	case MP_CMD_WK_CID:
-		ret = rtw_mp_cmd_hdl(padapter, pdrvextra_cmd->type);
-		break;
-#ifdef CONFIG_RTW_CUSTOMER_STR
-	case CUSTOMER_STR_WK_CID:
-		ret = rtw_customer_str_cmd_hdl(padapter, pdrvextra_cmd->type, pdrvextra_cmd->pbuf);
-		break;
-#endif
 
 		default:
 			break;
@@ -4877,10 +4528,6 @@ void rtw_getrttbl_cmd_cmdrsp_callback(_adapter*	padapter,  struct cmd_obj *pcmd)
 _func_enter_;
 
 	rtw_free_cmd_obj(pcmd);
-#ifdef CONFIG_MP_INCLUDED
-	if (padapter->registrypriv.mp_mode == 1)
-		padapter->mppriv.workparam.bcompleted=_TRUE;
-#endif
 
 _func_exit_;
 

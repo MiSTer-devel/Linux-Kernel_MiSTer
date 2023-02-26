@@ -23,9 +23,6 @@
 #if 1//def  CONFIG_SINGLE_IMG
 
 #include "../hal/phydm/phydm_precomp.h"
-#ifdef CONFIG_BT_COEXIST
-#include <hal_btcoex.h>
-#endif
 
 #ifdef CONFIG_SDIO_HCI
 #include <hal_sdio.h>
@@ -579,11 +576,6 @@ typedef struct hal_com_data
 	struct sreset_priv srestpriv;
 #endif //#ifdef DBG_CONFIG_ERROR_DETECT
 
-#ifdef CONFIG_BT_COEXIST
-	// For bluetooth co-existance
-	BT_COEXIST		bt_coexist;
-#endif // CONFIG_BT_COEXIST
-
 #if defined(CONFIG_RTL8723B) || defined(CONFIG_RTL8703B) || defined(CONFIG_RTL8188F)
 	#ifndef CONFIG_PCI_HCI	// mutual exclusive with PCI -- so they're SDIO and GSPI 
 	// Interrupt relatd register information.
@@ -591,28 +583,6 @@ typedef struct hal_com_data
 	u32			SysIntrMask;
 	#endif
 #endif /*endif CONFIG_RTL8723B	*/
-
-#ifdef CONFIG_LOAD_PHY_PARA_FROM_FILE
-	char	para_file_buf[MAX_PARA_FILE_BUF_LEN];
-	char *mac_reg;
-	u32	mac_reg_len;
-	char *bb_phy_reg;
-	u32	bb_phy_reg_len;
-	char *bb_agc_tab;
-	u32	bb_agc_tab_len;
-	char *bb_phy_reg_pg;
-	u32	bb_phy_reg_pg_len;
-	char *bb_phy_reg_mp;
-	u32	bb_phy_reg_mp_len;
-	char *rf_radio_a;
-	u32	rf_radio_a_len;
-	char *rf_radio_b;
-	u32	rf_radio_b_len;
-	char *rf_tx_pwr_track;
-	u32	rf_tx_pwr_track_len;
-	char *rf_tx_pwr_lmt;
-	u32	rf_tx_pwr_lmt_len;
-#endif
 
 #ifdef CONFIG_BACKGROUND_NOISE_MONITOR
 	s16 noise[ODM_MAX_CHANNEL_NUM];

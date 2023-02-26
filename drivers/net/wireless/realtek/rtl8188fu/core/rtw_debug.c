@@ -100,19 +100,6 @@ void dump_drv_cfg(void *sel)
 	DBG_871X_SEL_NL(sel, "CONFIG_POWER_SAVING\n");
 #endif
 
-#ifdef CONFIG_LOAD_PHY_PARA_FROM_FILE
-	DBG_871X_SEL_NL(sel, "LOAD_PHY_PARA_FROM_FILE - REALTEK_CONFIG_PATH=%s\n", REALTEK_CONFIG_PATH);
-	#if defined(CONFIG_MULTIDRV) || defined(REALTEK_CONFIG_PATH_WITH_IC_NAME_FOLDER)
-	DBG_871X_SEL_NL(sel, "LOAD_PHY_PARA_FROM_FILE - REALTEK_CONFIG_PATH_WITH_IC_NAME_FOLDER\n");
-	#endif
-	#ifdef CONFIG_CALIBRATE_TX_POWER_BY_REGULATORY
-	DBG_871X_SEL_NL(sel, "CONFIG_CALIBRATE_TX_POWER_BY_REGULATORY\n");
-	#endif
-	#ifdef CONFIG_CALIBRATE_TX_POWER_TO_MAX
-	DBG_871X_SEL_NL(sel, "CONFIG_CALIBRATE_TX_POWER_TO_MAX\n");
-	#endif
-#endif
-
 #ifdef CONFIG_DISABLE_ODM
 	DBG_871X_SEL_NL(sel, "CONFIG_DISABLE_ODM\n");
 #endif
@@ -131,12 +118,6 @@ void dump_drv_cfg(void *sel)
 #endif
 
 #ifdef CONFIG_USB_HCI
-	#ifdef CONFIG_SUPPORT_USB_INT	
-	DBG_871X_SEL_NL(sel, "CONFIG_SUPPORT_USB_INT\n");
-	#endif
-	#ifdef CONFIG_USB_INTERRUPT_IN_PIPE		
-	DBG_871X_SEL_NL(sel, "CONFIG_USB_INTERRUPT_IN_PIPE\n");
-	#endif
 	#ifdef CONFIG_USB_TX_AGGREGATION
 	DBG_871X_SEL_NL(sel, "CONFIG_USB_TX_AGGREGATION\n");
 	#endif
@@ -1111,16 +1092,6 @@ ssize_t proc_set_survey_info(struct file *file, const char __user *buffer, size_
 	if (count < 1)
 		return -EFAULT;
 
-#ifdef CONFIG_MP_INCLUDED
-		if ((padapter->registrypriv.mp_mode == 1)
-#ifdef CONFIG_CONCURRENT_MODE
-		|| ((padapter->pbuddy_adapter) && (padapter->pbuddy_adapter->registrypriv.mp_mode == 1))
-#endif			
-		){
-			DBG_871X(FUNC_ADPT_FMT ": MP mode block Scan request\n", FUNC_ADPT_ARG(padapter));	
-			goto exit;
-		}
-#endif
 	rtw_ps_deny(padapter, PS_DENY_SCAN);
 	if (_FAIL == rtw_pwr_wakeup(padapter))
 		goto exit;
@@ -2661,109 +2632,6 @@ ssize_t proc_set_best_channel(struct file *file, const char __user *buffer, size
 	return count;
 }
 #endif /* CONFIG_FIND_BEST_CHANNEL */
-
-#ifdef CONFIG_BT_COEXIST
-int proc_get_btcoex_dbg(struct seq_file *m, void *v)
-{
-	struct net_device *dev = m->private;
-	PADAPTER padapter;
-	char buf[512] = {0};
-	padapter = (PADAPTER)rtw_netdev_priv(dev);
-
-	rtw_btcoex_GetDBG(padapter, buf, 512);
-
-	DBG_871X_SEL(m, "%s", buf);
-
-	return 0;
-}
-
-ssize_t proc_set_btcoex_dbg(struct file *file, const char __user *buffer, size_t count, loff_t *pos, void *data)
-{
-	struct net_device *dev = data;
-	PADAPTER padapter;
-	u8 tmp[80] = {0};
-	u32 module[2] = {0};
-	u32 num;
-
-	padapter = (PADAPTER)rtw_netdev_priv(dev);
-
-//	DBG_871X("+" FUNC_ADPT_FMT "\n", FUNC_ADPT_ARG(padapter));
-
-	if (NULL == buffer)
-	{
-		DBG_871X(FUNC_ADPT_FMT ": input buffer is NULL!\n",
-			FUNC_ADPT_ARG(padapter));
-		
-		return -EFAULT;
-	}
-
-	if (count < 1)
-	{
-		DBG_871X(FUNC_ADPT_FMT ": input length is 0!\n",
-			FUNC_ADPT_ARG(padapter));
-
-		return -EFAULT;
-	}
-
-	num = count;
-	if (num > (sizeof(tmp) - 1))
-		num = (sizeof(tmp) - 1);
-
-	if (copy_from_user(tmp, buffer, num))
-	{
-		DBG_871X(FUNC_ADPT_FMT ": copy buffer from user space FAIL!\n",
-			FUNC_ADPT_ARG(padapter));
-
-		return -EFAULT;
-	}
-
-	num = sscanf(tmp, "%x %x", module, module+1);
-	if (1 == num)
-	{
-		if (0 == module[0])
-			_rtw_memset(module, 0, sizeof(module));
-		else
-			_rtw_memset(module, 0xFF, sizeof(module));
-	}
-	else if (2 != num)
-	{
-		DBG_871X(FUNC_ADPT_FMT ": input(\"%s\") format incorrect!\n",
-			FUNC_ADPT_ARG(padapter), tmp);
-
-		if (0 == num)
-			return -EFAULT;
-	}
-
-	DBG_871X(FUNC_ADPT_FMT ": input 0x%08X 0x%08X\n",
-		FUNC_ADPT_ARG(padapter), module[0], module[1]);
-	rtw_btcoex_SetDBG(padapter, module);
-
-	return count;
-}
-
-int proc_get_btcoex_info(struct seq_file *m, void *v)
-{
-	struct net_device *dev = m->private;
-	PADAPTER padapter;
-	const u32 bufsize = 30*100;
-	u8 *pbuf = NULL;
-
-	padapter = (PADAPTER)rtw_netdev_priv(dev);
-
-	pbuf = rtw_zmalloc(bufsize);
-	if (NULL == pbuf) {
-		return -ENOMEM;
-	}
-
-	rtw_btcoex_DisplayBtCoexInfo(padapter, pbuf, bufsize);
-
-	DBG_871X_SEL(m, "%s\n", pbuf);
-	
-	rtw_mfree(pbuf, bufsize);
-
-	return 0;
-}
-#endif /* CONFIG_BT_COEXIST */
 
 #if defined(DBG_CONFIG_ERROR_DETECT)
 int proc_get_sreset(struct seq_file *m, void *v)

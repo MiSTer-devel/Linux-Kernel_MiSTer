@@ -150,10 +150,6 @@ typedef struct _ADAPTER _adapter, ADAPTER,*PADAPTER;
 #include <ethernet.h>
 #include <circ_buf.h>
 
-#ifdef CONFIG_BT_COEXIST
-#include <rtw_btcoex.h>
-#endif // CONFIG_BT_COEXIST
-
 #define SPEC_DEV_ID_NONE BIT(0)
 #define SPEC_DEV_ID_DISABLE_HT BIT(1)
 #define SPEC_DEV_ID_ENABLE_PS BIT(2)
@@ -197,11 +193,6 @@ struct registry_priv
 	u8	short_retry_lmt;
 	u16	busy_thresh;
 	u8	ack_policy;
-	u8	mp_mode;
-#if defined(CONFIG_MP_INCLUDED) && defined(CONFIG_RTW_CUSTOMER_STR)
-	u8 mp_customer_str;
-#endif
-	u8  mp_dm;
 	u8	software_encrypt;
 	u8	software_decrypt;
 	#ifdef CONFIG_TX_EARLY_MODE
@@ -260,13 +251,6 @@ struct registry_priv
 	char alpha2[2];
 	u8	channel_plan;
 	u8  full_ch_in_p2p_handshake; /* 0: reply only softap channel, 1: reply full channel list*/
-#ifdef CONFIG_BT_COEXIST
-	u8	btcoex;
-	u8	bt_iso;
-	u8	bt_sco;
-	u8	bt_ampdu;
-	s8	ant_num;
-#endif
 	BOOLEAN	bAcceptAddbaReq;
 
 	u8	antdiv_cfg;
@@ -331,11 +315,6 @@ struct registry_priv
 	u8  check_fw_ps;
 	u8	RegPwrTrimEnable;
 	
-#ifdef CONFIG_LOAD_PHY_PARA_FROM_FILE
-	u8	load_phy_file;
-	u8	RegDecryptCustomFile;
-#endif
-
 #ifdef CONFIG_MULTI_VIR_IFACES
 	u8 ext_iface_num;//primary/secondary iface is excluded
 #endif
@@ -1002,10 +981,6 @@ struct _ADAPTER{
 	struct wifi_display_info wfd_info;
 #endif //CONFIG_WFD
 
-#ifdef CONFIG_BT_COEXIST_SOCKET_TRX
-	struct bt_coex_info coex_info;
-#endif //CONFIG_BT_COEXIST_SOCKET_TRX
-	
 	ERROR_CODE		LastError; /* <20130613, Kordan> Only the functions associated with MP records the error code by now. */
 	
 	PVOID			HalData;

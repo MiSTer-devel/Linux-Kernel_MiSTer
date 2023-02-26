@@ -46,16 +46,7 @@ void rtw_hal_read_chip_info(_adapter *padapter)
 	u8 hci_type = rtw_get_intf_type(padapter);
 	u32 start = rtw_get_current_time();
 
-	/*  before access eFuse, make sure card enable has been called */
-	if ((hci_type == RTW_SDIO || hci_type == RTW_GSPI)
-		&& !rtw_is_hw_init_completed(padapter))
-		rtw_hal_power_on(padapter);
-
 	padapter->HalFunc.read_adapter_info(padapter);
-
-	if ((hci_type == RTW_SDIO || hci_type == RTW_GSPI)
-		&& !rtw_is_hw_init_completed(padapter))
-		rtw_hal_power_off(padapter);
 
 	DBG_871X("%s in %d ms\n", __func__, rtw_get_passing_time_ms(start));
 }
@@ -104,9 +95,6 @@ void rtw_hal_data_deinit(_adapter *padapter)
 	if (is_primary_adapter(padapter)) {
 		if (padapter->HalData) 
 		{
-			#ifdef CONFIG_LOAD_PHY_PARA_FROM_FILE
-			phy_free_filebuf(padapter);				
-			#endif
 			rtw_vmfree(padapter->HalData, padapter->hal_data_sz);
 			padapter->HalData = NULL;
 			padapter->hal_data_sz = 0;
@@ -526,12 +514,6 @@ s32	rtw_hal_interrupt_handler(_adapter *padapter)
 	return ret;
 }
 #endif
-#if defined(CONFIG_USB_HCI) && defined(CONFIG_SUPPORT_USB_INT)
-void	rtw_hal_interrupt_handler(_adapter *padapter, u16 pkt_len, u8 *pbuf)
-{
-	padapter->HalFunc.interrupt_handler(padapter, pkt_len, pbuf);
-}
-#endif
 
 void	rtw_hal_set_bwmode(_adapter *padapter, CHANNEL_WIDTH Bandwidth, u8 Offset)
 {
@@ -784,7 +766,7 @@ s32 rtw_hal_fill_h2c_cmd(PADAPTER padapter, u8 ElementID, u32 CmdLen, u8 *pCmdBu
 
 	if (pri_adapter->bFWReady == _TRUE)
 		return padapter->HalFunc.fill_h2c_cmd(padapter, ElementID, CmdLen, pCmdBuffer);
-	else if (padapter->registrypriv.mp_mode == 0)
+	else 
 		DBG_871X_LEVEL(_drv_always_, FUNC_ADPT_FMT" FW doesn't exit when no MP mode, by pass H2C id:0x%02x\n"
 			, FUNC_ADPT_ARG(padapter), ElementID);
 	return _FAIL;
@@ -926,12 +908,6 @@ u8 rtw_hal_ops_check(_adapter *padapter)
 		ret = _FAIL;
 	}
 	#endif/*#if defined(CONFIG_PCI_HCI)*/
-	#if (defined(CONFIG_PCI_HCI)) || (defined(CONFIG_USB_HCI) && defined(CONFIG_SUPPORT_USB_INT))
-	if (NULL == padapter->HalFunc.interrupt_handler) {
-		rtw_hal_error_msg("interrupt_handler");
-		ret = _FAIL;
-	}
-	#endif /*#if (defined(CONFIG_PCI_HCI)) || (defined(CONFIG_USB_HCI) && defined(CONFIG_SUPPORT_USB_INT))*/
 
 	#if defined(CONFIG_PCI_HCI) || defined (CONFIG_SDIO_HCI) || defined (CONFIG_GSPI_HCI)	
 	if (NULL == padapter->HalFunc.enable_interrupt) {

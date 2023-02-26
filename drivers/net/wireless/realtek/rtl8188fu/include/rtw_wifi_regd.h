@@ -20,8 +20,8 @@ enum country_code_type_t {
 	COUNTRY_CODE_MAX
 }; 
 
-void rtw_regd_init(struct wiphy *wiphy);
-void rtw_reg_notify_by_driver(struct wiphy *wiphy);
+int rtw_regd_init(_adapter *padapter);
+void rtw_reg_notify_by_driver(_adapter *adapter);
 
 #endif /* __RTW_WIFI_REGD_H__ */
 
