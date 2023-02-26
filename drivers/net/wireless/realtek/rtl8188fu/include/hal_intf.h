@@ -22,7 +22,10 @@
 
 
 enum RTL871X_HCI_TYPE {
+	RTW_PCIE	= BIT0,
 	RTW_USB 	= BIT1,
+	RTW_SDIO 	= BIT2,
+	RTW_GSPI	= BIT3,
 };
 
 enum _CHIP_TYPE {
@@ -264,6 +267,10 @@ struct hal_ops {
 	u8	(*check_ips_status)(_adapter *padapter);
 #if defined(CONFIG_PCI_HCI)
 	s32	(*interrupt_handler)(_adapter *padapter);
+#endif
+
+#if defined(CONFIG_USB_HCI) && defined(CONFIG_SUPPORT_USB_INT)
+	void	(*interrupt_handler)(_adapter *padapter, u16 pkt_len, u8 *pbuf);
 #endif
 
 #if defined(CONFIG_PCI_HCI)
@@ -600,6 +607,9 @@ void	rtw_hal_write_rfreg(_adapter *padapter, u32 eRFPath, u32 RegAddr, u32 BitMa
 
 #if defined(CONFIG_PCI_HCI)
 s32	rtw_hal_interrupt_handler(_adapter *padapter);
+#endif
+#if  defined(CONFIG_USB_HCI) && defined(CONFIG_SUPPORT_USB_INT)
+void	rtw_hal_interrupt_handler(_adapter *padapter, u16 pkt_len, u8 *pbuf);
 #endif
 
 void	rtw_hal_set_bwmode(_adapter *padapter, CHANNEL_WIDTH Bandwidth, u8 Offset);

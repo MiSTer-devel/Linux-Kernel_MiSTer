@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0
 EXTRA_CFLAGS += $(USER_EXTRA_CFLAGS)
-EXTRA_CFLAGS += -O1
+EXTRA_CFLAGS += -O1 -Wno-vla
 #EXTRA_CFLAGS += -O3
 #EXTRA_CFLAGS += -Wall
 #EXTRA_CFLAGS += -Wextra
-#EXTRA_CFLAGS += -Werror
+EXTRA_CFLAGS += -Wno-error
 #EXTRA_CFLAGS += -pedantic
 #EXTRA_CFLAGS += -Wshadow -Wpointer-arith -Wcast-qual -Wstrict-prototypes -Wmissing-prototypes
 
@@ -17,8 +17,8 @@ EXTRA_CFLAGS += -Wno-unused
 #EXTRA_CFLAGS += -Wno-uninitialized
 #EXTRA_CFLAGS += -Wno-error=date-time	# Fix compile error on gcc 4.9 and later
 
-EXTRA_CFLAGS += -I$(src)/include
-EXTRA_CFLAGS += -I$(src)/hal/phydm
+EXTRA_CFLAGS += -I$(srctree)/$(src)/include
+EXTRA_CFLAGS += -I$(srctree)/$(src)/hal/phydm
 
 EXTRA_LDFLAGS += --strip-debug
 
@@ -41,11 +41,13 @@ CONFIG_POWER_SAVING = y
 CONFIG_USB_AUTOSUSPEND = n
 CONFIG_HW_PWRP_DETECTION = n
 CONFIG_WIFI_TEST = n
+CONFIG_BT_COEXIST = n
 CONFIG_INTEL_WIDI = n
 CONFIG_WAPI_SUPPORT = n
 CONFIG_EFUSE_CONFIG_FILE = n
 CONFIG_EXT_CLK = n
 CONFIG_TRAFFIC_PROTECT = y
+CONFIG_LOAD_PHY_PARA_FROM_FILE = y
 CONFIG_CALIBRATE_TX_POWER_BY_REGULATORY = n
 CONFIG_CALIBRATE_TX_POWER_TO_MAX = y
 CONFIG_RTW_ADAPTIVITY_EN = disable
@@ -130,13 +132,19 @@ _OS_INTFS_FILES :=	os_dep/osdep_service.o \
 			os_dep/linux/mlme_linux.o \
 			os_dep/linux/recv_linux.o \
 			os_dep/linux/ioctl_cfg80211.o \
-			os_dep/linux/wifi_regd.o
+			os_dep/linux/wifi_regd.o \
+			os_dep/linux/rtw_proc.o
+
+ifeq ($(CONFIG_MP_INCLUDED), y)
+_OS_INTFS_FILES += os_dep/linux/ioctl_mp.o
+endif
 
 _HAL_INTFS_FILES :=	hal/hal_intf.o \
 			hal/hal_com.o \
 			hal/hal_com_phycfg.o \
 			hal/hal_phy.o \
 			hal/hal_dm.o \
+			hal/hal_btcoex.o \
 			hal/hal_mp.o \
 			hal/hal_hci/hal_usb.o \
 			hal/led/hal_usb_led.o
@@ -163,6 +171,21 @@ _OUTSRC_FILES := hal/phydm/phydm_debug.o	\
 		hal/phydm/phydm_beamforming.o\
 		hal/phydm/txbf/halcomtxbf.o\
 		hal/phydm/txbf/haltxbfinterface.o
+
+ifeq ($(CONFIG_BT_COEXIST), y)
+EXTRA_CFLAGS += -I$(srctree)/$(src)/hal/btc
+_OUTSRC_FILES += hal/btc/HalBtc8192e1Ant.o \
+				hal/btc/HalBtc8192e2Ant.o \
+				hal/btc/HalBtc8723b1Ant.o \
+				hal/btc/HalBtc8723b2Ant.o \
+				hal/btc/HalBtc8812a1Ant.o \
+				hal/btc/HalBtc8812a2Ant.o \
+				hal/btc/HalBtc8821a1Ant.o \
+				hal/btc/HalBtc8821a2Ant.o \
+				hal/btc/HalBtc8821aCsr2Ant.o \
+				hal/btc/HalBtc8703b1Ant.o \
+				hal/btc/HalBtc8703b2Ant.o 
+endif
 
 ########### HAL_RTL8188F #################################
 ifeq ($(CONFIG_RTL8188F), y)
@@ -233,6 +256,10 @@ ifeq ($(CONFIG_WIFI_TEST), y)
 EXTRA_CFLAGS += -DCONFIG_WIFI_TEST
 endif
 
+ifeq ($(CONFIG_BT_COEXIST), y)
+EXTRA_CFLAGS += -DCONFIG_BT_COEXIST
+endif
+
 ifeq ($(CONFIG_INTEL_WIDI), y)
 EXTRA_CFLAGS += -DCONFIG_INTEL_WIDI
 endif
@@ -273,6 +300,13 @@ endif
 
 ifeq ($(CONFIG_TRAFFIC_PROTECT), y)
 EXTRA_CFLAGS += -DCONFIG_TRAFFIC_PROTECT
+endif
+
+ifeq ($(CONFIG_LOAD_PHY_PARA_FROM_FILE), y)
+EXTRA_CFLAGS += -DCONFIG_LOAD_PHY_PARA_FROM_FILE
+#EXTRA_CFLAGS += -DREALTEK_CONFIG_PATH_WITH_IC_NAME_FOLDER
+#EXTRA_CFLAGS += -DREALTEK_CONFIG_PATH=\"/lib/firmware/\"
+EXTRA_CFLAGS += -DREALTEK_CONFIG_PATH=\"\"
 endif
 
 ifeq ($(CONFIG_CALIBRATE_TX_POWER_BY_REGULATORY), y)
@@ -361,13 +395,13 @@ else
 EXTRA_CFLAGS += -mfloat-abi=hard
 endif
 endif
-## ULLI set DM_ODM_SUPPORT_TYPE to ODM_CE
+
 EXTRA_CFLAGS += -DDM_ODM_SUPPORT_TYPE=0x04
 
 ifeq ($(CONFIG_PLATFORM_I386_PC), y)
 EXTRA_CFLAGS += -DCONFIG_LITTLE_ENDIAN
 EXTRA_CFLAGS += -DCONFIG_IOCTL_CFG80211 -DRTW_USE_CFG80211_STA_EVENT
-SUBARCH := $(shell uname -m | sed -e s/i.86/i386/)
+SUBARCH := $(shell uname -m | sed -e s/i.86/i386/ | sed -e s/armv6l/arm/)
 ARCH ?= $(SUBARCH)
 CROSS_COMPILE ?=
 KVER  := $(shell uname -r)
@@ -400,6 +434,7 @@ rtk_core :=	core/rtw_cmd.o \
 		core/rtw_br_ext.o \
 		core/rtw_iol.o \
 		core/rtw_sreset.o \
+		core/rtw_btcoex.o \
 		core/rtw_beamforming.o \
 		core/rtw_odm.o \
 		core/efuse/rtw_efuse.o 
@@ -471,4 +506,3 @@ clean:
 	rm -fr *.mod.c *.mod *.o .*.cmd *.ko *~
 	rm -fr .tmp_versions
 endif
-

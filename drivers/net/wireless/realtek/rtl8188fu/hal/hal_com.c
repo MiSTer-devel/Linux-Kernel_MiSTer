@@ -26,6 +26,10 @@
 
 //#define CONFIG_GTK_OL_DBG
 
+#ifdef CONFIG_LOAD_PHY_PARA_FROM_FILE
+char	rtw_phy_para_file_path[PATH_LENGTH_MAX];
+#endif
+
 void dump_chip_info(HAL_VERSION	ChipVersion)
 {
 	int cnt = 0;
@@ -962,7 +966,8 @@ int hal_read_mac_hidden_rpt(_adapter *adapter)
 #if defined(CONFIG_USB_HCI) || defined(CONFIG_PCI_HCI)
 	u8 hci_type = rtw_get_intf_type(adapter);
 
-	if (!rtw_is_hw_init_completed(adapter))
+	if ((hci_type == RTW_USB || hci_type == RTW_PCIE)
+		&& !rtw_is_hw_init_completed(adapter))
 		rtw_hal_power_on(adapter);
 #endif
 
@@ -1003,7 +1008,8 @@ mac_hidden_rpt_hdl:
 exit:
 
 #if defined(CONFIG_USB_HCI) || defined(CONFIG_PCI_HCI)
-	if (!rtw_is_hw_init_completed(adapter))
+	if ((hci_type == RTW_USB || hci_type == RTW_PCIE)
+		&& !rtw_is_hw_init_completed(adapter))
 		rtw_hal_power_off(adapter);
 #endif
 
@@ -1662,6 +1668,14 @@ void hw_var_port_switch(_adapter *adapter)
 		rtw_write8(adapter, REG_BSSID1+i, bssid[i]);
 
 	/* write bcn ctl */
+#ifdef CONFIG_BT_COEXIST
+#if defined(CONFIG_RTL8723B) || defined(CONFIG_RTL8703B)
+	// always enable port0 beacon function for PSTDMA
+	bcn_ctrl_1 |= EN_BCN_FUNCTION;
+	// always disable port1 beacon function for PSTDMA
+	bcn_ctrl &= ~EN_BCN_FUNCTION;
+#endif
+#endif
 	rtw_write8(adapter, REG_BCN_CTRL, bcn_ctrl_1);
 	rtw_write8(adapter, REG_BCN_CTRL_1, bcn_ctrl);
 
@@ -2313,6 +2327,26 @@ void rtw_hal_set_fw_rsvd_page(_adapter* adapter, bool finished)
 
 	BufIndex += (CurtPktPageNum*PageSize);
 
+#ifdef CONFIG_BT_COEXIST
+	/* BT Qos null data * 1 page */
+	RsvdPageLoc.LocBTQosNull = TotalPageNum;
+	DBG_871X("LocBTQosNull: %d\n", RsvdPageLoc.LocBTQosNull);
+	rtw_hal_construct_NullFunctionData(
+			adapter,
+			&ReservedPagePacket[BufIndex],
+			&BTQosNullLength,
+			get_my_bssid(&pmlmeinfo->network),
+			_TRUE, 0, 0, _FALSE);
+	rtw_hal_fill_fake_txdesc(adapter,
+			&ReservedPagePacket[BufIndex-TxDescLen],
+			BTQosNullLength, _FALSE, _TRUE, _FALSE);
+
+	CurtPktPageNum = (u8)PageNum(TxDescLen + BTQosNullLength, PageSize);
+
+	TotalPageNum += CurtPktPageNum;
+
+	BufIndex += (CurtPktPageNum*PageSize);
+#endif /* CONFIG_BT_COEXIT */
 
 	/* null data * 1 page */
 	RsvdPageLoc.LocNullData = TotalPageNum;
@@ -3411,6 +3445,8 @@ int hal_efuse_macaddr_offset(_adapter *adapter)
 	case RTL8188F:
 		if (interface_type == RTW_USB)
 			addr_offset = EEPROM_MAC_ADDR_8188FU;
+		else if (interface_type == RTW_SDIO)
+			addr_offset = EEPROM_MAC_ADDR_8188FS;
 		break;
 #endif
 #ifdef CONFIG_RTL8812A

@@ -109,6 +109,14 @@
 #endif
 #endif
 
+#ifdef CONFIG_BT_COEXIST_SOCKET_TRX
+	#include <net/sock.h>
+	#include <net/tcp.h>
+	#include <linux/udp.h>
+	#include <linux/in.h>
+	#include <linux/netlink.h>
+#endif //CONFIG_BT_COEXIST_SOCKET_TRX
+
 #ifdef CONFIG_USB_HCI
 	typedef struct urb *  PURB;
 #if (LINUX_VERSION_CODE>=KERNEL_VERSION(2,6,22))
@@ -154,11 +162,7 @@
 	typedef int		thread_return;
 	typedef void*	thread_context;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
 	#define thread_exit() complete_and_exit(NULL, 0)
-#else
-	#define thread_exit() kthread_complete_and_exit(NULL, 0)
-#endif
 
 	typedef void timer_hdl_return;
 	typedef void* timer_hdl_context;

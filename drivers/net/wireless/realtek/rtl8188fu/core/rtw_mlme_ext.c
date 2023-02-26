@@ -1188,9 +1188,7 @@ void mgt_dispatcher(_adapter *padapter, union recv_frame *precv_frame)
 				ptable->func = &OnAuth;
 			else
 				ptable->func = &OnAuthClient;
-#if defined(fallthrough)
 			fallthrough;
-#endif
 		case WIFI_ASSOCREQ:
 		case WIFI_REASSOCREQ:
 			_mgt_dispatcher(padapter, ptable, precv_frame);	
@@ -3341,6 +3339,13 @@ u8 rtw_rx_ampdu_size(_adapter *adapter)
 		goto exit;
 	}
 
+#ifdef CONFIG_BT_COEXIST
+	if (rtw_btcoex_IsBTCoexCtrlAMPDUSize(adapter) == _TRUE) {
+		size = rtw_btcoex_GetAMPDUSize(adapter);
+		goto exit;
+	}
+#endif
+
 	/* for scan */
 	if (!mlmeext_chk_scan_state(&adapter->mlmeextpriv, SCAN_DISABLE)
 		&& !mlmeext_chk_scan_state(&adapter->mlmeextpriv, SCAN_COMPLETE)
@@ -3389,6 +3394,13 @@ bool rtw_rx_ampdu_is_accept(_adapter *adapter)
 		accept = adapter->fix_rx_ampdu_accept;
 		goto exit;
 	}
+
+#ifdef CONFIG_BT_COEXIST
+	if (rtw_btcoex_IsBTCoexRejectAMPDU(adapter) == _TRUE) {
+		accept = _FALSE;
+		goto exit;
+	}
+#endif
 
 	/* for scan */
 	if (!mlmeext_chk_scan_state(&adapter->mlmeextpriv, SCAN_DISABLE)
@@ -12995,6 +13007,15 @@ u8 setopmode_hdl(_adapter *padapter, u8 *pbuf)
 		}
 	}	
 
+#ifdef CONFIG_BT_COEXIST
+	if (psetop->mode == Ndis802_11APMode)
+	{
+		// Do this after port switch to
+		// prevent from downloading rsvd page to wrong port
+		rtw_btcoex_MediaStatusNotify(padapter, 1); //connect 
+	}
+#endif // CONFIG_BT_COEXIST
+
 	return H2C_SUCCESS;
 	
 }
@@ -14703,7 +14724,10 @@ u8 chk_bmc_sleepq_hdl(_adapter *padapter, unsigned char *pbuf)
 		//_exit_critical_bh(&psta_bmc->sleep_q.lock, &irqL);
 		_exit_critical_bh(&pxmitpriv->lock, &irqL);
 
+		if (rtw_get_intf_type(padapter) != RTW_PCIE) {
+			/* check hi queue and bmc_sleepq */
 			rtw_chk_hi_queue_cmd(padapter);
+		}
 	}
 #endif
 
@@ -15250,7 +15274,8 @@ u8 set_chplan_hdl(_adapter *padapter, unsigned char *pbuf)
 	rtw_hal_set_odm_var(padapter,HAL_ODM_REGULATION,NULL,_TRUE);
 	
 #ifdef CONFIG_IOCTL_CFG80211
-	rtw_reg_notify_by_driver(padapter);
+ 	if (padapter->rtw_wdev != NULL)
+ 		rtw_reg_notify_by_driver(padapter->rtw_wdev->wiphy);
 #endif //CONFIG_IOCTL_CFG80211
 
 	return 	H2C_SUCCESS;

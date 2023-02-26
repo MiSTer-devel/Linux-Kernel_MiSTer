@@ -32,6 +32,10 @@ atomic_t _malloc_size = ATOMIC_INIT(0);
 #endif
 #endif /* DBG_MEMORY_LEAK */
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+#define __vfs_read vfs_read
+#endif
+
 
 #if defined(PLATFORM_LINUX)
 /*
@@ -1863,6 +1867,208 @@ inline int ATOMIC_DEC_RETURN(ATOMIC_T *v)
 }
 
 
+#ifdef PLATFORM_LINUX
+/*
+* Open a file with the specific @param path, @param flag, @param mode
+* @param fpp the pointer of struct file pointer to get struct file pointer while file opening is success
+* @param path the path of the file to open
+* @param flag file operation flags, please refer to linux document
+* @param mode please refer to linux document
+* @return Linux specific error code
+*/
+static int openFile(struct file **fpp, char *path, int flag, int mode) 
+{ 
+	struct file *fp; 
+ 
+	fp=filp_open(path, flag, mode); 
+	if(IS_ERR(fp)) {
+		*fpp=NULL;
+		return PTR_ERR(fp);
+	}
+	else {
+		*fpp=fp; 
+		return 0;
+	}	
+}
+
+/*
+* Close the file with the specific @param fp
+* @param fp the pointer of struct file to close
+* @return always 0
+*/
+static int closeFile(struct file *fp) 
+{ 
+	filp_close(fp,NULL);
+	return 0; 
+}
+
+static int readFile(struct file *fp,char *buf,int len) 
+{ 
+	int rlen=0, sum=0;
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0))
+	if (!(fp->f_mode & FMODE_CAN_READ))
+#else
+	if (!fp->f_op || !fp->f_op->read)
+#endif
+		return -EPERM;
+
+	while(sum<len) {
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0))
+		rlen = __vfs_read(fp, buf+sum, len-sum, &fp->f_pos);
+#else
+		rlen = fp->f_op->read(fp, buf+sum, len-sum, &fp->f_pos);
+#endif
+		if(rlen>0)
+			sum+=rlen;
+		else if(0 != rlen)
+			return rlen;
+		else
+			break;
+	}
+	
+	return  sum;
+
+}
+
+static int writeFile(struct file *fp,char *buf,int len) 
+{ 
+	int wlen=0, sum=0;
+	
+	if (!fp->f_op || !fp->f_op->write) 
+		return -EPERM; 
+
+	while(sum<len) {
+		wlen=fp->f_op->write(fp,buf+sum,len-sum, &fp->f_pos);
+		if(wlen>0)
+			sum+=wlen;
+		else if(0 != wlen)
+			return wlen;
+		else
+			break;
+	}
+
+	return sum;
+
+}
+
+/*
+* Test if the specifi @param path is a file and readable
+* @param path the path of the file to test
+* @return Linux specific error code
+*/
+static int isFileReadable(char *path)
+{ 
+	struct file *fp;
+	int ret = 0;
+#ifdef set_fs
+	mm_segment_t oldfs;
+#endif
+	char buf;
+ 
+	fp=filp_open(path, O_RDONLY, 0); 
+	if(IS_ERR(fp)) {
+		ret = PTR_ERR(fp);
+	}
+	else {
+#ifdef set_fs
+ 		oldfs = get_fs();
+ 		set_fs(KERNEL_DS);
+#endif
+		
+		if(1!=readFile(fp, &buf, 1))
+			ret = PTR_ERR(fp);
+		
+#ifdef set_fs
+		set_fs(oldfs);
+#endif
+		filp_close(fp,NULL);
+	}	
+	return ret;
+}
+
+/*
+* Open the file with @param path and retrive the file content into memory starting from @param buf for @param sz at most
+* @param path the path of the file to open and read
+* @param buf the starting address of the buffer to store file content
+* @param sz how many bytes to read at most
+* @return the byte we've read, or Linux specific error code
+*/
+static int retriveFromFile(char *path, u8* buf, u32 sz)
+{
+	int ret =-1;
+#ifdef set_fs
+	mm_segment_t oldfs;
+#endif
+	struct file *fp;
+
+	if(path && buf) {
+		if( 0 == (ret=openFile(&fp,path, O_RDONLY, 0)) ){
+			DBG_871X("%s openFile path:%s fp=%p\n",__FUNCTION__, path ,fp);
+
+#ifdef set_fs
+ 			oldfs = get_fs();
+ 			set_fs(KERNEL_DS);
+			ret=readFile(fp, buf, sz);
+			set_fs(oldfs);
+#else
+			ret=readFile(fp, buf, sz);
+#endif
+			closeFile(fp);
+			
+			DBG_871X("%s readFile, ret:%d\n",__FUNCTION__, ret);
+			
+		} else {
+			DBG_871X("%s openFile path:%s Fail, ret:%d\n",__FUNCTION__, path, ret);
+		}
+	} else {
+		DBG_871X("%s NULL pointer\n",__FUNCTION__);
+		ret =  -EINVAL;
+	}
+	return ret;
+}
+
+/*
+* Open the file with @param path and wirte @param sz byte of data starting from @param buf into the file
+* @param path the path of the file to open and write
+* @param buf the starting address of the data to write into file
+* @param sz how many bytes to write at most
+* @return the byte we've written, or Linux specific error code
+*/
+static int storeToFile(char *path, u8* buf, u32 sz)
+{
+	int ret =0;
+#ifdef set_fs
+	mm_segment_t oldfs;
+#endif
+	struct file *fp;
+	
+	if(path && buf) {
+		if( 0 == (ret=openFile(&fp, path, O_CREAT|O_WRONLY, 0666)) ) {
+			DBG_871X("%s openFile path:%s fp=%p\n",__FUNCTION__, path ,fp);
+
+#ifdef set_fs
+ 			oldfs = get_fs();
+ 			set_fs(KERNEL_DS);
+			ret=writeFile(fp, buf, sz);
+			set_fs(oldfs);
+#else
+			ret=writeFile(fp, buf, sz);
+#endif
+			closeFile(fp);
+
+			DBG_871X("%s writeFile, ret:%d\n",__FUNCTION__, ret);
+			
+		} else {
+			DBG_871X("%s openFile path:%s Fail, ret:%d\n",__FUNCTION__, path, ret);
+		}	
+	} else {
+		DBG_871X("%s NULL pointer\n",__FUNCTION__);
+		ret =  -EINVAL;
+	}
+	return ret;
+}
+#endif //PLATFORM_LINUX
 
 /*
 * Test if the specifi @param path is a file and readable
@@ -2010,11 +2216,7 @@ int rtw_change_ifname(_adapter *padapter, const char *ifname)
 
 	rtw_init_netdev_name(pnetdev, ifname);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
-	_rtw_memcpy((void *)pnetdev->dev_addr, adapter_mac_addr(padapter), ETH_ALEN);
-#else
-        dev_addr_set(pnetdev, adapter_mac_addr(padapter));
-#endif  
+	_rtw_memcpy(pnetdev->dev_addr, adapter_mac_addr(padapter), ETH_ALEN);
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26))
 	if(!rtnl_is_locked())
@@ -2141,11 +2343,7 @@ inline u32 rtw_random32(void)
 {
 #ifdef PLATFORM_LINUX
 	#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,8,0))
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
-	return get_random_u32();
-#else
 	return prandom_u32();
-#endif
 	#elif (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,18))
 	u32 random_int;
 	get_random_bytes( &random_int , 4 );
@@ -2341,4 +2539,3 @@ inline char alpha_to_upper(char c)
 		c = 'A' + (c - 'a');
 	return c;
 }
-
