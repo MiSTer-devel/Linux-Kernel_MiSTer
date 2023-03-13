@@ -913,7 +913,7 @@ static __always_inline void ftecff_calculate_resistance(struct ftecff_effect_sta
 
 static __always_inline int ftecff_timer(struct ftec_drv_data *drv_data)
 {
-	struct usbhid_device *usbhid = drv_data->hid->driver_data;
+	//struct usbhid_device *usbhid = drv_data->hid->driver_data;
 	struct ftecff_slot *slot;
 	struct ftecff_effect_state *state;
 	struct ftecff_effect_parameters parameters[4];
@@ -921,7 +921,7 @@ static __always_inline int ftecff_timer(struct ftec_drv_data *drv_data)
 	unsigned long now = JIFFIES2MS(jiffies_now);
 	unsigned long flags;
 	unsigned int gain;
-	int current_period;
+	//int current_period;
 	int count;
 	int effect_id;
 	int i;
