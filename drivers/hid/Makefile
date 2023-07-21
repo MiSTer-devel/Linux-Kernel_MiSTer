@@ -49,6 +49,7 @@ obj-$(CONFIG_HID_EZKEY)		+= hid-ezkey.o
 obj-$(CONFIG_HID_FT260)		+= hid-ft260.o
 obj-$(CONFIG_HID_FTEC)		+= hid-fanatec.o
 hid-fanatec-$(CONFIG_HID_FTEC)	+= hid-ftec.o hid-ftecff.o
+obj-$(CONFIG_HID_GAMECUBE_ADAPTER)	+= hid-gamecube-adapter.o
 obj-$(CONFIG_HID_GEMBIRD)	+= hid-gembird.o
 obj-$(CONFIG_HID_GFRM)		+= hid-gfrm.o
 obj-$(CONFIG_HID_GLORIOUS)  += hid-glorious.o
