@@ -369,6 +369,24 @@ config HID_FTEC
 	help
 	  Support Fanatec racing wheels.
 
+config HID_GAMECUBE_ADAPTER
+	tristate "Nintendo Gamecube Controller Adapter support"
+	depends on HID
+	depends on USB_HID
+	help
+	  Support for the Nintendo Gamecube Controller Adapter.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called hid-gamecube-adapter.
+
+config HID_GAMECUBE_ADAPTER_FF
+	bool "Nintendo Gamecube Controller Adapter force feedback"
+	depends on HID_GAMECUBE_ADAPTER
+	select INPUT_FF_MEMLESS
+	help
+	  Say Y here if you want to enable force feedback support for Nintendo
+	  Gamecube Controller Adapters.
+
 config HID_GEMBIRD
 	tristate "Gembird Joypad"
 	depends on HID
