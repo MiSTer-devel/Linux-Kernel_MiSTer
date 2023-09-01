@@ -304,7 +304,8 @@ enum joycon_ctlr_type {
 	JOYCON_CTLR_TYPE_PRO = 0x03,
 	JOYCON_CTLR_TYPE_NESL = 0x09,
 	JOYCON_CTLR_TYPE_NESR = 0x0A,
-	JOYCON_CTLR_TYPE_SNES = 0x0B
+	JOYCON_CTLR_TYPE_SNES = 0x0B,
+	JOYCON_CTLR_TYPE_N64 = 0x0D,
 };
 
 struct joycon_stick_cal {
@@ -498,6 +499,8 @@ struct joycon_ctlr {
 	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_SNESCON)
 #define jc_type_is_chrggrip(ctlr) \
 	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_CHRGGRIP)
+	#define jc_type_is_n64con(ctlr) \
+	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_N64CON)
 
 /* Does this controller have inputs associated with left joycon? */
 #define jc_type_has_left(ctlr) \
@@ -509,8 +512,26 @@ struct joycon_ctlr {
 	(ctlr->ctlr_type == JOYCON_CTLR_TYPE_JCR || \
 	 ctlr->ctlr_type == JOYCON_CTLR_TYPE_PRO)
 
+/* Is this one of the Nintendo Switch Online controllers? */
+#define jc_type_is_nso(ctlr) \
+	(jc_type_is_nescon(ctlr) || \
+	 jc_type_is_snescon(ctlr) || \
+	 jc_type_is_n64con(ctlr))
+
+/* Can this controller be connected via USB */
+#define jc_has_usb(ctlr) \
+	(jc_type_is_procon(ctlr) || \
+	 jc_type_is_chrggrip(ctlr) || \
+	 jc_type_is_snescon(ctlr) || \
+	 jc_type_is_n64con(ctlr))
+
+/* Does this controller have motion sensors */
 #define jc_has_imu(ctlr) \
-	(jc_type_is_joycon(ctlr) || jc_type_is_procon(ctlr))
+	(!jc_type_is_nso(ctlr))
+
+/* Does this controller have rumble */
+#define jc_has_rumble(ctlr) \
+	(!jc_type_is_nescon(ctlr) && !jc_type_is_snescon(ctlr))
 
 static int __joycon_hid_send(struct hid_device *hdev, u8 *data, size_t len)
 {
@@ -1233,7 +1254,8 @@ static void joycon_parse_report(struct joycon_ctlr *ctlr,
 	unsigned long msecs = jiffies_to_msecs(jiffies);
 
 	spin_lock_irqsave(&ctlr->lock, flags);
-	if (IS_ENABLED(CONFIG_NINTENDO_FF) && rep->vibrator_report &&
+	if (IS_ENABLED(CONFIG_NINTENDO_FF) && jc_has_rumble(ctlr) &&
+		rep->vibrator_report &&
 	    (msecs - ctlr->rumble_msecs) >= JC_RUMBLE_PERIOD_MS &&
 	    (ctlr->rumble_queue_head != ctlr->rumble_queue_tail ||
 	     ctlr->rumble_zero_countdown > 0)) {
@@ -1279,7 +1301,7 @@ static void joycon_parse_report(struct joycon_ctlr *ctlr,
 	/* Parse the buttons and sticks */
 	btns = hid_field_extract(ctlr->hdev, rep->button_status, 0, 24);
 
-	if (jc_type_has_left(ctlr)) {
+	if (jc_type_has_left(ctlr) || jc_type_is_n64con(ctlr)) {
 		u16 raw_x;
 		u16 raw_y;
 		s32 x;
@@ -1295,7 +1317,8 @@ static void joycon_parse_report(struct joycon_ctlr *ctlr,
 		/* report sticks */
 		input_report_abs(dev, ABS_X, x);
 		input_report_abs(dev, ABS_Y, y);
-
+	}
+	if (jc_type_has_left(ctlr)) {
 		/* report buttons */
 		input_report_key(dev, BTN_TL, btns & JC_BTN_L);
 		input_report_key(dev, BTN_TL2, btns & JC_BTN_ZL);
@@ -1369,7 +1392,7 @@ static void joycon_parse_report(struct joycon_ctlr *ctlr,
 		input_report_key(dev, BTN_SOUTH, btns & JC_BTN_B);
 	}
 
-	if (jc_type_is_nescon(ctlr) || jc_type_is_snescon(ctlr)) {
+	if (jc_type_is_nso(ctlr)) {
 		s8 x = 0;
 		s8 y = 0;
 
@@ -1391,14 +1414,33 @@ static void joycon_parse_report(struct joycon_ctlr *ctlr,
 		input_report_key(dev, BTN_SOUTH, btns & JC_BTN_B);
 		input_report_key(dev, BTN_TL, btns & JC_BTN_L);
 		input_report_key(dev, BTN_TR, btns & JC_BTN_R);
-		input_report_key(dev, BTN_SELECT, btns & JC_BTN_MINUS);
 		input_report_key(dev, BTN_START, btns & JC_BTN_PLUS);
+
+		if (!jc_type_is_n64con(ctlr)) {
+			input_report_key(dev, BTN_SELECT, btns & JC_BTN_MINUS);
+		}
 
 		if (jc_type_is_snescon(ctlr)) {
 			input_report_key(dev, BTN_TL2, btns & JC_BTN_ZL);
 			input_report_key(dev, BTN_TR2, btns & JC_BTN_ZR);
 			input_report_key(dev, BTN_NORTH, btns & JC_BTN_X);
 			input_report_key(dev, BTN_WEST, btns & JC_BTN_Y);
+		}
+
+		if (jc_type_is_n64con(ctlr)) {
+			input_report_key(dev, BTN_TL2, btns & JC_BTN_ZL);
+			input_report_key(dev, BTN_MODE, btns & JC_BTN_HOME);
+			input_report_key(dev, BTN_Z, btns & JC_BTN_CAP);
+
+			/* Back ZR button */
+			input_report_key(dev, BTN_TR2, btns & JC_BTN_LSTICK);
+
+			/* C-buttons: up, right, down, left */
+			input_report_key(dev, BTN_NORTH, btns & JC_BTN_Y);
+			input_report_key(dev, BTN_THUMBR,
+					 btns & JC_BTN_MINUS);
+			input_report_key(dev, BTN_THUMBL, btns & JC_BTN_ZR);
+			input_report_key(dev, BTN_WEST, btns & JC_BTN_X);
 		}
 	}
 
@@ -1460,6 +1502,10 @@ static void joycon_rumble_worker(struct work_struct *work)
 	unsigned long flags;
 	bool again = true;
 	int ret;
+
+	if (!jc_has_rumble(ctlr)) {
+		return;
+	}
 
 	while (again) {
 		mutex_lock(&ctlr->output_mutex);
@@ -1644,6 +1690,15 @@ static const unsigned int snescon_button_inputs[] = {
 	0 /* 0 signals end of array */
 };
 
+static const unsigned int n64con_button_inputs[] = {
+	/* Original N64 controller buttons */
+	BTN_START, BTN_B, BTN_A, BTN_TL, BTN_TL2, BTN_TR,
+	BTN_WEST, BTN_NORTH, BTN_THUMBL, BTN_THUMBR,
+	/* NSO controller additions */
+	BTN_TR2, BTN_MODE, BTN_Z,
+	0 /* 0 signals end of array */
+};
+
 static int joycon_input_create(struct joycon_ctlr *ctlr)
 {
 	struct hid_device *hdev;
@@ -1686,6 +1741,10 @@ static int joycon_input_create(struct joycon_ctlr *ctlr)
 		break;
 	case USB_DEVICE_ID_NINTENDO_SNESCON:
 		name = "Nintendo Switch SNES Controller";
+		imu_name = NULL;
+		break;
+	case USB_DEVICE_ID_NINTENDO_N64CON:
+		name = "Nintendo Switch N64 Controller";
 		imu_name = NULL;
 		break;
 	default: /* Should be impossible */
@@ -1743,9 +1802,28 @@ static int joycon_input_create(struct joycon_ctlr *ctlr)
 			input_set_capability(ctlr->input, EV_KEY,
 					     joycon_button_inputs_r[i]);
 	}
-	if (jc_type_is_nescon(ctlr) || jc_type_is_snescon(ctlr)) {
-		const unsigned int* inputs = jc_type_is_nescon(ctlr) ?
-			nescon_button_inputs : snescon_button_inputs;
+
+	if (jc_type_is_nso(ctlr)) {
+		const unsigned int* inputs;
+
+		if (jc_type_is_nescon(ctlr)) {
+			inputs = nescon_button_inputs;
+		} else if (jc_type_is_snescon(ctlr)) {
+			inputs = snescon_button_inputs;
+		} else if (jc_type_is_n64con(ctlr)) {
+			inputs = n64con_button_inputs;
+
+			input_set_abs_params(ctlr->input, ABS_X,
+					     -JC_MAX_STICK_MAG,
+					     JC_MAX_STICK_MAG,
+					     JC_STICK_FUZZ,
+					     JC_STICK_FLAT);
+			input_set_abs_params(ctlr->input, ABS_Y,
+					     -JC_MAX_STICK_MAG,
+					     JC_MAX_STICK_MAG,
+					     JC_STICK_FUZZ,
+					     JC_STICK_FLAT);
+		}
 
 		/* set up d-pad hat */
 		input_set_abs_params(ctlr->input, ABS_HAT0X, -1, 1, 0, 0);
@@ -1754,13 +1832,6 @@ static int joycon_input_create(struct joycon_ctlr *ctlr)
 		/* set up buttons */
 		for (i = 0; inputs[i] > 0; i++)
 			input_set_capability(ctlr->input, EV_KEY, inputs[i]);
-
-		/* register the device here, we don't need any more setup */
-		ret = input_register_device(ctlr->input);
-		if (ret)
-			return ret;
-
-		return 0;
 	}
 
 	/* Let's report joy-con S triggers separately */
@@ -1774,20 +1845,26 @@ static int joycon_input_create(struct joycon_ctlr *ctlr)
 
 #if IS_ENABLED(CONFIG_NINTENDO_FF)
 	/* set up rumble */
-	input_set_capability(ctlr->input, EV_FF, FF_RUMBLE);
-	input_ff_create_memless(ctlr->input, NULL, joycon_play_effect);
-	ctlr->rumble_ll_freq = JC_RUMBLE_DFLT_LOW_FREQ;
-	ctlr->rumble_lh_freq = JC_RUMBLE_DFLT_HIGH_FREQ;
-	ctlr->rumble_rl_freq = JC_RUMBLE_DFLT_LOW_FREQ;
-	ctlr->rumble_rh_freq = JC_RUMBLE_DFLT_HIGH_FREQ;
-	joycon_clamp_rumble_freqs(ctlr);
-	joycon_set_rumble(ctlr, 0, 0, false);
-	ctlr->rumble_msecs = jiffies_to_msecs(jiffies);
+	if (jc_has_rumble(ctlr)) {
+		input_set_capability(ctlr->input, EV_FF, FF_RUMBLE);
+		input_ff_create_memless(ctlr->input, NULL, joycon_play_effect);
+		ctlr->rumble_ll_freq = JC_RUMBLE_DFLT_LOW_FREQ;
+		ctlr->rumble_lh_freq = JC_RUMBLE_DFLT_HIGH_FREQ;
+		ctlr->rumble_rl_freq = JC_RUMBLE_DFLT_LOW_FREQ;
+		ctlr->rumble_rh_freq = JC_RUMBLE_DFLT_HIGH_FREQ;
+		joycon_clamp_rumble_freqs(ctlr);
+		joycon_set_rumble(ctlr, 0, 0, false);
+		ctlr->rumble_msecs = jiffies_to_msecs(jiffies);
+	}
 #endif
 
 	ret = input_register_device(ctlr->input);
 	if (ret)
 		return ret;
+
+	/* setup is done if the controller has no IMU */
+	if (!jc_has_imu(ctlr))
+		return 0;
 
 	/* configure the imu input device */
 	ctlr->imu_input = devm_input_allocate_device(&hdev->dev);
@@ -2262,7 +2339,7 @@ static int nintendo_hid_probe(struct hid_device *hdev,
 	/* Initialize the controller */
 	mutex_lock(&ctlr->output_mutex);
 	/* if handshake command fails, assume ble pro controller */
-	if ((jc_type_is_procon(ctlr) || jc_type_is_snescon(ctlr) || jc_type_is_chrggrip(ctlr)) &&
+	if (jc_has_usb(ctlr) &&
 	    !joycon_send_usb(ctlr, JC_USB_CMD_HANDSHAKE, HZ)) {
 		hid_dbg(hdev, "detected USB controller\n");
 		/* set baudrate for improved latency */
@@ -2315,14 +2392,16 @@ static int nintendo_hid_probe(struct hid_device *hdev,
 		goto err_mutex;
 	}
 
-	if (!jc_type_is_snescon(ctlr) && !jc_type_is_nescon(ctlr)) {
+	if (jc_has_rumble(ctlr)) {
 		/* Enable rumble */
 		ret = joycon_enable_rumble(ctlr);
 		if (ret) {
 			hid_err(hdev, "Failed to enable rumble; ret=%d\n", ret);
 			goto err_mutex;
 		}
+	}
 
+	if (jc_has_imu(ctlr)) {
 		/* Enable the IMU */
 		ret = joycon_enable_imu(ctlr);
 		if (ret) {
@@ -2411,6 +2490,10 @@ static const struct hid_device_id nintendo_hid_devices[] = {
 			 USB_DEVICE_ID_NINTENDO_SNESCON) },
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_NINTENDO,
 			 USB_DEVICE_ID_NINTENDO_SNESCON) },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_NINTENDO,
+			 USB_DEVICE_ID_NINTENDO_N64CON) },
+	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_NINTENDO,
+			 USB_DEVICE_ID_NINTENDO_N64CON) },
 	{ }
 };
 MODULE_DEVICE_TABLE(hid, nintendo_hid_devices);
