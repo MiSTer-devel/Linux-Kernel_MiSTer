@@ -130,8 +130,6 @@ static const u16 JC_MAX_STICK_MAG		= 32767;
 static const u16 JC_STICK_FUZZ			= 250;
 static const u16 JC_STICK_FLAT			= 500;
 
-static const u16 JC_N64_MAX_STICK_MAX	= 4095;
-
 /* Hat values for pro controller's d-pad */
 static const u16 JC_MAX_DPAD_MAG		= 1;
 static const u16 JC_DPAD_FUZZ			/*= 0*/;
@@ -1025,7 +1023,6 @@ static s32 joycon_map_stick_val(struct joycon_stick_cal *cal, s32 val)
 		new_val /= (center - min);
 	}
 	new_val = clamp(new_val, (s32)-JC_MAX_STICK_MAG, (s32)JC_MAX_STICK_MAG);
-
 	return new_val;
 }
 
@@ -1304,7 +1301,7 @@ static void joycon_parse_report(struct joycon_ctlr *ctlr,
 	/* Parse the buttons and sticks */
 	btns = hid_field_extract(ctlr->hdev, rep->button_status, 0, 24);
 
-	if (jc_type_has_left(ctlr)) {
+	if (jc_type_has_left(ctlr) || jc_type_is_n64con(ctlr)) {
 		u16 raw_x;
 		u16 raw_y;
 		s32 x;
@@ -1320,7 +1317,8 @@ static void joycon_parse_report(struct joycon_ctlr *ctlr,
 		/* report sticks */
 		input_report_abs(dev, ABS_X, x);
 		input_report_abs(dev, ABS_Y, y);
-
+	}
+	if (jc_type_has_left(ctlr)) {
 		/* report buttons */
 		input_report_key(dev, BTN_TL, btns & JC_BTN_L);
 		input_report_key(dev, BTN_TL2, btns & JC_BTN_ZL);
@@ -1430,18 +1428,6 @@ static void joycon_parse_report(struct joycon_ctlr *ctlr,
 		}
 
 		if (jc_type_is_n64con(ctlr)) {
-			u16 raw_x;
-			u16 raw_y;
-
-			/* get raw stick values */
-			raw_x = hid_field_extract(ctlr->hdev, rep->left_stick, 0, 12);
-			raw_y = hid_field_extract(ctlr->hdev,
-						rep->left_stick + 1, 4, 12);
-			raw_y = JC_N64_MAX_STICK_MAX - raw_y;
-			/* report sticks */
-			input_report_abs(dev, ABS_X, raw_x);
-			input_report_abs(dev, ABS_Y, raw_y);
-
 			input_report_key(dev, BTN_TL2, btns & JC_BTN_ZL);
 			input_report_key(dev, BTN_MODE, btns & JC_BTN_HOME);
 			input_report_key(dev, BTN_Z, btns & JC_BTN_CAP);
@@ -1828,15 +1814,15 @@ static int joycon_input_create(struct joycon_ctlr *ctlr)
 			inputs = n64con_button_inputs;
 
 			input_set_abs_params(ctlr->input, ABS_X,
-					     0,
-					     JC_N64_MAX_STICK_MAX,
-					     JC_N64_MAX_STICK_MAX >> 8,
-					     JC_N64_MAX_STICK_MAX >> 4);
+					     -JC_MAX_STICK_MAG,
+					     JC_MAX_STICK_MAG,
+					     JC_STICK_FUZZ,
+					     JC_STICK_FLAT);
 			input_set_abs_params(ctlr->input, ABS_Y,
-					     0,
-					     JC_N64_MAX_STICK_MAX,
-					     JC_N64_MAX_STICK_MAX >> 8,
-					     JC_N64_MAX_STICK_MAX >> 4);
+					     -JC_MAX_STICK_MAG,
+					     JC_MAX_STICK_MAG,
+					     JC_STICK_FUZZ,
+					     JC_STICK_FLAT);
 		}
 
 		/* set up d-pad hat */
