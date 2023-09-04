@@ -305,7 +305,8 @@ enum joycon_ctlr_type {
 	JOYCON_CTLR_TYPE_NESL = 0x09,
 	JOYCON_CTLR_TYPE_NESR = 0x0A,
 	JOYCON_CTLR_TYPE_SNES = 0x0B,
-	JOYCON_CTLR_TYPE_N64 = 0x0D,
+	JOYCON_CTLR_TYPE_N64 = 0x0C,
+	JOYCON_CTLR_TYPE_MD = 0x0D,
 };
 
 struct joycon_stick_cal {
@@ -499,8 +500,10 @@ struct joycon_ctlr {
 	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_SNESCON)
 #define jc_type_is_chrggrip(ctlr) \
 	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_CHRGGRIP)
-	#define jc_type_is_n64con(ctlr) \
+#define jc_type_is_n64con(ctlr) \
 	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_N64CON)
+#define jc_type_is_mdcon(ctlr) \
+	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_MDCON)
 
 /* Does this controller have inputs associated with left joycon? */
 #define jc_type_has_left(ctlr) \
@@ -516,14 +519,16 @@ struct joycon_ctlr {
 #define jc_type_is_nso(ctlr) \
 	(jc_type_is_nescon(ctlr) || \
 	 jc_type_is_snescon(ctlr) || \
-	 jc_type_is_n64con(ctlr))
+	 jc_type_is_n64con(ctlr) || \
+	 jc_type_is_mdcon(ctlr))
 
 /* Can this controller be connected via USB */
 #define jc_has_usb(ctlr) \
 	(jc_type_is_procon(ctlr) || \
 	 jc_type_is_chrggrip(ctlr) || \
 	 jc_type_is_snescon(ctlr) || \
-	 jc_type_is_n64con(ctlr))
+	 jc_type_is_n64con(ctlr) || \
+	 jc_type_is_mdcon(ctlr))
 
 /* Does this controller have motion sensors */
 #define jc_has_imu(ctlr) \
@@ -531,7 +536,9 @@ struct joycon_ctlr {
 
 /* Does this controller have rumble */
 #define jc_has_rumble(ctlr) \
-	(!jc_type_is_nescon(ctlr) && !jc_type_is_snescon(ctlr))
+	(!jc_type_is_nescon(ctlr) && \
+	 !jc_type_is_snescon(ctlr) && \
+	 !jc_type_is_mdcon(ctlr))
 
 static int __joycon_hid_send(struct hid_device *hdev, u8 *data, size_t len)
 {
@@ -1416,7 +1423,7 @@ static void joycon_parse_report(struct joycon_ctlr *ctlr,
 		input_report_key(dev, BTN_TR, btns & JC_BTN_R);
 		input_report_key(dev, BTN_START, btns & JC_BTN_PLUS);
 
-		if (!jc_type_is_n64con(ctlr)) {
+		if (!jc_type_is_n64con(ctlr) && !jc_type_is_mdcon(ctlr)) {
 			input_report_key(dev, BTN_SELECT, btns & JC_BTN_MINUS);
 		}
 
@@ -1441,6 +1448,17 @@ static void joycon_parse_report(struct joycon_ctlr *ctlr,
 					 btns & JC_BTN_MINUS);
 			input_report_key(dev, BTN_THUMBL, btns & JC_BTN_ZR);
 			input_report_key(dev, BTN_WEST, btns & JC_BTN_X);
+		}
+
+		if (jc_type_is_mdcon(ctlr)) {
+			input_report_key(dev, BTN_NORTH, btns & JC_BTN_X);
+			input_report_key(dev, BTN_WEST, btns & JC_BTN_Y);
+
+			/* Mode button */
+			input_report_key(dev, BTN_TR2, btns & JC_BTN_ZR);
+
+			input_report_key(dev, BTN_MODE, btns & JC_BTN_HOME);
+			input_report_key(dev, BTN_Z, btns & JC_BTN_CAP);
 		}
 	}
 
@@ -1699,6 +1717,12 @@ static const unsigned int n64con_button_inputs[] = {
 	0 /* 0 signals end of array */
 };
 
+static const unsigned int mdcon_button_inputs[] = {
+	BTN_START, BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST, BTN_TR,
+	BTN_TL, BTN_TR2, BTN_MODE, BTN_Z,
+	0 /* 0 signals end of array */
+};
+
 static int joycon_input_create(struct joycon_ctlr *ctlr)
 {
 	struct hid_device *hdev;
@@ -1708,6 +1732,12 @@ static int joycon_input_create(struct joycon_ctlr *ctlr)
 	int i;
 
 	hdev = ctlr->hdev;
+
+	/* MD controller has wrong PID via BT, so just force it */
+	if (hdev->product == USB_DEVICE_ID_NINTENDO_SNESCON &&
+		ctlr->ctlr_type == JOYCON_CTLR_TYPE_MD) {
+		hdev->product = USB_DEVICE_ID_NINTENDO_MDCON;
+	}
 
 	switch (hdev->product) {
 	case USB_DEVICE_ID_NINTENDO_PROCON:
@@ -1745,6 +1775,10 @@ static int joycon_input_create(struct joycon_ctlr *ctlr)
 		break;
 	case USB_DEVICE_ID_NINTENDO_N64CON:
 		name = "Nintendo Switch N64 Controller";
+		imu_name = NULL;
+		break;
+	case USB_DEVICE_ID_NINTENDO_MDCON:
+		name = "Nintendo Switch Mega Drive/Genesis Controller";
 		imu_name = NULL;
 		break;
 	default: /* Should be impossible */
@@ -1810,6 +1844,8 @@ static int joycon_input_create(struct joycon_ctlr *ctlr)
 			inputs = nescon_button_inputs;
 		} else if (jc_type_is_snescon(ctlr)) {
 			inputs = snescon_button_inputs;
+		} else if (jc_type_is_mdcon(ctlr)) {
+			inputs = mdcon_button_inputs;
 		} else if (jc_type_is_n64con(ctlr)) {
 			inputs = n64con_button_inputs;
 
@@ -2494,6 +2530,10 @@ static const struct hid_device_id nintendo_hid_devices[] = {
 			 USB_DEVICE_ID_NINTENDO_N64CON) },
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_NINTENDO,
 			 USB_DEVICE_ID_NINTENDO_N64CON) },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_NINTENDO,
+		USB_DEVICE_ID_NINTENDO_MDCON) },
+	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_NINTENDO,
+			USB_DEVICE_ID_NINTENDO_MDCON) },
 	{ }
 };
 MODULE_DEVICE_TABLE(hid, nintendo_hid_devices);
