@@ -497,13 +497,13 @@ struct joycon_ctlr {
 #define jc_type_is_procon(ctlr) \
 	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_PROCON)
 #define jc_type_is_snescon(ctlr) \
-	(ctlr->ctlr_type == JOYCON_CTLR_TYPE_SNES)
+	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_SNESCON)
 #define jc_type_is_chrggrip(ctlr) \
 	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_CHRGGRIP)
 #define jc_type_is_n64con(ctlr) \
 	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_N64CON)
 #define jc_type_is_mdcon(ctlr) \
-	(ctlr->ctlr_type == JOYCON_CTLR_TYPE_MD)
+	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_MDCON)
 
 /* Does this controller have inputs associated with left joycon? */
 #define jc_type_has_left(ctlr) \
@@ -522,16 +522,13 @@ struct joycon_ctlr {
 	 jc_type_is_n64con(ctlr) || \
 	 jc_type_is_mdcon(ctlr))
 
-/*
- * Can this controller be connected via USB?
- * We need this info before we can query ctlr_type, so use PID explicitly
- */
+/* Can this controller be connected via USB */
 #define jc_has_usb(ctlr) \
-	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_PROCON || \
-	 ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_CHRGGRIP || \
-	 ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_SNESCON || \
-	 ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_N64CON || \
-	 ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_MDCON)
+	(jc_type_is_procon(ctlr) || \
+	 jc_type_is_chrggrip(ctlr) || \
+	 jc_type_is_snescon(ctlr) || \
+	 jc_type_is_n64con(ctlr) || \
+	 jc_type_is_mdcon(ctlr))
 
 /* Does this controller have motion sensors */
 #define jc_has_imu(ctlr) \
@@ -1736,6 +1733,12 @@ static int joycon_input_create(struct joycon_ctlr *ctlr)
 
 	hdev = ctlr->hdev;
 
+	/* MD controller has wrong PID via BT, so just force it */
+	if (hdev->product == USB_DEVICE_ID_NINTENDO_SNESCON &&
+		ctlr->ctlr_type == JOYCON_CTLR_TYPE_MD) {
+		hdev->product = USB_DEVICE_ID_NINTENDO_MDCON;
+	}
+
 	switch (hdev->product) {
 	case USB_DEVICE_ID_NINTENDO_PROCON:
 		name = "Nintendo Switch Pro Controller";
@@ -1767,15 +1770,8 @@ static int joycon_input_create(struct joycon_ctlr *ctlr)
 		}
 		break;
 	case USB_DEVICE_ID_NINTENDO_SNESCON:
-		if (ctlr->ctlr_type == JOYCON_CTLR_TYPE_MD) {
-			/* MD controller reports itself as SNES via BT */
-			name = "Nintendo Switch Mega Drive/Genesis Controller";
-			imu_name = NULL;
-		}
-		else {
-			name = "Nintendo Switch SNES Controller";
-			imu_name = NULL;
-		}
+		name = "Nintendo Switch SNES Controller";
+		imu_name = NULL;
 		break;
 	case USB_DEVICE_ID_NINTENDO_N64CON:
 		name = "Nintendo Switch N64 Controller";
@@ -2405,13 +2401,6 @@ static int nintendo_hid_probe(struct hid_device *hdev,
 		goto err_mutex;
 	}
 
-	ret = joycon_read_info(ctlr);
-	if (ret) {
-		hid_err(hdev, "Failed to retrieve controller info; ret=%d\n",
-			ret);
-		goto err_mutex;
-	}
-
 	/* get controller calibration data, and parse it */
 	ret = joycon_request_calibration(ctlr);
 	if (ret) {
@@ -2455,6 +2444,13 @@ static int nintendo_hid_probe(struct hid_device *hdev,
 			hid_err(hdev, "Failed to enable the IMU; ret=%d\n", ret);
 			goto err_mutex;
 		}
+	}
+
+	ret = joycon_read_info(ctlr);
+	if (ret) {
+		hid_err(hdev, "Failed to retrieve controller info; ret=%d\n",
+			ret);
+		goto err_mutex;
 	}
 
 	mutex_unlock(&ctlr->output_mutex);
