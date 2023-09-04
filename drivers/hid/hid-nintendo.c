@@ -2127,6 +2127,22 @@ static int joycon_input_create(struct joycon_ctlr *ctlr)
 
 	hdev = ctlr->hdev;
 
+	/*
+	 * MiSTer: NSO Genesis/Mega Drive controller has the wrong PID via
+	 * Bluetooth (reports 0x2017, the same PID as the NSO SNES
+	 * controller -- see the comment on this in joycon_request_
+	 * calibration()), so hdev->product (and therefore the input_dev
+	 * id.product userspace GUID lookups key off, e.g. Main_MiSTer's
+	 * SDL-format gamecontrollerdb.txt) is forced to the correct
+	 * GENCON PID here based on the real ctlr_type read from the
+	 * controller itself. Kernel-side button/axis mapping is already
+	 * unaffected either way since it dispatches off ctlr->ctlr_type,
+	 * never off hdev->product.
+	 */
+	if (hdev->product == USB_DEVICE_ID_NINTENDO_SNESCON &&
+	    ctlr->ctlr_type == JOYCON_CTLR_TYPE_GEN)
+		hdev->product = USB_DEVICE_ID_NINTENDO_GENCON;
+
 	ctlr->input = devm_input_allocate_device(&hdev->dev);
 	if (!ctlr->input)
 		return -ENOMEM;
