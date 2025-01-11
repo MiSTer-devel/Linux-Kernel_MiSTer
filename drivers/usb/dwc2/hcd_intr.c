@@ -949,14 +949,6 @@ static int dwc2_xfercomp_isoc_split_in(struct dwc2_hsotg *hsotg,
 
 	frame_desc->actual_length += len;
 
-	if (chan->align_buf) {
-		dev_vdbg(hsotg->dev, "non-aligned buffer\n");
-		dma_unmap_single(hsotg->dev, chan->qh->dw_align_buf_dma,
-				 DWC2_KMEM_UNALIGNED_BUF_SIZE, DMA_FROM_DEVICE);
-		memcpy(qtd->urb->buf + (chan->xfer_dma - qtd->urb->dma),
-		       chan->qh->dw_align_buf, len);
-	}
-
 	qtd->isoc_split_offset += len;
 
 	hctsiz = dwc2_readl(hsotg, HCTSIZ(chnum));
@@ -993,6 +985,7 @@ static void dwc2_hc_xfercomp_intr(struct dwc2_hsotg *hsotg,
 	enum dwc2_halt_status halt_status = DWC2_HC_XFER_COMPLETE;
 	int pipe_type;
 	int urb_xfer_done;
+	u32 xfer_len;
 
 	if (dbg_hc(chan))
 		dev_vdbg(hsotg->dev,
@@ -1012,8 +1005,24 @@ static void dwc2_hc_xfercomp_intr(struct dwc2_hsotg *hsotg,
 		goto handle_xfercomp_done;
 	}
 
+
 	/* Handle xfer complete on CSPLIT */
 	if (chan->qh->do_split) {
+		/* Handle possible un-aligned transfer */
+		if (chan->align_buf && chan->ep_is_in && qtd->complete_split) {
+			dev_vdbg(hsotg->dev, "non-aligned buffer\n");
+			xfer_len = dwc2_get_actual_xfer_length(hsotg, chan,
+						        chnum, qtd,
+							DWC2_HC_XFER_COMPLETE,
+							NULL);
+			dma_unmap_single(hsotg->dev,
+					 chan->qh->dw_align_buf_dma,
+					 DWC2_KMEM_UNALIGNED_BUF_SIZE,
+					 DMA_FROM_DEVICE);
+			memcpy(urb->buf + (chan->xfer_dma - urb->dma),
+			       chan->qh->dw_align_buf, xfer_len);
+		}
+
 		if (chan->ep_type == USB_ENDPOINT_XFER_ISOC && chan->ep_is_in &&
 		    hsotg->params.host_dma) {
 			if (qtd->complete_split &&
