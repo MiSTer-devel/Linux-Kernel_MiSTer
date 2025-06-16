@@ -302,6 +302,8 @@ enum joycon_ctlr_type {
 	JOYCON_CTLR_TYPE_JCL = 0x01,
 	JOYCON_CTLR_TYPE_JCR = 0x02,
 	JOYCON_CTLR_TYPE_PRO = 0x03,
+	JOYCON_CTLR_TYPE_FAMIL = 0x07,
+	JOYCON_CTLR_TYPE_FAMIR = 0x08,
 	JOYCON_CTLR_TYPE_NESL = 0x09,
 	JOYCON_CTLR_TYPE_NESR = 0x0A,
 	JOYCON_CTLR_TYPE_SNES = 0x0B,
@@ -488,12 +490,17 @@ struct joycon_ctlr {
 #define jc_type_is_nescon(ctlr) \
 	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_JOYCONR && \
 	 (ctlr->ctlr_type == JOYCON_CTLR_TYPE_NESL || \
+	  ctlr->ctlr_type == JOYCON_CTLR_TYPE_FAMIL || \
 	  ctlr->ctlr_type == JOYCON_CTLR_TYPE_NESR))
+#define jc_type_is_famircon(ctlr) \
+	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_JOYCONR && \
+	 (ctlr->ctlr_type == JOYCON_CTLR_TYPE_FAMIR))
 #define jc_type_is_joycon(ctlr) \
 	((ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_JOYCONL || \
 	  ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_JOYCONR || \
 	  ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_CHRGGRIP) && \
-	 !jc_type_is_nescon(ctlr))
+	 !jc_type_is_nescon(ctlr) && \
+	 !jc_type_is_famircon(ctlr))
 #define jc_type_is_procon(ctlr) \
 	(ctlr->hdev->product == USB_DEVICE_ID_NINTENDO_PROCON)
 #define jc_type_is_snescon(ctlr) \
@@ -518,6 +525,7 @@ struct joycon_ctlr {
 /* Is this one of the Nintendo Switch Online controllers? */
 #define jc_type_is_nso(ctlr) \
 	(jc_type_is_nescon(ctlr) || \
+	 jc_type_is_famircon(ctlr) || \
 	 jc_type_is_snescon(ctlr) || \
 	 jc_type_is_n64con(ctlr) || \
 	 jc_type_is_mdcon(ctlr))
@@ -537,6 +545,7 @@ struct joycon_ctlr {
 /* Does this controller have rumble */
 #define jc_has_rumble(ctlr) \
 	(!jc_type_is_nescon(ctlr) && \
+	 !jc_type_is_famircon(ctlr) && \
 	 !jc_type_is_snescon(ctlr) && \
 	 !jc_type_is_mdcon(ctlr))
 
@@ -1713,6 +1722,11 @@ static const unsigned int nescon_button_inputs[] = {
 	0 /* 0 signals end of array */
 };
 
+static const unsigned int famircon_button_inputs[] = {
+	BTN_SOUTH, BTN_EAST, BTN_TL, BTN_TR,
+	0 /* 0 signals end of array */
+};
+
 static const unsigned int snescon_button_inputs[] = {
 	BTN_SELECT, BTN_START, BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST,
 	BTN_TL, BTN_TL2, BTN_TR, BTN_TR2,
@@ -1853,6 +1867,8 @@ static int joycon_input_create(struct joycon_ctlr *ctlr)
 
 		if (jc_type_is_nescon(ctlr)) {
 			inputs = nescon_button_inputs;
+		} else if (jc_type_is_famircon(ctlr)) {
+			inputs = famircon_button_inputs;
 		} else if (jc_type_is_snescon(ctlr)) {
 			inputs = snescon_button_inputs;
 		} else if (jc_type_is_mdcon(ctlr)) {
