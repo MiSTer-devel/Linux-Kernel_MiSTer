@@ -316,6 +316,8 @@ enum joycon_ctlr_type {
 	JOYCON_CTLR_TYPE_JCL  = 0x01,
 	JOYCON_CTLR_TYPE_JCR  = 0x02,
 	JOYCON_CTLR_TYPE_PRO  = 0x03,
+	JOYCON_CTLR_TYPE_FAMIL = 0x07,
+	JOYCON_CTLR_TYPE_FAMIR = 0x08,
 	JOYCON_CTLR_TYPE_NESL = 0x09,
 	JOYCON_CTLR_TYPE_NESR = 0x0A,
 	JOYCON_CTLR_TYPE_SNES = 0x0B,
@@ -440,6 +442,24 @@ static const struct joycon_ctlr_button_mapping nescon_button_mappings[] = {
 	{ BTN_TR,	JC_BTN_R,	},
 	{ BTN_SELECT,	JC_BTN_MINUS,	},
 	{ BTN_START,	JC_BTN_PLUS,	},
+	{ /* sentinel */ },
+};
+
+/*
+ * MiSTer/#95 forward-port: the NSO Famicom controller pair reports two
+ * distinct ctlr_types, not one shared "nescon" type -- FAMIL (left) is
+ * wired into joycon_type_is_any_nescon() below and reuses the existing
+ * nescon_button_mappings table as-is (D-pad + A/B/L/R/Select/Start is a
+ * strict superset of what a Famicom left unit's combined report needs,
+ * same reasoning already used for the NESL/NESR pair it joins), while
+ * FAMIR (right, no microphone on this SKU) reports only 4 buttons with
+ * no D-pad/Select/Start and needs its own smaller mapping table below.
+ */
+static const struct joycon_ctlr_button_mapping famicom_r_button_mappings[] = {
+	{ BTN_EAST,	JC_BTN_A,	},
+	{ BTN_SOUTH,	JC_BTN_B,	},
+	{ BTN_TL,	JC_BTN_L,	},
+	{ BTN_TR,	JC_BTN_R,	},
 	{ /* sentinel */ },
 };
 
@@ -724,6 +744,16 @@ static inline bool joycon_type_is_right_nescon(struct joycon_ctlr *ctlr)
 	return ctlr->ctlr_type == JOYCON_CTLR_TYPE_NESR;
 }
 
+static inline bool joycon_type_is_left_famicom(struct joycon_ctlr *ctlr)
+{
+	return ctlr->ctlr_type == JOYCON_CTLR_TYPE_FAMIL;
+}
+
+static inline bool joycon_type_is_right_famicom(struct joycon_ctlr *ctlr)
+{
+	return ctlr->ctlr_type == JOYCON_CTLR_TYPE_FAMIR;
+}
+
 static inline bool joycon_type_is_any_joycon(struct joycon_ctlr *ctlr)
 {
 	return joycon_type_is_left_joycon(ctlr) ||
@@ -734,7 +764,8 @@ static inline bool joycon_type_is_any_joycon(struct joycon_ctlr *ctlr)
 static inline bool joycon_type_is_any_nescon(struct joycon_ctlr *ctlr)
 {
 	return joycon_type_is_left_nescon(ctlr) ||
-	       joycon_type_is_right_nescon(ctlr);
+	       joycon_type_is_right_nescon(ctlr) ||
+	       joycon_type_is_left_famicom(ctlr);
 }
 
 /*
@@ -1715,6 +1746,8 @@ static void joycon_parse_report(struct joycon_ctlr *ctlr,
 	} else if (joycon_type_is_any_nescon(ctlr)) {
 		joycon_report_dpad(ctlr, rep);
 		joycon_report_buttons(ctlr, rep, nescon_button_mappings);
+	} else if (joycon_type_is_right_famicom(ctlr)) {
+		joycon_report_buttons(ctlr, rep, famicom_r_button_mappings);
 	} else if (joycon_type_is_snescon(ctlr)) {
 		joycon_report_dpad(ctlr, rep);
 		joycon_report_buttons(ctlr, rep, snescon_button_mappings);
@@ -2177,6 +2210,8 @@ static int joycon_input_create(struct joycon_ctlr *ctlr)
 	} else if (joycon_type_is_any_nescon(ctlr)) {
 		joycon_config_dpad(ctlr->input);
 		joycon_config_buttons(ctlr->input, nescon_button_mappings);
+	} else if (joycon_type_is_right_famicom(ctlr)) {
+		joycon_config_buttons(ctlr->input, famicom_r_button_mappings);
 	} else if (joycon_type_is_snescon(ctlr)) {
 		joycon_config_dpad(ctlr->input);
 		joycon_config_buttons(ctlr->input, snescon_button_mappings);
