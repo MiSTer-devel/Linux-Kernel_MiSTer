@@ -2156,7 +2156,10 @@ static int dualshock4_get_mac_address(struct dualshock4 *ds4)
 				    DS4_FEATURE_REPORT_PAIRING_INFO_SIZE, false);
 		if (ret) {
 			hid_err(hdev, "Failed to retrieve DualShock4 pairing info: %d\n", ret);
-			goto err_free;
+			/* MiSTer: don't abort probe on 3rd party DS4 clones that
+			 * fail this read over wire -- fall through with buf's
+			 * (possibly all-zero) contents rather than fail probe. */
+			ret = 0;
 		}
 
 		memcpy(ds4->base.mac_address, &buf[1], sizeof(ds4->base.mac_address));
