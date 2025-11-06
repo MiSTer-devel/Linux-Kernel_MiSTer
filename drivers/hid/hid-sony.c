@@ -2628,8 +2628,8 @@ static int sony_check_add(struct sony_sc *sc)
 
 		if (ret != DS4_FEATURE_REPORT_0x81_SIZE) {
 			hid_err(sc->hdev, "failed to retrieve feature report 0x81 with the DualShock 4 MAC address\n");
-			ret = ret < 0 ? ret : -EINVAL;
-			goto out_free;
+			//ret = ret < 0 ? ret : -EINVAL;
+			//goto out_free;
 		}
 
 		memcpy(sc->mac_address, &buf[1], sizeof(sc->mac_address));
