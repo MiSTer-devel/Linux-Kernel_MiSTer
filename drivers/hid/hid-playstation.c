@@ -2128,8 +2128,17 @@ static int dualshock4_get_mac_address(struct dualshock4 *ds4)
 		ret = ps_get_report(hdev, DS4_FEATURE_REPORT_PAIRING_INFO, buf,
 				    DS4_FEATURE_REPORT_PAIRING_INFO_SIZE, false);
 		if (ret) {
-			hid_err(hdev, "Failed to retrieve DualShock4 pairing info: %d\n", ret);
-			goto err_free;
+			/*
+			 * MiSTer: some 3rd-party wired DS4 clones don't implement
+			 * this vendor feature report at all. Treat it as
+			 * non-fatal -- proceed with whatever (possibly zeroed)
+			 * data came back rather than refusing to bind the
+			 * device entirely.
+			 */
+			hid_warn(hdev,
+				 "Failed to retrieve DualShock4 pairing info: %d; continuing without it\n",
+				 ret);
+			ret = 0;
 		}
 
 		memcpy(ds4->base.mac_address, &buf[1], sizeof(ds4->base.mac_address));
@@ -2149,7 +2158,6 @@ static int dualshock4_get_mac_address(struct dualshock4 *ds4)
 		return 0;
 	}
 
-err_free:
 	kfree(buf);
 	return ret;
 }
