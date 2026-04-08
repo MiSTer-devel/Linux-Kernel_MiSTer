@@ -9,9 +9,6 @@
  *  Copyright (c) 2008 Jiri Slaby
  */
 
-/*
- */
-
 #include <linux/device.h>
 #include <linux/input.h>
 #include <linux/hid.h>
@@ -27,6 +24,10 @@
 #define MS_DUPLICATE_USAGES	BIT(5)
 #define MS_SURFACE_DIAL		BIT(6)
 #define MS_QUIRK_FF		BIT(7)
+#define MS_QUIRK_ELITE2_PADDLES	BIT(8)
+
+#define MS_XBE2_TRIGSCALE_USAGE  (HID_UP_CONSUMER | 0x0099)
+#define MS_XBE2_PADDLE_USAGE     (HID_UP_CONSUMER | 0x0081)
 
 struct ms_data {
 	unsigned long quirks;
@@ -203,6 +204,21 @@ static int ms_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 			return ret;
 	}
 
+	if (quirks & MS_QUIRK_ELITE2_PADDLES) {
+		/* Ignore the trigger scale switch entirely */
+		if (usage->hid == MS_XBE2_TRIGSCALE_USAGE)
+			return -1;
+
+		if (usage->hid == MS_XBE2_PADDLE_USAGE) {
+			set_bit(EV_KEY, hi->input->evbit);
+			set_bit(BTN_GRIPL,  hi->input->keybit);
+			set_bit(BTN_GRIPL2, hi->input->keybit);
+			set_bit(BTN_GRIPR,  hi->input->keybit);
+			set_bit(BTN_GRIPR2, hi->input->keybit);
+			return -1;
+		}
+	}
+
 	return 0;
 }
 
@@ -226,6 +242,20 @@ static int ms_event(struct hid_device *hdev, struct hid_field *field,
 	unsigned long quirks = ms->quirks;
 	struct input_dev *input;
 
+	if ((quirks & MS_QUIRK_ELITE2_PADDLES) &&
+	    usage->hid == MS_XBE2_PADDLE_USAGE) {
+		if (!(hdev->claimed & HID_CLAIMED_INPUT) || !field->hidinput)
+			return 0;
+		input = field->hidinput->input;
+		input_report_key(input, BTN_GRIPL,  value & BIT(2));
+		input_report_key(input, BTN_GRIPL2, value & BIT(3));
+		input_report_key(input, BTN_GRIPR,  value & BIT(0));
+		input_report_key(input, BTN_GRIPR2, value & BIT(1));
+		input_sync(input);
+		return 1;
+	}
+
+	/* All other handlers require a valid usage->type */
 	if (!(hdev->claimed & HID_CLAIMED_INPUT) || !field->hidinput ||
 			!usage->type)
 		return 0;
@@ -456,7 +486,7 @@ static const struct hid_device_id ms_devices[] = {
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_MICROSOFT, USB_DEVICE_ID_MS_XBOX_CONTROLLER_MODEL_1797),
 		.driver_data = MS_QUIRK_FF },
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_MICROSOFT, USB_DEVICE_ID_MS_XBOX_CONTROLLER_MODEL_1797_BLE),
-		.driver_data = MS_QUIRK_FF },
+		.driver_data = MS_QUIRK_FF | MS_QUIRK_ELITE2_PADDLES },
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_MICROSOFT, USB_DEVICE_ID_8BITDO_SN30_PRO_PLUS),
 		.driver_data = MS_QUIRK_FF },
 	{ }
