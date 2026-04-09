@@ -83,6 +83,9 @@ struct xone_dongle {
 	wait_queue_head_t disconnect_wait;
 
 	struct workqueue_struct *event_wq;
+
+	u16 vendor;
+	u16 product;
 };
 
 static void xone_dongle_prep_packet(struct xone_dongle_client *client,
@@ -809,6 +812,7 @@ static int xone_dongle_init(struct xone_dongle *dongle)
 {
 	struct xone_mt76 *mt = &dongle->mt;
 	int err;
+	char fwname[32];
 
 	init_usb_anchor(&dongle->urbs_out_idle);
 	init_usb_anchor(&dongle->urbs_out_busy);
@@ -829,7 +833,8 @@ static int xone_dongle_init(struct xone_dongle *dongle)
 	if (err)
 		return err;
 
-	err = xone_mt76_load_firmware(mt, "xow_dongle.bin");
+	sprintf(fwname, "xone_dongle_%04x.bin", dongle->product);
+	err = xone_mt76_load_firmware(mt, fwname);
 	if (err) {
 		dev_err(mt->dev, "%s: load firmware failed: %d\n",
 			__func__, err);
@@ -922,6 +927,8 @@ static int xone_dongle_probe(struct usb_interface *intf,
 
 	dongle->mt.dev = &intf->dev;
 	dongle->mt.udev = interface_to_usbdev(intf);
+	dongle->vendor = id->idVendor;
+	dongle->product = id->idProduct;
 
 	usb_reset_device(dongle->mt.udev);
 
