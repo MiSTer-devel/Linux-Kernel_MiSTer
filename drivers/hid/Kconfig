@@ -352,6 +352,14 @@ config HID_EZKEY
 	help
 	Support for Ezkey BTC 8193 keyboard.
 
+config HID_VADER4
+	tristate "Flydigi Vader 4 Pro in BT D-Input mode"
+	depends on HID
+	default !EXPERT
+	select INPUT_FF_MEMLESS
+	help
+	Remap weird Vader 4 Pro mapping over Bluetooth.
+
 config HID_FT260
 	tristate "FTDI FT260 USB HID to I2C host support"
 	depends on USB_HID && HIDRAW && I2C
