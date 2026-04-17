@@ -1,17 +1,24 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2021 Severin von Wnuck <severinvonw@outlook.de>
+ * Copyright (C) 2021 Severin von Wnuck-Lipinski <severinvonw@outlook.de>
  */
 
 #include <linux/module.h>
+#include <linux/version.h>
 #include <linux/hrtimer.h>
 #include <sound/core.h>
 #include <sound/initval.h>
 #include <sound/pcm.h>
 
-#include "../bus/bus.h"
+#include "common.h"
+#include "../auth/auth.h"
 
-#define GIP_HS_NAME "Microsoft X-Box One headset"
+#define GIP_HS_NAME "Microsoft Xbox Headset"
+
+#define GIP_HS_NUM_BUFFERS 128
+
+/* product ID for the chat headset */
+#define GIP_HS_PID_CHAT 0x0111
 
 #define GIP_HS_CONFIG_DELAY msecs_to_jiffies(1000)
 #define GIP_HS_POWER_ON_DELAY msecs_to_jiffies(1000)
@@ -25,15 +32,19 @@ static const struct snd_pcm_hardware gip_headset_pcm_hw = {
 	.formats = SNDRV_PCM_FMTBIT_S16_LE,
 	.rates = SNDRV_PCM_RATE_CONTINUOUS,
 	.periods_min = 2,
-	.periods_max = 1024,
+	.periods_max = GIP_HS_NUM_BUFFERS,
 };
 
 struct gip_headset {
 	struct gip_client *client;
+	struct gip_battery battery;
+	struct gip_auth auth;
 
-	struct delayed_work config_work;
-	struct delayed_work power_on_work;
-	struct work_struct register_work;
+	bool chat_headset;
+
+	struct delayed_work work_config;
+	struct delayed_work work_power_on;
+	struct work_struct work_register;
 	bool registered;
 
 	struct hrtimer timer;
@@ -46,7 +57,6 @@ struct gip_headset {
 	} playback, capture;
 
 	struct snd_card *card;
-	struct snd_pcm *pcm;
 };
 
 static int gip_headset_pcm_open(struct snd_pcm_substream *sub)
@@ -64,9 +74,9 @@ static int gip_headset_pcm_open(struct snd_pcm_substream *sub)
 	hw.rate_max = cfg->sample_rate;
 	hw.channels_min = cfg->channels;
 	hw.channels_max = cfg->channels;
-	hw.buffer_bytes_max = cfg->buffer_size * 8;
+	hw.buffer_bytes_max = cfg->buffer_size * GIP_HS_NUM_BUFFERS;
 	hw.period_bytes_min = cfg->buffer_size;
-	hw.period_bytes_max = cfg->buffer_size * 8;
+	hw.period_bytes_max = cfg->buffer_size;
 
 	sub->runtime->hw = hw;
 
@@ -76,18 +86,6 @@ static int gip_headset_pcm_open(struct snd_pcm_substream *sub)
 static int gip_headset_pcm_close(struct snd_pcm_substream *sub)
 {
 	return 0;
-}
-
-static int gip_headset_pcm_hw_params(struct snd_pcm_substream *sub,
-				     struct snd_pcm_hw_params *params)
-{
-	return snd_pcm_lib_alloc_vmalloc_buffer(sub,
-						params_buffer_bytes(params));
-}
-
-static int gip_headset_pcm_hw_free(struct snd_pcm_substream *sub)
-{
-	return snd_pcm_lib_free_vmalloc_buffer(sub);
 }
 
 static int gip_headset_pcm_prepare(struct snd_pcm_substream *sub)
@@ -142,76 +140,69 @@ static snd_pcm_uframes_t gip_headset_pcm_pointer(struct snd_pcm_substream *sub)
 static const struct snd_pcm_ops gip_headset_pcm_ops = {
 	.open = gip_headset_pcm_open,
 	.close = gip_headset_pcm_close,
-	.ioctl = snd_pcm_lib_ioctl,
-	.hw_params = gip_headset_pcm_hw_params,
-	.hw_free = gip_headset_pcm_hw_free,
 	.prepare = gip_headset_pcm_prepare,
 	.trigger = gip_headset_pcm_trigger,
 	.pointer = gip_headset_pcm_pointer,
-	.page = snd_pcm_lib_get_vmalloc_page,
 };
 
-static bool gip_headset_copy_playback(struct gip_headset_stream *stream,
-				      unsigned char *data, int len)
+static bool gip_headset_advance_pointer(struct gip_headset_stream *stream,
+					int len, size_t buf_size)
 {
-	struct snd_pcm_runtime *runtime = stream->substream->runtime;
-	size_t buf_size = snd_pcm_lib_buffer_bytes(stream->substream);
-	size_t remaining = buf_size - stream->pointer;
-
-	if (len <= remaining) {
-		memcpy(data, runtime->dma_area + stream->pointer, len);
-	} else {
-		memcpy(data, runtime->dma_area + stream->pointer, remaining);
-		memcpy(data + remaining, runtime->dma_area, len - remaining);
-	}
+	snd_pcm_uframes_t period = stream->substream->runtime->period_size;
 
 	stream->pointer += len;
 	if (stream->pointer >= buf_size)
 		stream->pointer -= buf_size;
 
 	stream->period += len;
-	if (stream->period >= runtime->period_size) {
-		stream->period -= runtime->period_size;
+	if (stream->period >= period) {
+		stream->period -= period;
 		return true;
 	}
 
 	return false;
 }
 
-static bool gip_headset_copy_capture(struct gip_headset_stream *stream,
-				     unsigned char *data, int len)
+static bool gip_headset_copy_playback(struct gip_headset_stream *stream,
+				      unsigned char *data, int len)
 {
-	struct snd_pcm_runtime *runtime = stream->substream->runtime;
+	unsigned char *src = stream->substream->runtime->dma_area;
 	size_t buf_size = snd_pcm_lib_buffer_bytes(stream->substream);
 	size_t remaining = buf_size - stream->pointer;
 
 	if (len <= remaining) {
-		memcpy(runtime->dma_area + stream->pointer, data, len);
+		memcpy(data, src + stream->pointer, len);
 	} else {
-		memcpy(runtime->dma_area + stream->pointer, data, remaining);
-		memcpy(runtime->dma_area, data + remaining, len - remaining);
+		memcpy(data, src + stream->pointer, remaining);
+		memcpy(data + remaining, src, len - remaining);
 	}
 
-	stream->pointer += len;
-	if (stream->pointer >= buf_size)
-		stream->pointer -= buf_size;
+	return gip_headset_advance_pointer(stream, len, buf_size);
+}
 
-	stream->period += len;
-	if (stream->period >= runtime->period_size) {
-		stream->period -= runtime->period_size;
-		return true;
+static bool gip_headset_copy_capture(struct gip_headset_stream *stream,
+				     unsigned char *data, int len)
+{
+	unsigned char *dest = stream->substream->runtime->dma_area;
+	size_t buf_size = snd_pcm_lib_buffer_bytes(stream->substream);
+	size_t remaining = buf_size - stream->pointer;
+
+	if (len <= remaining) {
+		memcpy(dest + stream->pointer, data, len);
+	} else {
+		memcpy(dest + stream->pointer, data, remaining);
+		memcpy(dest, data + remaining, len - remaining);
 	}
 
-	return false;
+	return gip_headset_advance_pointer(stream, len, buf_size);
 }
 
 static enum hrtimer_restart gip_headset_send_samples(struct hrtimer *timer)
 {
 	struct gip_headset *headset = container_of(timer, typeof(*headset),
 						   timer);
-	struct gip_headset_stream *stream = &headset->playback;
 	struct gip_audio_config *cfg = &headset->client->audio_config_out;
-	struct snd_pcm_substream *sub = stream->substream;
+	struct snd_pcm_substream *sub = headset->playback.substream;
 	bool elapsed = false;
 	int err;
 	unsigned long flags;
@@ -220,7 +211,7 @@ static enum hrtimer_restart gip_headset_send_samples(struct hrtimer *timer)
 		snd_pcm_stream_lock_irqsave(sub, flags);
 
 		if (sub->runtime && snd_pcm_running(sub))
-			elapsed = gip_headset_copy_playback(stream,
+			elapsed = gip_headset_copy_playback(&headset->playback,
 							    headset->buffer,
 							    cfg->buffer_size);
 
@@ -240,9 +231,10 @@ static enum hrtimer_restart gip_headset_send_samples(struct hrtimer *timer)
 	return HRTIMER_RESTART;
 }
 
-static int gip_headset_init_card(struct gip_headset *headset)
+static int gip_headset_init_pcm(struct gip_headset *headset)
 {
 	struct snd_card *card;
+	struct snd_pcm *pcm;
 	int err;
 
 	err = snd_card_new(&headset->client->dev, SNDRV_DEFAULT_IDX1,
@@ -250,67 +242,32 @@ static int gip_headset_init_card(struct gip_headset *headset)
 	if (err)
 		return err;
 
-	strscpy(card->driver, "GIP Headset", sizeof(card->driver));
+	strscpy(card->driver, "xone-gip-headset", sizeof(card->driver));
 	strscpy(card->shortname, GIP_HS_NAME, sizeof(card->shortname));
 	snprintf(card->longname, sizeof(card->longname), "%s at %s",
 		 GIP_HS_NAME, dev_name(&headset->client->dev));
 
 	headset->card = card;
 
-	return 0;
-}
-
-static int gip_headset_init_pcm(struct gip_headset *headset)
-{
-	struct gip_client *client = headset->client;
-	struct snd_pcm *pcm;
-	int err;
-
-	err = snd_pcm_new(headset->card, "GIP Headset", 0, 1, 1, &pcm);
+	err = snd_pcm_new(card, GIP_HS_NAME, 0, 1, 1, &pcm);
 	if (err)
 		return err;
 
-	strscpy(pcm->name, "GIP Headset", sizeof(pcm->name));
+	strscpy(pcm->name, GIP_HS_NAME, sizeof(pcm->name));
 	pcm->private_data = headset;
 
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &gip_headset_pcm_ops);
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &gip_headset_pcm_ops);
+	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_VMALLOC, NULL, 0, 0);
 
-	headset->buffer = devm_kzalloc(&client->dev,
-				       client->audio_config_out.buffer_size,
-				       GFP_KERNEL);
-	if (!headset->buffer)
-		return -ENOMEM;
-
-	headset->pcm = pcm;
-
-	return snd_card_register(headset->card);
-}
-
-static int gip_headset_start_audio(struct gip_headset *headset)
-{
-	struct gip_client *client = headset->client;
-	int err;
-
-	/* set headset volume to maximum */
-	err = gip_fix_audio_volume(client);
-	if (err)
-		return err;
-
-	err = gip_init_audio_out(client);
-	if (err)
-		return err;
-
-	hrtimer_start(&headset->timer, 0, HRTIMER_MODE_REL);
-
-	return 0;
+	return snd_card_register(card);
 }
 
 static void gip_headset_config(struct work_struct *work)
 {
 	struct gip_headset *headset = container_of(to_delayed_work(work),
 						   typeof(*headset),
-						   config_work);
+						   work_config);
 	struct gip_client *client = headset->client;
 	struct gip_info_element *fmts = client->audio_formats;
 	int err;
@@ -319,7 +276,8 @@ static void gip_headset_config(struct work_struct *work)
 		fmts->data[0], fmts->data[1]);
 
 	/* suggest initial audio format */
-	err = gip_suggest_audio_format(client, fmts->data[0], fmts->data[1]);
+	err = gip_suggest_audio_format(client, fmts->data[0], fmts->data[1],
+				       headset->chat_headset);
 	if (err)
 		dev_err(&client->dev, "%s: suggest format failed: %d\n",
 			__func__, err);
@@ -329,65 +287,111 @@ static void gip_headset_power_on(struct work_struct *work)
 {
 	struct gip_headset *headset = container_of(to_delayed_work(work),
 						   typeof(*headset),
-						   power_on_work);
+						   work_power_on);
 	struct gip_client *client = headset->client;
 	int err;
 
 	err = gip_set_power_mode(client, GIP_PWR_ON);
-	if (err)
+	if (err) {
 		dev_err(&client->dev, "%s: set power mode failed: %d\n",
+			__func__, err);
+		return;
+	}
+
+	/* not a standalone headset */
+	if (client->id)
+		return;
+
+	err = gip_init_battery(&headset->battery, client, GIP_HS_NAME);
+	if (err) {
+		dev_err(&client->dev, "%s: init battery failed: %d\n",
+			__func__, err);
+		return;
+	}
+
+	err = gip_auth_start_handshake(&headset->auth, client);
+	if (err)
+		dev_err(&client->dev, "%s: start handshake failed: %d\n",
 			__func__, err);
 }
 
 static void gip_headset_register(struct work_struct *work)
 {
 	struct gip_headset *headset = container_of(work, typeof(*headset),
-						   register_work);
-	struct device *dev = &headset->client->dev;
+						   work_register);
+	struct gip_client *client = headset->client;
 	int err;
 
-	err = gip_headset_init_card(headset);
-	if (err) {
-		dev_err(dev, "%s: init card failed: %d\n", __func__, err);
+	headset->buffer = devm_kzalloc(&client->dev,
+				       client->audio_config_out.buffer_size,
+				       GFP_KERNEL);
+	if (!headset->buffer)
 		return;
-	}
 
 	err = gip_headset_init_pcm(headset);
 	if (err) {
-		dev_err(dev, "%s: init PCM failed: %d\n", __func__, err);
-		goto err_free_card;
+		dev_err(&client->dev, "%s: init PCM failed: %d\n",
+			__func__, err);
+		return;
 	}
 
-	err = gip_headset_start_audio(headset);
+	/* set hardware volume to maximum for headset jack */
+	/* standalone & chat headsets have physical volume controls */
+	if (client->id && !headset->chat_headset) {
+		err = gip_set_audio_volume(client, 100, 50, 100);
+		if (err) {
+			dev_err(&client->dev, "%s: set volume failed: %d\n",
+				__func__, err);
+			return;
+		}
+	}
+
+	err = gip_init_audio_out(client);
 	if (err) {
-		dev_err(dev, "%s: start audio failed: %d\n", __func__, err);
-		goto err_free_card;
+		dev_err(&client->dev, "%s: init audio out failed: %d\n",
+			__func__, err);
+		return;
 	}
 
-	return;
+	hrtimer_start(&headset->timer, 0, HRTIMER_MODE_REL);
+}
 
-err_free_card:
-	snd_card_free(headset->card);
-	headset->card = NULL;
+static int gip_headset_op_battery(struct gip_client *client,
+				  enum gip_battery_type type,
+				  enum gip_battery_level level)
+{
+	struct gip_headset *headset = dev_get_drvdata(&client->dev);
+
+	gip_report_battery(&headset->battery, type, level);
+
+	return 0;
+}
+
+static int gip_headset_op_authenticate(struct gip_client *client,
+				       void *data, u32 len)
+{
+	struct gip_headset *headset = dev_get_drvdata(&client->dev);
+
+	return gip_auth_process_pkt(&headset->auth, data, len);
 }
 
 static int gip_headset_op_audio_ready(struct gip_client *client)
 {
 	struct gip_headset *headset = dev_get_drvdata(&client->dev);
 
-	schedule_delayed_work(&headset->power_on_work, GIP_HS_POWER_ON_DELAY);
+	schedule_delayed_work(&headset->work_power_on, GIP_HS_POWER_ON_DELAY);
 
 	return 0;
 }
 
 static int gip_headset_op_audio_volume(struct gip_client *client,
-				       int in, int out)
+				       u8 in, u8 out)
 {
 	struct gip_headset *headset = dev_get_drvdata(&client->dev);
 
 	/* headset reported initial volume, start audio I/O */
 	if (!headset->registered) {
-		schedule_work(&headset->register_work);
+		schedule_work(&headset->work_register);
 		headset->registered = true;
 	}
 
@@ -396,11 +400,10 @@ static int gip_headset_op_audio_volume(struct gip_client *client,
 }
 
 static int gip_headset_op_audio_samples(struct gip_client *client,
-					void *data, int len)
+					void *data, u32 len)
 {
 	struct gip_headset *headset = dev_get_drvdata(&client->dev);
-	struct gip_headset_stream *stream = &headset->capture;
-	struct snd_pcm_substream *sub = stream->substream;
+	struct snd_pcm_substream *sub = headset->capture.substream;
 	bool elapsed = false;
 	unsigned long flags;
 
@@ -410,7 +413,8 @@ static int gip_headset_op_audio_samples(struct gip_client *client,
 	snd_pcm_stream_lock_irqsave(sub, flags);
 
 	if (sub->runtime && snd_pcm_running(sub))
-		elapsed = gip_headset_copy_capture(stream, data, len);
+		elapsed = gip_headset_copy_capture(&headset->capture,
+						   data, len);
 
 	snd_pcm_stream_unlock_irqrestore(sub, flags);
 
@@ -434,13 +438,20 @@ static int gip_headset_probe(struct gip_client *client)
 		return -ENOMEM;
 
 	headset->client = client;
+	headset->chat_headset = client->hardware.vendor == GIP_VID_MICROSOFT &&
+				client->hardware.product == GIP_HS_PID_CHAT;
 
-	INIT_DELAYED_WORK(&headset->config_work, gip_headset_config);
-	INIT_DELAYED_WORK(&headset->power_on_work, gip_headset_power_on);
-	INIT_WORK(&headset->register_work, gip_headset_register);
+	INIT_DELAYED_WORK(&headset->work_config, gip_headset_config);
+	INIT_DELAYED_WORK(&headset->work_power_on, gip_headset_power_on);
+	INIT_WORK(&headset->work_register, gip_headset_register);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 	hrtimer_init(&headset->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	headset->timer.function = gip_headset_send_samples;
+#else
+	hrtimer_setup(&headset->timer, gip_headset_send_samples,
+		      CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+#endif
 
 	err = gip_enable_audio(client);
 	if (err)
@@ -455,7 +466,7 @@ static int gip_headset_probe(struct gip_client *client)
 	dev_set_drvdata(&client->dev, headset);
 
 	/* delay to prevent response from being dropped */
-	schedule_delayed_work(&headset->config_work, GIP_HS_CONFIG_DELAY);
+	schedule_delayed_work(&headset->work_config, GIP_HS_CONFIG_DELAY);
 
 	return 0;
 }
@@ -464,9 +475,9 @@ static void gip_headset_remove(struct gip_client *client)
 {
 	struct gip_headset *headset = dev_get_drvdata(&client->dev);
 
-	cancel_delayed_work_sync(&headset->config_work);
-	cancel_delayed_work_sync(&headset->power_on_work);
-	cancel_work_sync(&headset->register_work);
+	cancel_delayed_work_sync(&headset->work_config);
+	cancel_delayed_work_sync(&headset->work_power_on);
+	cancel_work_sync(&headset->work_register);
 	hrtimer_cancel(&headset->timer);
 	gip_disable_audio(client);
 
@@ -474,14 +485,14 @@ static void gip_headset_remove(struct gip_client *client)
 		snd_card_disconnect(headset->card);
 		snd_card_free_when_closed(headset->card);
 	}
-
-	dev_set_drvdata(&client->dev, NULL);
 }
 
 static struct gip_driver gip_headset_driver = {
 	.name = "xone-gip-headset",
 	.class = "Windows.Xbox.Input.Headset",
 	.ops = {
+		.battery = gip_headset_op_battery,
+		.authenticate = gip_headset_op_authenticate,
 		.audio_ready = gip_headset_op_audio_ready,
 		.audio_volume = gip_headset_op_audio_volume,
 		.audio_samples = gip_headset_op_audio_samples,
@@ -492,7 +503,7 @@ static struct gip_driver gip_headset_driver = {
 module_gip_driver(gip_headset_driver);
 
 MODULE_ALIAS("gip:Windows.Xbox.Input.Headset");
-MODULE_AUTHOR("Severin von Wnuck <severinvonw@outlook.de>");
+MODULE_AUTHOR("Severin von Wnuck-Lipinski <severinvonw@outlook.de>");
 MODULE_DESCRIPTION("xone GIP headset driver");
 MODULE_VERSION("#VERSION#");
 MODULE_LICENSE("GPL");

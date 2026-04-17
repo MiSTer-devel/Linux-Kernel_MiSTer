@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Copyright (C) 2021 Severin von Wnuck <severinvonw@outlook.de>
+ * Copyright (C) 2021 Severin von Wnuck-Lipinski <severinvonw@outlook.de>
  */
 
 #pragma once
@@ -28,6 +28,18 @@ enum xone_mt76_event {
 	XONE_MT_EVT_PACKET_RX = 0x0c,
 	XONE_MT_EVT_COREDUMP = 0x0d,
 	XONE_MT_EVT_CLIENT_LOST = 0x0e,
+};
+
+enum xone_mt76_client_command {
+	XONE_MT_CLIENT_PAIR_REQ = 0x01,
+	XONE_MT_CLIENT_PAIR_RESP = 0x02,
+	XONE_MT_CLIENT_CHANGE_CHAN_REQ = 0x03,
+	XONE_MT_CLIENT_CHANGE_CHAN_RESP = 0x04,
+	XONE_MT_CLIENT_STATISTICS_REQ = 0x05,
+	XONE_MT_CLIENT_STATISTICS_RESP = 0x06,
+	XONE_MT_CLIENT_SCAN_CHAN_REQ = 0x07,
+	XONE_MT_CLIENT_SCAN_CHAN_RESP = 0x08,
+	XONE_MT_CLIENT_ENABLE_ENCRYPTION = 0x10,
 };
 
 struct xone_mt76_channel {
@@ -62,4 +74,8 @@ int xone_mt76_set_pairing(struct xone_mt76 *mt, bool enable);
 
 int xone_mt76_pair_client(struct xone_mt76 *mt, u8 *addr);
 int xone_mt76_associate_client(struct xone_mt76 *mt, u8 wcid, u8 *addr);
+int xone_mt76_send_client_command(struct xone_mt76 *mt, u8 wcid, u8 *addr,
+				  enum xone_mt76_client_command cmd,
+				  u8 *data, int len);
+int xone_mt76_set_client_key(struct xone_mt76 *mt, u8 wcid, u8 *key, int len);
 int xone_mt76_remove_client(struct xone_mt76 *mt, u8 wcid);

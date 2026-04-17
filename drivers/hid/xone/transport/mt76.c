@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2021 Severin von Wnuck <severinvonw@outlook.de>
+ * Copyright (C) 2021 Severin von Wnuck-Lipinski <severinvonw@outlook.de>
  */
 
 #include <linux/slab.h>
@@ -29,6 +29,8 @@
 #define XONE_MT_CH_2G_HIGH 0x03
 #define XONE_MT_CH_5G_LOW 0x01
 #define XONE_MT_CH_5G_HIGH 0x02
+
+#define XONE_MT_WCID_KEY_LEN 16
 
 /* commands specific to the dongle's firmware */
 enum xone_mt76_ms_command {
@@ -185,7 +187,7 @@ struct sk_buff *xone_mt76_alloc_message(int len, gfp_t gfp)
 	return skb;
 }
 
-void xone_mt76_prep_message(struct sk_buff *skb, u32 info)
+static void xone_mt76_prep_message(struct sk_buff *skb, u32 info)
 {
 	int len, pad;
 
@@ -545,18 +547,18 @@ err_free_firmware:
 
 static const struct xone_mt76_channel
 xone_mt76_channels[XONE_MT_NUM_CHANNELS] = {
-	{ 0x01, XONE_MT_CH_2G_LOW, MT_PHY_BW_20, 0, true },
-	{ 0x06, XONE_MT_CH_2G_MID, MT_PHY_BW_20, 0, true },
-	{ 0x0b, XONE_MT_CH_2G_HIGH, MT_PHY_BW_20, 0, true },
-	{ 0x24, XONE_MT_CH_5G_LOW, MT_PHY_BW_40, MT_CH_5G_UNII_1, true },
-	{ 0x28, XONE_MT_CH_5G_LOW, MT_PHY_BW_40, MT_CH_5G_UNII_1, false },
-	{ 0x2c, XONE_MT_CH_5G_HIGH, MT_PHY_BW_40, MT_CH_5G_UNII_1, true },
-	{ 0x30, XONE_MT_CH_5G_HIGH, MT_PHY_BW_40, MT_CH_5G_UNII_1, false },
-	{ 0x95, XONE_MT_CH_5G_LOW, MT_PHY_BW_80, MT_CH_5G_UNII_3, true },
-	{ 0x99, XONE_MT_CH_5G_LOW, MT_PHY_BW_80, MT_CH_5G_UNII_3, false },
-	{ 0x9d, XONE_MT_CH_5G_HIGH, MT_PHY_BW_80, MT_CH_5G_UNII_3, true },
-	{ 0xa1, XONE_MT_CH_5G_HIGH, MT_PHY_BW_80, MT_CH_5G_UNII_3, false },
-	{ 0xa5, XONE_MT_CH_5G_HIGH, MT_PHY_BW_80, MT_CH_5G_UNII_3, false },
+	{ 0x01, XONE_MT_CH_2G_LOW, MT_PHY_BW_20, 0, true, 0 },
+	{ 0x06, XONE_MT_CH_2G_MID, MT_PHY_BW_20, 0, true, 0 },
+	{ 0x0b, XONE_MT_CH_2G_HIGH, MT_PHY_BW_20, 0, true, 0 },
+	{ 0x24, XONE_MT_CH_5G_LOW, MT_PHY_BW_40, MT_CH_5G_UNII_1, true, 0 },
+	{ 0x28, XONE_MT_CH_5G_LOW, MT_PHY_BW_40, MT_CH_5G_UNII_1, false, 0 },
+	{ 0x2c, XONE_MT_CH_5G_HIGH, MT_PHY_BW_40, MT_CH_5G_UNII_1, true, 0 },
+	{ 0x30, XONE_MT_CH_5G_HIGH, MT_PHY_BW_40, MT_CH_5G_UNII_1, false, 0 },
+	{ 0x95, XONE_MT_CH_5G_LOW, MT_PHY_BW_80, MT_CH_5G_UNII_3, true, 0 },
+	{ 0x99, XONE_MT_CH_5G_LOW, MT_PHY_BW_80, MT_CH_5G_UNII_3, false, 0 },
+	{ 0x9d, XONE_MT_CH_5G_HIGH, MT_PHY_BW_80, MT_CH_5G_UNII_3, true, 0 },
+	{ 0xa1, XONE_MT_CH_5G_HIGH, MT_PHY_BW_80, MT_CH_5G_UNII_3, false, 0 },
+	{ 0xa5, XONE_MT_CH_5G_HIGH, MT_PHY_BW_80, MT_CH_5G_UNII_3, false, 0 },
 };
 
 static int xone_mt76_set_channel_candidates(struct xone_mt76 *mt)
@@ -1067,13 +1069,11 @@ int xone_mt76_pair_client(struct xone_mt76 *mt, u8 *addr)
 {
 	struct sk_buff *skb;
 	struct ieee80211_hdr_3addr hdr = {};
-	u8 data[] = {
-		0x70, 0x02, 0x00, 0x45, 0x55, 0x01, 0x0f, 0x8f,
-		0xff, 0x87, 0x1f,
-	};
+	u8 data[] = { 0x00, 0x45, 0x55, 0x01, 0x0f, 0x8f, 0xff, 0x87, 0x1f };
 
 	skb = xone_mt76_alloc_message(sizeof(struct mt76_txwi) + sizeof(hdr) +
-				      sizeof(data), GFP_KERNEL);
+				      sizeof(u8) * 2 + sizeof(data),
+				      GFP_KERNEL);
 	if (!skb)
 		return -ENOMEM;
 
@@ -1085,6 +1085,8 @@ int xone_mt76_pair_client(struct xone_mt76 *mt, u8 *addr)
 
 	skb_reserve(skb, sizeof(struct mt76_txwi));
 	skb_put_data(skb, &hdr, sizeof(hdr));
+	skb_put_u8(skb, XONE_MT_WLAN_RESERVED);
+	skb_put_u8(skb, XONE_MT_CLIENT_PAIR_RESP);
 	skb_put_data(skb, data, sizeof(data));
 
 	return xone_mt76_send_wlan(mt, skb);
@@ -1099,7 +1101,7 @@ int xone_mt76_associate_client(struct xone_mt76 *mt, u8 wcid, u8 *addr)
 		       sizeof(mgmt.u.assoc_resp);
 	int err;
 
-	skb = xone_mt76_alloc_message(sizeof(struct mt76_txwi) + mgmt_len,
+	skb = xone_mt76_alloc_message(sizeof(struct mt76_txwi) + mgmt_len + 8,
 				      GFP_KERNEL);
 	if (!skb)
 		return -ENOMEM;
@@ -1135,10 +1137,79 @@ err_free_skb:
 	return err;
 }
 
+int xone_mt76_send_client_command(struct xone_mt76 *mt, u8 wcid, u8 *addr,
+				  enum xone_mt76_client_command cmd,
+				  u8 *data, int len)
+{
+	struct sk_buff *skb;
+	struct mt76_txwi txwi = {};
+	struct ieee80211_hdr_3addr hdr = {};
+	u8 info[] = {
+		0x00, 0x00, 0x00, wcid - 1, 0x00, 0x00, 0x00, 0x00,
+	};
+
+	skb = xone_mt76_alloc_message(sizeof(info) + sizeof(txwi) +
+				      sizeof(hdr) + sizeof(u8) * 2 + len,
+				      GFP_KERNEL);
+	if (!skb)
+		return -ENOMEM;
+
+	/* wait for acknowledgment */
+	txwi.flags = cpu_to_le16(FIELD_PREP(MT_TXWI_FLAGS_MPDU_DENSITY,
+					    IEEE80211_HT_MPDU_DENSITY_4));
+	txwi.rate = cpu_to_le16(FIELD_PREP(MT_RXWI_RATE_PHY, MT_PHY_TYPE_OFDM));
+	txwi.ack_ctl = MT_TXWI_ACK_CTL_REQ;
+	txwi.wcid = wcid - 1;
+	txwi.len_ctl = cpu_to_le16(sizeof(hdr) + sizeof(u8) * 2 + len);
+
+	hdr.frame_control = cpu_to_le16(IEEE80211_FTYPE_MGMT |
+					XONE_MT_WLAN_RESERVED);
+	memcpy(hdr.addr1, addr, ETH_ALEN);
+	memcpy(hdr.addr2, mt->address, ETH_ALEN);
+	memcpy(hdr.addr3, mt->address, ETH_ALEN);
+
+	skb_put_data(skb, info, sizeof(info));
+	skb_put_data(skb, &txwi, sizeof(txwi));
+	skb_put_data(skb, &hdr, sizeof(hdr));
+	skb_put_u8(skb, XONE_MT_WLAN_RESERVED);
+	skb_put_u8(skb, cmd);
+
+	if (data)
+		skb_put_data(skb, data, len);
+
+	return xone_mt76_send_command(mt, skb, 0);
+}
+
+int xone_mt76_set_client_key(struct xone_mt76 *mt, u8 wcid, u8 *key, int len)
+{
+	u8 iv[] = { 0x01, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00 };
+	__le32 attr = cpu_to_le32(FIELD_PREP(MT_WCID_ATTR_PKEY_MODE,
+					     MT_CIPHER_AES_CCMP) |
+				  MT_WCID_ATTR_PAIRWISE);
+	int err;
+
+	if (len != XONE_MT_WCID_KEY_LEN)
+		return -EINVAL;
+
+	err = xone_mt76_write_burst(mt, MT_WCID_KEY(wcid), key, len);
+	if (err)
+		return err;
+
+	err = xone_mt76_write_burst(mt, MT_WCID_IV(wcid), iv, sizeof(iv));
+	if (err)
+		return err;
+
+	return xone_mt76_write_burst(mt, MT_WCID_ATTR(wcid),
+				     &attr, sizeof(attr));
+}
+
 int xone_mt76_remove_client(struct xone_mt76 *mt, u8 wcid)
 {
 	u8 data[] = { wcid - 1, 0x00, 0x00, 0x00 };
 	u8 addr[ETH_ALEN] = {};
+	u8 iv[8] = {};
+	u32 attr = 0;
+	u8 key[XONE_MT_WCID_KEY_LEN] = {};
 	int err;
 
 	err = xone_mt76_send_ms_command(mt, XONE_MT_REMOVE_CLIENT,
@@ -1146,5 +1217,18 @@ int xone_mt76_remove_client(struct xone_mt76 *mt, u8 wcid)
 	if (err)
 		return err;
 
-	return xone_mt76_write_burst(mt, MT_WCID_ADDR(wcid), addr, ETH_ALEN);
+	err = xone_mt76_write_burst(mt, MT_WCID_ADDR(wcid), addr, sizeof(addr));
+	if (err)
+		return err;
+
+	err = xone_mt76_write_burst(mt, MT_WCID_IV(wcid), iv, sizeof(iv));
+	if (err)
+		return err;
+
+	err = xone_mt76_write_burst(mt, MT_WCID_ATTR(wcid),
+				    &attr, sizeof(attr));
+	if (err)
+		return err;
+
+	return xone_mt76_write_burst(mt, MT_WCID_KEY(wcid), key, sizeof(key));
 }

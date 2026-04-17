@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2021 Severin von Wnuck <severinvonw@outlook.de>
+ * Copyright (C) 2021 Severin von Wnuck-Lipinski <severinvonw@outlook.de>
  */
 
 #include <linux/module.h>
@@ -263,8 +263,12 @@ static int xone_wired_submit_buffer(struct gip_adapter *adap,
 static int xone_wired_enable_audio(struct gip_adapter *adap)
 {
 	struct xone_wired *wired = dev_get_drvdata(&adap->dev);
-	struct usb_interface *intf = to_usb_interface(wired->audio_port.dev);
+	struct usb_interface *intf;
 
+	if (!wired->audio_port.dev)
+		return -ENOTSUPP;
+
+	intf = to_usb_interface(wired->audio_port.dev);
 	if (intf->cur_altsetting->desc.bAlternateSetting == 1)
 		return -EALREADY;
 
@@ -278,6 +282,9 @@ static int xone_wired_init_audio_in(struct gip_adapter *adap)
 	struct urb *urb;
 	void *buf;
 	int len, i;
+
+	if (!port->ep_in)
+		return -ENOTSUPP;
 
 	urb = usb_alloc_urb(XONE_WIRED_NUM_AUDIO_PKTS, GFP_KERNEL);
 	if (!urb)
@@ -316,6 +323,9 @@ static int xone_wired_init_audio_out(struct gip_adapter *adap, int pkt_len)
 	struct urb *urb;
 	void *buf;
 	int i, j;
+
+	if (!port->ep_out)
+		return -ENOTSUPP;
 
 	port->buffer_length_out = pkt_len * XONE_WIRED_NUM_AUDIO_PKTS;
 
@@ -356,8 +366,12 @@ static int xone_wired_disable_audio(struct gip_adapter *adap)
 {
 	struct xone_wired *wired = dev_get_drvdata(&adap->dev);
 	struct xone_wired_port *port = &wired->audio_port;
-	struct usb_interface *intf = to_usb_interface(port->dev);
+	struct usb_interface *intf;
 
+	if (!port->dev)
+		return -ENOTSUPP;
+
+	intf = to_usb_interface(port->dev);
 	if (!intf->cur_altsetting->desc.bAlternateSetting)
 		return -EALREADY;
 
@@ -406,14 +420,15 @@ static int xone_wired_init_data_port(struct xone_wired *wired,
 	struct xone_wired_port *port = &wired->data_port;
 	int err;
 
+	init_usb_anchor(&port->urbs_out_idle);
+	init_usb_anchor(&port->urbs_out_busy);
+
 	err = usb_find_common_endpoints(intf->cur_altsetting, NULL, NULL,
 					&port->ep_in, &port->ep_out);
 	if (err)
 		return err;
 
 	port->dev = &intf->dev;
-	init_usb_anchor(&port->urbs_out_idle);
-	init_usb_anchor(&port->urbs_out_busy);
 
 	return 0;
 }
@@ -425,13 +440,18 @@ static int xone_wired_init_audio_port(struct xone_wired *wired)
 	struct usb_host_interface *alt;
 	int err;
 
+	init_usb_anchor(&port->urbs_out_idle);
+	init_usb_anchor(&port->urbs_out_busy);
+
 	intf = usb_ifnum_to_if(wired->udev, XONE_WIRED_INTF_AUDIO);
-	if (!intf)
-		return -ENODEV;
+	if (!intf) {
+		dev_dbg(&wired->udev->dev, "%s: audio unavailable\n", __func__);
+		return 0;
+	}
 
 	alt = usb_altnum_to_altsetting(intf, 1);
 	if (!alt)
-		return -ENODEV;
+		return -ENXIO;
 
 	err = usb_driver_claim_interface(&xone_wired_driver, intf, NULL);
 	if (err)
@@ -448,8 +468,6 @@ static int xone_wired_init_audio_port(struct xone_wired *wired)
 		return err;
 
 	port->dev = &intf->dev;
-	init_usb_anchor(&port->urbs_out_idle);
-	init_usb_anchor(&port->urbs_out_busy);
 
 	return 0;
 }
@@ -540,6 +558,11 @@ static const struct usb_device_id xone_wired_id_table[] = {
 	{ XONE_WIRED_VENDOR(0x3285) }, /* Nacon */
 	{ XONE_WIRED_VENDOR(0x2dc8) }, /* 8BitDo */
 	{ XONE_WIRED_VENDOR(0x2e95) }, /* SCUF */
+	{ XONE_WIRED_VENDOR(0x3537) }, /* GameSir */
+	{ XONE_WIRED_VENDOR(0x11c1) }, /* ??? */
+	{ XONE_WIRED_VENDOR(0x294b) }, /* Snakebyte */
+	{ XONE_WIRED_VENDOR(0x2c16) }, /* Priferential */
+	{ XONE_WIRED_VENDOR(0x0b05) }, /* ASUS */
 	{ },
 };
 
@@ -553,7 +576,7 @@ static struct usb_driver xone_wired_driver = {
 module_usb_driver(xone_wired_driver);
 
 MODULE_DEVICE_TABLE(usb, xone_wired_id_table);
-MODULE_AUTHOR("Severin von Wnuck <severinvonw@outlook.de>");
+MODULE_AUTHOR("Severin von Wnuck-Lipinski <severinvonw@outlook.de>");
 MODULE_DESCRIPTION("xone wired driver");
 MODULE_VERSION("#VERSION#");
 MODULE_LICENSE("GPL");

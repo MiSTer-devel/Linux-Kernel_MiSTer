@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2021 Severin von Wnuck <severinvonw@outlook.de>
+ * Copyright (C) 2021 Severin von Wnuck-Lipinski <severinvonw@outlook.de>
  */
 
 #include <linux/module.h>
@@ -8,7 +8,7 @@
 
 #include "common.h"
 
-#define GIP_CP_NAME "Microsoft X-Box One chatpad"
+#define GIP_CP_NAME "Microsoft Xbox Chatpad"
 
 struct gip_chatpad {
 	struct gip_client *client;
@@ -134,7 +134,7 @@ static int gip_chatpad_op_guide_button(struct gip_client *client, bool down)
 }
 
 static int gip_chatpad_op_hid_report(struct gip_client *client,
-				     void *data, int len)
+				     void *data, u32 len)
 {
 	struct gip_chatpad *chatpad = dev_get_drvdata(&client->dev);
 
@@ -183,7 +183,6 @@ static void gip_chatpad_remove(struct gip_client *client)
 	struct gip_chatpad *chatpad = dev_get_drvdata(&client->dev);
 
 	hid_destroy_device(chatpad->hid_dev);
-	dev_set_drvdata(&client->dev, NULL);
 }
 
 static struct gip_driver gip_chatpad_driver = {
@@ -199,7 +198,7 @@ static struct gip_driver gip_chatpad_driver = {
 module_gip_driver(gip_chatpad_driver);
 
 MODULE_ALIAS("gip:Windows.Xbox.Input.Chatpad");
-MODULE_AUTHOR("Severin von Wnuck <severinvonw@outlook.de>");
+MODULE_AUTHOR("Severin von Wnuck-Lipinski <severinvonw@outlook.de>");
 MODULE_DESCRIPTION("xone GIP chatpad driver");
 MODULE_VERSION("#VERSION#");
 MODULE_LICENSE("GPL");

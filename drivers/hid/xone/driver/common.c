@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2021 Severin von Wnuck <severinvonw@outlook.de>
+ * Copyright (C) 2021 Severin von Wnuck-Lipinski <severinvonw@outlook.de>
  */
 
-#include <linux/module.h>
 #include <linux/sysfs.h>
 
 #include "common.h"
@@ -218,8 +217,3 @@ int gip_init_input(struct gip_input *input, struct gip_client *client,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(gip_init_input);
-
-MODULE_AUTHOR("Severin von Wnuck <severinvonw@outlook.de>");
-MODULE_DESCRIPTION("xone GIP common driver");
-MODULE_VERSION("#VERSION#");
-MODULE_LICENSE("GPL");
