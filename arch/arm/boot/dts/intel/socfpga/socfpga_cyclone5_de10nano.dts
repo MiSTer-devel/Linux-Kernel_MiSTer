@@ -3,6 +3,11 @@
  * Copyright (C) 2017, Intel Corporation
  *
  * based on socfpga_cyclone5_de0_nano_soc.dts
+ *
+ * MiSTer additions (2026): the DE10-Nano as used by the MiSTer project.
+ * Every value here was diffed against the DTB decompiled from a running stock
+ * MiSTer (docs/stock-inventory/stock.dts); the node-by-node comparison and the
+ * reason for every divergence live in docs/dts-comparison.md.
  */
 /dts-v1/;
 
@@ -14,7 +19,20 @@
 	model = "Terasic DE10-Nano";
 	compatible = "terasic,de10-nano", "altr,socfpga-cyclone5", "altr,socfpga";
 
+	aliases {
+		/*
+		 * Load-bearing: U-Boot's fdt_fixup_ethernet() walks /aliases
+		 * looking for "ethernetN" and writes $ethaddr into the node it
+		 * points at (u-boot common/fdt_support.c:470, called from
+		 * image_setup_libfdt() common/image-fdt.c:497).  Without this
+		 * alias the MAC address is never injected.
+		 */
+		ethernet0 = &gmac1;
+	};
+
 	chosen {
+		/* Overwritten by U-Boot's fdt_chosen() from $bootargs. */
+		bootargs = "earlyprintk";
 		stdout-path = "serial0:115200n8";
 	};
 
@@ -39,18 +57,107 @@
 			 */
 		};
 	};
+
+	regulator_3_3v: 3-3-v-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "3.3V";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		/*
+		 * ABI: the LED must be named "hps_led0" (the class device name
+		 * comes from "label").  Main_MiSTer polls
+		 * /sys/class/leds/hps_led0/brightness_hw_changed.
+		 */
+		hps0 {
+			label = "hps_led0";
+			gpios = <&portb 24 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "mmc0";
+		};
+	};
+
+	/*
+	 * Bit-banged I2C for the (optional) MiSTer RTC add-on board.
+	 * This is the THIRD and LAST i2c adapter: with i2c0 and i2c2 it gives
+	 * exactly three adapters -> /dev/i2c-0, /dev/i2c-1, /dev/i2c-2.
+	 * Main_MiSTer never scans past /dev/i2c-2 (smbus.cpp:214), so no
+	 * fourth adapter may ever be added here.  See docs/abi-contract.md.
+	 */
+	i2c_gpio {
+		compatible = "i2c-gpio";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		gpios = <&portb 22 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>, /* SDA */
+			<&portb 23 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>; /* SCL */
+		i2c-gpio,delay-us = <2>;
+
+		/* Only one of these is populated on any given add-on board. */
+		rtc@51 {
+			compatible = "nxp,pcf8563";
+			reg = <0x51>;
+		};
+
+		rtc@68 {
+			compatible = "st,m41t81";
+			reg = <0x68>;
+		};
+
+		rtc@6f {
+			compatible = "microchip,mcp7941x";
+			reg = <0x6f>;
+		};
+	};
+
+	/*
+	 * MiSTer framebuffer: a window into FPGA-side memory.  The driver
+	 * (drivers/video/fbdev/MiSTer_fb.c, patch 0001) matches on the
+	 * compatible string, not on the node name.  Stock names this node
+	 * "MiSTer_fb" with no unit address; we add "@22000000" to silence
+	 * dtc's unit_address_vs_reg check.  The platform device is named
+	 * "22000000.MiSTer_fb" either way -- of_device_make_bus_id() builds
+	 * it from the translated reg plus %pOFn, which strips the unit
+	 * address (drivers/of/device.c:298-305).
+	 * IRQ 40 is GIC SPI 40 == FPGA-to-HPS interrupt f2h_irq0.
+	 */
+	MiSTer_fb@22000000 {
+		compatible = "MiSTer_fb";
+		reg = <0x22000000 0x800000>;
+		interrupt-parent = <&intc>;
+		interrupts = <0 40 IRQ_TYPE_EDGE_RISING>;
+	};
 };
 
 &gmac1 {
 	/* Uses a KSZ9031RNX phy */
-	phy-mode = "rgmii-id";
-	rxd0-skew-ps = <420>;
-	rxd1-skew-ps = <420>;
-	rxd2-skew-ps = <420>;
-	rxd3-skew-ps = <420>;
-	txen-skew-ps = <0>;
-	rxdv-skew-ps = <420>;
 	status = "okay";
+
+	/*
+	 * "rgmii" (not mainline's "rgmii-id"): the delay is produced by the
+	 * explicit skew values below, exactly as stock does.  There is no
+	 * mdio/phy child node, so micrel's ksz9031_config_init() walks up the
+	 * device parents to find an of_node and reads the skews from THIS node
+	 * (drivers/net/phy/micrel.c).
+	 */
+	phy-mode = "rgmii";
+
+	txd0-skew-ps = <0>;	/* -420ps */
+	txd1-skew-ps = <0>;	/* -420ps */
+	txd2-skew-ps = <0>;	/* -420ps */
+	txd3-skew-ps = <0>;	/* -420ps */
+	rxd0-skew-ps = <420>;	/* 0ps */
+	rxd1-skew-ps = <420>;	/* 0ps */
+	rxd2-skew-ps = <420>;	/* 0ps */
+	rxd3-skew-ps = <420>;	/* 0ps */
+	txen-skew-ps = <0>;	/* -420ps */
+	txc-skew-ps = <1860>;	/* 960ps */
+	rxdv-skew-ps = <420>;	/* 0ps */
+	rxc-skew-ps = <1680>;	/* 780ps */
+
+	max-frame-size = <3800>;
 };
 
 &gpio0 {
@@ -65,6 +172,7 @@
 	status = "okay";
 };
 
+/* i2c adapter #1 of 3 (see i2c_gpio above). */
 &i2c0 {
 	clock-frequency = <100000>;
 	status = "okay";
@@ -79,9 +187,49 @@
 	};
 };
 
+/* i2c adapter #2 of 3.  Carries the ADV7513 HDMI transmitter on some boards;
+ * Main_MiSTer probes 0x39 across /dev/i2c-0..2 at runtime (video.cpp:1448).
+ */
+&i2c2 {
+	clock-frequency = <100000>;
+	status = "okay";
+};
+
 &mmc0 {
 	/* micro SD card socket J11 */
+	vmmc-supply = <&regulator_3_3v>;
+	vqmmc-supply = <&regulator_3_3v>;
 	status = "okay";
+};
+
+/* SPI bus 0 -> the MiSTer audio link (sound/drivers/MiSTer-audio-spi.c). */
+&spi0 {
+	status = "okay";
+
+	spiusb@0 {
+		compatible = "MiSTer,spi-audio";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+		spi-cpha;
+		spi-cpol;
+	};
+};
+
+/*
+ * SPI bus 1 -> userspace via spidev.  Main_MiSTer opens /dev/spidev1.0
+ * (brightness.cpp) to talk to the add-on hub.  Stock used compatible =
+ * "altspi", which only worked because the fork added that string to
+ * spidev_dt_ids[].  We use "rohm,dh2228fv", which mainline's spidev already
+ * accepts (drivers/spi/spidev.c), so no kernel patch is needed.
+ */
+&spi1 {
+	status = "okay";
+
+	spidev@0 {
+		compatible = "rohm,dh2228fv";
+		reg = <0>;
+		spi-max-frequency = <25000000>;
+	};
 };
 
 &uart0 {
@@ -92,4 +240,31 @@
 	 * no handshaking lines
 	 */
 	clock-frequency = <100000000>;
+
+	/* DW UART DMA is unreliable on this SoC; stock deletes it too. */
+	/delete-property/ dmas;
+	/delete-property/ dma-names;
+};
+
+&uart1 {
+	/delete-property/ dmas;
+	/delete-property/ dma-names;
+};
+
+&usb1 {
+	dr_mode = "host";
+	disable-over-current;
+	status = "okay";
+};
+
+&fpga_bridge0 {
+	status = "okay";
+};
+
+&fpga_bridge1 {
+	status = "okay";
+};
+
+&fpga_bridge2 {
+	status = "okay";
 };
