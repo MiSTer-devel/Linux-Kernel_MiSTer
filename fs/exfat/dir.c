@@ -268,8 +268,10 @@ get_new:
 	}
 
 	mutex_unlock(&EXFAT_SB(sb)->s_lock);
+	/* one classifier for readdir and lstat: DT_LNK iff st_mode is S_IFLNK */
 	if (!dir_emit(ctx, nb->lfn, strlen(nb->lfn), inum,
-			(de.attr & EXFAT_ATTR_SUBDIR) ? DT_DIR : DT_REG))
+			fs_umode_to_dtype(exfat_make_mode(EXFAT_SB(sb),
+							  de.attr, 0))))
 		goto out;
 	ctx->pos = cpos;
 	goto get_new;
@@ -396,6 +398,10 @@ static void exfat_set_entry_type(struct exfat_dentry *ep, unsigned int type)
 	} else if (type == TYPE_FILE) {
 		ep->type = EXFAT_FILE;
 		ep->dentry.file.attr = cpu_to_le16(EXFAT_ATTR_ARCHIVE);
+	} else if (type == TYPE_SYMLINK) {
+		ep->type = EXFAT_FILE;
+		ep->dentry.file.attr = cpu_to_le16(EXFAT_ATTR_ARCHIVE |
+						   EXFAT_ATTR_SYMLINK);
 	}
 }
 

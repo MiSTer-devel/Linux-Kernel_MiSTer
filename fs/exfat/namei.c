@@ -519,8 +519,19 @@ static int exfat_add_entry(struct inode *inode, const char *path,
 	info->flags = ALLOC_NO_FAT_CHAIN;
 	info->type = type;
 
-	if (type == TYPE_FILE) {
+	if (type == TYPE_FILE || type == TYPE_SYMLINK) {
 		info->attr = EXFAT_ATTR_ARCHIVE;
+		if (type == TYPE_SYMLINK) {
+			info->attr |= EXFAT_ATTR_SYMLINK;
+			/*
+			 * In-core, a symlink is a TYPE_FILE inode told apart
+			 * by its attr bit, exactly as when re-read from disk
+			 * (exfat_get_entry_type() has no symlink case).
+			 * __exfat_truncate()'s type guard relies on this to
+			 * free the target's cluster on eviction.
+			 */
+			info->type = TYPE_FILE;
+		}
 		info->start_clu = EXFAT_EOF_CLUSTER;
 		info->size = 0;
 		info->num_subdirs = 0;
@@ -583,6 +594,101 @@ static int exfat_create(struct mnt_idmap *idmap, struct inode *dir,
 	d_instantiate(dentry, inode);
 unlock:
 	mutex_unlock(&EXFAT_SB(sb)->s_lock);
+	return err;
+}
+
+/*
+ * Samsung-style symlink (MiSTer carried patch): an ordinary file dentry
+ * set whose attributes carry EXFAT_ATTR_SYMLINK (the DOS "system" bit)
+ * and whose data is the target path, not NUL-terminated
+ * (i_size == strlen(target)).  This is the on-disk format of the
+ * out-of-tree Samsung exfat driver that MiSTer's stock kernel shipped;
+ * cards written by either driver are interchangeable.
+ */
+static int exfat_symlink(struct mnt_idmap *idmap, struct inode *dir,
+			 struct dentry *dentry, const char *symname)
+{
+	/* the entry-creation prologue mirrors exfat_create(); keep in sync */
+	struct super_block *sb = dir->i_sb;
+	struct exfat_sb_info *sbi = EXFAT_SB(sb);
+	struct inode *inode;
+	struct exfat_dir_entry info;
+	struct exfat_entry_set_cache es;
+	loff_t i_pos;
+	loff_t size = i_size_read(dir);
+	int len = strlen(symname);
+	int err;
+
+	if (unlikely(exfat_forced_shutdown(sb)))
+		return -EIO;
+
+	mutex_lock(&sbi->s_lock);
+	exfat_set_volume_dirty(sb);
+	err = exfat_add_entry(dir, dentry->d_name.name, TYPE_SYMLINK, &info);
+	if (err)
+		goto unlock;
+
+	inode_inc_iversion(dir);
+	inode_set_mtime_to_ts(dir, inode_set_ctime_current(dir));
+	if (IS_DIRSYNC(dir) && size != i_size_read(dir))
+		exfat_sync_inode(dir);
+	else
+		mark_inode_dirty(dir);
+
+	i_pos = exfat_make_i_pos(&info);
+	inode = exfat_build_inode(sb, &info, i_pos);
+	err = PTR_ERR_OR_ZERO(inode);
+	if (err)
+		goto unlock;
+
+	inode_inc_iversion(inode);
+	EXFAT_I(inode)->i_crtime = simple_inode_init_ts(inode);
+	exfat_truncate_inode_atime(inode);
+
+	/*
+	 * exfat_get_block() takes s_lock, so the target has to be written
+	 * with the lock dropped.  page_symlink(inode, symname, n) stores
+	 * n-1 bytes, so passing len + 1 writes exactly len bytes: the path
+	 * without its NUL, which is the Samsung format (i_size == strlen).
+	 */
+	mutex_unlock(&sbi->s_lock);
+	err = page_symlink(inode, symname, len + 1);
+	if (!err && IS_DIRSYNC(dir))
+		err = write_inode_now(inode, 1);
+	if (err)
+		goto remove_entry;
+
+	d_instantiate(dentry, inode);
+	return 0;
+
+remove_entry:
+	mutex_lock(&sbi->s_lock);
+	exfat_set_volume_dirty(sb);
+	if (!exfat_get_dentry_set_by_ei(&es, sb, EXFAT_I(inode))) {
+		exfat_remove_entries(inode, &es, ES_IDX_FILE);
+		if (!exfat_put_dentry_set(&es, IS_DIRSYNC(dir))) {
+			EXFAT_I(inode)->dir.dir = DIR_DELETED;
+			/*
+			 * Entry removal reached the disk, so eviction may
+			 * free the clusters page_symlink() allocated.  On
+			 * any removal failure keep nlink instead: a live
+			 * on-disk entry must never point at freed clusters
+			 * (same asymmetry exfat_unlink() accepts).
+			 */
+			clear_nlink(inode);
+		}
+	}
+	inode_inc_iversion(dir);
+	simple_inode_init_ts(dir);
+	exfat_truncate_inode_atime(dir);
+	mark_inode_dirty(dir);
+	exfat_unhash_inode(inode);
+	mutex_unlock(&sbi->s_lock);
+	iput(inode);
+	return err;
+
+unlock:
+	mutex_unlock(&sbi->s_lock);
 	return err;
 }
 
@@ -1318,6 +1424,7 @@ const struct inode_operations exfat_dir_inode_operations = {
 	.create		= exfat_create,
 	.lookup		= exfat_lookup,
 	.unlink		= exfat_unlink,
+	.symlink	= exfat_symlink,
 	.mkdir		= exfat_mkdir,
 	.rmdir		= exfat_rmdir,
 	.rename		= exfat_rename,

@@ -649,6 +649,24 @@ static int exfat_fill_inode(struct inode *inode, struct exfat_dir_entry *info)
 		inode->i_op = &exfat_dir_inode_operations;
 		inode->i_fop = &exfat_dir_operations;
 		set_nlink(inode, info->num_subdirs);
+	} else if (info->attr & EXFAT_ATTR_SYMLINK_ANY) {
+		/*
+		 * Samsung-style symlink: target path stored as file data.
+		 * EXFAT_ATTR_SYMLINK_OLD is not in EXFAT_ATTR_RWMASK, so a
+		 * legacy-marked link would lose its marker on the next attr
+		 * writeback; OR-ing in EXFAT_ATTR_SYMLINK keeps it a link if
+		 * that ever happens.  This does not itself dirty the inode —
+		 * the on-disk marker only changes on a writeback triggered
+		 * for some other reason.
+		 */
+		info->attr |= EXFAT_ATTR_SYMLINK;
+		inode->i_generation |= 1;
+		inode->i_mode = exfat_make_mode(sbi, info->attr, 0777);
+		inode->i_op = &exfat_symlink_inode_operations;
+		inode->i_mapping->a_ops = &exfat_aops;
+		inode->i_mapping->nrpages = 0;
+		/* page_get_link() dereferences page_address() directly */
+		inode_nohighmem(inode);
 	} else { /* regular file */
 		inode->i_generation |= 1;
 		inode->i_mode = exfat_make_mode(sbi, info->attr, 0777);

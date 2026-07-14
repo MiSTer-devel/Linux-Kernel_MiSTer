@@ -60,6 +60,7 @@ enum {
 #define TYPE_VOLUME		0x0103
 #define TYPE_DIR		0x0104
 #define TYPE_FILE		0x011F
+#define TYPE_SYMLINK		0x015F
 #define TYPE_CRITICAL_SEC	0x0200
 #define TYPE_STREAM		0x0201
 #define TYPE_EXTEND		0x0202
@@ -372,6 +373,9 @@ static inline mode_t exfat_make_mode(struct exfat_sb_info *sbi,
 	if (attr & EXFAT_ATTR_SUBDIR)
 		return (mode & ~sbi->options.fs_dmask) | S_IFDIR;
 
+	if (attr & EXFAT_ATTR_SYMLINK_ANY)
+		return (mode & ~sbi->options.fs_fmask) | S_IFLNK;
+
 	return (mode & ~sbi->options.fs_fmask) | S_IFREG;
 }
 
@@ -526,6 +530,7 @@ int exfat_write_volume_label(struct super_block *sb,
 
 /* inode.c */
 extern const struct inode_operations exfat_file_inode_operations;
+extern const struct inode_operations exfat_symlink_inode_operations;
 void exfat_sync_inode(struct inode *inode);
 struct inode *exfat_build_inode(struct super_block *sb,
 		struct exfat_dir_entry *info, loff_t i_pos);

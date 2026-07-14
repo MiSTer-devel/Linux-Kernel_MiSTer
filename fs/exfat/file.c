@@ -402,6 +402,16 @@ static int exfat_ioctl_set_attributes(struct file *file, u32 __user *user_attr)
 		 EXFAT_ATTR_ARCHIVE);
 	attr |= (is_dir ? EXFAT_ATTR_SUBDIR : 0);
 
+	/*
+	 * The system bit doubles as the symlink marker (EXFAT_ATTR_SYMLINK),
+	 * so flipping it here would change the inode's S_IFMT under the VFS
+	 * (exfat_make_mode() below would hand setattr an S_IFLNK/S_IFREG
+	 * mode swap on a live inode).  Pin it to its current state.
+	 */
+	if (!is_dir)
+		attr = (attr & ~EXFAT_ATTR_SYMLINK) |
+		       (oldattr & EXFAT_ATTR_SYMLINK);
+
 	/* Equivalent to a chmod() */
 	ia.ia_valid = ATTR_MODE | ATTR_CTIME;
 	ia.ia_ctime = current_time(inode);
@@ -775,6 +785,12 @@ const struct file_operations exfat_file_operations = {
 };
 
 const struct inode_operations exfat_file_inode_operations = {
+	.setattr     = exfat_setattr,
+	.getattr     = exfat_getattr,
+};
+
+const struct inode_operations exfat_symlink_inode_operations = {
+	.get_link    = page_get_link,
 	.setattr     = exfat_setattr,
 	.getattr     = exfat_getattr,
 };

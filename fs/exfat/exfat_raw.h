@@ -71,6 +71,18 @@
 #define EXFAT_ATTR_SUBDIR	0x0010
 #define EXFAT_ATTR_ARCHIVE	0x0020
 
+/*
+ * Samsung's out-of-tree exfat driver (exfat-nofuse lineage, carried by
+ * MiSTer's kernel fork) overloads the DOS "system" attribute to mark a
+ * symlink whose target path is stored as the file's data, not
+ * NUL-terminated (i_size == strlen(target)).  0x0040 is a reserved
+ * attribute bit that even older Samsung releases used for the same
+ * purpose; it is honoured on read but never written.
+ */
+#define EXFAT_ATTR_SYMLINK	EXFAT_ATTR_SYSTEM
+#define EXFAT_ATTR_SYMLINK_OLD	0x0040
+#define EXFAT_ATTR_SYMLINK_ANY	(EXFAT_ATTR_SYMLINK | EXFAT_ATTR_SYMLINK_OLD)
+
 #define EXFAT_ATTR_RWMASK	(EXFAT_ATTR_HIDDEN | EXFAT_ATTR_SYSTEM | \
 				 EXFAT_ATTR_VOLUME | EXFAT_ATTR_SUBDIR | \
 				 EXFAT_ATTR_ARCHIVE)
