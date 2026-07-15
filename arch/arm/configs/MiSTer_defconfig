@@ -1109,7 +1109,8 @@ CONFIG_PREVENT_FIRMWARE_BUILD=y
 # Firmware loader
 #
 CONFIG_FW_LOADER=y
-CONFIG_EXTRA_FIRMWARE=""
+CONFIG_EXTRA_FIRMWARE="rtl_bt/rtl8821c_fw.bin rtl_bt/rtl8821c_config.bin"
+CONFIG_EXTRA_FIRMWARE_DIR="firmware"
 # CONFIG_FW_LOADER_USER_HELPER is not set
 # CONFIG_FW_LOADER_COMPRESS is not set
 # end of Firmware loader
