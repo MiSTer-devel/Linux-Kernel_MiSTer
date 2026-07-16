@@ -11,6 +11,10 @@
 #include <asm/nospec-branch.h>
 
 SYM_FUNC_START(__efi_call)
+	/*
+	 * The EFI code doesn't have any CFI, annotate away the CFI violation.
+	 */
+	ANNOTATE_NOCFI_SYM
 	pushq %rbp
 	movq %rsp, %rbp
 	and $~0xf, %rsp
@@ -23,5 +27,5 @@ SYM_FUNC_START(__efi_call)
 	mov %rsi, %rcx
 	CALL_NOSPEC rdi
 	leave
-	ret
+	RET
 SYM_FUNC_END(__efi_call)

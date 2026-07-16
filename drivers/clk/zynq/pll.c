@@ -12,7 +12,7 @@
 #include <linux/io.h>
 
 /**
- * struct zynq_pll
+ * struct zynq_pll - pll clock
  * @hw:		Handle between common and hardware-specific interfaces
  * @pll_ctrl:	PLL control register
  * @pll_status:	PLL status register
@@ -46,27 +46,29 @@ struct zynq_pll {
  * @hw:		Handle between common and hardware-specific interfaces
  * @rate:	Desired clock frequency
  * @prate:	Clock frequency of parent clock
- * Returns frequency closest to @rate the hardware can generate.
+ * Return:	frequency closest to @rate the hardware can generate.
  */
-static long zynq_pll_round_rate(struct clk_hw *hw, unsigned long rate,
-		unsigned long *prate)
+static int zynq_pll_determine_rate(struct clk_hw *hw,
+				   struct clk_rate_request *req)
 {
 	u32 fbdiv;
 
-	fbdiv = DIV_ROUND_CLOSEST(rate, *prate);
+	fbdiv = DIV_ROUND_CLOSEST(req->rate, req->best_parent_rate);
 	if (fbdiv < PLL_FBDIV_MIN)
 		fbdiv = PLL_FBDIV_MIN;
 	else if (fbdiv > PLL_FBDIV_MAX)
 		fbdiv = PLL_FBDIV_MAX;
 
-	return *prate * fbdiv;
+	req->rate = req->best_parent_rate * fbdiv;
+
+	return 0;
 }
 
 /**
  * zynq_pll_recalc_rate() - Recalculate clock frequency
  * @hw:			Handle between common and hardware-specific interfaces
  * @parent_rate:	Clock frequency of parent clock
- * Returns current clock frequency.
+ * Return:		current clock frequency.
  */
 static unsigned long zynq_pll_recalc_rate(struct clk_hw *hw,
 		unsigned long parent_rate)
@@ -87,7 +89,7 @@ static unsigned long zynq_pll_recalc_rate(struct clk_hw *hw,
 /**
  * zynq_pll_is_enabled - Check if a clock is enabled
  * @hw:		Handle between common and hardware-specific interfaces
- * Returns 1 if the clock is enabled, 0 otherwise.
+ * Return:	1 if the clock is enabled, 0 otherwise.
  *
  * Not sure this is a good idea, but since disabled means bypassed for
  * this clock implementation we say we are always enabled.
@@ -110,7 +112,7 @@ static int zynq_pll_is_enabled(struct clk_hw *hw)
 /**
  * zynq_pll_enable - Enable clock
  * @hw:		Handle between common and hardware-specific interfaces
- * Returns 0 on success
+ * Return: 0 on success
  */
 static int zynq_pll_enable(struct clk_hw *hw)
 {
@@ -167,7 +169,7 @@ static const struct clk_ops zynq_pll_ops = {
 	.enable = zynq_pll_enable,
 	.disable = zynq_pll_disable,
 	.is_enabled = zynq_pll_is_enabled,
-	.round_rate = zynq_pll_round_rate,
+	.determine_rate = zynq_pll_determine_rate,
 	.recalc_rate = zynq_pll_recalc_rate
 };
 
@@ -179,7 +181,7 @@ static const struct clk_ops zynq_pll_ops = {
  * @pll_status:	Pointer to PLL status register
  * @lock_index:	Bit index to this PLL's lock status bit in @pll_status
  * @lock:	Register lock
- * Returns handle to the registered clock.
+ * Return:	handle to the registered clock.
  */
 struct clk *clk_register_zynq_pll(const char *name, const char *parent,
 		void __iomem *pll_ctrl, void __iomem *pll_status, u8 lock_index,

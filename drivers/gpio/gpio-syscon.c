@@ -9,7 +9,6 @@
 #include <linux/gpio/driver.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
@@ -24,7 +23,6 @@
 
 /**
  * struct syscon_gpio_data - Configuration for the device.
- * @compatible:		SYSCON driver compatible string.
  * @flags:		Set of GPIO_SYSCON_FEAT_ flags:
  *			GPIO_SYSCON_FEAT_IN:	GPIOs supports input,
  *			GPIO_SYSCON_FEAT_OUT:	GPIOs supports output,
@@ -38,13 +36,12 @@
  */
 
 struct syscon_gpio_data {
-	const char	*compatible;
 	unsigned int	flags;
 	unsigned int	bit_count;
 	unsigned int	dat_bit_offset;
 	unsigned int	dir_bit_offset;
-	void		(*set)(struct gpio_chip *chip,
-			       unsigned offset, int value);
+	int		(*set)(struct gpio_chip *chip, unsigned int offset,
+			       int value);
 };
 
 struct syscon_gpio_priv {
@@ -71,17 +68,17 @@ static int syscon_gpio_get(struct gpio_chip *chip, unsigned offset)
 	return !!(val & BIT(offs % SYSCON_REG_BITS));
 }
 
-static void syscon_gpio_set(struct gpio_chip *chip, unsigned offset, int val)
+static int syscon_gpio_set(struct gpio_chip *chip, unsigned int offset, int val)
 {
 	struct syscon_gpio_priv *priv = gpiochip_get_data(chip);
 	unsigned int offs;
 
 	offs = priv->dreg_offset + priv->data->dat_bit_offset + offset;
 
-	regmap_update_bits(priv->syscon,
-			   (offs / SYSCON_REG_BITS) * SYSCON_REG_SIZE,
-			   BIT(offs % SYSCON_REG_BITS),
-			   val ? BIT(offs % SYSCON_REG_BITS) : 0);
+	return regmap_update_bits(priv->syscon,
+				  (offs / SYSCON_REG_BITS) * SYSCON_REG_SIZE,
+				  BIT(offs % SYSCON_REG_BITS),
+				  val ? BIT(offs % SYSCON_REG_BITS) : 0);
 }
 
 static int syscon_gpio_dir_in(struct gpio_chip *chip, unsigned offset)
@@ -118,21 +115,18 @@ static int syscon_gpio_dir_out(struct gpio_chip *chip, unsigned offset, int val)
 				   BIT(offs % SYSCON_REG_BITS));
 	}
 
-	chip->set(chip, offset, val);
-
-	return 0;
+	return chip->set(chip, offset, val);
 }
 
 static const struct syscon_gpio_data clps711x_mctrl_gpio = {
 	/* ARM CLPS711X SYSFLG1 Bits 8-10 */
-	.compatible	= "cirrus,ep7209-syscon1",
 	.flags		= GPIO_SYSCON_FEAT_IN,
 	.bit_count	= 3,
 	.dat_bit_offset	= 0x40 * 8 + 8,
 };
 
-static void rockchip_gpio_set(struct gpio_chip *chip, unsigned int offset,
-			      int val)
+static int rockchip_gpio_set(struct gpio_chip *chip, unsigned int offset,
+			     int val)
 {
 	struct syscon_gpio_priv *priv = gpiochip_get_data(chip);
 	unsigned int offs;
@@ -148,6 +142,8 @@ static void rockchip_gpio_set(struct gpio_chip *chip, unsigned int offset,
 			   data);
 	if (ret < 0)
 		dev_err(chip->parent, "gpio write failed ret(%d)\n", ret);
+
+	return ret;
 }
 
 static const struct syscon_gpio_data rockchip_rk3328_gpio_mute = {
@@ -160,7 +156,8 @@ static const struct syscon_gpio_data rockchip_rk3328_gpio_mute = {
 
 #define KEYSTONE_LOCK_BIT BIT(0)
 
-static void keystone_gpio_set(struct gpio_chip *chip, unsigned offset, int val)
+static int keystone_gpio_set(struct gpio_chip *chip, unsigned int offset,
+			     int val)
 {
 	struct syscon_gpio_priv *priv = gpiochip_get_data(chip);
 	unsigned int offs;
@@ -169,7 +166,7 @@ static void keystone_gpio_set(struct gpio_chip *chip, unsigned offset, int val)
 	offs = priv->dreg_offset + priv->data->dat_bit_offset + offset;
 
 	if (!val)
-		return;
+		return 0;
 
 	ret = regmap_update_bits(
 			priv->syscon,
@@ -178,11 +175,12 @@ static void keystone_gpio_set(struct gpio_chip *chip, unsigned offset, int val)
 			BIT(offs % SYSCON_REG_BITS) | KEYSTONE_LOCK_BIT);
 	if (ret < 0)
 		dev_err(chip->parent, "gpio write failed ret(%d)\n", ret);
+
+	return ret;
 }
 
 static const struct syscon_gpio_data keystone_dsp_gpio = {
 	/* ARM Keystone 2 */
-	.compatible	= NULL,
 	.flags		= GPIO_SYSCON_FEAT_OUT,
 	.bit_count	= 28,
 	.dat_bit_offset	= 4,
@@ -212,6 +210,7 @@ static int syscon_gpio_probe(struct platform_device *pdev)
 	struct syscon_gpio_priv *priv;
 	struct device_node *np = dev->of_node;
 	int ret;
+	bool use_parent_regmap = false;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -219,19 +218,15 @@ static int syscon_gpio_probe(struct platform_device *pdev)
 
 	priv->data = of_device_get_match_data(dev);
 
-	if (priv->data->compatible) {
-		priv->syscon = syscon_regmap_lookup_by_compatible(
-					priv->data->compatible);
-		if (IS_ERR(priv->syscon))
-			return PTR_ERR(priv->syscon);
-	} else {
-		priv->syscon =
-			syscon_regmap_lookup_by_phandle(np, "gpio,syscon-dev");
-		if (IS_ERR(priv->syscon) && np->parent)
-			priv->syscon = syscon_node_to_regmap(np->parent);
-		if (IS_ERR(priv->syscon))
-			return PTR_ERR(priv->syscon);
+	priv->syscon = syscon_regmap_lookup_by_phandle(np, "gpio,syscon-dev");
+	if (IS_ERR(priv->syscon) && np->parent) {
+		priv->syscon = syscon_node_to_regmap(np->parent);
+		use_parent_regmap = true;
+	}
+	if (IS_ERR(priv->syscon))
+		return PTR_ERR(priv->syscon);
 
+	if (!use_parent_regmap) {
 		ret = of_property_read_u32_index(np, "gpio,syscon-dev", 1,
 						 &priv->dreg_offset);
 		if (ret)
@@ -259,8 +254,6 @@ static int syscon_gpio_probe(struct platform_device *pdev)
 		priv->chip.set = priv->data->set ? : syscon_gpio_set;
 		priv->chip.direction_output = syscon_gpio_dir_out;
 	}
-
-	platform_set_drvdata(pdev, priv);
 
 	return devm_gpiochip_add_data(&pdev->dev, &priv->chip, priv);
 }

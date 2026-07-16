@@ -7,7 +7,7 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/regulator/driver.h>
@@ -115,7 +115,7 @@ out_rst_assert:
 	return ret;
 }
 
-static int uniphier_regulator_remove(struct platform_device *pdev)
+static void uniphier_regulator_remove(struct platform_device *pdev)
 {
 	struct uniphier_regulator_priv *priv = platform_get_drvdata(pdev);
 	int i;
@@ -124,8 +124,6 @@ static int uniphier_regulator_remove(struct platform_device *pdev)
 		reset_control_assert(priv->rst[i]);
 
 	clk_bulk_disable_unprepare(priv->data->nclks, priv->clk);
-
-	return 0;
 }
 
 /* USB3 controller data */
@@ -199,6 +197,10 @@ static const struct of_device_id uniphier_regulator_match[] = {
 		.compatible = "socionext,uniphier-pxs3-usb3-regulator",
 		.data = &uniphier_pxs2_usb3_data,
 	},
+	{
+		.compatible = "socionext,uniphier-nx1-usb3-regulator",
+		.data = &uniphier_pxs2_usb3_data,
+	},
 	{ /* Sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, uniphier_regulator_match);
@@ -208,6 +210,7 @@ static struct platform_driver uniphier_regulator_driver = {
 	.remove = uniphier_regulator_remove,
 	.driver = {
 		.name  = "uniphier-regulator",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = uniphier_regulator_match,
 	},
 };

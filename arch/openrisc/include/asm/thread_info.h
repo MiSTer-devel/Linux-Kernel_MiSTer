@@ -17,7 +17,7 @@
 
 #ifdef __KERNEL__
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <asm/types.h>
 #include <asm/processor.h>
 #endif
@@ -38,9 +38,7 @@
  * - if the contents of this structure are changed, the assembly constants
  *   must also be changed
  */
-#ifndef __ASSEMBLY__
-
-typedef unsigned long mm_segment_t;
+#ifndef __ASSEMBLER__
 
 struct thread_info {
 	struct task_struct	*task;		/* main task structure */
@@ -48,10 +46,6 @@ struct thread_info {
 	__u32			cpu;		/* current CPU */
 	__s32			preempt_count; /* 0 => preemptable, <0 => BUG */
 
-	mm_segment_t		addr_limit; /* thread address space:
-					       0-0x7FFFFFFF for user-thead
-					       0-0xFFFFFFFF for kernel-thread
-					     */
 	__u8			supervisor_stack[0];
 
 	/* saved context data */
@@ -64,14 +58,13 @@ struct thread_info {
  *
  * preempt_count needs to be 1 initially, until the scheduler is functional.
  */
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #define INIT_THREAD_INFO(tsk)				\
 {							\
 	.task		= &tsk,				\
 	.flags		= 0,				\
 	.cpu		= 0,				\
 	.preempt_count	= INIT_PREEMPT_COUNT,		\
-	.addr_limit	= KERNEL_DS,			\
 	.ksp            = 0,                            \
 }
 
@@ -82,7 +75,7 @@ register struct thread_info *current_thread_info_reg asm("r10");
 #define get_thread_info(ti) get_task_struct((ti)->task)
 #define put_thread_info(ti) put_task_struct((ti)->task)
 
-#endif /* !__ASSEMBLY__ */
+#endif /* !__ASSEMBLER__ */
 
 /*
  * thread information flags

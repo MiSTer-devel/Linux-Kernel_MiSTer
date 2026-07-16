@@ -12,6 +12,7 @@
 #include <linux/net.h>
 #include <linux/ipv6.h>
 #include <linux/ioam6.h>
+#include <linux/ioam6_genl.h>
 #include <linux/rhashtable-types.h>
 
 struct ioam6_namespace {
@@ -35,7 +36,7 @@ struct ioam6_schema {
 	int len;
 	__be32 hdr;
 
-	u8 data[0];
+	u8 data[];
 };
 
 struct ioam6_pernet_data {
@@ -56,12 +57,18 @@ static inline struct ioam6_pernet_data *ioam6_pernet(struct net *net)
 struct ioam6_namespace *ioam6_namespace(struct net *net, __be16 id);
 void ioam6_fill_trace_data(struct sk_buff *skb,
 			   struct ioam6_namespace *ns,
-			   struct ioam6_trace_hdr *trace);
+			   struct ioam6_trace_hdr *trace,
+			   bool is_input);
+
+u8 ioam6_trace_compute_nodelen(u32 trace_type);
 
 int ioam6_init(void);
 void ioam6_exit(void);
 
 int ioam6_iptunnel_init(void);
 void ioam6_iptunnel_exit(void);
+
+void ioam6_event(enum ioam6_event_type type, struct net *net, gfp_t gfp,
+		 void *opt, unsigned int opt_len);
 
 #endif /* _NET_IOAM6_H */

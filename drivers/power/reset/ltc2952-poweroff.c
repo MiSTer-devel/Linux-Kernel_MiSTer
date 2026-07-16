@@ -94,7 +94,6 @@ static struct ltc2952_poweroff *ltc2952_data;
  */
 static enum hrtimer_restart ltc2952_poweroff_timer_wde(struct hrtimer *timer)
 {
-	ktime_t now;
 	int state;
 	struct ltc2952_poweroff *data = to_ltc2952(timer, timer_wde);
 
@@ -104,8 +103,7 @@ static enum hrtimer_restart ltc2952_poweroff_timer_wde(struct hrtimer *timer)
 	state = gpiod_get_value(data->gpio_watchdog);
 	gpiod_set_value(data->gpio_watchdog, !state);
 
-	now = hrtimer_cb_get_time(timer);
-	hrtimer_forward(timer, now, data->wde_interval);
+	hrtimer_forward_now(timer, data->wde_interval);
 
 	return HRTIMER_RESTART;
 }
@@ -161,14 +159,14 @@ static void ltc2952_poweroff_kill(void)
 
 static void ltc2952_poweroff_default(struct ltc2952_poweroff *data)
 {
-	data->wde_interval = 300L * 1E6L;
-	data->trigger_delay = ktime_set(2, 500L*1E6L);
+	data->wde_interval = 300L * NSEC_PER_MSEC;
+	data->trigger_delay = ktime_set(2, 500L * NSEC_PER_MSEC);
 
-	hrtimer_init(&data->timer_trigger, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	data->timer_trigger.function = ltc2952_poweroff_timer_trigger;
+	hrtimer_setup(&data->timer_trigger, ltc2952_poweroff_timer_trigger, CLOCK_MONOTONIC,
+		      HRTIMER_MODE_REL);
 
-	hrtimer_init(&data->timer_wde, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	data->timer_wde.function = ltc2952_poweroff_timer_wde;
+	hrtimer_setup(&data->timer_wde, ltc2952_poweroff_timer_wde, CLOCK_MONOTONIC,
+		      HRTIMER_MODE_REL);
 }
 
 static int ltc2952_poweroff_init(struct platform_device *pdev)
@@ -288,7 +286,7 @@ static int ltc2952_poweroff_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int ltc2952_poweroff_remove(struct platform_device *pdev)
+static void ltc2952_poweroff_remove(struct platform_device *pdev)
 {
 	struct ltc2952_poweroff *data = platform_get_drvdata(pdev);
 
@@ -297,7 +295,6 @@ static int ltc2952_poweroff_remove(struct platform_device *pdev)
 	hrtimer_cancel(&data->timer_wde);
 	atomic_notifier_chain_unregister(&panic_notifier_list,
 					 &data->panic_notifier);
-	return 0;
 }
 
 static const struct of_device_id of_ltc2952_poweroff_match[] = {
@@ -319,4 +316,3 @@ module_platform_driver(ltc2952_poweroff_driver);
 
 MODULE_AUTHOR("René Moll <rene.moll@xsens.com>");
 MODULE_DESCRIPTION("LTC PowerPath power-off driver");
-MODULE_LICENSE("GPL v2");

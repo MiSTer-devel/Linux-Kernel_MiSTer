@@ -25,37 +25,24 @@
 #ifndef __DRM_CRTC_H__
 #define __DRM_CRTC_H__
 
-#include <linux/i2c.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
-#include <linux/fb.h>
-#include <linux/hdmi.h>
-#include <linux/media-bus-format.h>
-#include <uapi/drm/drm_mode.h>
-#include <uapi/drm/drm_fourcc.h>
 #include <drm/drm_modeset_lock.h>
-#include <drm/drm_rect.h>
 #include <drm/drm_mode_object.h>
-#include <drm/drm_framebuffer.h>
 #include <drm/drm_modes.h>
-#include <drm/drm_connector.h>
 #include <drm/drm_device.h>
-#include <drm/drm_property.h>
-#include <drm/drm_edid.h>
 #include <drm/drm_plane.h>
-#include <drm/drm_blend.h>
-#include <drm/drm_color_mgmt.h>
 #include <drm/drm_debugfs_crc.h>
 #include <drm/drm_mode_config.h>
 
+struct drm_connector;
 struct drm_device;
+struct drm_framebuffer;
 struct drm_mode_set;
 struct drm_file;
-struct drm_clip_rect;
 struct drm_printer;
 struct drm_self_refresh_data;
 struct device_node;
-struct dma_fence;
 struct edid;
 
 static inline int64_t U642I64(uint64_t val)
@@ -90,11 +77,6 @@ struct drm_plane_helper_funcs;
  * intended to indicate whether a full modeset is needed, rather than strictly
  * describing what has changed in a commit. See also:
  * drm_atomic_crtc_needs_modeset()
- *
- * WARNING: Transitional helpers (like drm_helper_crtc_mode_set() or
- * drm_helper_crtc_mode_set_base()) do not maintain many of the derived control
- * state like @plane_mask so drivers not converted over to atomic helpers should
- * not rely on these being accurate!
  */
 struct drm_crtc_state {
 	/** @crtc: backpointer to the CRTC */
@@ -285,6 +267,10 @@ struct drm_crtc_state {
 	 * Lookup table for converting pixel data after the color conversion
 	 * matrix @ctm.  See drm_crtc_enable_color_mgmt(). The blob (if not
 	 * NULL) is an array of &struct drm_color_lut.
+	 *
+	 * Note that for mostly historical reasons stemming from Xorg heritage,
+	 * this is also used to store the color map (also sometimes color lut,
+	 * CLUT or color palette) for indexed formats like DRM_FORMAT_C8.
 	 */
 	struct drm_property_blob *gamma_lut;
 
@@ -1075,12 +1061,18 @@ struct drm_crtc {
 	/**
 	 * @gamma_size: Size of legacy gamma ramp reported to userspace. Set up
 	 * by calling drm_mode_crtc_set_gamma_size().
+	 *
+	 * Note that atomic drivers need to instead use
+	 * &drm_crtc_state.gamma_lut. See drm_crtc_enable_color_mgmt().
 	 */
 	uint32_t gamma_size;
 
 	/**
 	 * @gamma_store: Gamma ramp values used by the legacy SETGAMMA and
 	 * GETGAMMA IOCTls. Set up by calling drm_mode_crtc_set_gamma_size().
+	 *
+	 * Note that atomic drivers need to instead use
+	 * &drm_crtc_state.gamma_lut. See drm_crtc_enable_color_mgmt().
 	 */
 	uint16_t *gamma_store;
 
@@ -1135,14 +1127,12 @@ struct drm_crtc {
 	 */
 	spinlock_t commit_lock;
 
-#ifdef CONFIG_DEBUG_FS
 	/**
 	 * @debugfs_entry:
 	 *
 	 * Debugfs directory for this CRTC.
 	 */
 	struct dentry *debugfs_entry;
-#endif
 
 	/**
 	 * @crc:
@@ -1221,6 +1211,15 @@ int drm_crtc_init_with_planes(struct drm_device *dev,
 			      struct drm_plane *cursor,
 			      const struct drm_crtc_funcs *funcs,
 			      const char *name, ...);
+
+__printf(6, 7)
+int drmm_crtc_init_with_planes(struct drm_device *dev,
+			       struct drm_crtc *crtc,
+			       struct drm_plane *primary,
+			       struct drm_plane *cursor,
+			       const struct drm_crtc_funcs *funcs,
+			       const char *name, ...);
+
 void drm_crtc_cleanup(struct drm_crtc *crtc);
 
 __printf(7, 8)
@@ -1324,5 +1323,5 @@ static inline struct drm_crtc *drm_crtc_find(struct drm_device *dev,
 
 int drm_crtc_create_scaling_filter_property(struct drm_crtc *crtc,
 					    unsigned int supported_filters);
-
+bool drm_crtc_in_clone_mode(struct drm_crtc_state *crtc_state);
 #endif /* __DRM_CRTC_H__ */

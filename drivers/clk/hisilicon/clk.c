@@ -16,7 +16,7 @@
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/slab.h>
 
 #include "clk.h"
@@ -162,7 +162,7 @@ int hisi_clk_register_mux(const struct hisi_mux_clock *clks,
 					clks[i].num_parents, clks[i].flags,
 					base + clks[i].offset, clks[i].shift,
 					mask, clks[i].mux_flags,
-					(u32 *)clks[i].table, &hisi_clk_lock);
+					clks[i].table, &hisi_clk_lock);
 		if (IS_ERR(clk)) {
 			pr_err("%s: failed to register clock %s\n",
 			       __func__, clks[i].name);

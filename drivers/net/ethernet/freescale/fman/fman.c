@@ -1,39 +1,13 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0-or-later
 /*
- * Copyright 2008-2015 Freescale Semiconductor Inc.
+ * Copyright 2008 - 2015 Freescale Semiconductor Inc.
  * Copyright 2020 NXP
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in the
- *       documentation and/or other materials provided with the distribution.
- *     * Neither the name of Freescale Semiconductor nor the
- *       names of its contributors may be used to endorse or promote products
- *       derived from this software without specific prior written permission.
- *
- *
- * ALTERNATIVELY, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") as published by the Free Software
- * Foundation, either version 2 of that License or (at your option) any
- * later version.
- *
- * THIS SOFTWARE IS PROVIDED BY Freescale Semiconductor ``AS IS'' AND ANY
- * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL Freescale Semiconductor BE LIABLE FOR ANY
- * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/fsl/guts.h>
+#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/module.h>
@@ -50,7 +24,6 @@
 
 /* General defines */
 #define FMAN_LIODN_TBL			64	/* size of LIODN table */
-#define MAX_NUM_OF_MACS			10
 #define FM_NUM_OF_FMAN_CTRL_EVENT_REGS	4
 #define BASE_RX_PORTID			0x08
 #define BASE_TX_PORTID			0x28
@@ -2717,17 +2690,16 @@ static struct fman *read_dts_node(struct platform_device *of_dev)
 {
 	struct fman *fman;
 	struct device_node *fm_node, *muram_node;
+	void __iomem *base_addr;
 	struct resource *res;
 	u32 val, range[2];
 	int err, irq;
 	struct clk *clk;
 	u32 clk_rate;
-	phys_addr_t phys_base_addr;
-	resource_size_t mem_size;
 
 	fman = kzalloc(sizeof(*fman), GFP_KERNEL);
 	if (!fman)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
 	fm_node = of_node_get(of_dev->dev.of_node);
 
@@ -2740,36 +2712,20 @@ static struct fman *read_dts_node(struct platform_device *of_dev)
 	fman->dts_params.id = (u8)val;
 
 	/* Get the FM interrupt */
-	res = platform_get_resource(of_dev, IORESOURCE_IRQ, 0);
-	if (!res) {
-		dev_err(&of_dev->dev, "%s: Can't get FMan IRQ resource\n",
-			__func__);
+	err = platform_get_irq(of_dev, 0);
+	if (err < 0)
 		goto fman_node_put;
-	}
-	irq = res->start;
+	irq = err;
 
 	/* Get the FM error interrupt */
-	res = platform_get_resource(of_dev, IORESOURCE_IRQ, 1);
-	if (!res) {
-		dev_err(&of_dev->dev, "%s: Can't get FMan Error IRQ resource\n",
-			__func__);
+	err = platform_get_irq(of_dev, 1);
+	if (err < 0)
 		goto fman_node_put;
-	}
-	fman->dts_params.err_irq = res->start;
-
-	/* Get the FM address */
-	res = platform_get_resource(of_dev, IORESOURCE_MEM, 0);
-	if (!res) {
-		dev_err(&of_dev->dev, "%s: Can't get FMan memory resource\n",
-			__func__);
-		goto fman_node_put;
-	}
-
-	phys_base_addr = res->start;
-	mem_size = resource_size(res);
+	fman->dts_params.err_irq = err;
 
 	clk = of_clk_get(fm_node, 0);
 	if (IS_ERR(clk)) {
+		err = PTR_ERR(clk);
 		dev_err(&of_dev->dev, "%s: Failed to get FM%d clock structure\n",
 			__func__, fman->dts_params.id);
 		goto fman_node_put;
@@ -2777,6 +2733,7 @@ static struct fman *read_dts_node(struct platform_device *of_dev)
 
 	clk_rate = clk_get_rate(clk);
 	if (!clk_rate) {
+		err = -EINVAL;
 		dev_err(&of_dev->dev, "%s: Failed to determine FM%d clock rate\n",
 			__func__, fman->dts_params.id);
 		goto fman_node_put;
@@ -2797,6 +2754,7 @@ static struct fman *read_dts_node(struct platform_device *of_dev)
 	/* Get the MURAM base address and size */
 	muram_node = of_find_matching_node(fm_node, fman_muram_match);
 	if (!muram_node) {
+		err = -EINVAL;
 		dev_err(&of_dev->dev, "%s: could not find MURAM node\n",
 			__func__);
 		goto fman_free;
@@ -2832,21 +2790,15 @@ static struct fman *read_dts_node(struct platform_device *of_dev)
 		}
 	}
 
-	fman->dts_params.res =
-		devm_request_mem_region(&of_dev->dev, phys_base_addr,
-					mem_size, "fman");
-	if (!fman->dts_params.res) {
-		dev_err(&of_dev->dev, "%s: request_mem_region() failed\n",
-			__func__);
-		goto fman_free;
-	}
-
-	fman->dts_params.base_addr =
-		devm_ioremap(&of_dev->dev, phys_base_addr, mem_size);
-	if (!fman->dts_params.base_addr) {
+	base_addr = devm_platform_get_and_ioremap_resource(of_dev, 0, &res);
+	if (IS_ERR(base_addr)) {
+		err = PTR_ERR(base_addr);
 		dev_err(&of_dev->dev, "%s: devm_ioremap() failed\n", __func__);
 		goto fman_free;
 	}
+
+	fman->dts_params.base_addr = base_addr;
+	fman->dts_params.res = res;
 
 	fman->dev = &of_dev->dev;
 
@@ -2868,7 +2820,7 @@ fman_node_put:
 	of_node_put(fm_node);
 fman_free:
 	kfree(fman);
-	return NULL;
+	return ERR_PTR(err);
 }
 
 static int fman_probe(struct platform_device *of_dev)
@@ -2880,8 +2832,8 @@ static int fman_probe(struct platform_device *of_dev)
 	dev = &of_dev->dev;
 
 	fman = read_dts_node(of_dev);
-	if (!fman)
-		return -EIO;
+	if (IS_ERR(fman))
+		return PTR_ERR(fman);
 
 	err = fman_config(fman);
 	if (err) {

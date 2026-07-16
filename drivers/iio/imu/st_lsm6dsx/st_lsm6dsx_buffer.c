@@ -2,7 +2,7 @@
 /*
  * STMicroelectronics st_lsm6dsx FIFO buffer library driver
  *
- * LSM6DS3/LSM6DS3H/LSM6DSL/LSM6DSM/ISM330DLC/LSM6DS3TR-C:
+ * Pattern FIFO:
  * The FIFO buffer can be configured to store data from gyroscope and
  * accelerometer. Samples are queued without any tag according to a
  * specific pattern based on 'FIFO data sets' (6 bytes each):
@@ -14,10 +14,33 @@
  * (e.g. Gx, Gy, Gz, Ax, Ay, Az), then data are repeated depending on the
  * value of the decimation factor and ODR set for each FIFO data set.
  *
- * LSM6DSO/LSM6DSOX/ASM330LHH/LSM6DSR/LSM6DSRX/ISM330DHCX/LSM6DST/LSM6DSOP:
+ * Supported devices:
+ * - ISM330DLC
+ * - LSM6DS3
+ * - LSM6DS3H
+ * - LSM6DS3TR-C
+ * - LSM6DSL
+ * - LSM6DSM
+ *
+ * Tagged FIFO:
  * The FIFO buffer can be configured to store data from gyroscope and
  * accelerometer. Each sample is queued with a tag (1B) indicating data
  * source (gyroscope, accelerometer, hw timer).
+ *
+ * Supported devices:
+ * - ASM330LHB
+ * - ASM330LHH
+ * - ASM330LHHX
+ * - ASM330LHHXG1
+ * - ISM330DHCX
+ * - LSM6DSO
+ * - LSM6DSOP
+ * - LSM6DSOX
+ * - LSM6DSR
+ * - LSM6DSRX
+ * - LSM6DST
+ * - LSM6DSTX
+ * - LSM6DSV
  *
  * FIFO supported modes:
  *  - BYPASS: FIFO disabled
@@ -201,6 +224,10 @@ static int st_lsm6dsx_set_fifo_odr(struct st_lsm6dsx_sensor *sensor,
 	const struct st_lsm6dsx_reg *batch_reg;
 	u8 data;
 
+	/* Only internal sensors have a FIFO ODR configuration register. */
+	if (sensor->id >= ARRAY_SIZE(hw->settings->batch))
+		return 0;
+
 	batch_reg = &hw->settings->batch[sensor->id];
 	if (batch_reg->addr) {
 		int val;
@@ -369,6 +396,9 @@ int st_lsm6dsx_read_fifo(struct st_lsm6dsx_hw *hw)
 	if (fifo_status & cpu_to_le16(ST_LSM6DSX_FIFO_EMPTY_MASK))
 		return 0;
 
+	if (!pattern_len)
+		pattern_len = ST_LSM6DSX_SAMPLE_SIZE;
+
 	fifo_len = (le16_to_cpu(fifo_status) & fifo_diff_mask) *
 		   ST_LSM6DSX_CHAN_SIZE;
 	fifo_len = (fifo_len / pattern_len) * pattern_len;
@@ -456,17 +486,31 @@ int st_lsm6dsx_read_fifo(struct st_lsm6dsx_hw *hw)
 			}
 
 			if (gyro_sip > 0 && !(sip % gyro_sensor->decimator)) {
-				iio_push_to_buffers_with_timestamp(
-					hw->iio_devs[ST_LSM6DSX_ID_GYRO],
-					&hw->scan[ST_LSM6DSX_ID_GYRO],
-					gyro_sensor->ts_ref + ts);
+				/*
+				 * We need to discards gyro samples during
+				 * filters settling time
+				 */
+				if (gyro_sensor->samples_to_discard > 0)
+					gyro_sensor->samples_to_discard--;
+				else
+					iio_push_to_buffers_with_timestamp(
+						hw->iio_devs[ST_LSM6DSX_ID_GYRO],
+						&hw->scan[ST_LSM6DSX_ID_GYRO],
+						gyro_sensor->ts_ref + ts);
 				gyro_sip--;
 			}
 			if (acc_sip > 0 && !(sip % acc_sensor->decimator)) {
-				iio_push_to_buffers_with_timestamp(
-					hw->iio_devs[ST_LSM6DSX_ID_ACC],
-					&hw->scan[ST_LSM6DSX_ID_ACC],
-					acc_sensor->ts_ref + ts);
+				/*
+				 * We need to discards accel samples during
+				 * filters settling time
+				 */
+				if (acc_sensor->samples_to_discard > 0)
+					acc_sensor->samples_to_discard--;
+				else
+					iio_push_to_buffers_with_timestamp(
+						hw->iio_devs[ST_LSM6DSX_ID_ACC],
+						&hw->scan[ST_LSM6DSX_ID_ACC],
+						acc_sensor->ts_ref + ts);
 				acc_sip--;
 			}
 			if (ext_sip > 0 && !(sip % ext_sensor->decimator)) {
@@ -564,7 +608,7 @@ int st_lsm6dsx_read_tagged_fifo(struct st_lsm6dsx_hw *hw)
 	 * must be passed a buffer that is aligned to 8 bytes so
 	 * as to allow insertion of a naturally aligned timestamp.
 	 */
-	u8 iio_buff[ST_LSM6DSX_IIO_BUFF_SIZE] __aligned(8);
+	u8 iio_buff[ST_LSM6DSX_IIO_BUFF_SIZE] __aligned(8) = { };
 	u8 tag;
 	bool reset_ts = false;
 	int i, err, read_len;
@@ -585,6 +629,9 @@ int st_lsm6dsx_read_tagged_fifo(struct st_lsm6dsx_hw *hw)
 		   ST_LSM6DSX_TAGGED_SAMPLE_SIZE;
 	if (!fifo_len)
 		return 0;
+
+	if (!pattern_len)
+		pattern_len = ST_LSM6DSX_TAGGED_SAMPLE_SIZE;
 
 	for (read_len = 0; read_len < fifo_len; read_len += pattern_len) {
 		err = st_lsm6dsx_read_block(hw,
@@ -653,6 +700,30 @@ int st_lsm6dsx_flush_fifo(struct st_lsm6dsx_hw *hw)
 	return err;
 }
 
+static void
+st_lsm6dsx_update_samples_to_discard(struct st_lsm6dsx_sensor *sensor)
+{
+	const struct st_lsm6dsx_samples_to_discard *data;
+	struct st_lsm6dsx_hw *hw = sensor->hw;
+	int i;
+
+	if (sensor->id != ST_LSM6DSX_ID_GYRO &&
+	    sensor->id != ST_LSM6DSX_ID_ACC)
+		return;
+
+	/* check if drdy mask is supported in hw */
+	if (hw->settings->drdy_mask.addr)
+		return;
+
+	data = &hw->settings->samples_to_discard[sensor->id];
+	for (i = 0; i < ST_LSM6DSX_ODR_LIST_SIZE; i++) {
+		if (data->val[i].milli_hz == sensor->odr) {
+			sensor->samples_to_discard = data->val[i].samples;
+			return;
+		}
+	}
+}
+
 int st_lsm6dsx_update_fifo(struct st_lsm6dsx_sensor *sensor, bool enable)
 {
 	struct st_lsm6dsx_hw *hw = sensor->hw;
@@ -672,17 +743,12 @@ int st_lsm6dsx_update_fifo(struct st_lsm6dsx_sensor *sensor, bool enable)
 			goto out;
 	}
 
-	if (sensor->id == ST_LSM6DSX_ID_EXT0 ||
-	    sensor->id == ST_LSM6DSX_ID_EXT1 ||
-	    sensor->id == ST_LSM6DSX_ID_EXT2) {
-		err = st_lsm6dsx_shub_set_enable(sensor, enable);
-		if (err < 0)
-			goto out;
-	} else {
-		err = st_lsm6dsx_sensor_set_enable(sensor, enable);
-		if (err < 0)
-			goto out;
-	}
+	if (enable)
+		st_lsm6dsx_update_samples_to_discard(sensor);
+
+	err = st_lsm6dsx_device_set_enable(sensor, enable);
+	if (err < 0)
+		goto out;
 
 	err = st_lsm6dsx_set_fifo_odr(sensor, enable);
 	if (err < 0)
@@ -746,7 +812,6 @@ int st_lsm6dsx_fifo_setup(struct st_lsm6dsx_hw *hw)
 			continue;
 
 		ret = devm_iio_kfifo_buffer_setup(hw->dev, hw->iio_devs[i],
-						  INDIO_BUFFER_SOFTWARE,
 						  &st_lsm6dsx_buffer_ops);
 		if (ret)
 			return ret;

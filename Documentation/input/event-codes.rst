@@ -137,7 +137,11 @@ A few EV_KEY codes have special meanings:
     code should be set to a value of 1. When the tool is no longer interacting
     with the input device, the BTN_TOOL_<name> code should be reset to 0. All
     trackpads, tablets, and touchscreens should use at least one BTN_TOOL_<name>
-    code when events are generated.
+    code when events are generated. Likewise all trackpads, tablets, and
+    touchscreens should export only one BTN_TOOL_<name> at a time. To not break
+    existing userspace, it is recommended to not switch tool in one EV_SYN frame
+    but first emitting the old BTN_TOOL_<name> at 0, then emit one SYN_REPORT
+    and then set the new BTN_TOOL_<name> at 1.
 
 * BTN_TOUCH:
 
@@ -230,6 +234,12 @@ A few EV_ABS codes have special meanings:
     proximity and set to 0 when the tool leaves detectable proximity.
     BTN_TOOL_<name> signals the type of tool that is currently detected by the
     hardware and is otherwise independent of ABS_DISTANCE and/or BTN_TOUCH.
+
+* ABS_PROFILE:
+
+  - Used to describe the state of a multi-value profile switch.  An event is
+    emitted only when the selected profile changes, indicating the newly
+    selected profile value.
 
 * ABS_MT_<name>:
 
@@ -389,6 +399,31 @@ can report through the rotational axes (absolute and/or relative rx, ry, rz).
 
 All other axes retain their meaning. A device must not mix
 regular directional axes and accelerometer axes on the same event node.
+
+INPUT_PROP_PRESSUREPAD
+----------------------
+
+The INPUT_PROP_PRESSUREPAD property indicates that the device provides
+simulated haptic feedback (e.g. a vibrator motor situated below the surface)
+instead of physical haptic feedback (e.g. a hinge). This property is only set
+if the device:
+
+- can differentiate between at least 5 fingers
+- uses correct resolution for the X/Y (units and value)
+- follows the MT protocol type B
+
+If the simulated haptic feedback is controllable by userspace the device must:
+
+- support simple haptic auto and manual triggering, and
+- report correct force per touch, and correct units for them (newtons or grams), and
+- provide the EV_FF FF_HAPTIC force feedback effect.
+
+Summing up, such devices follow the MS spec for input devices in
+Win8 and Win8.1, and in addition may support the Simple haptic controller HID
+table, and report correct units for the pressure.
+
+Where applicable, this property is set in addition to INPUT_PROP_BUTTONPAD, it
+does not replace that property.
 
 Guidelines
 ==========

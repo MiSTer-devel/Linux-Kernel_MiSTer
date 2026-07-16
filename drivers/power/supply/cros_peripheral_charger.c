@@ -5,6 +5,7 @@
  * Copyright 2020 Google LLC.
  */
 
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/notifier.h>
 #include <linux/platform_data/cros_ec_commands.h>
@@ -14,6 +15,7 @@
 #include <linux/slab.h>
 #include <linux/stringify.h>
 #include <linux/types.h>
+#include <linux/unaligned.h>
 
 #define DRV_NAME		"cros-ec-pchg"
 #define PCHG_DIR_PREFIX		"peripheral"
@@ -62,7 +64,7 @@ static int cros_pchg_ec_command(const struct charger_data *charger,
 	struct cros_ec_command *msg;
 	int ret;
 
-	msg = kzalloc(sizeof(*msg) + max(outsize, insize), GFP_KERNEL);
+	msg = kzalloc(struct_size(msg, data, max(outsize, insize)), GFP_KERNEL);
 	if (!msg)
 		return -ENOMEM;
 
@@ -226,8 +228,7 @@ static int cros_pchg_get_prop(struct power_supply *psy,
 	return 0;
 }
 
-static int cros_pchg_event(const struct charger_data *charger,
-			   unsigned long host_event)
+static int cros_pchg_event(const struct charger_data *charger)
 {
 	int i;
 
@@ -237,49 +238,25 @@ static int cros_pchg_event(const struct charger_data *charger,
 	return NOTIFY_OK;
 }
 
-static u32 cros_get_device_event(const struct charger_data *charger)
-{
-	struct ec_params_device_event req;
-	struct ec_response_device_event rsp;
-	struct device *dev = charger->dev;
-	int ret;
-
-	req.param = EC_DEVICE_EVENT_PARAM_GET_CURRENT_EVENTS;
-	ret = cros_pchg_ec_command(charger, 0, EC_CMD_DEVICE_EVENT,
-				   &req, sizeof(req), &rsp, sizeof(rsp));
-	if (ret < 0) {
-		dev_warn(dev, "Unable to get device events (err:%d)\n", ret);
-		return 0;
-	}
-
-	return rsp.event_mask;
-}
-
 static int cros_ec_notify(struct notifier_block *nb,
 			  unsigned long queued_during_suspend,
 			  void *data)
 {
-	struct cros_ec_device *ec_dev = (struct cros_ec_device *)data;
-	u32 host_event = cros_ec_get_host_event(ec_dev);
+	struct cros_ec_device *ec_dev = data;
 	struct charger_data *charger =
 			container_of(nb, struct charger_data, notifier);
-	u32 device_event_mask;
+	u32 host_event;
 
-	if (!host_event)
+	if (ec_dev->event_data.event_type != EC_MKBP_EVENT_PCHG ||
+			ec_dev->event_size != sizeof(host_event))
 		return NOTIFY_DONE;
 
-	if (!(host_event & EC_HOST_EVENT_MASK(EC_HOST_EVENT_DEVICE)))
+	host_event = get_unaligned_le32(&ec_dev->event_data.data.host_event);
+
+	if (!(host_event & EC_MKBP_PCHG_DEVICE_EVENT))
 		return NOTIFY_DONE;
 
-	/*
-	 * todo: Retrieve device event mask in common place
-	 * (e.g. cros_ec_proto.c).
-	 */
-	device_event_mask = cros_get_device_event(charger);
-	if (!(device_event_mask & EC_DEVICE_EVENT_MASK(EC_DEVICE_EVENT_WLC)))
-		return NOTIFY_DONE;
-
-	return cros_pchg_event(charger, host_event);
+	return cros_pchg_event(charger);
 }
 
 static int cros_pchg_probe(struct platform_device *pdev)
@@ -303,6 +280,8 @@ static int cros_pchg_probe(struct platform_device *pdev)
 	charger->dev = dev;
 	charger->ec_dev = ec_dev;
 	charger->ec_device = ec_device;
+
+	platform_set_drvdata(pdev, charger);
 
 	ret = cros_pchg_port_count(charger);
 	if (ret <= 0) {
@@ -372,15 +351,39 @@ static int cros_pchg_probe(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
+static int __maybe_unused cros_pchg_resume(struct device *dev)
+{
+	struct charger_data *charger = dev_get_drvdata(dev);
+
+	/*
+	 * Sync all ports on resume in case reports from EC are lost during
+	 * the last suspend.
+	 */
+	cros_pchg_event(charger);
+
+	return 0;
+}
+#endif
+
+static SIMPLE_DEV_PM_OPS(cros_pchg_pm_ops, NULL, cros_pchg_resume);
+
+static const struct platform_device_id cros_pchg_id[] = {
+	{ DRV_NAME, 0 },
+	{}
+};
+MODULE_DEVICE_TABLE(platform, cros_pchg_id);
+
 static struct platform_driver cros_pchg_driver = {
 	.driver = {
 		.name = DRV_NAME,
+		.pm = &cros_pchg_pm_ops,
 	},
-	.probe = cros_pchg_probe
+	.probe = cros_pchg_probe,
+	.id_table = cros_pchg_id,
 };
 
 module_platform_driver(cros_pchg_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("ChromeOS EC peripheral device charger");
-MODULE_ALIAS("platform:" DRV_NAME);

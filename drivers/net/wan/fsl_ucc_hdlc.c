@@ -34,6 +34,8 @@
 #define TDM_PPPOHT_SLIC_MAXIN
 #define RX_BD_ERRORS (R_CD_S | R_OV_S | R_CR_S | R_AB_S | R_NO_S | R_LG_S)
 
+static int uhdlc_close(struct net_device *dev);
+
 static struct ucc_tdm_info utdm_primary_info = {
 	.uf_info = {
 		.tsa = 0,
@@ -306,9 +308,8 @@ static int uhdlc_init(struct ucc_hdlc_private *priv)
 		else
 			bd_status = R_E_S | R_I_S | R_W_S;
 
-		iowrite16be(bd_status, &priv->rx_bd_base[i].status);
-		iowrite32be(priv->dma_rx_addr + i * MAX_RX_BUF_LENGTH,
-			    &priv->rx_bd_base[i].buf);
+		priv->rx_bd_base[i].status = cpu_to_be16(bd_status);
+		priv->rx_bd_base[i].buf = cpu_to_be32(priv->dma_rx_addr + i * MAX_RX_BUF_LENGTH);
 	}
 
 	for (i = 0; i < TX_BD_RING_LEN; i++) {
@@ -317,10 +318,10 @@ static int uhdlc_init(struct ucc_hdlc_private *priv)
 		else
 			bd_status =  T_I_S | T_TC_S | T_W_S;
 
-		iowrite16be(bd_status, &priv->tx_bd_base[i].status);
-		iowrite32be(priv->dma_tx_addr + i * MAX_RX_BUF_LENGTH,
-			    &priv->tx_bd_base[i].buf);
+		priv->tx_bd_base[i].status = cpu_to_be16(bd_status);
+		priv->tx_bd_base[i].buf = cpu_to_be32(priv->dma_tx_addr + i * MAX_RX_BUF_LENGTH);
 	}
+	dma_wmb();
 
 	return 0;
 
@@ -352,10 +353,10 @@ static netdev_tx_t ucc_hdlc_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	hdlc_device *hdlc = dev_to_hdlc(dev);
 	struct ucc_hdlc_private *priv = (struct ucc_hdlc_private *)hdlc->priv;
-	struct qe_bd __iomem *bd;
+	struct qe_bd *bd;
 	u16 bd_status;
 	unsigned long flags;
-	u16 *proto_head;
+	__be16 *proto_head;
 
 	switch (dev->type) {
 	case ARPHRD_RAWHDLC:
@@ -368,14 +369,14 @@ static netdev_tx_t ucc_hdlc_tx(struct sk_buff *skb, struct net_device *dev)
 
 		skb_push(skb, HDLC_HEAD_LEN);
 
-		proto_head = (u16 *)skb->data;
+		proto_head = (__be16 *)skb->data;
 		*proto_head = htons(DEFAULT_HDLC_HEAD);
 
 		dev->stats.tx_bytes += skb->len;
 		break;
 
 	case ARPHRD_PPP:
-		proto_head = (u16 *)skb->data;
+		proto_head = (__be16 *)skb->data;
 		if (*proto_head != htons(DEFAULT_PPP_HEAD)) {
 			dev->stats.tx_dropped++;
 			dev_kfree_skb(skb);
@@ -398,9 +399,10 @@ static netdev_tx_t ucc_hdlc_tx(struct sk_buff *skb, struct net_device *dev)
 	netdev_sent_queue(dev, skb->len);
 	spin_lock_irqsave(&priv->lock, flags);
 
+	dma_rmb();
 	/* Start from the next BD that should be filled */
 	bd = priv->curtx_bd;
-	bd_status = ioread16be(&bd->status);
+	bd_status = be16_to_cpu(bd->status);
 	/* Save the skb pointer so we can free it later */
 	priv->tx_skbuff[priv->skb_curtx] = skb;
 
@@ -415,8 +417,8 @@ static netdev_tx_t ucc_hdlc_tx(struct sk_buff *skb, struct net_device *dev)
 	/* set bd status and length */
 	bd_status = (bd_status & T_W_S) | T_R_S | T_I_S | T_L_S | T_TC_S;
 
-	iowrite16be(skb->len, &bd->length);
-	iowrite16be(bd_status, &bd->status);
+	bd->length = cpu_to_be16(skb->len);
+	bd->status = cpu_to_be16(bd_status);
 
 	/* Move to next BD in the ring */
 	if (!(bd_status & T_W_S))
@@ -458,8 +460,9 @@ static int hdlc_tx_done(struct ucc_hdlc_private *priv)
 	u16 bd_status;
 	int tx_restart = 0;
 
+	dma_rmb();
 	bd = priv->dirty_tx;
-	bd_status = ioread16be(&bd->status);
+	bd_status = be16_to_cpu(bd->status);
 
 	/* Normal processing. */
 	while ((bd_status & T_R_S) == 0) {
@@ -503,7 +506,7 @@ static int hdlc_tx_done(struct ucc_hdlc_private *priv)
 			bd += 1;
 		else
 			bd = priv->tx_bd_base;
-		bd_status = ioread16be(&bd->status);
+		bd_status = be16_to_cpu(bd->status);
 	}
 	priv->dirty_tx = bd;
 
@@ -524,8 +527,9 @@ static int hdlc_rx_done(struct ucc_hdlc_private *priv, int rx_work_limit)
 	u16 length, howmany = 0;
 	u8 *bdbuffer;
 
+	dma_rmb();
 	bd = priv->currx_bd;
-	bd_status = ioread16be(&bd->status);
+	bd_status = be16_to_cpu(bd->status);
 
 	/* while there are received buffers and BD is full (~R_E) */
 	while (!((bd_status & (R_E_S)) || (--rx_work_limit < 0))) {
@@ -549,7 +553,7 @@ static int hdlc_rx_done(struct ucc_hdlc_private *priv, int rx_work_limit)
 		}
 		bdbuffer = priv->rx_buffer +
 			(priv->currx_bdnum * MAX_RX_BUF_LENGTH);
-		length = ioread16be(&bd->length);
+		length = be16_to_cpu(bd->length);
 
 		switch (dev->type) {
 		case ARPHRD_RAWHDLC:
@@ -593,7 +597,7 @@ static int hdlc_rx_done(struct ucc_hdlc_private *priv, int rx_work_limit)
 		netif_receive_skb(skb);
 
 recycle:
-		iowrite16be((bd_status & R_W_S) | R_E_S | R_I_S, &bd->status);
+		bd->status = cpu_to_be16((bd_status & R_W_S) | R_E_S | R_I_S);
 
 		/* update to point at the next bd */
 		if (bd_status & R_W_S) {
@@ -608,8 +612,9 @@ recycle:
 			bd += 1;
 		}
 
-		bd_status = ioread16be(&bd->status);
+		bd_status = be16_to_cpu(bd->status);
 	}
+	dma_rmb();
 
 	priv->currx_bd = bd;
 	return howmany;
@@ -705,6 +710,7 @@ static int uhdlc_open(struct net_device *dev)
 	hdlc_device *hdlc = dev_to_hdlc(dev);
 	struct ucc_hdlc_private *priv = hdlc->priv;
 	struct ucc_tdm *utdm = priv->utdm;
+	int rc = 0;
 
 	if (priv->hdlc_busy != 1) {
 		if (request_irq(priv->ut_info->uf_info.irq,
@@ -721,17 +727,20 @@ static int uhdlc_open(struct net_device *dev)
 
 		/* Enable the TDM port */
 		if (priv->tsa)
-			utdm->si_regs->siglmr1_h |= (0x1 << utdm->tdm_port);
+			qe_setbits_8(&utdm->si_regs->siglmr1_h, 0x1 << utdm->tdm_port);
 
 		priv->hdlc_busy = 1;
 		netif_device_attach(priv->ndev);
 		napi_enable(&priv->napi);
 		netdev_reset_queue(dev);
 		netif_start_queue(dev);
-		hdlc_open(dev);
+
+		rc = hdlc_open(dev);
+		if (rc)
+			uhdlc_close(dev);
 	}
 
-	return 0;
+	return rc;
 }
 
 static void uhdlc_memclean(struct ucc_hdlc_private *priv)
@@ -781,18 +790,14 @@ static void uhdlc_memclean(struct ucc_hdlc_private *priv)
 
 	if (priv->rx_buffer) {
 		dma_free_coherent(priv->dev,
-				  RX_BD_RING_LEN * MAX_RX_BUF_LENGTH,
+				  (RX_BD_RING_LEN + TX_BD_RING_LEN) * MAX_RX_BUF_LENGTH,
 				  priv->rx_buffer, priv->dma_rx_addr);
 		priv->rx_buffer = NULL;
 		priv->dma_rx_addr = 0;
-	}
 
-	if (priv->tx_buffer) {
-		dma_free_coherent(priv->dev,
-				  TX_BD_RING_LEN * MAX_RX_BUF_LENGTH,
-				  priv->tx_buffer, priv->dma_tx_addr);
 		priv->tx_buffer = NULL;
 		priv->dma_tx_addr = 0;
+
 	}
 }
 
@@ -812,7 +817,7 @@ static int uhdlc_close(struct net_device *dev)
 		     (u8)QE_CR_PROTOCOL_UNSPECIFIED, 0);
 
 	if (priv->tsa)
-		utdm->si_regs->siglmr1_h &= ~(0x1 << utdm->tdm_port);
+		qe_clrbits_8(&utdm->si_regs->siglmr1_h, 0x1 << utdm->tdm_port);
 
 	ucc_fast_disable(priv->uccf, COMM_DIR_RX | COMM_DIR_TX);
 
@@ -820,6 +825,8 @@ static int uhdlc_close(struct net_device *dev)
 	netif_stop_queue(dev);
 	netdev_reset_queue(dev);
 	priv->hdlc_busy = 0;
+
+	hdlc_close(dev);
 
 	return 0;
 }
@@ -848,7 +855,7 @@ static int ucc_hdlc_attach(struct net_device *dev, unsigned short encoding,
 #ifdef CONFIG_PM
 static void store_clk_config(struct ucc_hdlc_private *priv)
 {
-	struct qe_mux *qe_mux_reg = &qe_immr->qmx;
+	struct qe_mux __iomem *qe_mux_reg = &qe_immr->qmx;
 
 	/* store si clk */
 	priv->cmxsi1cr_h = ioread32be(&qe_mux_reg->cmxsi1cr_h);
@@ -863,7 +870,7 @@ static void store_clk_config(struct ucc_hdlc_private *priv)
 
 static void resume_clk_config(struct ucc_hdlc_private *priv)
 {
-	struct qe_mux *qe_mux_reg = &qe_immr->qmx;
+	struct qe_mux __iomem *qe_mux_reg = &qe_immr->qmx;
 
 	memcpy_toio(qe_mux_reg->cmxucr, priv->cmxucr, 4 * sizeof(u32));
 
@@ -990,9 +997,8 @@ static int uhdlc_resume(struct device *dev)
 		else
 			bd_status = R_E_S | R_I_S | R_W_S;
 
-		iowrite16be(bd_status, &priv->rx_bd_base[i].status);
-		iowrite32be(priv->dma_rx_addr + i * MAX_RX_BUF_LENGTH,
-			    &priv->rx_bd_base[i].buf);
+		priv->rx_bd_base[i].status = cpu_to_be16(bd_status);
+		priv->rx_bd_base[i].buf = cpu_to_be32(priv->dma_rx_addr + i * MAX_RX_BUF_LENGTH);
 	}
 
 	for (i = 0; i < TX_BD_RING_LEN; i++) {
@@ -1001,10 +1007,10 @@ static int uhdlc_resume(struct device *dev)
 		else
 			bd_status =  T_I_S | T_TC_S | T_W_S;
 
-		iowrite16be(bd_status, &priv->tx_bd_base[i].status);
-		iowrite32be(priv->dma_tx_addr + i * MAX_RX_BUF_LENGTH,
-			    &priv->tx_bd_base[i].buf);
+		priv->tx_bd_base[i].status = cpu_to_be16(bd_status);
+		priv->tx_bd_base[i].buf = cpu_to_be32(priv->dma_tx_addr + i * MAX_RX_BUF_LENGTH);
 	}
+	dma_wmb();
 
 	/* if hdlc is busy enable TX and RX */
 	if (priv->hdlc_busy == 1) {
@@ -1018,7 +1024,7 @@ static int uhdlc_resume(struct device *dev)
 
 		/* Enable the TDM port */
 		if (priv->tsa)
-			utdm->si_regs->siglmr1_h |= (0x1 << utdm->tdm_port);
+			qe_setbits_8(&utdm->si_regs->siglmr1_h, 0x1 << utdm->tdm_port);
 	}
 
 	napi_enable(&priv->napi);
@@ -1175,14 +1181,9 @@ static int ucc_hdlc_probe(struct platform_device *pdev)
 	uhdlc_priv->dev = &pdev->dev;
 	uhdlc_priv->ut_info = ut_info;
 
-	if (of_get_property(np, "fsl,tdm-interface", NULL))
-		uhdlc_priv->tsa = 1;
-
-	if (of_get_property(np, "fsl,ucc-internal-loopback", NULL))
-		uhdlc_priv->loopback = 1;
-
-	if (of_get_property(np, "fsl,hdlc-bus", NULL))
-		uhdlc_priv->hdlc_bus = 1;
+	uhdlc_priv->tsa = of_property_read_bool(np, "fsl,tdm-interface");
+	uhdlc_priv->loopback = of_property_read_bool(np, "fsl,ucc-internal-loopback");
+	uhdlc_priv->hdlc_bus = of_property_read_bool(np, "fsl,hdlc-bus");
 
 	if (uhdlc_priv->tsa == 1) {
 		utdm = kzalloc(sizeof(*utdm), GFP_KERNEL);
@@ -1229,7 +1230,7 @@ static int ucc_hdlc_probe(struct platform_device *pdev)
 	dev->watchdog_timeo = 2 * HZ;
 	hdlc->attach = ucc_hdlc_attach;
 	hdlc->xmit = ucc_hdlc_tx;
-	netif_napi_add(dev, &uhdlc_priv->napi, ucc_hdlc_poll, 32);
+	netif_napi_add_weight(dev, &uhdlc_priv->napi, ucc_hdlc_poll, 32);
 	if (register_hdlc_device(dev)) {
 		ret = -ENOBUFS;
 		pr_err("ucc_hdlc: unable to register hdlc device\n");
@@ -1241,9 +1242,11 @@ static int ucc_hdlc_probe(struct platform_device *pdev)
 free_dev:
 	free_netdev(dev);
 undo_uhdlc_init:
-	iounmap(utdm->siram);
+	if (utdm)
+		iounmap(utdm->siram);
 unmap_si_regs:
-	iounmap(utdm->si_regs);
+	if (utdm)
+		iounmap(utdm->si_regs);
 free_utdm:
 	if (uhdlc_priv->tsa)
 		kfree(utdm);
@@ -1252,7 +1255,7 @@ free_uhdlc_priv:
 	return ret;
 }
 
-static int ucc_hdlc_remove(struct platform_device *pdev)
+static void ucc_hdlc_remove(struct platform_device *pdev)
 {
 	struct ucc_hdlc_private *priv = dev_get_drvdata(&pdev->dev);
 
@@ -1270,8 +1273,6 @@ static int ucc_hdlc_remove(struct platform_device *pdev)
 	kfree(priv);
 
 	dev_info(&pdev->dev, "UCC based hdlc module removed\n");
-
-	return 0;
 }
 
 static const struct of_device_id fsl_ucc_hdlc_of_match[] = {
@@ -1285,7 +1286,7 @@ MODULE_DEVICE_TABLE(of, fsl_ucc_hdlc_of_match);
 
 static struct platform_driver ucc_hdlc_driver = {
 	.probe	= ucc_hdlc_probe,
-	.remove	= ucc_hdlc_remove,
+	.remove = ucc_hdlc_remove,
 	.driver	= {
 		.name		= DRV_NAME,
 		.pm		= HDLC_PM_OPS,

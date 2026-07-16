@@ -5,14 +5,16 @@
  * Author : Trent Jaeger, <jaegert@us.ibm.com>
  * Updated : Venkat Yekkirala, <vyekkirala@TrustedCS.com>
  */
+
 #ifndef _SELINUX_XFRM_H_
 #define _SELINUX_XFRM_H_
 
+#include <linux/lsm_audit.h>
 #include <net/flow.h>
+#include <net/xfrm.h>
 
 int selinux_xfrm_policy_alloc(struct xfrm_sec_ctx **ctxp,
-			      struct xfrm_user_sec_ctx *uctx,
-			      gfp_t gfp);
+			      struct xfrm_user_sec_ctx *uctx, gfp_t gfp);
 int selinux_xfrm_policy_clone(struct xfrm_sec_ctx *old_ctx,
 			      struct xfrm_sec_ctx **new_ctxp);
 void selinux_xfrm_policy_free(struct xfrm_sec_ctx *ctx);

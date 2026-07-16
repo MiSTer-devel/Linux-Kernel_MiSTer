@@ -68,6 +68,14 @@ unsigned long cpufreq_get_freq_hardware(unsigned int cpu);
 unsigned long cpufreq_get_transition_latency(unsigned int cpu);
 
 
+/* determine energy performance preference
+ *
+ * returns NULL on failure, else the string that represents the energy performance
+ * preference requested.
+ */
+char *cpufreq_get_energy_performance_preference(unsigned int cpu);
+void cpufreq_put_energy_performance_preference(char *ptr);
+
 /* determine hardware CPU frequency limits
  *
  * These may be limited further by thermal, energy or other
@@ -202,6 +210,18 @@ int cpufreq_modify_policy_governor(unsigned int cpu, char *governor);
 
 int cpufreq_set_frequency(unsigned int cpu,
 				unsigned long target_frequency);
+
+/*
+ * get the sysfs value from specific table
+ *
+ * Read the value with the sysfs file name from specific table. Does
+ * only work if the cpufreq driver has the specific sysfs interfaces.
+ */
+
+unsigned long cpufreq_get_sysfs_value_from_table(unsigned int cpu,
+						 const char **table,
+						 unsigned int index,
+						 unsigned int size);
 
 #ifdef __cplusplus
 }

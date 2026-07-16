@@ -7,6 +7,8 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
+#include <linux/sysfs.h>
+#include <linux/types.h>
 #include <linux/watchdog.h>
 
 #include "watchdog_core.h"
@@ -207,10 +209,9 @@ void watchdog_unregister_pretimeout(struct watchdog_device *wdd)
 	list_for_each_entry_safe(p, t, &pretimeout_list, entry) {
 		if (p->wdd == wdd) {
 			list_del(&p->entry);
+			kfree(p);
 			break;
 		}
 	}
 	spin_unlock_irq(&pretimeout_lock);
-
-	kfree(p);
 }

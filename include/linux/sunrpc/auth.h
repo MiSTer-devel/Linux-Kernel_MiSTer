@@ -99,6 +99,7 @@ struct rpc_auth_create_args {
 
 /* Flags for rpcauth_lookupcred() */
 #define RPCAUTH_LOOKUP_NEW		0x01	/* Accept an uninitialised cred */
+#define RPCAUTH_LOOKUP_ASYNC		0x02	/* Don't block waiting for memory */
 
 /*
  * Client authentication ops
@@ -119,6 +120,7 @@ struct rpc_authops {
 						struct rpcsec_gss_info *);
 	int			(*key_timeout)(struct rpc_auth *,
 						struct rpc_cred *);
+	int			(*ping)(struct rpc_clnt *clnt);
 };
 
 struct rpc_credops {
@@ -143,6 +145,7 @@ struct rpc_credops {
 
 extern const struct rpc_authops	authunix_ops;
 extern const struct rpc_authops	authnull_ops;
+extern const struct rpc_authops	authtls_ops;
 
 int __init		rpc_init_authunix(void);
 int __init		rpcauth_init_module(void);

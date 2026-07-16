@@ -5,14 +5,16 @@
  * Author: Fabian Vogt <fabian@ritter-vogt.de>
  */
 
-#include <linux/spinlock.h>
+#include <linux/bitops.h>
 #include <linux/errno.h>
 #include <linux/init.h>
-#include <linux/bitops.h>
 #include <linux/io.h>
-#include <linux/of_device.h>
-#include <linux/of_gpio.h>
+#include <linux/mod_devicetable.h>
+#include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
+
 #include <linux/gpio/driver.h>
 
 /*
@@ -53,22 +55,23 @@
 #define ZEVIO_GPIO_BIT(gpio) (gpio&7)
 
 struct zevio_gpio {
+	struct gpio_chip        chip;
 	spinlock_t		lock;
-	struct of_mm_gpio_chip	chip;
+	void __iomem		*regs;
 };
 
 static inline u32 zevio_gpio_port_get(struct zevio_gpio *c, unsigned pin,
 					unsigned port_offset)
 {
 	unsigned section_offset = ((pin >> 3) & 3)*ZEVIO_GPIO_SECTION_SIZE;
-	return readl(IOMEM(c->chip.regs + section_offset + port_offset));
+	return readl(IOMEM(c->regs + section_offset + port_offset));
 }
 
 static inline void zevio_gpio_port_set(struct zevio_gpio *c, unsigned pin,
 					unsigned port_offset, u32 val)
 {
 	unsigned section_offset = ((pin >> 3) & 3)*ZEVIO_GPIO_SECTION_SIZE;
-	writel(val, IOMEM(c->chip.regs + section_offset + port_offset));
+	writel(val, IOMEM(c->regs + section_offset + port_offset));
 }
 
 /* Functions for struct gpio_chip */
@@ -88,7 +91,7 @@ static int zevio_gpio_get(struct gpio_chip *chip, unsigned pin)
 	return (val >> ZEVIO_GPIO_BIT(pin)) & 0x1;
 }
 
-static void zevio_gpio_set(struct gpio_chip *chip, unsigned pin, int value)
+static int zevio_gpio_set(struct gpio_chip *chip, unsigned int pin, int value)
 {
 	struct zevio_gpio *controller = gpiochip_get_data(chip);
 	u32 val;
@@ -102,6 +105,8 @@ static void zevio_gpio_set(struct gpio_chip *chip, unsigned pin, int value)
 
 	zevio_gpio_port_set(controller, pin, ZEVIO_GPIO_OUTPUT, val);
 	spin_unlock(&controller->lock);
+
+	return 0;
 }
 
 static int zevio_gpio_direction_input(struct gpio_chip *chip, unsigned pin)
@@ -162,12 +167,12 @@ static const struct gpio_chip zevio_gpio_chip = {
 	.base			= 0,
 	.owner			= THIS_MODULE,
 	.ngpio			= 32,
-	.of_gpio_n_cells	= 2,
 };
 
 /* Initialization */
 static int zevio_gpio_probe(struct platform_device *pdev)
 {
+	struct device *dev = &pdev->dev;
 	struct zevio_gpio *controller;
 	int status, i;
 
@@ -175,15 +180,20 @@ static int zevio_gpio_probe(struct platform_device *pdev)
 	if (!controller)
 		return -ENOMEM;
 
-	platform_set_drvdata(pdev, controller);
-
 	/* Copy our reference */
-	controller->chip.gc = zevio_gpio_chip;
-	controller->chip.gc.parent = &pdev->dev;
+	controller->chip = zevio_gpio_chip;
+	controller->chip.parent = &pdev->dev;
 
-	status = of_mm_gpiochip_add_data(pdev->dev.of_node,
-					 &(controller->chip),
-					 controller);
+	controller->chip.label = devm_kasprintf(dev, GFP_KERNEL, "%pfw", dev_fwnode(dev));
+	if (!controller->chip.label)
+		return -ENOMEM;
+
+	controller->regs = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(controller->regs))
+		return dev_err_probe(&pdev->dev, PTR_ERR(controller->regs),
+				     "failed to ioremap memory resource\n");
+
+	status = devm_gpiochip_add_data(&pdev->dev, &controller->chip, controller);
 	if (status) {
 		dev_err(&pdev->dev, "failed to add gpiochip: %d\n", status);
 		return status;
@@ -192,10 +202,10 @@ static int zevio_gpio_probe(struct platform_device *pdev)
 	spin_lock_init(&controller->lock);
 
 	/* Disable interrupts, they only cause errors */
-	for (i = 0; i < controller->chip.gc.ngpio; i += 8)
+	for (i = 0; i < controller->chip.ngpio; i += 8)
 		zevio_gpio_port_set(controller, i, ZEVIO_GPIO_INT_MASK, 0xFF);
 
-	dev_dbg(controller->chip.gc.parent, "ZEVIO GPIO controller set up!\n");
+	dev_dbg(controller->chip.parent, "ZEVIO GPIO controller set up!\n");
 
 	return 0;
 }

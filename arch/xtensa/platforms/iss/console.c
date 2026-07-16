@@ -36,29 +36,23 @@ static void rs_poll(struct timer_list *);
 static struct tty_driver *serial_driver;
 static struct tty_port serial_port;
 static DEFINE_TIMER(serial_timer, rs_poll);
-static DEFINE_SPINLOCK(timer_lock);
 
 static int rs_open(struct tty_struct *tty, struct file * filp)
 {
-	spin_lock_bh(&timer_lock);
 	if (tty->count == 1)
 		mod_timer(&serial_timer, jiffies + SERIAL_TIMER_VALUE);
-	spin_unlock_bh(&timer_lock);
 
 	return 0;
 }
 
 static void rs_close(struct tty_struct *tty, struct file * filp)
 {
-	spin_lock_bh(&timer_lock);
 	if (tty->count == 1)
-		del_timer_sync(&serial_timer);
-	spin_unlock_bh(&timer_lock);
+		timer_delete_sync(&serial_timer);
 }
 
 
-static int rs_write(struct tty_struct * tty,
-		    const unsigned char *buf, int count)
+static ssize_t rs_write(struct tty_struct * tty, const u8 *buf, size_t count)
 {
 	/* see drivers/char/serialX.c to reference original version */
 
@@ -71,9 +65,7 @@ static void rs_poll(struct timer_list *unused)
 	struct tty_port *port = &serial_port;
 	int i = 0;
 	int rd = 1;
-	unsigned char c;
-
-	spin_lock(&timer_lock);
+	u8 c;
 
 	while (simc_poll(0)) {
 		rd = simc_read(0, &c, 1);
@@ -87,33 +79,12 @@ static void rs_poll(struct timer_list *unused)
 		tty_flip_buffer_push(port);
 	if (rd)
 		mod_timer(&serial_timer, jiffies + SERIAL_TIMER_VALUE);
-	spin_unlock(&timer_lock);
-}
-
-
-static int rs_put_char(struct tty_struct *tty, unsigned char ch)
-{
-	return rs_write(tty, &ch, 1);
-}
-
-static void rs_flush_chars(struct tty_struct *tty)
-{
 }
 
 static unsigned int rs_write_room(struct tty_struct *tty)
 {
 	/* Let's say iss can always accept 2K characters.. */
 	return 2 * 1024;
-}
-
-static void rs_hangup(struct tty_struct *tty)
-{
-	/* Stub, once again.. */
-}
-
-static void rs_wait_until_sent(struct tty_struct *tty, int timeout)
-{
-	/* Stub, once again.. */
 }
 
 static int rs_proc_show(struct seq_file *m, void *v)
@@ -126,11 +97,7 @@ static const struct tty_operations serial_ops = {
 	.open = rs_open,
 	.close = rs_close,
 	.write = rs_write,
-	.put_char = rs_put_char,
-	.flush_chars = rs_flush_chars,
 	.write_room = rs_write_room,
-	.hangup = rs_hangup,
-	.wait_until_sent = rs_wait_until_sent,
 	.proc_show = rs_proc_show,
 };
 
@@ -199,10 +166,8 @@ late_initcall(rs_init);
 
 static void iss_console_write(struct console *co, const char *s, unsigned count)
 {
-	if (s && *s != 0) {
-		int len = strlen(s);
-		simc_write(1, s, count < len ? count : len);
-	}
+	if (s && *s != 0)
+		simc_write(1, s, min(count, strlen(s)));
 }
 
 static struct tty_driver* iss_console_device(struct console *c, int *index)

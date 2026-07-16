@@ -32,12 +32,10 @@ void efx_fini_eventq(struct efx_channel *channel);
 void efx_remove_eventq(struct efx_channel *channel);
 
 int efx_realloc_channels(struct efx_nic *efx, u32 rxq_entries, u32 txq_entries);
-void efx_get_channel_name(struct efx_channel *channel, char *buf, size_t len);
 void efx_set_channel_names(struct efx_nic *efx);
 int efx_init_channels(struct efx_nic *efx);
 int efx_probe_channels(struct efx_nic *efx);
 int efx_set_channels(struct efx_nic *efx);
-bool efx_default_channel_want_txqs(struct efx_channel *channel);
 void efx_remove_channel(struct efx_channel *channel);
 void efx_remove_channels(struct efx_nic *efx);
 void efx_fini_channels(struct efx_nic *efx);
@@ -45,12 +43,18 @@ struct efx_channel *efx_copy_channel(const struct efx_channel *old_channel);
 void efx_start_channels(struct efx_nic *efx);
 void efx_stop_channels(struct efx_nic *efx);
 
+static inline u64 efx_get_queue_stat_rx_hw_drops(struct efx_channel *channel)
+{
+	return channel->n_rx_eth_crc_err + channel->n_rx_frm_trunc +
+	       channel->n_rx_overlength + channel->n_rx_nodesc_trunc +
+	       channel->n_rx_mport_bad;
+}
+
 void efx_init_napi_channel(struct efx_channel *channel);
 void efx_init_napi(struct efx_nic *efx);
 void efx_fini_napi_channel(struct efx_channel *channel);
 void efx_fini_napi(struct efx_nic *efx);
 
-int efx_channel_dummy_op_int(struct efx_channel *channel);
 void efx_channel_dummy_op_void(struct efx_channel *channel);
 
 #endif

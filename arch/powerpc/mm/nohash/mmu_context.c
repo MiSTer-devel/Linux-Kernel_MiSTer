@@ -33,6 +33,7 @@
 #include <asm/mmu_context.h>
 #include <asm/tlbflush.h>
 #include <asm/smp.h>
+#include <asm/kup.h>
 
 #include <mm/mmu_decl.h>
 
@@ -202,25 +203,14 @@ static unsigned int steal_context_up(unsigned int id)
 static void set_context(unsigned long id, pgd_t *pgd)
 {
 	if (IS_ENABLED(CONFIG_PPC_8xx)) {
-		s16 offset = (s16)(__pa(swapper_pg_dir));
-
-		/*
-		 * Register M_TWB will contain base address of level 1 table minus the
-		 * lower part of the kernel PGDIR base address, so that all accesses to
-		 * level 1 table are done relative to lower part of kernel PGDIR base
-		 * address.
-		 */
-		mtspr(SPRN_M_TWB, __pa(pgd) - offset);
+		mtspr(SPRN_M_TWB, __pa(pgd));
 
 		/* Update context */
 		mtspr(SPRN_M_CASID, id - 1);
 
 		/* sync */
 		mb();
-	} else {
-		if (IS_ENABLED(CONFIG_40x))
-			mb();	/* sync */
-
+	} else if (kuap_is_disabled()) {
 		mtspr(SPRN_PID, id);
 		isync();
 	}
@@ -305,6 +295,9 @@ void switch_mmu_context(struct mm_struct *prev, struct mm_struct *next,
 	if (IS_ENABLED(CONFIG_BDI_SWITCH))
 		abatron_pteptrs[1] = next->pgd;
 	set_context(id, next->pgd);
+#if defined(CONFIG_BOOKE) && defined(CONFIG_PPC_KUAP)
+	tsk->thread.pid = id;
+#endif
 	raw_spin_unlock(&context_lock);
 }
 
@@ -313,15 +306,6 @@ void switch_mmu_context(struct mm_struct *prev, struct mm_struct *next,
  */
 int init_new_context(struct task_struct *t, struct mm_struct *mm)
 {
-	/*
-	 * We have MMU_NO_CONTEXT set to be ~0. Hence check
-	 * explicitly against context.id == 0. This ensures that we properly
-	 * initialize context slice details for newly allocated mm's (which will
-	 * have id == 0) and don't alter context slice inherited via fork (which
-	 * will have id != 0).
-	 */
-	if (mm->context.id == 0)
-		slice_init_new_context_exec(mm);
 	mm->context.id = MMU_NO_CONTEXT;
 	mm->context.active = 0;
 	pte_frag_set(&mm->context, NULL);
@@ -393,21 +377,11 @@ void __init mmu_context_init(void)
 	/*
 	 * Allocate the maps used by context management
 	 */
-	context_map = memblock_alloc(CTX_MAP_SIZE, SMP_CACHE_BYTES);
-	if (!context_map)
-		panic("%s: Failed to allocate %zu bytes\n", __func__,
-		      CTX_MAP_SIZE);
-	context_mm = memblock_alloc(sizeof(void *) * (LAST_CONTEXT + 1),
+	context_map = memblock_alloc_or_panic(CTX_MAP_SIZE, SMP_CACHE_BYTES);
+	context_mm = memblock_alloc_or_panic(sizeof(void *) * (LAST_CONTEXT + 1),
 				    SMP_CACHE_BYTES);
-	if (!context_mm)
-		panic("%s: Failed to allocate %zu bytes\n", __func__,
-		      sizeof(void *) * (LAST_CONTEXT + 1));
 	if (IS_ENABLED(CONFIG_SMP)) {
-		stale_map[boot_cpuid] = memblock_alloc(CTX_MAP_SIZE, SMP_CACHE_BYTES);
-		if (!stale_map[boot_cpuid])
-			panic("%s: Failed to allocate %zu bytes\n", __func__,
-			      CTX_MAP_SIZE);
-
+		stale_map[boot_cpuid] = memblock_alloc_or_panic(CTX_MAP_SIZE, SMP_CACHE_BYTES);
 		cpuhp_setup_state_nocalls(CPUHP_POWERPC_MMU_CTX_PREPARE,
 					  "powerpc/mmu/ctx:prepare",
 					  mmu_ctx_cpu_prepare, mmu_ctx_cpu_dead);

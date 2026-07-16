@@ -294,7 +294,7 @@ static bool check_duplicate_entry(struct mlx4_dev *dev, u8 port,
 	struct mlx4_promisc_qp *dqp, *tmp_dqp;
 
 	if (port < 1 || port > dev->caps.num_ports)
-		return NULL;
+		return false;
 
 	s_steer = &mlx4_priv(dev)->steer[port - 1];
 
@@ -375,7 +375,7 @@ static bool can_remove_steering_entry(struct mlx4_dev *dev, u8 port,
 	bool ret = false;
 
 	if (port < 1 || port > dev->caps.num_ports)
-		return NULL;
+		return false;
 
 	s_steer = &mlx4_priv(dev)->steer[port - 1];
 
@@ -1046,7 +1046,7 @@ int mlx4_flow_detach(struct mlx4_dev *dev, u64 reg_id)
 }
 EXPORT_SYMBOL_GPL(mlx4_flow_detach);
 
-int mlx4_tunnel_steer_add(struct mlx4_dev *dev, unsigned char *addr,
+int mlx4_tunnel_steer_add(struct mlx4_dev *dev, const unsigned char *addr,
 			  int port, int qpn, u16 prio, u64 *reg_id)
 {
 	int err;

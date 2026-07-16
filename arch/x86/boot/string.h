@@ -8,8 +8,10 @@
 #undef memcmp
 
 void *memcpy(void *dst, const void *src, size_t len);
+void *memmove(void *dst, const void *src, size_t len);
 void *memset(void *dst, int c, size_t len);
 int memcmp(const void *s1, const void *s2, size_t len);
+int bcmp(const void *s1, const void *s2, size_t len);
 
 /* Access builtin version by default. */
 #define memcpy(d,s,l) __builtin_memcpy(d,s,l)
@@ -22,9 +24,9 @@ extern size_t strlen(const char *s);
 extern char *strstr(const char *s1, const char *s2);
 extern char *strchr(const char *s, int c);
 extern size_t strnlen(const char *s, size_t maxlen);
-extern unsigned int atou(const char *s);
 extern unsigned long long simple_strtoull(const char *cp, char **endp,
 					  unsigned int base);
+long simple_strtol(const char *cp, char **endp, unsigned int base);
 
 int kstrtoull(const char *s, unsigned int base, unsigned long long *res);
 int boot_kstrtoul(const char *s, unsigned int base, unsigned long *res);

@@ -13,20 +13,20 @@ Video4Linux (V4L) drivers
 	:maxdepth: 5
 
 	bttv-devel
-	cpia2_devel
 	cx2341x-devel
 	cx88-devel
-	davinci-vpbe-devel
 	fimc-devel
 	pvrusb2
 	pxa_camera
 	radiotrack
+	rkisp1
 	saa7134-devel
 	sh_mobile_ceu_camera
 	tuners
 	vimc-devel
 	zoran
 	ccs/ccs
+	ipu6
 
 
 Digital TV drivers

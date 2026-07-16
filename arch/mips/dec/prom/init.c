@@ -42,7 +42,7 @@ int (*__pmax_close)(int);
  * Detect which PROM the DECSTATION has, and set the callback vectors
  * appropriately.
  */
-void __init which_prom(s32 magic, s32 *prom_vec)
+static void __init which_prom(s32 magic, s32 *prom_vec)
 {
 	/*
 	 * No sign of the REX PROM's magic number means we assume a non-REX
@@ -113,7 +113,7 @@ void __init prom_init(void)
 	if ((current_cpu_type() == CPU_R4000SC) ||
 	    (current_cpu_type() == CPU_R4400SC)) {
 		static const char r4k_msg[] __initconst =
-			"Please recompile with \"CONFIG_CPU_R4x00 = y\".\n";
+			"Please recompile with \"CONFIG_CPU_R4X00 = y\".\n";
 		printk(cpu_msg);
 		printk(r4k_msg);
 		dec_machine_halt();

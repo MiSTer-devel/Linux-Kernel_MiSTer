@@ -31,15 +31,15 @@ However, except for filenames, fscrypt does not encrypt filesystem
 metadata.
 
 Unlike eCryptfs, which is a stacked filesystem, fscrypt is integrated
-directly into supported filesystems --- currently ext4, F2FS, and
-UBIFS.  This allows encrypted files to be read and written without
-caching both the decrypted and encrypted pages in the pagecache,
-thereby nearly halving the memory used and bringing it in line with
-unencrypted files.  Similarly, half as many dentries and inodes are
-needed.  eCryptfs also limits encrypted filenames to 143 bytes,
-causing application compatibility issues; fscrypt allows the full 255
-bytes (NAME_MAX).  Finally, unlike eCryptfs, the fscrypt API can be
-used by unprivileged users, with no need to mount anything.
+directly into supported filesystems --- currently ext4, F2FS, UBIFS,
+and CephFS.  This allows encrypted files to be read and written
+without caching both the decrypted and encrypted pages in the
+pagecache, thereby nearly halving the memory used and bringing it in
+line with unencrypted files.  Similarly, half as many dentries and
+inodes are needed.  eCryptfs also limits encrypted filenames to 143
+bytes, causing application compatibility issues; fscrypt allows the
+full 255 bytes (NAME_MAX).  Finally, unlike eCryptfs, the fscrypt API
+can be used by unprivileged users, with no need to mount anything.
 
 fscrypt does not support encrypting files in-place.  Instead, it
 supports marking an empty directory as encrypted.  Then, after
@@ -70,18 +70,18 @@ Online attacks
 --------------
 
 fscrypt (and storage encryption in general) can only provide limited
-protection, if any at all, against online attacks.  In detail:
+protection against online attacks.  In detail:
 
 Side-channel attacks
 ~~~~~~~~~~~~~~~~~~~~
 
 fscrypt is only resistant to side-channel attacks, such as timing or
 electromagnetic attacks, to the extent that the underlying Linux
-Cryptographic API algorithms are.  If a vulnerable algorithm is used,
-such as a table-based implementation of AES, it may be possible for an
-attacker to mount a side channel attack against the online system.
-Side channel attacks may also be mounted against applications
-consuming decrypted data.
+Cryptographic API algorithms or inline encryption hardware are.  If a
+vulnerable algorithm is used, such as a table-based implementation of
+AES, it may be possible for an attacker to mount a side channel attack
+against the online system.  Side channel attacks may also be mounted
+against applications consuming decrypted data.
 
 Unauthorized file access
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -99,16 +99,23 @@ Therefore, any encryption-specific access control checks would merely
 be enforced by kernel *code* and therefore would be largely redundant
 with the wide variety of access control mechanisms already available.)
 
-Kernel memory compromise
-~~~~~~~~~~~~~~~~~~~~~~~~
+Read-only kernel memory compromise
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-An attacker who compromises the system enough to read from arbitrary
-memory, e.g. by mounting a physical attack or by exploiting a kernel
-security vulnerability, can compromise all encryption keys that are
-currently in use.
+Unless `hardware-wrapped keys`_ are used, an attacker who gains the
+ability to read from arbitrary kernel memory, e.g. by mounting a
+physical attack or by exploiting a kernel security vulnerability, can
+compromise all fscrypt keys that are currently in-use.  This also
+extends to cold boot attacks; if the system is suddenly powered off,
+keys the system was using may remain in memory for a short time.
 
-However, fscrypt allows encryption keys to be removed from the kernel,
-which may protect them from later compromise.
+However, if hardware-wrapped keys are used, then the fscrypt master
+keys and file contents encryption keys (but not other types of fscrypt
+subkeys such as filenames encryption keys) are protected from
+compromises of arbitrary kernel memory.
+
+In addition, fscrypt allows encryption keys to be removed from the
+kernel, which may protect them from later compromise.
 
 In more detail, the FS_IOC_REMOVE_ENCRYPTION_KEY ioctl (or the
 FS_IOC_REMOVE_ENCRYPTION_KEY_ALL_USERS ioctl) can wipe a master
@@ -137,13 +144,29 @@ However, these ioctls have some limitations:
 - In general, decrypted contents and filenames in the kernel VFS
   caches are freed but not wiped.  Therefore, portions thereof may be
   recoverable from freed memory, even after the corresponding key(s)
-  were wiped.  To partially solve this, you can set
-  CONFIG_PAGE_POISONING=y in your kernel config and add page_poison=1
-  to your kernel command line.  However, this has a performance cost.
+  were wiped.  To partially solve this, you can add init_on_free=1 to
+  your kernel command line.  However, this has a performance cost.
 
-- Secret keys might still exist in CPU registers, in crypto
-  accelerator hardware (if used by the crypto API to implement any of
-  the algorithms), or in other places not explicitly considered here.
+- Secret keys might still exist in CPU registers or in other places
+  not explicitly considered here.
+
+Full system compromise
+~~~~~~~~~~~~~~~~~~~~~~
+
+An attacker who gains "root" access and/or the ability to execute
+arbitrary kernel code can freely exfiltrate data that is protected by
+any in-use fscrypt keys.  Thus, usually fscrypt provides no meaningful
+protection in this scenario.  (Data that is protected by a key that is
+absent throughout the entire attack remains protected, modulo the
+limitations of key removal mentioned above in the case where the key
+was removed prior to the attack.)
+
+However, if `hardware-wrapped keys`_ are used, such attackers will be
+unable to exfiltrate the master keys or file contents keys in a form
+that will be usable after the system is powered off.  This may be
+useful if the attacker is significantly time-limited and/or
+bandwidth-limited, so they can only exfiltrate some data and need to
+rely on a later offline attack to exfiltrate the rest of it.
 
 Limitations of v1 policies
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -171,16 +194,20 @@ policies on all new encrypted directories.
 Key hierarchy
 =============
 
+Note: this section assumes the use of raw keys rather than
+hardware-wrapped keys.  The use of hardware-wrapped keys modifies the
+key hierarchy slightly.  For details, see `Hardware-wrapped keys`_.
+
 Master Keys
 -----------
 
 Each encrypted directory tree is protected by a *master key*.  Master
 keys can be up to 64 bytes long, and must be at least as long as the
-greater of the key length needed by the contents and filenames
-encryption modes being used.  For example, if AES-256-XTS is used for
-contents encryption, the master key must be 64 bytes (512 bits).  Note
-that the XTS mode is defined to require a key twice as long as that
-required by the underlying block cipher.
+greater of the security strength of the contents and filenames
+encryption modes being used.  For example, if any AES-256 mode is
+used, the master key must be at least 256 bits, i.e. 32 bytes.  A
+stricter requirement applies if the key is used by a v1 encryption
+policy and AES-256-XTS is used; such keys must be 64 bytes.
 
 To "unlock" an encrypted directory tree, userspace must provide the
 appropriate master key.  There can be any number of master keys, each
@@ -261,9 +288,9 @@ DIRECT_KEY policies
 
 The Adiantum encryption mode (see `Encryption modes and usage`_) is
 suitable for both contents and filenames encryption, and it accepts
-long IVs --- long enough to hold both an 8-byte logical block number
-and a 16-byte per-file nonce.  Also, the overhead of each Adiantum key
-is greater than that of an AES-256-XTS key.
+long IVs --- long enough to hold both an 8-byte data unit index and a
+16-byte per-file nonce.  Also, the overhead of each Adiantum key is
+greater than that of an AES-256-XTS key.
 
 Therefore, to improve performance and save memory, for Adiantum a
 "direct key" configuration is supported.  When the user has enabled
@@ -300,8 +327,8 @@ IV_INO_LBLK_32 policies
 
 IV_INO_LBLK_32 policies work like IV_INO_LBLK_64, except that for
 IV_INO_LBLK_32, the inode number is hashed with SipHash-2-4 (where the
-SipHash key is derived from the master key) and added to the file
-logical block number mod 2^32 to produce a 32-bit IV.
+SipHash key is derived from the master key) and added to the file data
+unit index mod 2^32 to produce a 32-bit IV.
 
 This format is optimized for use with inline encryption hardware
 compliant with the eMMC v5.2 standard, which supports only 32 IV bits
@@ -332,64 +359,176 @@ Encryption modes and usage
 fscrypt allows one encryption mode to be specified for file contents
 and one encryption mode to be specified for filenames.  Different
 directory trees are permitted to use different encryption modes.
+
+Supported modes
+---------------
+
 Currently, the following pairs of encryption modes are supported:
 
-- AES-256-XTS for contents and AES-256-CTS-CBC for filenames
-- AES-128-CBC for contents and AES-128-CTS-CBC for filenames
+- AES-256-XTS for contents and AES-256-CBC-CTS for filenames
+- AES-256-XTS for contents and AES-256-HCTR2 for filenames
 - Adiantum for both contents and filenames
+- AES-128-CBC-ESSIV for contents and AES-128-CBC-CTS for filenames
+- SM4-XTS for contents and SM4-CBC-CTS for filenames
 
-If unsure, you should use the (AES-256-XTS, AES-256-CTS-CBC) pair.
+Note: in the API, "CBC" means CBC-ESSIV, and "CTS" means CBC-CTS.
+So, for example, FSCRYPT_MODE_AES_256_CTS means AES-256-CBC-CTS.
 
-AES-128-CBC was added only for low-powered embedded devices with
-crypto accelerators such as CAAM or CESA that do not support XTS.  To
-use AES-128-CBC, CONFIG_CRYPTO_ESSIV and CONFIG_CRYPTO_SHA256 (or
-another SHA-256 implementation) must be enabled so that ESSIV can be
-used.
+Authenticated encryption modes are not currently supported because of
+the difficulty of dealing with ciphertext expansion.  Therefore,
+contents encryption uses a block cipher in `XTS mode
+<https://en.wikipedia.org/wiki/Disk_encryption_theory#XTS>`_ or
+`CBC-ESSIV mode
+<https://en.wikipedia.org/wiki/Disk_encryption_theory#Encrypted_salt-sector_initialization_vector_(ESSIV)>`_,
+or a wide-block cipher.  Filenames encryption uses a
+block cipher in `CBC-CTS mode
+<https://en.wikipedia.org/wiki/Ciphertext_stealing>`_ or a wide-block
+cipher.
 
-Adiantum is a (primarily) stream cipher-based mode that is fast even
-on CPUs without dedicated crypto instructions.  It's also a true
-wide-block mode, unlike XTS.  It can also eliminate the need to derive
-per-file encryption keys.  However, it depends on the security of two
-primitives, XChaCha12 and AES-256, rather than just one.  See the
-paper "Adiantum: length-preserving encryption for entry-level
-processors" (https://eprint.iacr.org/2018/720.pdf) for more details.
-To use Adiantum, CONFIG_CRYPTO_ADIANTUM must be enabled.  Also, fast
-implementations of ChaCha and NHPoly1305 should be enabled, e.g.
-CONFIG_CRYPTO_CHACHA20_NEON and CONFIG_CRYPTO_NHPOLY1305_NEON for ARM.
+The (AES-256-XTS, AES-256-CBC-CTS) pair is the recommended default.
+It is also the only option that is *guaranteed* to always be supported
+if the kernel supports fscrypt at all; see `Kernel config options`_.
 
-New encryption modes can be added relatively easily, without changes
-to individual filesystems.  However, authenticated encryption (AE)
-modes are not currently supported because of the difficulty of dealing
-with ciphertext expansion.
+The (AES-256-XTS, AES-256-HCTR2) pair is also a good choice that
+upgrades the filenames encryption to use a wide-block cipher.  (A
+*wide-block cipher*, also called a tweakable super-pseudorandom
+permutation, has the property that changing one bit scrambles the
+entire result.)  As described in `Filenames encryption`_, a wide-block
+cipher is the ideal mode for the problem domain, though CBC-CTS is the
+"least bad" choice among the alternatives.  For more information about
+HCTR2, see `the HCTR2 paper <https://eprint.iacr.org/2021/1441.pdf>`_.
+
+Adiantum is recommended on systems where AES is too slow due to lack
+of hardware acceleration for AES.  Adiantum is a wide-block cipher
+that uses XChaCha12 and AES-256 as its underlying components.  Most of
+the work is done by XChaCha12, which is much faster than AES when AES
+acceleration is unavailable.  For more information about Adiantum, see
+`the Adiantum paper <https://eprint.iacr.org/2018/720.pdf>`_.
+
+The (AES-128-CBC-ESSIV, AES-128-CBC-CTS) pair was added to try to
+provide a more efficient option for systems that lack AES instructions
+in the CPU but do have a non-inline crypto engine such as CAAM or CESA
+that supports AES-CBC (and not AES-XTS).  This is deprecated.  It has
+been shown that just doing AES on the CPU is actually faster.
+Moreover, Adiantum is faster still and is recommended on such systems.
+
+The remaining mode pairs are the "national pride ciphers":
+
+- (SM4-XTS, SM4-CBC-CTS)
+
+Generally speaking, these ciphers aren't "bad" per se, but they
+receive limited security review compared to the usual choices such as
+AES and ChaCha.  They also don't bring much new to the table.  It is
+suggested to only use these ciphers where their use is mandated.
+
+Kernel config options
+---------------------
+
+Enabling fscrypt support (CONFIG_FS_ENCRYPTION) automatically pulls in
+only the basic support from the crypto API needed to use AES-256-XTS
+and AES-256-CBC-CTS encryption.  For optimal performance, it is
+strongly recommended to also enable any available platform-specific
+kconfig options that provide acceleration for the algorithm(s) you
+wish to use.  Support for any "non-default" encryption modes typically
+requires extra kconfig options as well.
+
+Below, some relevant options are listed by encryption mode.  Note,
+acceleration options not listed below may be available for your
+platform; refer to the kconfig menus.  File contents encryption can
+also be configured to use inline encryption hardware instead of the
+kernel crypto API (see `Inline encryption support`_); in that case,
+the file contents mode doesn't need to supported in the kernel crypto
+API, but the filenames mode still does.
+
+- AES-256-XTS and AES-256-CBC-CTS
+    - Recommended:
+        - arm64: CONFIG_CRYPTO_AES_ARM64_CE_BLK
+        - x86: CONFIG_CRYPTO_AES_NI_INTEL
+
+- AES-256-HCTR2
+    - Mandatory:
+        - CONFIG_CRYPTO_HCTR2
+    - Recommended:
+        - arm64: CONFIG_CRYPTO_AES_ARM64_CE_BLK
+        - arm64: CONFIG_CRYPTO_POLYVAL_ARM64_CE
+        - x86: CONFIG_CRYPTO_AES_NI_INTEL
+        - x86: CONFIG_CRYPTO_POLYVAL_CLMUL_NI
+
+- Adiantum
+    - Mandatory:
+        - CONFIG_CRYPTO_ADIANTUM
+    - Recommended:
+        - arm32: CONFIG_CRYPTO_NHPOLY1305_NEON
+        - arm64: CONFIG_CRYPTO_NHPOLY1305_NEON
+        - x86: CONFIG_CRYPTO_NHPOLY1305_SSE2
+        - x86: CONFIG_CRYPTO_NHPOLY1305_AVX2
+
+- AES-128-CBC-ESSIV and AES-128-CBC-CTS:
+    - Mandatory:
+        - CONFIG_CRYPTO_ESSIV
+        - CONFIG_CRYPTO_SHA256 or another SHA-256 implementation
+    - Recommended:
+        - AES-CBC acceleration
 
 Contents encryption
 -------------------
 
-For file contents, each filesystem block is encrypted independently.
-Starting from Linux kernel 5.5, encryption of filesystems with block
-size less than system's page size is supported.
+For contents encryption, each file's contents is divided into "data
+units".  Each data unit is encrypted independently.  The IV for each
+data unit incorporates the zero-based index of the data unit within
+the file.  This ensures that each data unit within a file is encrypted
+differently, which is essential to prevent leaking information.
 
-Each block's IV is set to the logical block number within the file as
-a little endian number, except that:
+Note: the encryption depending on the offset into the file means that
+operations like "collapse range" and "insert range" that rearrange the
+extent mapping of files are not supported on encrypted files.
 
-- With CBC mode encryption, ESSIV is also used.  Specifically, each IV
-  is encrypted with AES-256 where the AES-256 key is the SHA-256 hash
-  of the file's data encryption key.
+There are two cases for the sizes of the data units:
 
-- With `DIRECT_KEY policies`_, the file's nonce is appended to the IV.
-  Currently this is only allowed with the Adiantum encryption mode.
+* Fixed-size data units.  This is how all filesystems other than UBIFS
+  work.  A file's data units are all the same size; the last data unit
+  is zero-padded if needed.  By default, the data unit size is equal
+  to the filesystem block size.  On some filesystems, users can select
+  a sub-block data unit size via the ``log2_data_unit_size`` field of
+  the encryption policy; see `FS_IOC_SET_ENCRYPTION_POLICY`_.
 
-- With `IV_INO_LBLK_64 policies`_, the logical block number is limited
-  to 32 bits and is placed in bits 0-31 of the IV.  The inode number
-  (which is also limited to 32 bits) is placed in bits 32-63.
+* Variable-size data units.  This is what UBIFS does.  Each "UBIFS
+  data node" is treated as a crypto data unit.  Each contains variable
+  length, possibly compressed data, zero-padded to the next 16-byte
+  boundary.  Users cannot select a sub-block data unit size on UBIFS.
 
-- With `IV_INO_LBLK_32 policies`_, the logical block number is limited
-  to 32 bits and is placed in bits 0-31 of the IV.  The inode number
-  is then hashed and added mod 2^32.
+In the case of compression + encryption, the compressed data is
+encrypted.  UBIFS compression works as described above.  f2fs
+compression works a bit differently; it compresses a number of
+filesystem blocks into a smaller number of filesystem blocks.
+Therefore a f2fs-compressed file still uses fixed-size data units, and
+it is encrypted in a similar way to a file containing holes.
 
-Note that because file logical block numbers are included in the IVs,
-filesystems must enforce that blocks are never shifted around within
-encrypted files, e.g. via "collapse range" or "insert range".
+As mentioned in `Key hierarchy`_, the default encryption setting uses
+per-file keys.  In this case, the IV for each data unit is simply the
+index of the data unit in the file.  However, users can select an
+encryption setting that does not use per-file keys.  For these, some
+kind of file identifier is incorporated into the IVs as follows:
+
+- With `DIRECT_KEY policies`_, the data unit index is placed in bits
+  0-63 of the IV, and the file's nonce is placed in bits 64-191.
+
+- With `IV_INO_LBLK_64 policies`_, the data unit index is placed in
+  bits 0-31 of the IV, and the file's inode number is placed in bits
+  32-63.  This setting is only allowed when data unit indices and
+  inode numbers fit in 32 bits.
+
+- With `IV_INO_LBLK_32 policies`_, the file's inode number is hashed
+  and added to the data unit index.  The resulting value is truncated
+  to 32 bits and placed in bits 0-31 of the IV.  This setting is only
+  allowed when data unit indices and inode numbers fit in 32 bits.
+
+The byte order of the IV is always little endian.
+
+If the user selects FSCRYPT_MODE_AES_128_CBC for the contents mode, an
+ESSIV layer is automatically included.  In this case, before the IV is
+passed to AES-128-CBC, it is encrypted with AES-256 where the AES-256
+key is the SHA-256 hash of the file's contents encryption key.
 
 Filenames encryption
 --------------------
@@ -404,11 +543,11 @@ alternatively has the file's nonce (for `DIRECT_KEY policies`_) or
 inode number (for `IV_INO_LBLK_64 policies`_) included in the IVs.
 Thus, IV reuse is limited to within a single directory.
 
-With CTS-CBC, the IV reuse means that when the plaintext filenames
-share a common prefix at least as long as the cipher block size (16
-bytes for AES), the corresponding encrypted filenames will also share
-a common prefix.  This is undesirable.  Adiantum does not have this
-weakness, as it is a wide-block encryption mode.
+With CBC-CTS, the IV reuse means that when the plaintext filenames share a
+common prefix at least as long as the cipher block size (16 bytes for AES), the
+corresponding encrypted filenames will also share a common prefix.  This is
+undesirable.  Adiantum and HCTR2 do not have this weakness, as they are
+wide-block encryption modes.
 
 All supported filenames encryption modes accept any plaintext length
 >= 16 bytes; cipher block alignment is not required.  However,
@@ -458,7 +597,8 @@ follows::
             __u8 contents_encryption_mode;
             __u8 filenames_encryption_mode;
             __u8 flags;
-            __u8 __reserved[4];
+            __u8 log2_data_unit_size;
+            __u8 __reserved[3];
             __u8 master_key_identifier[FSCRYPT_KEY_IDENTIFIER_SIZE];
     };
 
@@ -474,7 +614,14 @@ This structure must be initialized as follows:
   be set to constants from ``<linux/fscrypt.h>`` which identify the
   encryption modes to use.  If unsure, use FSCRYPT_MODE_AES_256_XTS
   (1) for ``contents_encryption_mode`` and FSCRYPT_MODE_AES_256_CTS
-  (4) for ``filenames_encryption_mode``.
+  (4) for ``filenames_encryption_mode``.  For details, see `Encryption
+  modes and usage`_.
+
+  v1 encryption policies only support three combinations of modes:
+  (FSCRYPT_MODE_AES_256_XTS, FSCRYPT_MODE_AES_256_CTS),
+  (FSCRYPT_MODE_AES_128_CBC, FSCRYPT_MODE_AES_128_CTS), and
+  (FSCRYPT_MODE_ADIANTUM, FSCRYPT_MODE_ADIANTUM).  v2 policies support
+  all combinations documented in `Supported modes`_.
 
 - ``flags`` contains optional flags from ``<linux/fscrypt.h>``:
 
@@ -492,6 +639,29 @@ This structure must be initialized as follows:
 
   The DIRECT_KEY, IV_INO_LBLK_64, and IV_INO_LBLK_32 flags are
   mutually exclusive.
+
+- ``log2_data_unit_size`` is the log2 of the data unit size in bytes,
+  or 0 to select the default data unit size.  The data unit size is
+  the granularity of file contents encryption.  For example, setting
+  ``log2_data_unit_size`` to 12 causes file contents be passed to the
+  underlying encryption algorithm (such as AES-256-XTS) in 4096-byte
+  data units, each with its own IV.
+
+  Not all filesystems support setting ``log2_data_unit_size``.  ext4
+  and f2fs support it since Linux v6.7.  On filesystems that support
+  it, the supported nonzero values are 9 through the log2 of the
+  filesystem block size, inclusively.  The default value of 0 selects
+  the filesystem block size.
+
+  The main use case for ``log2_data_unit_size`` is for selecting a
+  data unit size smaller than the filesystem block size for
+  compatibility with inline encryption hardware that only supports
+  smaller data unit sizes.  ``/sys/block/$disk/queue/crypto/`` may be
+  useful for checking which data unit sizes are supported by a
+  particular system's inline encryption hardware.
+
+  Leave this field zeroed unless you are certain you need it.  Using
+  an unnecessarily small data unit size reduces performance.
 
 - For v2 encryption policies, ``__reserved`` must be zeroed.
 
@@ -685,7 +855,9 @@ a pointer to struct fscrypt_add_key_arg, defined as follows::
             struct fscrypt_key_specifier key_spec;
             __u32 raw_size;
             __u32 key_id;
-            __u32 __reserved[8];
+    #define FSCRYPT_ADD_KEY_FLAG_HW_WRAPPED 0x00000001
+            __u32 flags;
+            __u32 __reserved[7];
             __u8 raw[];
     };
 
@@ -704,7 +876,7 @@ a pointer to struct fscrypt_add_key_arg, defined as follows::
 
     struct fscrypt_provisioning_key_payload {
             __u32 type;
-            __u32 __reserved;
+            __u32 flags;
             __u8 raw[];
     };
 
@@ -732,24 +904,32 @@ as follows:
   Alternatively, if ``key_id`` is nonzero, this field must be 0, since
   in that case the size is implied by the specified Linux keyring key.
 
-- ``key_id`` is 0 if the raw key is given directly in the ``raw``
-  field.  Otherwise ``key_id`` is the ID of a Linux keyring key of
-  type "fscrypt-provisioning" whose payload is
-  struct fscrypt_provisioning_key_payload whose ``raw`` field contains
-  the raw key and whose ``type`` field matches ``key_spec.type``.
-  Since ``raw`` is variable-length, the total size of this key's
-  payload must be ``sizeof(struct fscrypt_provisioning_key_payload)``
-  plus the raw key size.  The process must have Search permission on
-  this key.
+- ``key_id`` is 0 if the key is given directly in the ``raw`` field.
+  Otherwise ``key_id`` is the ID of a Linux keyring key of type
+  "fscrypt-provisioning" whose payload is struct
+  fscrypt_provisioning_key_payload whose ``raw`` field contains the
+  key, whose ``type`` field matches ``key_spec.type``, and whose
+  ``flags`` field matches ``flags``.  Since ``raw`` is
+  variable-length, the total size of this key's payload must be
+  ``sizeof(struct fscrypt_provisioning_key_payload)`` plus the number
+  of key bytes.  The process must have Search permission on this key.
 
-  Most users should leave this 0 and specify the raw key directly.
-  The support for specifying a Linux keyring key is intended mainly to
+  Most users should leave this 0 and specify the key directly.  The
+  support for specifying a Linux keyring key is intended mainly to
   allow re-adding keys after a filesystem is unmounted and re-mounted,
-  without having to store the raw keys in userspace memory.
+  without having to store the keys in userspace memory.
+
+- ``flags`` contains optional flags from ``<linux/fscrypt.h>``:
+
+  - FSCRYPT_ADD_KEY_FLAG_HW_WRAPPED: This denotes that the key is a
+    hardware-wrapped key.  See `Hardware-wrapped keys`_.  This flag
+    can't be used if FSCRYPT_KEY_SPEC_TYPE_DESCRIPTOR is used.
 
 - ``raw`` is a variable-length field which must contain the actual
   key, ``raw_size`` bytes long.  Alternatively, if ``key_id`` is
-  nonzero, then this field is unused.
+  nonzero, then this field is unused.  Note that despite being named
+  ``raw``, if FSCRYPT_ADD_KEY_FLAG_HW_WRAPPED is specified then it
+  will contain a wrapped key, not a raw key.
 
 For v2 policy keys, the kernel keeps track of which user (identified
 by effective user ID) added the key, and only allows the key to be
@@ -761,8 +941,8 @@ prevent that other user from unexpectedly removing it.  Therefore,
 FS_IOC_ADD_ENCRYPTION_KEY may also be used to add a v2 policy key
 *again*, even if it's already added by other user(s).  In this case,
 FS_IOC_ADD_ENCRYPTION_KEY will just install a claim to the key for the
-current user, rather than actually add the key again (but the raw key
-must still be provided, as a proof of knowledge).
+current user, rather than actually add the key again (but the key must
+still be provided, as a proof of knowledge).
 
 FS_IOC_ADD_ENCRYPTION_KEY returns 0 if either the key or a claim to
 the key was either added or already exists.
@@ -771,20 +951,23 @@ FS_IOC_ADD_ENCRYPTION_KEY can fail with the following errors:
 
 - ``EACCES``: FSCRYPT_KEY_SPEC_TYPE_DESCRIPTOR was specified, but the
   caller does not have the CAP_SYS_ADMIN capability in the initial
-  user namespace; or the raw key was specified by Linux key ID but the
+  user namespace; or the key was specified by Linux key ID but the
   process lacks Search permission on the key.
+- ``EBADMSG``: invalid hardware-wrapped key
 - ``EDQUOT``: the key quota for this user would be exceeded by adding
   the key
 - ``EINVAL``: invalid key size or key specifier type, or reserved bits
   were set
-- ``EKEYREJECTED``: the raw key was specified by Linux key ID, but the
-  key has the wrong type
-- ``ENOKEY``: the raw key was specified by Linux key ID, but no key
-  exists with that ID
+- ``EKEYREJECTED``: the key was specified by Linux key ID, but the key
+  has the wrong type
+- ``ENOKEY``: the key was specified by Linux key ID, but no key exists
+  with that ID
 - ``ENOTTY``: this type of filesystem does not implement encryption
 - ``EOPNOTSUPP``: the kernel was not configured with encryption
   support for this filesystem, or the filesystem superblock has not
-  had encryption enabled on it
+  had encryption enabled on it; or a hardware wrapped key was specified
+  but the filesystem does not support inline encryption or the hardware
+  does not support hardware-wrapped keys
 
 Legacy method
 ~~~~~~~~~~~~~
@@ -847,9 +1030,8 @@ or removed by non-root users.
 These ioctls don't work on keys that were added via the legacy
 process-subscribed keyrings mechanism.
 
-Before using these ioctls, read the `Kernel memory compromise`_
-section for a discussion of the security goals and limitations of
-these ioctls.
+Before using these ioctls, read the `Online attacks`_ section for a
+discussion of the security goals and limitations of these ioctls.
 
 FS_IOC_REMOVE_ENCRYPTION_KEY
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -986,8 +1168,8 @@ The caller must zero all input fields, then fill in ``key_spec``:
 On success, 0 is returned and the kernel fills in the output fields:
 
 - ``status`` indicates whether the key is absent, present, or
-  incompletely removed.  Incompletely removed means that the master
-  secret has been removed, but some files are still in use; i.e.,
+  incompletely removed.  Incompletely removed means that removal has
+  been initiated, but some files are still in use; i.e.,
   `FS_IOC_REMOVE_ENCRYPTION_KEY`_ returned 0 but set the informational
   status flag FSCRYPT_KEY_REMOVAL_STATUS_FLAG_FILES_BUSY.
 
@@ -1047,8 +1229,8 @@ astute users may notice some differences in behavior:
   may be used to overwrite the source files but isn't guaranteed to be
   effective on all filesystems and storage devices.
 
-- Direct I/O is not supported on encrypted files.  Attempts to use
-  direct I/O on such files will fall back to buffered I/O.
+- Direct I/O is supported on encrypted files only under some
+  circumstances.  For details, see `Direct I/O support`_.
 
 - The fallocate operations FALLOC_FL_COLLAPSE_RANGE and
   FALLOC_FL_INSERT_RANGE are not supported on encrypted files and will
@@ -1135,6 +1317,132 @@ where applications may later write sensitive data.  It is recommended
 that systems implementing a form of "verified boot" take advantage of
 this by validating all top-level encryption policies prior to access.
 
+Inline encryption support
+=========================
+
+Many newer systems (especially mobile SoCs) have *inline encryption
+hardware* that can encrypt/decrypt data while it is on its way to/from
+the storage device.  Linux supports inline encryption through a set of
+extensions to the block layer called *blk-crypto*.  blk-crypto allows
+filesystems to attach encryption contexts to bios (I/O requests) to
+specify how the data will be encrypted or decrypted in-line.  For more
+information about blk-crypto, see
+:ref:`Documentation/block/inline-encryption.rst <inline_encryption>`.
+
+On supported filesystems (currently ext4 and f2fs), fscrypt can use
+blk-crypto instead of the kernel crypto API to encrypt/decrypt file
+contents.  To enable this, set CONFIG_FS_ENCRYPTION_INLINE_CRYPT=y in
+the kernel configuration, and specify the "inlinecrypt" mount option
+when mounting the filesystem.
+
+Note that the "inlinecrypt" mount option just specifies to use inline
+encryption when possible; it doesn't force its use.  fscrypt will
+still fall back to using the kernel crypto API on files where the
+inline encryption hardware doesn't have the needed crypto capabilities
+(e.g. support for the needed encryption algorithm and data unit size)
+and where blk-crypto-fallback is unusable.  (For blk-crypto-fallback
+to be usable, it must be enabled in the kernel configuration with
+CONFIG_BLK_INLINE_ENCRYPTION_FALLBACK=y, and the file must be
+protected by a raw key rather than a hardware-wrapped key.)
+
+Currently fscrypt always uses the filesystem block size (which is
+usually 4096 bytes) as the data unit size.  Therefore, it can only use
+inline encryption hardware that supports that data unit size.
+
+Inline encryption doesn't affect the ciphertext or other aspects of
+the on-disk format, so users may freely switch back and forth between
+using "inlinecrypt" and not using "inlinecrypt".  An exception is that
+files that are protected by a hardware-wrapped key can only be
+encrypted/decrypted by the inline encryption hardware and therefore
+can only be accessed when the "inlinecrypt" mount option is used.  For
+more information about hardware-wrapped keys, see below.
+
+Hardware-wrapped keys
+---------------------
+
+fscrypt supports using *hardware-wrapped keys* when the inline
+encryption hardware supports it.  Such keys are only present in kernel
+memory in wrapped (encrypted) form; they can only be unwrapped
+(decrypted) by the inline encryption hardware and are temporally bound
+to the current boot.  This prevents the keys from being compromised if
+kernel memory is leaked.  This is done without limiting the number of
+keys that can be used and while still allowing the execution of
+cryptographic tasks that are tied to the same key but can't use inline
+encryption hardware, e.g. filenames encryption.
+
+Note that hardware-wrapped keys aren't specific to fscrypt; they are a
+block layer feature (part of *blk-crypto*).  For more details about
+hardware-wrapped keys, see the block layer documentation at
+:ref:`Documentation/block/inline-encryption.rst
+<hardware_wrapped_keys>`.  The rest of this section just focuses on
+the details of how fscrypt can use hardware-wrapped keys.
+
+fscrypt supports hardware-wrapped keys by allowing the fscrypt master
+keys to be hardware-wrapped keys as an alternative to raw keys.  To
+add a hardware-wrapped key with `FS_IOC_ADD_ENCRYPTION_KEY`_,
+userspace must specify FSCRYPT_ADD_KEY_FLAG_HW_WRAPPED in the
+``flags`` field of struct fscrypt_add_key_arg and also in the
+``flags`` field of struct fscrypt_provisioning_key_payload when
+applicable.  The key must be in ephemerally-wrapped form, not
+long-term wrapped form.
+
+Some limitations apply.  First, files protected by a hardware-wrapped
+key are tied to the system's inline encryption hardware.  Therefore
+they can only be accessed when the "inlinecrypt" mount option is used,
+and they can't be included in portable filesystem images.  Second,
+currently the hardware-wrapped key support is only compatible with
+`IV_INO_LBLK_64 policies`_ and `IV_INO_LBLK_32 policies`_, as it
+assumes that there is just one file contents encryption key per
+fscrypt master key rather than one per file.  Future work may address
+this limitation by passing per-file nonces down the storage stack to
+allow the hardware to derive per-file keys.
+
+Implementation-wise, to encrypt/decrypt the contents of files that are
+protected by a hardware-wrapped key, fscrypt uses blk-crypto,
+attaching the hardware-wrapped key to the bio crypt contexts.  As is
+the case with raw keys, the block layer will program the key into a
+keyslot when it isn't already in one.  However, when programming a
+hardware-wrapped key, the hardware doesn't program the given key
+directly into a keyslot but rather unwraps it (using the hardware's
+ephemeral wrapping key) and derives the inline encryption key from it.
+The inline encryption key is the key that actually gets programmed
+into a keyslot, and it is never exposed to software.
+
+However, fscrypt doesn't just do file contents encryption; it also
+uses its master keys to derive filenames encryption keys, key
+identifiers, and sometimes some more obscure types of subkeys such as
+dirhash keys.  So even with file contents encryption out of the
+picture, fscrypt still needs a raw key to work with.  To get such a
+key from a hardware-wrapped key, fscrypt asks the inline encryption
+hardware to derive a cryptographically isolated "software secret" from
+the hardware-wrapped key.  fscrypt uses this "software secret" to key
+its KDF to derive all subkeys other than file contents keys.
+
+Note that this implies that the hardware-wrapped key feature only
+protects the file contents encryption keys.  It doesn't protect other
+fscrypt subkeys such as filenames encryption keys.
+
+Direct I/O support
+==================
+
+For direct I/O on an encrypted file to work, the following conditions
+must be met (in addition to the conditions for direct I/O on an
+unencrypted file):
+
+* The file must be using inline encryption.  Usually this means that
+  the filesystem must be mounted with ``-o inlinecrypt`` and inline
+  encryption hardware must be present.  However, a software fallback
+  is also available.  For details, see `Inline encryption support`_.
+
+* The I/O request must be fully aligned to the filesystem block size.
+  This means that the file position the I/O is targeting, the lengths
+  of all I/O segments, and the memory addresses of all I/O buffers
+  must be multiples of this value.  Note that the filesystem block
+  size may be greater than the logical block size of the block device.
+
+If either of the above conditions is not met, then direct I/O on the
+encrypted file will fall back to buffered I/O.
+
 Implementation details
 ======================
 
@@ -1169,7 +1477,8 @@ directory.)  These structs are defined as follows::
             u8 contents_encryption_mode;
             u8 filenames_encryption_mode;
             u8 flags;
-            u8 __reserved[4];
+            u8 log2_data_unit_size;
+            u8 __reserved[3];
             u8 master_key_identifier[FSCRYPT_KEY_IDENTIFIER_SIZE];
             u8 nonce[FSCRYPT_FILE_NONCE_SIZE];
     };
@@ -1184,30 +1493,25 @@ keys`_ and `DIRECT_KEY policies`_.
 Data path changes
 -----------------
 
-For the read path (->readpage()) of regular files, filesystems can
-read the ciphertext into the page cache and decrypt it in-place.  The
-page lock must be held until decryption has finished, to prevent the
-page from becoming visible to userspace prematurely.
+When inline encryption is used, filesystems just need to associate
+encryption contexts with bios to specify how the block layer or the
+inline encryption hardware will encrypt/decrypt the file contents.
 
-For the write path (->writepage()) of regular files, filesystems
+When inline encryption isn't used, filesystems must encrypt/decrypt
+the file contents themselves, as described below:
+
+For the read path (->read_folio()) of regular files, filesystems can
+read the ciphertext into the page cache and decrypt it in-place.  The
+folio lock must be held until decryption has finished, to prevent the
+folio from becoming visible to userspace prematurely.
+
+For the write path (->writepages()) of regular files, filesystems
 cannot encrypt data in-place in the page cache, since the cached
 plaintext must be preserved.  Instead, filesystems must encrypt into a
 temporary buffer or "bounce page", then write out the temporary
 buffer.  Some filesystems, such as UBIFS, already use temporary
 buffers regardless of encryption.  Other filesystems, such as ext4 and
 F2FS, have to allocate bounce pages specially for encryption.
-
-Fscrypt is also able to use inline encryption hardware instead of the
-kernel crypto API for en/decryption of file contents.  When possible,
-and if directed to do so (by specifying the 'inlinecrypt' mount option
-for an ext4/F2FS filesystem), it adds encryption contexts to bios and
-uses blk-crypto to perform the en/decryption instead of making use of
-the above read/write path changes.  Of course, even if directed to
-make use of inline encryption, fscrypt will only be able to do so if
-either hardware inline encryption support is available for the
-selected encryption algorithm or CONFIG_BLK_INLINE_ENCRYPTION_FALLBACK
-is selected.  If neither is the case, fscrypt will fall back to using
-the above mentioned read/write path changes for en/decryption.
 
 Filename hashing and encoding
 -----------------------------

@@ -5,10 +5,6 @@
  *
  * Portions of this file are derived from the ipw3945 project, as well
  * as portions of the ieee80211 subsystem header files.
- *
- * Contact Information:
- *  Intel Linux Wireless <linuxwifi@intel.com>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
  *****************************************************************************/
 #ifndef __iwl_power_setting_h__
 #define __iwl_power_setting_h__
@@ -26,7 +22,5 @@ int iwl_power_set_mode(struct iwl_priv *priv, struct iwl_powertable_cmd *cmd,
 		       bool force);
 int iwl_power_update_mode(struct iwl_priv *priv, bool force);
 void iwl_power_initialize(struct iwl_priv *priv);
-
-extern bool no_sleep_autoadjust;
 
 #endif  /* __iwl_power_setting_h__ */

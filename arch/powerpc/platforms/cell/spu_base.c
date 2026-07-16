@@ -23,8 +23,6 @@
 #include <asm/spu.h>
 #include <asm/spu_priv1.h>
 #include <asm/spu_csa.h>
-#include <asm/xmon.h>
-#include <asm/prom.h>
 #include <asm/kexec.h>
 
 const struct spu_management_ops *spu_management_ops;
@@ -327,12 +325,6 @@ spu_irq_class_1(int irq, void *data)
 	if (stat & CLASS1_STORAGE_FAULT_INTR)
 		__spu_trap_data_map(spu, dar, dsisr);
 
-	if (stat & CLASS1_LS_COMPARE_SUSPEND_ON_GET_INTR)
-		;
-
-	if (stat & CLASS1_LS_COMPARE_SUSPEND_ON_PUT_INTR)
-		;
-
 	spu->class_1_dsisr = 0;
 	spu->class_1_dar = 0;
 
@@ -387,7 +379,7 @@ spu_irq_class_2(int irq, void *data)
 	return stat ? IRQ_HANDLED : IRQ_NONE;
 }
 
-static int spu_request_irqs(struct spu *spu)
+static int __init spu_request_irqs(struct spu *spu)
 {
 	int ret = 0;
 
@@ -490,7 +482,7 @@ int spu_add_dev_attr(struct device_attribute *attr)
 }
 EXPORT_SYMBOL_GPL(spu_add_dev_attr);
 
-int spu_add_dev_attr_group(struct attribute_group *attrs)
+int spu_add_dev_attr_group(const struct attribute_group *attrs)
 {
 	struct spu *spu;
 	int rc = 0;
@@ -529,7 +521,7 @@ void spu_remove_dev_attr(struct device_attribute *attr)
 }
 EXPORT_SYMBOL_GPL(spu_remove_dev_attr);
 
-void spu_remove_dev_attr_group(struct attribute_group *attrs)
+void spu_remove_dev_attr_group(const struct attribute_group *attrs)
 {
 	struct spu *spu;
 
@@ -540,7 +532,7 @@ void spu_remove_dev_attr_group(struct attribute_group *attrs)
 }
 EXPORT_SYMBOL_GPL(spu_remove_dev_attr_group);
 
-static int spu_create_dev(struct spu *spu)
+static int __init spu_create_dev(struct spu *spu)
 {
 	int ret;
 
@@ -711,7 +703,7 @@ static void crash_kexec_stop_spus(void)
 	}
 }
 
-static void crash_register_spus(struct list_head *list)
+static void __init crash_register_spus(struct list_head *list)
 {
 	struct spu *spu;
 	int ret;
@@ -779,7 +771,6 @@ static int __init init_spu_base(void)
 		fb_append_extra_logo(&logo_spe_clut224, ret);
 
 	mutex_lock(&spu_full_list_mutex);
-	xmon_register_spus(&spu_full_list);
 	crash_register_spus(&spu_full_list);
 	mutex_unlock(&spu_full_list_mutex);
 	spu_add_dev_attr(&dev_attr_stat);

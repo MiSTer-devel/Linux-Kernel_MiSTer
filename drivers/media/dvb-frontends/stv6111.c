@@ -3,15 +3,6 @@
  * Driver for the ST STV6111 tuner
  *
  * Copyright (C) 2014 Digital Devices GmbH
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 only, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/kernel.h>
@@ -170,7 +161,7 @@ static const struct slookup gain_rfagc_lookup[] = {
 };
 
 /*
- * This table is 6 dB too low comapred to the others (probably created with
+ * This table is 6 dB too low compared to the others (probably created with
  * a different BB_MAG setting)
  */
 static const struct slookup gain_channel_agc_nf_lookup[] = {

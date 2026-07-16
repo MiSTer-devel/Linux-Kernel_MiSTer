@@ -174,14 +174,12 @@ static int xgene_rtc_probe(struct platform_device *pdev)
 	/* Turn on the clock and the crystal */
 	writel(RTC_CCR_EN, pdata->csr_base + RTC_CCR);
 
-	ret = device_init_wakeup(&pdev->dev, 1);
+	ret = device_init_wakeup(&pdev->dev, true);
 	if (ret) {
 		clk_disable_unprepare(pdata->clk);
 		return ret;
 	}
 
-	/* HW does not support update faster than 1 seconds */
-	pdata->rtc->uie_unsupported = 1;
 	pdata->rtc->ops = &xgene_rtc_ops;
 	pdata->rtc->range_max = U32_MAX;
 
@@ -194,14 +192,13 @@ static int xgene_rtc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int xgene_rtc_remove(struct platform_device *pdev)
+static void xgene_rtc_remove(struct platform_device *pdev)
 {
 	struct xgene_rtc_dev *pdata = platform_get_drvdata(pdev);
 
 	xgene_rtc_alarm_irq_enable(&pdev->dev, 0);
-	device_init_wakeup(&pdev->dev, 0);
+	device_init_wakeup(&pdev->dev, false);
 	clk_disable_unprepare(pdata->clk);
-	return 0;
 }
 
 static int __maybe_unused xgene_rtc_suspend(struct device *dev)

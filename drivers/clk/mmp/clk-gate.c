@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * mmp gate clock operation source file
  *
  * Copyright (C) 2014 Marvell
  * Chao Xie <chao.xie@marvell.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/clk-provider.h>
@@ -18,7 +15,7 @@
 #include "clk.h"
 
 /*
- * Some clocks will have mutiple bits to enable the clocks, and
+ * Some clocks will have multiple bits to enable the clocks, and
  * the bits to disable the clock is not same as enabling bits.
  */
 

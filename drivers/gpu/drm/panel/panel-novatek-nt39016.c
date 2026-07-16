@@ -12,7 +12,6 @@
 #include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
@@ -247,9 +246,10 @@ static int nt39016_probe(struct spi_device *spi)
 	struct nt39016 *panel;
 	int err;
 
-	panel = devm_kzalloc(dev, sizeof(*panel), GFP_KERNEL);
-	if (!panel)
-		return -ENOMEM;
+	panel = devm_drm_panel_alloc(dev, struct nt39016, drm_panel, &nt39016_funcs,
+				     DRM_MODE_CONNECTOR_DPI);
+	if (IS_ERR(panel))
+		return PTR_ERR(panel);
 
 	spi_set_drvdata(spi, panel);
 
@@ -258,16 +258,13 @@ static int nt39016_probe(struct spi_device *spi)
 		return -EINVAL;
 
 	panel->supply = devm_regulator_get(dev, "power");
-	if (IS_ERR(panel->supply)) {
-		dev_err(dev, "Failed to get power supply\n");
-		return PTR_ERR(panel->supply);
-	}
+	if (IS_ERR(panel->supply))
+		return dev_err_probe(dev, PTR_ERR(panel->supply),
+				     "Failed to get power supply\n");
 
 	panel->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
-	if (IS_ERR(panel->reset_gpio)) {
-		dev_err(dev, "Failed to get reset GPIO\n");
-		return PTR_ERR(panel->reset_gpio);
-	}
+	if (IS_ERR(panel->reset_gpio))
+		return dev_err_probe(dev, PTR_ERR(panel->reset_gpio), "Failed to get reset GPIO\n");
 
 	spi->bits_per_word = 8;
 	spi->mode = SPI_MODE_3 | SPI_3WIRE;
@@ -283,22 +280,16 @@ static int nt39016_probe(struct spi_device *spi)
 		return PTR_ERR(panel->map);
 	}
 
-	drm_panel_init(&panel->drm_panel, dev, &nt39016_funcs,
-		       DRM_MODE_CONNECTOR_DPI);
-
 	err = drm_panel_of_backlight(&panel->drm_panel);
-	if (err) {
-		if (err != -EPROBE_DEFER)
-			dev_err(dev, "Failed to get backlight handle\n");
-		return err;
-	}
+	if (err)
+		return dev_err_probe(dev, err, "Failed to get backlight handle\n");
 
 	drm_panel_add(&panel->drm_panel);
 
 	return 0;
 }
 
-static int nt39016_remove(struct spi_device *spi)
+static void nt39016_remove(struct spi_device *spi)
 {
 	struct nt39016 *panel = spi_get_drvdata(spi);
 
@@ -306,8 +297,6 @@ static int nt39016_remove(struct spi_device *spi)
 
 	nt39016_disable(&panel->drm_panel);
 	nt39016_unprepare(&panel->drm_panel);
-
-	return 0;
 }
 
 static const struct drm_display_mode kd035g6_display_modes[] = {
@@ -365,4 +354,5 @@ module_spi_driver(nt39016_driver);
 
 MODULE_AUTHOR("Maarten ter Huurne <maarten@treewalker.org>");
 MODULE_AUTHOR("Paul Cercueil <paul@crapouillou.net>");
+MODULE_DESCRIPTION("Novatek NT39016 TFT LCD panel driver");
 MODULE_LICENSE("GPL v2");

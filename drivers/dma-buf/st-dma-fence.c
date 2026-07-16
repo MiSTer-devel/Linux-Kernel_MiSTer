@@ -102,6 +102,8 @@ static int sanitycheck(void *arg)
 	if (!f)
 		return -ENOMEM;
 
+	dma_fence_enable_sw_signaling(f);
+
 	dma_fence_signal(f);
 	dma_fence_put(f);
 
@@ -116,6 +118,8 @@ static int test_signaling(void *arg)
 	f = mock_fence();
 	if (!f)
 		return -ENOMEM;
+
+	dma_fence_enable_sw_signaling(f);
 
 	if (dma_fence_is_signaled(f)) {
 		pr_err("Fence unexpectedly signaled on creation\n");
@@ -189,6 +193,8 @@ static int test_late_add_callback(void *arg)
 	f = mock_fence();
 	if (!f)
 		return -ENOMEM;
+
+	dma_fence_enable_sw_signaling(f);
 
 	dma_fence_signal(f);
 
@@ -282,6 +288,8 @@ static int test_status(void *arg)
 	if (!f)
 		return -ENOMEM;
 
+	dma_fence_enable_sw_signaling(f);
+
 	if (dma_fence_get_status(f)) {
 		pr_err("Fence unexpectedly has signaled status on creation\n");
 		goto err_free;
@@ -307,6 +315,8 @@ static int test_error(void *arg)
 	f = mock_fence();
 	if (!f)
 		return -ENOMEM;
+
+	dma_fence_enable_sw_signaling(f);
 
 	dma_fence_set_error(f, -EIO);
 
@@ -337,6 +347,8 @@ static int test_wait(void *arg)
 	if (!f)
 		return -ENOMEM;
 
+	dma_fence_enable_sw_signaling(f);
+
 	if (dma_fence_wait_timeout(f, false, 0) != -ETIME) {
 		pr_err("Wait reported complete before being signaled\n");
 		goto err_free;
@@ -363,7 +375,7 @@ struct wait_timer {
 
 static void wait_timer(struct timer_list *timer)
 {
-	struct wait_timer *wt = from_timer(wt, timer, timer);
+	struct wait_timer *wt = timer_container_of(wt, timer, timer);
 
 	dma_fence_signal(wt->f);
 }
@@ -379,6 +391,8 @@ static int test_wait_timeout(void *arg)
 	if (!wt.f)
 		return -ENOMEM;
 
+	dma_fence_enable_sw_signaling(wt.f);
+
 	if (dma_fence_wait_timeout(wt.f, false, 1) != -ETIME) {
 		pr_err("Wait reported complete before being signaled\n");
 		goto err_free;
@@ -388,7 +402,7 @@ static int test_wait_timeout(void *arg)
 
 	if (dma_fence_wait_timeout(wt.f, false, 2) == -ETIME) {
 		if (timer_pending(&wt.timer)) {
-			pr_notice("Timer did not fire within the jiffie!\n");
+			pr_notice("Timer did not fire within the jiffy!\n");
 			err = 0; /* not our fault! */
 		} else {
 			pr_err("Wait reported incomplete after timeout\n");
@@ -398,8 +412,8 @@ static int test_wait_timeout(void *arg)
 
 	err = 0;
 err_free:
-	del_timer_sync(&wt.timer);
-	destroy_timer_on_stack(&wt.timer);
+	timer_delete_sync(&wt.timer);
+	timer_destroy_on_stack(&wt.timer);
 	dma_fence_signal(wt.f);
 	dma_fence_put(wt.f);
 	return err;
@@ -457,6 +471,8 @@ static int thread_signal_callback(void *arg)
 			err = -ENOMEM;
 			break;
 		}
+
+		dma_fence_enable_sw_signaling(f1);
 
 		rcu_assign_pointer(t->fences[t->id], f1);
 		smp_wmb();
@@ -524,6 +540,12 @@ static int race_signal_callback(void *arg)
 			t[i].before = pass;
 			t[i].task = kthread_run(thread_signal_callback, &t[i],
 						"dma-fence:%d", i);
+			if (IS_ERR(t[i].task)) {
+				ret = PTR_ERR(t[i].task);
+				while (--i >= 0)
+					kthread_stop_put(t[i].task);
+				return ret;
+			}
 			get_task_struct(t[i].task);
 		}
 
@@ -532,11 +554,9 @@ static int race_signal_callback(void *arg)
 		for (i = 0; i < ARRAY_SIZE(t); i++) {
 			int err;
 
-			err = kthread_stop(t[i].task);
+			err = kthread_stop_put(t[i].task);
 			if (err && !ret)
 				ret = err;
-
-			put_task_struct(t[i].task);
 		}
 	}
 

@@ -12,7 +12,7 @@
 
 #define HAVE_FUNCTION_GRAPH_FP_TEST
 
-#ifdef CONFIG_DYNAMIC_FTRACE_WITH_REGS
+#ifdef CONFIG_DYNAMIC_FTRACE_WITH_ARGS
 #define ARCH_SUPPORTS_FTRACE_OPS 1
 #else
 #define MCOUNT_ADDR		((unsigned long)_mcount)
@@ -22,8 +22,7 @@
 #define MCOUNT_INSN_SIZE	AARCH64_INSN_SIZE
 
 #define FTRACE_PLT_IDX		0
-#define FTRACE_REGS_PLT_IDX	1
-#define NR_FTRACE_PLTS		2
+#define NR_FTRACE_PLTS		1
 
 /*
  * Currently, gcc tends to save the link register after the local variables
@@ -52,25 +51,140 @@ extern unsigned long ftrace_graph_call;
 
 extern void return_to_handler(void);
 
-static inline unsigned long ftrace_call_adjust(unsigned long addr)
+unsigned long ftrace_call_adjust(unsigned long addr);
+unsigned long arch_ftrace_get_symaddr(unsigned long fentry_ip);
+#define ftrace_get_symaddr(fentry_ip) arch_ftrace_get_symaddr(fentry_ip)
+
+#ifdef CONFIG_DYNAMIC_FTRACE_WITH_ARGS
+#define HAVE_ARCH_FTRACE_REGS
+struct dyn_ftrace;
+struct ftrace_ops;
+struct ftrace_regs;
+#define arch_ftrace_regs(fregs) ((struct __arch_ftrace_regs *)(fregs))
+
+#define arch_ftrace_get_regs(regs) NULL
+
+/*
+ * Note: sizeof(struct ftrace_regs) must be a multiple of 16 to ensure correct
+ * stack alignment
+ */
+struct __arch_ftrace_regs {
+	/* x0 - x8 */
+	unsigned long regs[9];
+
+#ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
+	unsigned long direct_tramp;
+#else
+	unsigned long __unused;
+#endif
+
+	unsigned long fp;
+	unsigned long lr;
+
+	unsigned long sp;
+	unsigned long pc;
+};
+
+static __always_inline unsigned long
+ftrace_regs_get_instruction_pointer(const struct ftrace_regs *fregs)
 {
-	/*
-	 * Adjust addr to point at the BL in the callsite.
-	 * See ftrace_init_nop() for the callsite sequence.
-	 */
-	if (IS_ENABLED(CONFIG_DYNAMIC_FTRACE_WITH_REGS))
-		return addr + AARCH64_INSN_SIZE;
-	/*
-	 * addr is the address of the mcount call instruction.
-	 * recordmcount does the necessary offset calculation.
-	 */
-	return addr;
+	return arch_ftrace_regs(fregs)->pc;
 }
 
-#ifdef CONFIG_DYNAMIC_FTRACE_WITH_REGS
-struct dyn_ftrace;
+static __always_inline void
+ftrace_regs_set_instruction_pointer(struct ftrace_regs *fregs,
+				    unsigned long pc)
+{
+	arch_ftrace_regs(fregs)->pc = pc;
+}
+
+static __always_inline unsigned long
+ftrace_regs_get_stack_pointer(const struct ftrace_regs *fregs)
+{
+	return arch_ftrace_regs(fregs)->sp;
+}
+
+static __always_inline unsigned long
+ftrace_regs_get_argument(struct ftrace_regs *fregs, unsigned int n)
+{
+	if (n < 8)
+		return arch_ftrace_regs(fregs)->regs[n];
+	return 0;
+}
+
+static __always_inline unsigned long
+ftrace_regs_get_return_value(const struct ftrace_regs *fregs)
+{
+	return arch_ftrace_regs(fregs)->regs[0];
+}
+
+static __always_inline void
+ftrace_regs_set_return_value(struct ftrace_regs *fregs,
+			     unsigned long ret)
+{
+	arch_ftrace_regs(fregs)->regs[0] = ret;
+}
+
+static __always_inline void
+ftrace_override_function_with_return(struct ftrace_regs *fregs)
+{
+	arch_ftrace_regs(fregs)->pc = arch_ftrace_regs(fregs)->lr;
+}
+
+static __always_inline unsigned long
+ftrace_regs_get_frame_pointer(const struct ftrace_regs *fregs)
+{
+	return arch_ftrace_regs(fregs)->fp;
+}
+
+static __always_inline unsigned long
+ftrace_regs_get_return_address(const struct ftrace_regs *fregs)
+{
+	return arch_ftrace_regs(fregs)->lr;
+}
+
+static __always_inline struct pt_regs *
+ftrace_partial_regs(const struct ftrace_regs *fregs, struct pt_regs *regs)
+{
+	struct __arch_ftrace_regs *afregs = arch_ftrace_regs(fregs);
+
+	memcpy(regs->regs, afregs->regs, sizeof(afregs->regs));
+	regs->sp = afregs->sp;
+	regs->pc = afregs->pc;
+	regs->regs[29] = afregs->fp;
+	regs->regs[30] = afregs->lr;
+	regs->pstate = PSR_MODE_EL1h;
+	return regs;
+}
+
+#define arch_ftrace_fill_perf_regs(fregs, _regs) do {		\
+		(_regs)->pc = arch_ftrace_regs(fregs)->pc;			\
+		(_regs)->regs[29] = arch_ftrace_regs(fregs)->fp;		\
+		(_regs)->sp = arch_ftrace_regs(fregs)->sp;			\
+		(_regs)->pstate = PSR_MODE_EL1h;		\
+	} while (0)
+
+int ftrace_regs_query_register_offset(const char *name);
+
 int ftrace_init_nop(struct module *mod, struct dyn_ftrace *rec);
 #define ftrace_init_nop ftrace_init_nop
+
+void ftrace_graph_func(unsigned long ip, unsigned long parent_ip,
+		       struct ftrace_ops *op, struct ftrace_regs *fregs);
+#define ftrace_graph_func ftrace_graph_func
+
+#ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
+static inline void arch_ftrace_set_direct_caller(struct ftrace_regs *fregs,
+						 unsigned long addr)
+{
+	/*
+	 * The ftrace trampoline will return to this address instead of the
+	 * instrumented function.
+	 */
+	arch_ftrace_regs(fregs)->direct_tramp = addr;
+}
+#endif /* CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS */
+
 #endif
 
 #define ftrace_return_address(n) return_address(n)
@@ -104,5 +218,14 @@ static inline bool arch_syscall_match_sym_name(const char *sym,
 	return !strcmp(sym + 8, name);
 }
 #endif /* ifndef __ASSEMBLY__ */
+
+#ifndef __ASSEMBLY__
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
+
+void prepare_ftrace_return(unsigned long self_addr, unsigned long *parent,
+			   unsigned long frame_pointer);
+
+#endif /* ifdef CONFIG_FUNCTION_GRAPH_TRACER  */
+#endif
 
 #endif /* __ASM_FTRACE_H */

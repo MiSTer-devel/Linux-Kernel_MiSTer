@@ -589,8 +589,7 @@ static int acenic_probe_one(struct pci_dev *pdev,
 	}
 	ap->name = dev->name;
 
-	if (ap->pci_using_dac)
-		dev->features |= NETIF_F_HIGHDMA;
+	dev->features |= NETIF_F_HIGHDMA;
 
 	pci_set_drvdata(pdev, dev);
 
@@ -869,6 +868,7 @@ static int ace_init(struct net_device *dev)
 	int board_idx, ecode = 0;
 	short i;
 	unsigned char cache_size;
+	u8 addr[ETH_ALEN];
 
 	ap = netdev_priv(dev);
 	regs = ap->regs;
@@ -988,12 +988,13 @@ static int ace_init(struct net_device *dev)
 	writel(mac1, &regs->MacAddrHi);
 	writel(mac2, &regs->MacAddrLo);
 
-	dev->dev_addr[0] = (mac1 >> 8) & 0xff;
-	dev->dev_addr[1] = mac1 & 0xff;
-	dev->dev_addr[2] = (mac2 >> 24) & 0xff;
-	dev->dev_addr[3] = (mac2 >> 16) & 0xff;
-	dev->dev_addr[4] = (mac2 >> 8) & 0xff;
-	dev->dev_addr[5] = mac2 & 0xff;
+	addr[0] = (mac1 >> 8) & 0xff;
+	addr[1] = mac1 & 0xff;
+	addr[2] = (mac2 >> 24) & 0xff;
+	addr[3] = (mac2 >> 16) & 0xff;
+	addr[4] = (mac2 >> 8) & 0xff;
+	addr[5] = mac2 & 0xff;
+	eth_hw_addr_set(dev, addr);
 
 	printk("MAC: %pM\n", dev->dev_addr);
 
@@ -1128,11 +1129,7 @@ static int ace_init(struct net_device *dev)
 	/*
 	 * Configure DMA attributes.
 	 */
-	if (!dma_set_mask(&pdev->dev, DMA_BIT_MASK(64))) {
-		ap->pci_using_dac = 1;
-	} else if (!dma_set_mask(&pdev->dev, DMA_BIT_MASK(32))) {
-		ap->pci_using_dac = 0;
-	} else {
+	if (dma_set_mask(&pdev->dev, DMA_BIT_MASK(64))) {
 		ecode = -ENODEV;
 		goto init_error;
 	}
@@ -1563,9 +1560,9 @@ static void ace_watchdog(struct net_device *data, unsigned int txqueue)
 }
 
 
-static void ace_tasklet(struct tasklet_struct *t)
+static void ace_bh_work(struct work_struct *work)
 {
-	struct ace_private *ap = from_tasklet(ap, t, ace_tasklet);
+	struct ace_private *ap = from_work(ap, work, ace_bh_work);
 	struct net_device *dev = ap->ndev;
 	int cur_size;
 
@@ -1598,7 +1595,7 @@ static void ace_tasklet(struct tasklet_struct *t)
 #endif
 		ace_load_jumbo_rx_ring(dev, RX_JUMBO_SIZE - cur_size);
 	}
-	ap->tasklet_pending = 0;
+	ap->bh_work_pending = 0;
 }
 
 
@@ -1620,7 +1617,7 @@ static void ace_dump_trace(struct ace_private *ap)
  *
  * Loading rings is safe without holding the spin lock since this is
  * done only before the device is enabled, thus no interrupts are
- * generated and by the interrupt handler/tasklet handler.
+ * generated and by the interrupt handler/bh handler.
  */
 static void ace_load_std_rx_ring(struct net_device *dev, int nr_bufs)
 {
@@ -2163,7 +2160,7 @@ static irqreturn_t ace_interrupt(int irq, void *dev_id)
 	 */
 	if (netif_running(dev)) {
 		int cur_size;
-		int run_tasklet = 0;
+		int run_bh_work = 0;
 
 		cur_size = atomic_read(&ap->cur_rx_bufs);
 		if (cur_size < RX_LOW_STD_THRES) {
@@ -2175,7 +2172,7 @@ static irqreturn_t ace_interrupt(int irq, void *dev_id)
 				ace_load_std_rx_ring(dev,
 						     RX_RING_SIZE - cur_size);
 			} else
-				run_tasklet = 1;
+				run_bh_work = 1;
 		}
 
 		if (!ACE_IS_TIGON_I(ap)) {
@@ -2191,7 +2188,7 @@ static irqreturn_t ace_interrupt(int irq, void *dev_id)
 					ace_load_mini_rx_ring(dev,
 							      RX_MINI_SIZE - cur_size);
 				} else
-					run_tasklet = 1;
+					run_bh_work = 1;
 			}
 		}
 
@@ -2208,12 +2205,12 @@ static irqreturn_t ace_interrupt(int irq, void *dev_id)
 					ace_load_jumbo_rx_ring(dev,
 							       RX_JUMBO_SIZE - cur_size);
 				} else
-					run_tasklet = 1;
+					run_bh_work = 1;
 			}
 		}
-		if (run_tasklet && !ap->tasklet_pending) {
-			ap->tasklet_pending = 1;
-			tasklet_schedule(&ap->ace_tasklet);
+		if (run_bh_work && !ap->bh_work_pending) {
+			ap->bh_work_pending = 1;
+			queue_work(system_bh_wq, &ap->ace_bh_work);
 		}
 	}
 
@@ -2270,7 +2267,7 @@ static int ace_open(struct net_device *dev)
 	/*
 	 * Setup the bottom half rx ring refill handler
 	 */
-	tasklet_setup(&ap->ace_tasklet, ace_tasklet);
+	INIT_WORK(&ap->ace_bh_work, ace_bh_work);
 	return 0;
 }
 
@@ -2304,7 +2301,7 @@ static int ace_close(struct net_device *dev)
 	cmd.idx = 0;
 	ace_issue_cmd(regs, &cmd);
 
-	tasklet_kill(&ap->ace_tasklet);
+	cancel_work_sync(&ap->ace_bh_work);
 
 	/*
 	 * Make sure one CPU is not processing packets while
@@ -2438,7 +2435,7 @@ restart:
 	} else {
 		dma_addr_t mapping;
 		u32 vlan_tag = 0;
-		int i, len = 0;
+		int i;
 
 		mapping = ace_map_tx_skb(ap, skb, NULL, idx);
 		flagsize = (skb_headlen(skb) << 16);
@@ -2457,7 +2454,6 @@ restart:
 			const skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
 			struct tx_ring_info *info;
 
-			len += skb_frag_size(frag);
 			info = ap->skb->tx_skbuff + idx;
 			desc = ap->tx_ring + idx;
 
@@ -2543,7 +2539,7 @@ static int ace_change_mtu(struct net_device *dev, int new_mtu)
 	struct ace_regs __iomem *regs = ap->regs;
 
 	writel(new_mtu + ETH_HLEN + 4, &regs->IfMtu);
-	dev->mtu = new_mtu;
+	WRITE_ONCE(dev->mtu, new_mtu);
 
 	if (new_mtu > ACE_STD_MTU) {
 		if (!(ap->jumbo)) {
@@ -2694,12 +2690,12 @@ static void ace_get_drvinfo(struct net_device *dev,
 {
 	struct ace_private *ap = netdev_priv(dev);
 
-	strlcpy(info->driver, "acenic", sizeof(info->driver));
+	strscpy(info->driver, "acenic", sizeof(info->driver));
 	snprintf(info->fw_version, sizeof(info->version), "%i.%i.%i",
 		 ap->firmware_major, ap->firmware_minor, ap->firmware_fix);
 
 	if (ap->pdev)
-		strlcpy(info->bus_info, pci_name(ap->pdev),
+		strscpy(info->bus_info, pci_name(ap->pdev),
 			sizeof(info->bus_info));
 
 }
@@ -2712,15 +2708,15 @@ static int ace_set_mac_addr(struct net_device *dev, void *p)
 	struct ace_private *ap = netdev_priv(dev);
 	struct ace_regs __iomem *regs = ap->regs;
 	struct sockaddr *addr=p;
-	u8 *da;
+	const u8 *da;
 	struct cmd cmd;
 
 	if(netif_running(dev))
 		return -EBUSY;
 
-	memcpy(dev->dev_addr, addr->sa_data,dev->addr_len);
+	eth_hw_addr_set(dev, addr->sa_data);
 
-	da = (u8 *)dev->dev_addr;
+	da = (const u8 *)dev->dev_addr;
 
 	writel(da[0] << 8 | da[1], &regs->MacAddrHi);
 	writel((da[2] << 24) | (da[3] << 16) | (da[4] << 8) | da[5],

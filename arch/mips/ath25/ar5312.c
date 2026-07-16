@@ -116,7 +116,7 @@ static int ar5312_misc_irq_map(struct irq_domain *d, unsigned irq,
 	return 0;
 }
 
-static struct irq_domain_ops ar5312_misc_irq_domain_ops = {
+static const struct irq_domain_ops ar5312_misc_irq_domain_ops = {
 	.map = ar5312_misc_irq_map,
 };
 
@@ -143,8 +143,8 @@ void __init ar5312_arch_init_irq(void)
 
 	ath25_irq_dispatch = ar5312_irq_dispatch;
 
-	domain = irq_domain_add_linear(NULL, AR5312_MISC_IRQ_COUNT,
-				       &ar5312_misc_irq_domain_ops, NULL);
+	domain = irq_domain_create_linear(NULL, AR5312_MISC_IRQ_COUNT,
+					  &ar5312_misc_irq_domain_ops, NULL);
 	if (!domain)
 		panic("Failed to add IRQ domain");
 

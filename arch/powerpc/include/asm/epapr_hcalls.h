@@ -52,7 +52,7 @@
 
 #include <uapi/asm/epapr_hcalls.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <asm/byteorder.h>
@@ -65,7 +65,7 @@
  * but the gcc inline assembly syntax does not allow us to specify registers
  * on the clobber list that are also on the input/output list.  Therefore,
  * the lists of clobbered registers depends on the number of register
- * parmeters ("+r" and "=r") passed to the hypercall.
+ * parameters ("+r" and "=r") passed to the hypercall.
  *
  * Each assembly block should use one of the HCALL_CLOBBERSx macros.  As a
  * general rule, 'x' is the number of parameters passed to the assembly
@@ -571,5 +571,5 @@ static inline long epapr_hypercall4(unsigned int nr, unsigned long p1,
 	in[3] = p4;
 	return epapr_hypercall(in, out, nr);
 }
-#endif /* !__ASSEMBLY__ */
+#endif /* !__ASSEMBLER__ */
 #endif /* _EPAPR_HCALLS_H */

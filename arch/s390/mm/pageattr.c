@@ -3,13 +3,17 @@
  * Copyright IBM Corp. 2011
  * Author(s): Jan Glauber <jang@linux.vnet.ibm.com>
  */
+#include <linux/cpufeature.h>
 #include <linux/hugetlb.h>
+#include <linux/proc_fs.h>
+#include <linux/vmalloc.h>
 #include <linux/mm.h>
 #include <asm/cacheflush.h>
 #include <asm/facility.h>
 #include <asm/pgalloc.h>
 #include <asm/kfence.h>
 #include <asm/page.h>
+#include <asm/asm.h>
 #include <asm/set_memory.h>
 
 static inline unsigned long sske_frame(unsigned long addr, unsigned char skey)
@@ -24,7 +28,7 @@ void __storage_key_init_range(unsigned long start, unsigned long end)
 	unsigned long boundary, size;
 
 	while (start < end) {
-		if (MACHINE_HAS_EDAT1) {
+		if (cpu_has_edat1()) {
 			/* set storage keys for a 1MB frame */
 			size = 1UL << 20;
 			boundary = (start + size) & ~(size - 1);
@@ -41,7 +45,7 @@ void __storage_key_init_range(unsigned long start, unsigned long end)
 }
 
 #ifdef CONFIG_PROC_FS
-atomic_long_t direct_pages_count[PG_DIRECT_MAP_MAX];
+atomic_long_t __bootdata_preserved(direct_pages_count[PG_DIRECT_MAP_MAX]);
 
 void arch_report_meminfo(struct seq_file *m)
 {
@@ -57,10 +61,10 @@ void arch_report_meminfo(struct seq_file *m)
 static void pgt_set(unsigned long *old, unsigned long new, unsigned long addr,
 		    unsigned long dtt)
 {
-	unsigned long table, mask;
+	unsigned long *table, mask;
 
 	mask = 0;
-	if (MACHINE_HAS_EDAT2) {
+	if (cpu_has_edat2()) {
 		switch (dtt) {
 		case CRDTE_DTT_REGION3:
 			mask = ~(PTRS_PER_PUD * sizeof(pud_t) - 1);
@@ -72,9 +76,9 @@ static void pgt_set(unsigned long *old, unsigned long new, unsigned long addr,
 			mask = ~(PTRS_PER_PTE * sizeof(pte_t) - 1);
 			break;
 		}
-		table = (unsigned long)old & mask;
-		crdte(*old, new, table, dtt, addr, S390_lowcore.kernel_asce);
-	} else if (MACHINE_HAS_IDTE) {
+		table = (unsigned long *)((unsigned long)old & mask);
+		crdte(*old, new, table, dtt, addr, get_lowcore()->kernel_asce.val);
+	} else if (cpu_has_idte()) {
 		cspg(old, *old, new);
 	} else {
 		csp((unsigned int *)old + 1, *old, new);
@@ -96,11 +100,17 @@ static int walk_pte_level(pmd_t *pmdp, unsigned long addr, unsigned long end,
 		if (flags & SET_MEMORY_RO)
 			new = pte_wrprotect(new);
 		else if (flags & SET_MEMORY_RW)
-			new = pte_mkwrite(pte_mkdirty(new));
+			new = pte_mkwrite_novma(pte_mkdirty(new));
 		if (flags & SET_MEMORY_NX)
-			pte_val(new) |= _PAGE_NOEXEC;
+			new = set_pte_bit(new, __pgprot(_PAGE_NOEXEC));
 		else if (flags & SET_MEMORY_X)
-			pte_val(new) &= ~_PAGE_NOEXEC;
+			new = clear_pte_bit(new, __pgprot(_PAGE_NOEXEC));
+		if (flags & SET_MEMORY_INV) {
+			new = set_pte_bit(new, __pgprot(_PAGE_INVALID));
+		} else if (flags & SET_MEMORY_DEF) {
+			new = __pte(pte_val(new) & PAGE_MASK);
+			new = set_pte_bit(new, PAGE_KERNEL);
+		}
 		pgt_set((unsigned long *)ptep, pte_val(new), addr, CRDTE_DTT_PAGE);
 		ptep++;
 		addr += PAGE_SIZE;
@@ -127,11 +137,11 @@ static int split_pmd_page(pmd_t *pmdp, unsigned long addr)
 		prot &= ~_PAGE_NOEXEC;
 	ptep = pt_dir;
 	for (i = 0; i < PTRS_PER_PTE; i++) {
-		pte_val(*ptep) = pte_addr | prot;
+		set_pte(ptep, __pte(pte_addr | prot));
 		pte_addr += PAGE_SIZE;
 		ptep++;
 	}
-	pmd_val(new) = __pa(pt_dir) | _SEGMENT_ENTRY;
+	new = __pmd(__pa(pt_dir) | _SEGMENT_ENTRY);
 	pgt_set((unsigned long *)pmdp, pmd_val(new), addr, CRDTE_DTT_SEGMENT);
 	update_page_count(PG_DIRECT_MAP_4K, PTRS_PER_PTE);
 	update_page_count(PG_DIRECT_MAP_1M, -1);
@@ -146,11 +156,17 @@ static void modify_pmd_page(pmd_t *pmdp, unsigned long addr,
 	if (flags & SET_MEMORY_RO)
 		new = pmd_wrprotect(new);
 	else if (flags & SET_MEMORY_RW)
-		new = pmd_mkwrite(pmd_mkdirty(new));
+		new = pmd_mkwrite_novma(pmd_mkdirty(new));
 	if (flags & SET_MEMORY_NX)
-		pmd_val(new) |= _SEGMENT_ENTRY_NOEXEC;
+		new = set_pmd_bit(new, __pgprot(_SEGMENT_ENTRY_NOEXEC));
 	else if (flags & SET_MEMORY_X)
-		pmd_val(new) &= ~_SEGMENT_ENTRY_NOEXEC;
+		new = clear_pmd_bit(new, __pgprot(_SEGMENT_ENTRY_NOEXEC));
+	if (flags & SET_MEMORY_INV) {
+		new = set_pmd_bit(new, __pgprot(_SEGMENT_ENTRY_INVALID));
+	} else if (flags & SET_MEMORY_DEF) {
+		new = __pmd(pmd_val(new) & PMD_MASK);
+		new = set_pmd_bit(new, SEGMENT_KERNEL);
+	}
 	pgt_set((unsigned long *)pmdp, pmd_val(new), addr, CRDTE_DTT_SEGMENT);
 }
 
@@ -167,7 +183,7 @@ static int walk_pmd_level(pud_t *pudp, unsigned long addr, unsigned long end,
 		if (pmd_none(*pmdp))
 			return -EINVAL;
 		next = pmd_addr_end(addr, end);
-		if (pmd_large(*pmdp)) {
+		if (pmd_leaf(*pmdp)) {
 			need_split  = !!(flags & SET_MEMORY_4K);
 			need_split |= !!(addr & ~PMD_MASK);
 			need_split |= !!(addr + PMD_SIZE > next);
@@ -208,11 +224,11 @@ static int split_pud_page(pud_t *pudp, unsigned long addr)
 		prot &= ~_SEGMENT_ENTRY_NOEXEC;
 	pmdp = pm_dir;
 	for (i = 0; i < PTRS_PER_PMD; i++) {
-		pmd_val(*pmdp) = pmd_addr | prot;
+		set_pmd(pmdp, __pmd(pmd_addr | prot));
 		pmd_addr += PMD_SIZE;
 		pmdp++;
 	}
-	pud_val(new) = __pa(pm_dir) | _REGION3_ENTRY;
+	new = __pud(__pa(pm_dir) | _REGION3_ENTRY);
 	pgt_set((unsigned long *)pudp, pud_val(new), addr, CRDTE_DTT_REGION3);
 	update_page_count(PG_DIRECT_MAP_1M, PTRS_PER_PMD);
 	update_page_count(PG_DIRECT_MAP_2G, -1);
@@ -229,9 +245,15 @@ static void modify_pud_page(pud_t *pudp, unsigned long addr,
 	else if (flags & SET_MEMORY_RW)
 		new = pud_mkwrite(pud_mkdirty(new));
 	if (flags & SET_MEMORY_NX)
-		pud_val(new) |= _REGION_ENTRY_NOEXEC;
+		new = set_pud_bit(new, __pgprot(_REGION_ENTRY_NOEXEC));
 	else if (flags & SET_MEMORY_X)
-		pud_val(new) &= ~_REGION_ENTRY_NOEXEC;
+		new = clear_pud_bit(new, __pgprot(_REGION_ENTRY_NOEXEC));
+	if (flags & SET_MEMORY_INV) {
+		new = set_pud_bit(new, __pgprot(_REGION_ENTRY_INVALID));
+	} else if (flags & SET_MEMORY_DEF) {
+		new = __pud(pud_val(new) & PUD_MASK);
+		new = set_pud_bit(new, REGION3_KERNEL);
+	}
 	pgt_set((unsigned long *)pudp, pud_val(new), addr, CRDTE_DTT_REGION3);
 }
 
@@ -248,7 +270,7 @@ static int walk_pud_level(p4d_t *p4d, unsigned long addr, unsigned long end,
 		if (pud_none(*pudp))
 			return -EINVAL;
 		next = pud_addr_end(addr, end);
-		if (pud_large(*pudp)) {
+		if (pud_leaf(*pudp)) {
 			need_split  = !!(flags & SET_MEMORY_4K);
 			need_split |= !!(addr & ~PUD_MASK);
 			need_split |= !!(addr + PUD_SIZE > next);
@@ -298,11 +320,6 @@ static int change_page_attr(unsigned long addr, unsigned long end,
 	int rc = -EINVAL;
 	pgd_t *pgdp;
 
-	if (addr == end)
-		return 0;
-	if (end >= MODULES_END)
-		return -EINVAL;
-	mutex_lock(&cpa_mutex);
 	pgdp = pgd_offset_k(addr);
 	do {
 		if (pgd_none(*pgdp))
@@ -313,18 +330,103 @@ static int change_page_attr(unsigned long addr, unsigned long end,
 			break;
 		cond_resched();
 	} while (pgdp++, addr = next, addr < end && !rc);
+	return rc;
+}
+
+static int change_page_attr_alias(unsigned long addr, unsigned long end,
+				  unsigned long flags)
+{
+	unsigned long alias, offset, va_start, va_end;
+	struct vm_struct *area;
+	int rc = 0;
+
+	/*
+	 * Changes to read-only permissions on kernel VA mappings are also
+	 * applied to the kernel direct mapping. Execute permissions are
+	 * intentionally not transferred to keep all allocated pages within
+	 * the direct mapping non-executable.
+	 */
+	flags &= SET_MEMORY_RO | SET_MEMORY_RW;
+	if (!flags)
+		return 0;
+	area = NULL;
+	while (addr < end) {
+		if (!area)
+			area = find_vm_area((void *)addr);
+		if (!area || !(area->flags & VM_ALLOC))
+			return 0;
+		va_start = (unsigned long)area->addr;
+		va_end = va_start + area->nr_pages * PAGE_SIZE;
+		offset = (addr - va_start) >> PAGE_SHIFT;
+		alias = (unsigned long)page_address(area->pages[offset]);
+		rc = change_page_attr(alias, alias + PAGE_SIZE, flags);
+		if (rc)
+			break;
+		addr += PAGE_SIZE;
+		if (addr >= va_end)
+			area = NULL;
+	}
+	return rc;
+}
+
+int __set_memory(unsigned long addr, unsigned long numpages, unsigned long flags)
+{
+	unsigned long end;
+	int rc;
+
+	if (!cpu_has_nx())
+		flags &= ~(SET_MEMORY_NX | SET_MEMORY_X);
+	if (!flags)
+		return 0;
+	if (!numpages)
+		return 0;
+	addr &= PAGE_MASK;
+	end = addr + numpages * PAGE_SIZE;
+	mutex_lock(&cpa_mutex);
+	rc = change_page_attr(addr, end, flags);
+	if (rc)
+		goto out;
+	rc = change_page_attr_alias(addr, end, flags);
+out:
 	mutex_unlock(&cpa_mutex);
 	return rc;
 }
 
-int __set_memory(unsigned long addr, int numpages, unsigned long flags)
+int set_direct_map_invalid_noflush(struct page *page)
 {
-	if (!MACHINE_HAS_NX)
-		flags &= ~(SET_MEMORY_NX | SET_MEMORY_X);
-	if (!flags)
-		return 0;
-	addr &= PAGE_MASK;
-	return change_page_attr(addr, addr + numpages * PAGE_SIZE, flags);
+	return __set_memory((unsigned long)page_to_virt(page), 1, SET_MEMORY_INV);
+}
+
+int set_direct_map_default_noflush(struct page *page)
+{
+	return __set_memory((unsigned long)page_to_virt(page), 1, SET_MEMORY_DEF);
+}
+
+int set_direct_map_valid_noflush(struct page *page, unsigned nr, bool valid)
+{
+	unsigned long flags;
+
+	if (valid)
+		flags = SET_MEMORY_DEF;
+	else
+		flags = SET_MEMORY_INV;
+
+	return __set_memory((unsigned long)page_to_virt(page), nr, flags);
+}
+
+bool kernel_page_present(struct page *page)
+{
+	unsigned long addr;
+	unsigned int cc;
+
+	addr = (unsigned long)page_address(page);
+	asm volatile(
+		"	lra	%[addr],0(%[addr])\n"
+		CC_IPM(cc)
+		: CC_OUT(cc, cc), [addr] "+a" (addr)
+		:
+		: CC_CLOBBER);
+	return CC_TRANSFORM(cc) == 0;
 }
 
 #if defined(CONFIG_DEBUG_PAGEALLOC) || defined(CONFIG_KFENCE)
@@ -347,23 +449,24 @@ static void ipte_range(pte_t *pte, unsigned long address, int nr)
 void __kernel_map_pages(struct page *page, int numpages, int enable)
 {
 	unsigned long address;
+	pte_t *ptep, pte;
 	int nr, i, j;
-	pte_t *pte;
 
 	for (i = 0; i < numpages;) {
 		address = (unsigned long)page_to_virt(page + i);
-		pte = virt_to_kpte(address);
-		nr = (unsigned long)pte >> ilog2(sizeof(long));
+		ptep = virt_to_kpte(address);
+		nr = (unsigned long)ptep >> ilog2(sizeof(long));
 		nr = PTRS_PER_PTE - (nr & (PTRS_PER_PTE - 1));
 		nr = min(numpages - i, nr);
 		if (enable) {
 			for (j = 0; j < nr; j++) {
-				pte_val(*pte) &= ~_PAGE_INVALID;
+				pte = clear_pte_bit(*ptep, __pgprot(_PAGE_INVALID));
+				set_pte(ptep, pte);
 				address += PAGE_SIZE;
-				pte++;
+				ptep++;
 			}
 		} else {
-			ipte_range(pte, address, nr);
+			ipte_range(ptep, address, nr);
 		}
 		i += nr;
 	}

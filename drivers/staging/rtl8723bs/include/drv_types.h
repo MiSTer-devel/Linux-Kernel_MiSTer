@@ -33,16 +33,13 @@
 #include <xmit_osdep.h>
 #include <rtw_recv.h>
 
-#include <recv_osdep.h>
 #include <rtw_efuse.h>
 #include <hal_intf.h>
 #include <hal_com.h>
 #include <rtw_qos.h>
 #include <rtw_pwrctrl.h>
 #include <rtw_mlme.h>
-#include <mlme_osdep.h>
 #include <rtw_io.h>
-#include <rtw_ioctl.h>
 #include <rtw_ioctl_set.h>
 #include <osdep_intf.h>
 #include <rtw_eeprom.h>
@@ -51,7 +48,6 @@
 #include <rtw_mlme_ext.h>
 #include <rtw_ap.h>
 #include <rtw_version.h>
-#include <rtw_odm.h>
 
 #include "ioctl_cfg80211.h"
 
@@ -184,8 +180,6 @@ struct registry_priv {
 
 #include <drv_types_sdio.h>
 
-#define is_primary_adapter(adapter) (1)
-#define get_iface_type(adapter) (IFACE_PORT0)
 #define GET_PRIMARY_ADAPTER(padapter) (((struct adapter *)padapter)->dvobj->if1)
 #define GET_IFACE_NUMS(padapter) (((struct adapter *)padapter)->dvobj->iface_nums)
 #define GET_ADAPTER(padapter, iface_id) (((struct adapter *)padapter)->dvobj->padapters[iface_id])
@@ -307,7 +301,11 @@ struct sdio_data intf_data;
 };
 
 #define dvobj_to_pwrctl(dvobj) (&(dvobj->pwrctl_priv))
-#define pwrctl_to_dvobj(pwrctl) container_of(pwrctl, struct dvobj_priv, pwrctl_priv)
+
+static inline struct dvobj_priv *pwrctl_to_dvobj(struct pwrctrl_priv *pwrctl_priv)
+{
+	return container_of(pwrctl_priv, struct dvobj_priv, pwrctl_priv);
+}
 
 static inline struct device *dvobj_to_dev(struct dvobj_priv *dvobj)
 {
@@ -317,14 +315,6 @@ static inline struct device *dvobj_to_dev(struct dvobj_priv *dvobj)
 
 	return &dvobj->intf_data.func->dev;
 }
-
-struct adapter *dvobj_get_port0_adapter(struct dvobj_priv *dvobj);
-
-enum {
-	IFACE_PORT0, /* mapping to port0 for C/D series chips */
-	IFACE_PORT1, /* mapping to port1 for C/D series chip */
-	MAX_IFACE_PORT,
-};
 
 enum {
 	DRIVER_NORMAL = 0,
@@ -358,7 +348,6 @@ struct adapter {
 
 	void *HalData;
 	u32 hal_data_sz;
-	struct hal_ops	HalFunc;
 
 	s32	bDriverStopped;
 	s32	bSurpriseRemoved;
@@ -450,14 +439,7 @@ struct adapter {
 #define DF_RX_BIT		BIT1
 #define DF_IO_BIT		BIT2
 
-/* define RTW_DISABLE_FUNC(padapter, func) (atomic_add(&adapter_to_dvobj(padapter)->disable_func, (func))) */
 /* define RTW_ENABLE_FUNC(padapter, func) (atomic_sub(&adapter_to_dvobj(padapter)->disable_func, (func))) */
-static inline void RTW_DISABLE_FUNC(struct adapter *padapter, int func_bit)
-{
-	int	df = atomic_read(&adapter_to_dvobj(padapter)->disable_func);
-	df |= func_bit;
-	atomic_set(&adapter_to_dvobj(padapter)->disable_func, df);
-}
 
 static inline void RTW_ENABLE_FUNC(struct adapter *padapter, int func_bit)
 {
@@ -488,13 +470,10 @@ static inline u8 *myid(struct eeprom_priv *peepriv)
 }
 
 /*  HCI Related header file */
-#include <sdio_osintf.h>
 #include <sdio_ops.h>
 #include <sdio_hal.h>
 
 #include <rtw_btcoex.h>
-
-int rtw_change_ifname(struct adapter *padapter, const char *ifname);
 
 extern char *rtw_initmac;
 extern int rtw_mc2u_disable;

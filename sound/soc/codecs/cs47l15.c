@@ -45,7 +45,7 @@ struct cs47l15 {
 	bool in1_lp_mode;
 };
 
-static const struct wm_adsp_region cs47l15_dsp1_regions[] = {
+static const struct cs_dsp_region cs47l15_dsp1_regions[] = {
 	{ .type = WMFW_ADSP2_PM, .base = 0x080000 },
 	{ .type = WMFW_ADSP2_ZM, .base = 0x0e0000 },
 	{ .type = WMFW_ADSP2_XM, .base = 0x0a0000 },
@@ -122,6 +122,9 @@ static int cs47l15_in1_adc_put(struct snd_kcontrol *kcontrol,
 		snd_soc_kcontrol_component(kcontrol);
 	struct cs47l15 *cs47l15 = snd_soc_component_get_drvdata(component);
 
+	if (!!ucontrol->value.integer.value[0] == cs47l15->in1_lp_mode)
+		return 0;
+
 	switch (ucontrol->value.integer.value[0]) {
 	case 0:
 		/* Set IN1 to normal mode */
@@ -150,7 +153,7 @@ static int cs47l15_in1_adc_put(struct snd_kcontrol *kcontrol,
 		break;
 	}
 
-	return 0;
+	return 1;
 }
 
 static const struct snd_kcontrol_new cs47l15_snd_controls[] = {
@@ -1140,6 +1143,10 @@ static int cs47l15_set_fll(struct snd_soc_component *component, int fll_id,
 	}
 }
 
+static const struct snd_soc_dai_ops cs47l15_dai_ops = {
+	.compress_new = snd_soc_new_compress,
+};
+
 static struct snd_soc_dai_driver cs47l15_dai[] = {
 	{
 		.name = "cs47l15-aif1",
@@ -1216,7 +1223,7 @@ static struct snd_soc_dai_driver cs47l15_dai[] = {
 			.rates = MADERA_RATES,
 			.formats = MADERA_FORMATS,
 		},
-		.compress_new = snd_soc_new_compress,
+		.ops = &cs47l15_dai_ops,
 	},
 	{
 		.name = "cs47l15-dsp-trace",
@@ -1239,12 +1246,12 @@ static int cs47l15_open(struct snd_soc_component *component,
 	struct madera *madera = priv->madera;
 	int n_adsp;
 
-	if (strcmp(asoc_rtd_to_codec(rtd, 0)->name, "cs47l15-dsp-trace") == 0) {
+	if (strcmp(snd_soc_rtd_to_codec(rtd, 0)->name, "cs47l15-dsp-trace") == 0) {
 		n_adsp = 0;
 	} else {
 		dev_err(madera->dev,
 			"No suitable compressed stream for DAI '%s'\n",
-			asoc_rtd_to_codec(rtd, 0)->name);
+			snd_soc_rtd_to_codec(rtd, 0)->name);
 		return -EINVAL;
 	}
 
@@ -1353,7 +1360,6 @@ static const struct snd_soc_component_driver soc_component_dev_cs47l15 = {
 	.num_dapm_routes	= ARRAY_SIZE(cs47l15_dapm_routes),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static int cs47l15_probe(struct platform_device *pdev)
@@ -1402,18 +1408,18 @@ static int cs47l15_probe(struct platform_device *pdev)
 		dev_warn(&pdev->dev, "Failed to set DSP IRQ wake: %d\n", ret);
 
 	cs47l15->core.adsp[0].part = "cs47l15";
-	cs47l15->core.adsp[0].num = 1;
-	cs47l15->core.adsp[0].type = WMFW_ADSP2;
-	cs47l15->core.adsp[0].rev = 2;
-	cs47l15->core.adsp[0].dev = madera->dev;
-	cs47l15->core.adsp[0].regmap = madera->regmap_32bit;
+	cs47l15->core.adsp[0].cs_dsp.num = 1;
+	cs47l15->core.adsp[0].cs_dsp.type = WMFW_ADSP2;
+	cs47l15->core.adsp[0].cs_dsp.rev = 2;
+	cs47l15->core.adsp[0].cs_dsp.dev = madera->dev;
+	cs47l15->core.adsp[0].cs_dsp.regmap = madera->regmap_32bit;
 
-	cs47l15->core.adsp[0].base = MADERA_DSP1_CONFIG_1;
-	cs47l15->core.adsp[0].mem = cs47l15_dsp1_regions;
-	cs47l15->core.adsp[0].num_mems = ARRAY_SIZE(cs47l15_dsp1_regions);
+	cs47l15->core.adsp[0].cs_dsp.base = MADERA_DSP1_CONFIG_1;
+	cs47l15->core.adsp[0].cs_dsp.mem = cs47l15_dsp1_regions;
+	cs47l15->core.adsp[0].cs_dsp.num_mems = ARRAY_SIZE(cs47l15_dsp1_regions);
 
-	cs47l15->core.adsp[0].lock_regions =
-		WM_ADSP2_REGION_1 | WM_ADSP2_REGION_2 | WM_ADSP2_REGION_3;
+	cs47l15->core.adsp[0].cs_dsp.lock_regions =
+		CS_ADSP2_REGION_1 | CS_ADSP2_REGION_2 | CS_ADSP2_REGION_3;
 
 	ret = wm_adsp2_init(&cs47l15->core.adsp[0]);
 	if (ret != 0)
@@ -1466,7 +1472,7 @@ error_core:
 	return ret;
 }
 
-static int cs47l15_remove(struct platform_device *pdev)
+static void cs47l15_remove(struct platform_device *pdev)
 {
 	struct cs47l15 *cs47l15 = platform_get_drvdata(pdev);
 
@@ -1480,8 +1486,6 @@ static int cs47l15_remove(struct platform_device *pdev)
 	madera_free_irq(cs47l15->core.madera, MADERA_IRQ_DSP_IRQ1, cs47l15);
 	madera_free_overheat(&cs47l15->core);
 	madera_core_free(&cs47l15->core);
-
-	return 0;
 }
 
 static struct platform_driver cs47l15_codec_driver = {
@@ -1489,7 +1493,7 @@ static struct platform_driver cs47l15_codec_driver = {
 		.name = "cs47l15-codec",
 	},
 	.probe = &cs47l15_probe,
-	.remove = &cs47l15_remove,
+	.remove = cs47l15_remove,
 };
 
 module_platform_driver(cs47l15_codec_driver);

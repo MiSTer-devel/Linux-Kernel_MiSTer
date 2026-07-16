@@ -21,7 +21,6 @@
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/phy/phy.h>
 #include <linux/phy/phy-mipi-dphy.h>
 #include <linux/platform_device.h>
@@ -327,7 +326,6 @@ static int rk_dphy_probe(struct platform_device *pdev)
 	struct device_node *np = dev->of_node;
 	const struct rk_dphy_drv_data *drv_data;
 	struct phy_provider *phy_provider;
-	const struct of_device_id *of_id;
 	struct rk_dphy *priv;
 	struct phy *phy;
 	unsigned int i;
@@ -347,11 +345,7 @@ static int rk_dphy_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	of_id = of_match_device(rk_dphy_dt_ids, dev);
-	if (!of_id)
-		return -EINVAL;
-
-	drv_data = of_id->data;
+	drv_data = of_device_get_match_data(dev);
 	priv->drv_data = drv_data;
 	priv->clks = devm_kcalloc(&pdev->dev, drv_data->num_clks,
 				  sizeof(*priv->clks), GFP_KERNEL);

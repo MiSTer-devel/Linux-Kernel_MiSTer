@@ -13,6 +13,7 @@
 #include "util/evlist.h"
 #include "util/cpumap.h"
 #include "util/mmap.h"
+#include "util/sample.h"
 #include "util/thread_map.h"
 #include <perf/evlist.h>
 #include <perf/mmap.h>
@@ -61,7 +62,7 @@ static int __test__sw_clock_freq(enum perf_sw_ids clock_id)
 	}
 	evlist__add(evlist, evsel);
 
-	cpus = perf_cpu_map__dummy_new();
+	cpus = perf_cpu_map__new_any_cpu();
 	threads = thread_map__new_by_tid(getpid());
 	if (!cpus || !threads) {
 		err = -ENOMEM;
@@ -103,12 +104,14 @@ static int __test__sw_clock_freq(enum perf_sw_ids clock_id)
 	while ((event = perf_mmap__read_event(&md->core)) != NULL) {
 		struct perf_sample sample;
 
+		perf_sample__init(&sample, /*all=*/false);
 		if (event->header.type != PERF_RECORD_SAMPLE)
 			goto next_event;
 
 		err = evlist__parse_sample(evlist, event, &sample);
 		if (err < 0) {
 			pr_debug("Error during parse sample\n");
+			perf_sample__exit(&sample);
 			goto out_delete_evlist;
 		}
 
@@ -116,6 +119,7 @@ static int __test__sw_clock_freq(enum perf_sw_ids clock_id)
 		nr_samples++;
 next_event:
 		perf_mmap__consume(&md->core);
+		perf_sample__exit(&sample);
 	}
 	perf_mmap__read_done(&md->core);
 
@@ -133,7 +137,7 @@ out_delete_evlist:
 	return err;
 }
 
-int test__sw_clock_freq(struct test *test __maybe_unused, int subtest __maybe_unused)
+static int test__sw_clock_freq(struct test_suite *test __maybe_unused, int subtest __maybe_unused)
 {
 	int ret;
 
@@ -143,3 +147,5 @@ int test__sw_clock_freq(struct test *test __maybe_unused, int subtest __maybe_un
 
 	return ret;
 }
+
+DEFINE_SUITE("Software clock events period values", sw_clock_freq);

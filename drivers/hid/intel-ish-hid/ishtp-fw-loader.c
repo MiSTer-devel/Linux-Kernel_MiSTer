@@ -76,9 +76,12 @@ enum ish_loader_commands {
 #define LOADER_XFER_MODE_ISHTP			BIT(1)
 
 /* ISH Transport Loader client unique GUID */
-static const guid_t loader_ishtp_guid =
-	GUID_INIT(0xc804d06a, 0x55bd, 0x4ea7,
-		  0xad, 0xed, 0x1e, 0x31, 0x22, 0x8c, 0x76, 0xdc);
+static const struct ishtp_device_id loader_ishtp_id_table[] = {
+	{ .guid = GUID_INIT(0xc804d06a, 0x55bd, 0x4ea7,
+		  0xad, 0xed, 0x1e, 0x31, 0x22, 0x8c, 0x76, 0xdc) },
+	{ }
+};
+MODULE_DEVICE_TABLE(ishtp, loader_ishtp_id_table);
 
 #define FILENAME_SIZE				256
 
@@ -265,7 +268,8 @@ static int get_firmware_variant(struct ishtp_cl_data *client_data,
 }
 
 /**
- * loader_cl_send()	Send message from host to firmware
+ * loader_cl_send() - Send message from host to firmware
+ *
  * @client_data:	Client data instance
  * @out_msg:		Message buffer to be sent to firmware
  * @out_size:		Size of out going message
@@ -631,7 +635,7 @@ static int ish_fw_xfer_direct_dma(struct ishtp_cl_data *client_data,
 				  const struct firmware *fw,
 				  const struct shim_fw_info fw_info)
 {
-	int rv;
+	int rv = 0;
 	void *dma_buf;
 	dma_addr_t dma_buf_phy;
 	u32 fragment_offset, fragment_size, payload_max_size;
@@ -657,19 +661,10 @@ static int ish_fw_xfer_direct_dma(struct ishtp_cl_data *client_data,
 	 */
 	payload_max_size &= ~(L1_CACHE_BYTES - 1);
 
-	dma_buf = kmalloc(payload_max_size, GFP_KERNEL | GFP_DMA32);
+	dma_buf = dma_alloc_coherent(devc, payload_max_size, &dma_buf_phy, GFP_KERNEL);
 	if (!dma_buf) {
 		client_data->flag_retry = true;
 		return -ENOMEM;
-	}
-
-	dma_buf_phy = dma_map_single(devc, dma_buf, payload_max_size,
-				     DMA_TO_DEVICE);
-	if (dma_mapping_error(devc, dma_buf_phy)) {
-		dev_err(cl_data_to_dev(client_data), "DMA map failed\n");
-		client_data->flag_retry = true;
-		rv = -ENOMEM;
-		goto end_err_dma_buf_release;
 	}
 
 	ldr_xfer_dma_frag.fragment.hdr.command = LOADER_CMD_XFER_FRAGMENT;
@@ -691,14 +686,7 @@ static int ish_fw_xfer_direct_dma(struct ishtp_cl_data *client_data,
 		ldr_xfer_dma_frag.fragment.size = fragment_size;
 		memcpy(dma_buf, &fw->data[fragment_offset], fragment_size);
 
-		dma_sync_single_for_device(devc, dma_buf_phy,
-					   payload_max_size,
-					   DMA_TO_DEVICE);
-
-		/*
-		 * Flush cache here because the dma_sync_single_for_device()
-		 * does not do for x86.
-		 */
+		/* Flush cache to be sure the data is in main memory. */
 		clflush_cache_range(dma_buf, payload_max_size);
 
 		dev_dbg(cl_data_to_dev(client_data),
@@ -721,15 +709,8 @@ static int ish_fw_xfer_direct_dma(struct ishtp_cl_data *client_data,
 		fragment_offset += fragment_size;
 	}
 
-	dma_unmap_single(devc, dma_buf_phy, payload_max_size, DMA_TO_DEVICE);
-	kfree(dma_buf);
-	return 0;
-
 end_err_resp_buf_release:
-	/* Free ISH buffer if not done already, in error case */
-	dma_unmap_single(devc, dma_buf_phy, payload_max_size, DMA_TO_DEVICE);
-end_err_dma_buf_release:
-	kfree(dma_buf);
+	dma_free_coherent(devc, payload_max_size, dma_buf, dma_buf_phy);
 	return rv;
 }
 
@@ -812,7 +793,7 @@ static int load_fw_from_host(struct ishtp_cl_data *client_data)
 	if (rv < 0)
 		goto end_err_fw_release;
 
-	/* Step 3: Start ISH main firmware exeuction */
+	/* Step 3: Start ISH main firmware execution */
 
 	rv = ish_fw_start(client_data);
 	if (rv < 0)
@@ -859,43 +840,22 @@ static void load_fw_from_host_handler(struct work_struct *work)
  *
  * Return: 0 for success, negative error code for failure
  */
-static int loader_init(struct ishtp_cl *loader_ishtp_cl, int reset)
+static int loader_init(struct ishtp_cl *loader_ishtp_cl, bool reset)
 {
 	int rv;
-	struct ishtp_fw_client *fw_client;
 	struct ishtp_cl_data *client_data =
 		ishtp_get_client_data(loader_ishtp_cl);
 
 	dev_dbg(cl_data_to_dev(client_data), "reset flag: %d\n", reset);
 
-	rv = ishtp_cl_link(loader_ishtp_cl);
-	if (rv < 0) {
-		dev_err(cl_data_to_dev(client_data), "ishtp_cl_link failed\n");
-		return rv;
-	}
-
-	/* Connect to firmware client */
-	ishtp_set_tx_ring_size(loader_ishtp_cl, LOADER_CL_TX_RING_SIZE);
-	ishtp_set_rx_ring_size(loader_ishtp_cl, LOADER_CL_RX_RING_SIZE);
-
-	fw_client =
-		ishtp_fw_cl_get_client(ishtp_get_ishtp_device(loader_ishtp_cl),
-				       &loader_ishtp_guid);
-	if (!fw_client) {
-		dev_err(cl_data_to_dev(client_data),
-			"ISH client uuid not found\n");
-		rv = -ENOENT;
-		goto err_cl_unlink;
-	}
-
-	ishtp_cl_set_fw_client_id(loader_ishtp_cl,
-				  ishtp_get_fw_client_id(fw_client));
-	ishtp_set_connection_state(loader_ishtp_cl, ISHTP_CL_CONNECTING);
-
-	rv = ishtp_cl_connect(loader_ishtp_cl);
+	rv = ishtp_cl_establish_connection(loader_ishtp_cl,
+					   &loader_ishtp_id_table[0].guid,
+					   LOADER_CL_TX_RING_SIZE,
+					   LOADER_CL_RX_RING_SIZE,
+					   reset);
 	if (rv < 0) {
 		dev_err(cl_data_to_dev(client_data), "Client connect fail\n");
-		goto err_cl_unlink;
+		goto err_cl_disconnect;
 	}
 
 	dev_dbg(cl_data_to_dev(client_data), "Client connected\n");
@@ -904,17 +864,14 @@ static int loader_init(struct ishtp_cl *loader_ishtp_cl, int reset)
 
 	return 0;
 
-err_cl_unlink:
-	ishtp_cl_unlink(loader_ishtp_cl);
+err_cl_disconnect:
+	ishtp_cl_destroy_connection(loader_ishtp_cl, reset);
 	return rv;
 }
 
 static void loader_deinit(struct ishtp_cl *loader_ishtp_cl)
 {
-	ishtp_set_connection_state(loader_ishtp_cl, ISHTP_CL_DISCONNECTING);
-	ishtp_cl_disconnect(loader_ishtp_cl);
-	ishtp_cl_unlink(loader_ishtp_cl);
-	ishtp_cl_flush_queues(loader_ishtp_cl);
+	ishtp_cl_destroy_connection(loader_ishtp_cl, false);
 
 	/* Disband and free all Tx and Rx client-level rings */
 	ishtp_cl_free(loader_ishtp_cl);
@@ -933,19 +890,7 @@ static void reset_handler(struct work_struct *work)
 	loader_ishtp_cl = client_data->loader_ishtp_cl;
 	cl_device = client_data->cl_device;
 
-	/* Unlink, flush queues & start again */
-	ishtp_cl_unlink(loader_ishtp_cl);
-	ishtp_cl_flush_queues(loader_ishtp_cl);
-	ishtp_cl_free(loader_ishtp_cl);
-
-	loader_ishtp_cl = ishtp_cl_allocate(cl_device);
-	if (!loader_ishtp_cl)
-		return;
-
-	ishtp_set_drvdata(cl_device, loader_ishtp_cl);
-	ishtp_set_client_data(loader_ishtp_cl, client_data);
-	client_data->loader_ishtp_cl = loader_ishtp_cl;
-	client_data->cl_device = cl_device;
+	ishtp_cl_destroy_connection(loader_ishtp_cl, true);
 
 	rv = loader_init(loader_ishtp_cl, 1);
 	if (rv < 0) {
@@ -993,7 +938,7 @@ static int loader_ishtp_cl_probe(struct ishtp_cl_device *cl_device)
 	INIT_WORK(&client_data->work_fw_load,
 		  load_fw_from_host_handler);
 
-	rv = loader_init(loader_ishtp_cl, 0);
+	rv = loader_init(loader_ishtp_cl, false);
 	if (rv < 0) {
 		ishtp_cl_free(loader_ishtp_cl);
 		return rv;
@@ -1057,7 +1002,7 @@ static int loader_ishtp_cl_reset(struct ishtp_cl_device *cl_device)
 
 static struct ishtp_cl_driver	loader_ishtp_cl_driver = {
 	.name = "ish-loader",
-	.guid = &loader_ishtp_guid,
+	.id = loader_ishtp_id_table,
 	.probe = loader_ishtp_cl_probe,
 	.remove = loader_ishtp_cl_remove,
 	.reset = loader_ishtp_cl_reset,
@@ -1083,4 +1028,3 @@ MODULE_DESCRIPTION("ISH ISH-TP Host firmware Loader Client Driver");
 MODULE_AUTHOR("Rushikesh S Kadam <rushikesh.s.kadam@intel.com>");
 
 MODULE_LICENSE("GPL v2");
-MODULE_ALIAS("ishtp:*");

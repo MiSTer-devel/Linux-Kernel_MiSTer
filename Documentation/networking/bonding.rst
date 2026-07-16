@@ -193,14 +193,24 @@ ad_actor_sys_prio
 	This parameter has effect only in 802.3ad mode and is available through
 	SysFs interface.
 
+actor_port_prio
+
+	In an AD system, this specifies the port priority. The allowed range
+	is 1 - 65535. If the value is not specified, it takes 255 as the
+	default value.
+
+	This parameter has effect only in 802.3ad mode and is available through
+	netlink interface.
+
 ad_actor_system
 
 	In an AD system, this specifies the mac-address for the actor in
-	protocol packet exchanges (LACPDUs). The value cannot be NULL or
-	multicast. It is preferred to have the local-admin bit set for this
-	mac but driver does not enforce it. If the value is not given then
-	system defaults to using the masters' mac address as actors' system
-	address.
+	protocol packet exchanges (LACPDUs). The value cannot be a multicast
+	address. If the all-zeroes MAC is specified, bonding will internally
+	use the MAC of the bond itself. It is preferred to have the
+	local-admin bit set for this mac but driver does not enforce it. If
+	the value is not given then system defaults to using the masters'
+	mac address as actors' system address.
 
 	This parameter has effect only in 802.3ad mode and is available through
 	SysFs interface.
@@ -240,10 +250,18 @@ ad_select
 		ports (slaves).  Reselection occurs as described under the
 		"bandwidth" setting, above.
 
-	The bandwidth and count selection policies permit failover of
-	802.3ad aggregations when partial failure of the active aggregator
-	occurs.  This keeps the aggregator with the highest availability
-	(either in bandwidth or in number of ports) active at all times.
+	actor_port_prio or 3
+
+		The active aggregator is chosen by the highest total sum of
+		actor port priorities across its active ports. Note this
+		priority is actor_port_prio, not per port prio, which is
+		used for primary reselect.
+
+	The bandwidth, count and actor_port_prio selection policies permit
+	failover of 802.3ad aggregations when partial failure of the active
+	aggregator occurs. This keeps the aggregator with the highest
+	availability (either in bandwidth, number of ports, or total value
+	of port priorities) active at all times.
 
 	This option was added in bonding version 3.4.0.
 
@@ -311,6 +329,17 @@ arp_ip_target
 	address must be given for ARP monitoring to function.  The
 	maximum number of targets that can be specified is 16.  The
 	default value is no IP addresses.
+
+ns_ip6_target
+
+	Specifies the IPv6 addresses to use as IPv6 monitoring peers when
+	arp_interval is > 0.  These are the targets of the NS request
+	sent to determine the health of the link to the targets.
+	Specify these values in ffff:ffff::ffff:ffff format.  Multiple IPv6
+	addresses must be separated by a comma.  At least one IPv6
+	address must be given for NS/NA monitoring to function.  The
+	maximum number of targets that can be specified is 16.  The
+	default value is no IPv6 addresses.
 
 arp_validate
 
@@ -421,6 +450,29 @@ arp_all_targets
 		consider the slave up only when all of the arp_ip_targets
 		are reachable
 
+arp_missed_max
+
+	Specifies the number of arp_interval monitor checks that must
+	fail in order for an interface to be marked down by the ARP monitor.
+
+	In order to provide orderly failover semantics, backup interfaces
+	are permitted an extra monitor check (i.e., they must fail
+	arp_missed_max + 1 times before being marked down).
+
+	The default value is 2, and the allowable range is 1 - 255.
+
+coupled_control
+
+    Specifies whether the LACP state machine's MUX in the 802.3ad mode
+    should have separate Collecting and Distributing states.
+
+    This is by implementing the independent control state machine per
+    IEEE 802.1AX-2008 5.4.15 in addition to the existing coupled control
+    state machine.
+
+    The default value is 1. This setting does not separate the Collecting
+    and Distributing states, maintaining the bond in coupled control.
+
 downdelay
 
 	Specifies the time, in milliseconds, to wait before disabling
@@ -527,6 +579,12 @@ lacp_rate
 
 	The default is slow.
 
+broadcast_neighbor
+
+	Option specifying whether to broadcast ARP/ND packets to all
+	active slaves.  This option has no effect in modes other than
+	802.3ad mode.  The default is off (0).
+
 max_bonds
 
 	Specifies the number of bonding devices to create for this
@@ -541,9 +599,8 @@ miimon
 	This determines how often the link state of each slave is
 	inspected for link failures.  A value of zero disables MII
 	link monitoring.  A value of 100 is a good starting point.
-	The use_carrier option, below, affects how the link state is
-	determined.  See the High Availability section for additional
-	information.  The default value is 0.
+
+	The default value is 100 if arp_interval is not set.
 
 min_links
 
@@ -731,8 +788,9 @@ num_unsol_na
 	greater than 1.
 
 	The valid range is 0 - 255; the default value is 1.  These options
-	affect only the active-backup mode.  These options were added for
-	bonding versions 3.3.0 and 3.4.0 respectively.
+	affect the active-backup or 802.3ad (broadcast_neighbor enabled) mode.
+	These options were added for bonding versions 3.3.0 and 3.4.0
+	respectively.
 
 	From Linux 3.0 and bonding version 3.7.1, these notifications
 	are generated by the ipv4 and ipv6 code and the numbers of
@@ -752,10 +810,22 @@ peer_notif_delay
 	Specify the delay, in milliseconds, between each peer
 	notification (gratuitous ARP and unsolicited IPv6 Neighbor
 	Advertisement) when they are issued after a failover event.
-	This delay should be a multiple of the link monitor interval
-	(arp_interval or miimon, whichever is active). The default
-	value is 0 which means to match the value of the link monitor
-	interval.
+	This delay should be a multiple of the MII link monitor interval
+	(miimon).
+
+	The valid range is 0 - 300000. The default value is 0, which means
+	to match the value of the MII link monitor interval.
+
+prio
+	Slave priority. A higher number means higher priority.
+	The primary slave has the highest priority. This option also
+	follows the primary_reselect rules.
+
+	This option could only be configured via netlink, and is only valid
+	for active-backup(1), balance-tlb (5) and balance-alb (6) mode.
+	The valid value range is a signed 32 bit integer.
+
+	The default value is 0.
 
 primary
 
@@ -812,7 +882,7 @@ primary_reselect
 tlb_dynamic_lb
 
 	Specifies if dynamic shuffling of flows is enabled in tlb
-	mode. The value has no effect on any other modes.
+	or alb mode. The value has no effect on any other modes.
 
 	The default behavior of tlb mode is to shuffle active flows across
 	slaves based on the load in that interval. This gives nice lb
@@ -841,25 +911,14 @@ updelay
 
 use_carrier
 
-	Specifies whether or not miimon should use MII or ETHTOOL
-	ioctls vs. netif_carrier_ok() to determine the link
-	status. The MII or ETHTOOL ioctls are less efficient and
-	utilize a deprecated calling sequence within the kernel.  The
-	netif_carrier_ok() relies on the device driver to maintain its
-	state with netif_carrier_on/off; at this writing, most, but
-	not all, device drivers support this facility.
+	Obsolete option that previously selected between MII /
+	ETHTOOL ioctls and netif_carrier_ok() to determine link
+	state.
 
-	If bonding insists that the link is up when it should not be,
-	it may be that your network device driver does not support
-	netif_carrier_on/off.  The default state for netif_carrier is
-	"carrier on," so if a driver does not support netif_carrier,
-	it will appear as if the link is always up.  In this case,
-	setting use_carrier to 0 will cause bonding to revert to the
-	MII / ETHTOOL ioctl method to determine the link state.
+	All link state checks are now done with netif_carrier_ok().
 
-	A value of 1 enables the use of netif_carrier_ok(), a value of
-	0 will use the deprecated MII / ETHTOOL ioctls.  The default
-	value is 1.
+	For backwards compatibility, this option's value may be inspected
+	or set.  The only valid setting is 1.
 
 xmit_hash_policy
 
@@ -871,7 +930,7 @@ xmit_hash_policy
 		Uses XOR of hardware MAC addresses and packet type ID
 		field to generate the hash. The formula is
 
-		hash = source MAC XOR destination MAC XOR packet type ID
+		hash = source MAC[5] XOR destination MAC[5] XOR packet type ID
 		slave number = hash modulo slave count
 
 		This algorithm will place all traffic to a particular
@@ -887,7 +946,7 @@ xmit_hash_policy
 		Uses XOR of hardware MAC addresses and IP addresses to
 		generate the hash.  The formula is
 
-		hash = source MAC XOR destination MAC XOR packet type ID
+		hash = source MAC[5] XOR destination MAC[5] XOR packet type ID
 		hash = hash XOR source IP XOR destination IP
 		hash = hash XOR (hash RSHIFT 16)
 		hash = hash XOR (hash RSHIFT 8)
@@ -922,6 +981,7 @@ xmit_hash_policy
 		hash = hash XOR source IP XOR destination IP
 		hash = hash XOR (hash RSHIFT 16)
 		hash = hash XOR (hash RSHIFT 8)
+		hash = hash RSHIFT 1
 		And then hash is reduced modulo slave count.
 
 		If the protocol is IPv6 then the source and destination
@@ -1599,7 +1659,7 @@ your init script::
 -----------------------------------------
 
 This section applies to distros which use /etc/network/interfaces file
-to describe network interface configuration, most notably Debian and it's
+to describe network interface configuration, most notably Debian and its
 derivatives.
 
 The ifup and ifdown commands on Debian don't support bonding out of
@@ -1914,7 +1974,7 @@ obtain its hardware address from the first slave, which might not
 match the hardware address of the VLAN interfaces (which was
 ultimately copied from an earlier slave).
 
-There are two methods to insure that the VLAN device operates
+There are two methods to ensure that the VLAN device operates
 with the correct hardware address if all slaves are removed from a
 bond interface:
 
@@ -1948,15 +2008,6 @@ uses the response as an indication that the link is operating.  This
 gives some assurance that traffic is actually flowing to and from one
 or more peers on the local network.
 
-The ARP monitor relies on the device driver itself to verify
-that traffic is flowing.  In particular, the driver must keep up to
-date the last receive time, dev->last_rx.  Drivers that use NETIF_F_LLTX
-flag must also update netdev_queue->trans_start.  If they do not, then the
-ARP monitor will immediately fail any slaves using that driver, and
-those slaves will stay down.  If networking monitoring (tcpdump, etc)
-shows the ARP requests and replies on the network, then it may be that
-your device driver is not updating last_rx and trans_start.
-
 7.2 Configuring Multiple ARP Targets
 ------------------------------------
 
@@ -1989,22 +2040,8 @@ depending upon the device driver to maintain its carrier state, by
 querying the device's MII registers, or by making an ethtool query to
 the device.
 
-If the use_carrier module parameter is 1 (the default value),
-then the MII monitor will rely on the driver for carrier state
-information (via the netif_carrier subsystem).  As explained in the
-use_carrier parameter information, above, if the MII monitor fails to
-detect carrier loss on the device (e.g., when the cable is physically
-disconnected), it may be that the driver does not support
-netif_carrier.
-
-If use_carrier is 0, then the MII monitor will first query the
-device's (via ioctl) MII registers and check the link state.  If that
-request fails (not just that it returns carrier down), then the MII
-monitor will make an ethtool ETHTOOL_GLINK request to attempt to obtain
-the same information.  If both methods fail (i.e., the driver either
-does not support or had some error in processing both the MII register
-and ethtool requests), then the MII monitor will assume the link is
-up.
+The MII monitor relies on the driver for carrier state information (via
+the netif_carrier subsystem).
 
 8. Potential Sources of Trouble
 ===============================
@@ -2038,7 +2075,7 @@ as an unsolicited ARP reply (because ARP matches replies on an
 interface basis), and is discarded.  The MII monitor is not affected
 by the state of the routing table.
 
-The solution here is simply to insure that slaves do not have
+The solution here is simply to ensure that slaves do not have
 routes of their own, and if for some reason they must, those routes do
 not supersede routes of their master.  This should generally be the
 case, but unusual configurations or errant manual or automatic static
@@ -2087,34 +2124,6 @@ In this case, the following can be added to config files in
 This will load tg3 and e1000 modules before loading the bonding one.
 Full documentation on this can be found in the modprobe.d and modprobe
 manual pages.
-
-8.3. Painfully Slow Or No Failed Link Detection By Miimon
----------------------------------------------------------
-
-By default, bonding enables the use_carrier option, which
-instructs bonding to trust the driver to maintain carrier state.
-
-As discussed in the options section, above, some drivers do
-not support the netif_carrier_on/_off link state tracking system.
-With use_carrier enabled, bonding will always see these links as up,
-regardless of their actual state.
-
-Additionally, other drivers do support netif_carrier, but do
-not maintain it in real time, e.g., only polling the link state at
-some fixed interval.  In this case, miimon will detect failures, but
-only after some long period of time has expired.  If it appears that
-miimon is very slow in detecting link failures, try specifying
-use_carrier=0 to see if that improves the failure detection time.  If
-it does, then it may be that the driver checks the carrier state at a
-fixed interval, but does not cache the MII register values (so the
-use_carrier=0 method of querying the registers directly works).  If
-use_carrier=0 does not improve the failover, then the driver may cache
-the registers, or the problem may be elsewhere.
-
-Also, remember that miimon only checks for the device's
-carrier state.  It has no way to determine the state of devices on or
-beyond other ports of a switch, or if a switch is refusing to pass
-traffic while still maintaining carrier on.
 
 9. SNMP agents
 ===============
@@ -2255,7 +2264,7 @@ active-backup:
 	the switches have an ISL and play together well.  If the
 	network configuration is such that one switch is specifically
 	a backup switch (e.g., has lower capacity, higher cost, etc),
-	then the primary option can be used to insure that the
+	then the primary option can be used to ensure that the
 	preferred link is always used when it is available.
 
 broadcast:
@@ -2282,7 +2291,7 @@ monitor can provide a higher level of reliability in detecting end to
 end connectivity failures (which may be caused by the failure of any
 individual component to pass traffic for any reason).  Additionally,
 the ARP monitor should be configured with multiple targets (at least
-one for each switch in the network).  This will insure that,
+one for each switch in the network).  This will ensure that,
 regardless of which switch is active, the ARP monitor has a suitable
 target to query.
 
@@ -2875,6 +2884,17 @@ To restore your slaves' MAC addresses, you need to detach them
 from the bond (``ifenslave -d bond0 eth0``). The bonding driver will
 then restore the MAC addresses that the slaves had before they were
 enslaved.
+
+9.  What bonding modes support native XDP?
+------------------------------------------
+
+  * balance-rr (0)
+  * active-backup (1)
+  * balance-xor (2)
+  * 802.3ad (4)
+
+Note that the vlan+srcmac hash policy does not support native XDP.
+For other bonding modes, the XDP program must be loaded with generic mode.
 
 16. Resources and Links
 =======================

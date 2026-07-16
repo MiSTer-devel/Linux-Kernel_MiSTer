@@ -11,10 +11,6 @@
  * Authors: Serge E. Hallyn <serue@us.ibm.com>
  */
 
-
-/* NOTE: we really do want to use the kernel headers here */
-#define __EXPORTED_HEADERS__
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -82,7 +78,7 @@ int main(int argc, char *argv[])
 
 	/* print out the class permissions */
 	for (i = 0; secclass_map[i].name; i++) {
-		struct security_class_mapping *map = &secclass_map[i];
+		const struct security_class_mapping *map = &secclass_map[i];
 		fprintf(fout, "class %s\n", map->name);
 		fprintf(fout, "{\n");
 		for (j = 0; map->perms[j]; j++)
@@ -103,7 +99,7 @@ int main(int argc, char *argv[])
 #define SYSTEMLOW "s0"
 #define SYSTEMHIGH "s1:c0.c1"
 		for (i = 0; secclass_map[i].name; i++) {
-			struct security_class_mapping *map = &secclass_map[i];
+			const struct security_class_mapping *map = &secclass_map[i];
 
 			fprintf(fout, "mlsconstrain %s {\n", map->name);
 			for (j = 0; map->perms[j]; j++)
@@ -170,9 +166,6 @@ int main(int argc, char *argv[])
 #endif
 #ifdef CONFIG_JFS_SECURITY
 	FS_USE("xattr", "jfs");
-#endif
-#ifdef CONFIG_REISERFS_FS_SECURITY
-	FS_USE("xattr", "reiserfs");
 #endif
 #ifdef CONFIG_JFFS2_FS_SECURITY
 	FS_USE("xattr", "jffs2");

@@ -80,6 +80,16 @@
 #define	ELF_HWCAP2		COMPAT_ELF_HWCAP2
 #endif
 
+#ifdef	COMPAT_ELF_HWCAP3
+#undef	ELF_HWCAP3
+#define	ELF_HWCAP3		COMPAT_ELF_HWCAP3
+#endif
+
+#ifdef	COMPAT_ELF_HWCAP4
+#undef	ELF_HWCAP4
+#define	ELF_HWCAP4		COMPAT_ELF_HWCAP4
+#endif
+
 #ifdef	COMPAT_ARCH_DLINFO
 #undef	ARCH_DLINFO
 #define	ARCH_DLINFO		COMPAT_ARCH_DLINFO
@@ -135,6 +145,8 @@
 #define elf_format		compat_elf_format
 #define init_elf_binfmt		init_compat_elf_binfmt
 #define exit_elf_binfmt		exit_compat_elf_binfmt
+#define binfmt_elf_test_cases	compat_binfmt_elf_test_cases
+#define binfmt_elf_test_suite	compat_binfmt_elf_test_suite
 
 /*
  * We share all the actual code with the native (64-bit) version.

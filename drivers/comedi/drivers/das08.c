@@ -10,11 +10,10 @@
  */
 
 #include <linux/module.h>
+#include <linux/comedi/comedidev.h>
+#include <linux/comedi/comedi_8255.h>
+#include <linux/comedi/comedi_8254.h>
 
-#include "../comedidev.h"
-
-#include "8255.h"
-#include "comedi_8254.h"
 #include "das08.h"
 
 /*
@@ -178,7 +177,6 @@ static int das08_ai_insn_read(struct comedi_device *dev,
 	int ret;
 
 	chan = CR_CHAN(insn->chanspec);
-	range = CR_RANGE(insn->chanspec);
 
 	/* clear crap */
 	inb(dev->iobase + DAS08_AI_LSB_REG);
@@ -430,7 +428,7 @@ int das08_common_attach(struct comedi_device *dev, unsigned long iobase)
 	s = &dev->subdevices[4];
 	/* 8255 */
 	if (board->i8255_offset != 0) {
-		ret = subdev_8255_init(dev, s, NULL, board->i8255_offset);
+		ret = subdev_8255_io_init(dev, s, board->i8255_offset);
 		if (ret)
 			return ret;
 	} else {
@@ -440,10 +438,11 @@ int das08_common_attach(struct comedi_device *dev, unsigned long iobase)
 	/* Counter subdevice (8254) */
 	s = &dev->subdevices[5];
 	if (board->i8254_offset) {
-		dev->pacer = comedi_8254_init(dev->iobase + board->i8254_offset,
-					      0, I8254_IO8, 0);
-		if (!dev->pacer)
-			return -ENOMEM;
+		dev->pacer =
+		    comedi_8254_io_alloc(dev->iobase + board->i8254_offset,
+					 0, I8254_IO8, 0);
+		if (IS_ERR(dev->pacer))
+			return PTR_ERR(dev->pacer);
 
 		comedi_8254_subdevice_init(s, dev->pacer);
 	} else {

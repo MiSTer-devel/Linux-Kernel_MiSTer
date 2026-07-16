@@ -23,7 +23,9 @@ struct tcf_walker {
 };
 
 int register_tcf_proto_ops(struct tcf_proto_ops *ops);
-int unregister_tcf_proto_ops(struct tcf_proto_ops *ops);
+void unregister_tcf_proto_ops(struct tcf_proto_ops *ops);
+#define NET_CLS_ALIAS_PREFIX "net-cls-"
+#define MODULE_ALIAS_NET_CLS(kind)	MODULE_ALIAS(NET_CLS_ALIAS_PREFIX kind)
 
 struct tcf_block_ext_info {
 	enum flow_block_binder_type binder_type;
@@ -59,6 +61,8 @@ int tcf_block_get_ext(struct tcf_block **p_block, struct Qdisc *q,
 void tcf_block_put(struct tcf_block *block);
 void tcf_block_put_ext(struct tcf_block *block, struct Qdisc *q,
 		       struct tcf_block_ext_info *ei);
+int tcf_exts_init_ex(struct tcf_exts *exts, struct net *net, int action,
+		     int police, struct tcf_proto *tp, u32 handle, bool used_action_miss);
 
 static inline bool tcf_block_shared(struct tcf_block *block)
 {
@@ -70,6 +74,15 @@ static inline bool tcf_block_non_null_shared(struct tcf_block *block)
 	return block && block->index;
 }
 
+#ifdef CONFIG_NET_CLS_ACT
+DECLARE_STATIC_KEY_FALSE(tcf_sw_enabled_key);
+
+static inline bool tcf_block_bypass_sw(struct tcf_block *block)
+{
+	return block && !atomic_read(&block->useswcnt);
+}
+#endif
+
 static inline struct Qdisc *tcf_block_q(struct tcf_block *block)
 {
 	WARN_ON(tcf_block_shared(block));
@@ -80,6 +93,19 @@ int tcf_classify(struct sk_buff *skb,
 		 const struct tcf_block *block,
 		 const struct tcf_proto *tp, struct tcf_result *res,
 		 bool compat_mode);
+
+static inline bool tc_cls_stats_dump(struct tcf_proto *tp,
+				     struct tcf_walker *arg,
+				     void *filter)
+{
+	if (arg->count >= arg->skip && arg->fn(tp, filter, arg) < 0) {
+		arg->stop = 1;
+		return false;
+	}
+
+	arg->count++;
+	return true;
+}
 
 #else
 static inline bool tcf_block_shared(struct tcf_block *block)
@@ -121,19 +147,6 @@ void tcf_block_put_ext(struct tcf_block *block, struct Qdisc *q,
 static inline struct Qdisc *tcf_block_q(struct tcf_block *block)
 {
 	return NULL;
-}
-
-static inline
-int tc_setup_cb_block_register(struct tcf_block *block, flow_setup_cb_t *cb,
-			       void *cb_priv)
-{
-	return 0;
-}
-
-static inline
-void tc_setup_cb_block_unregister(struct tcf_block *block, flow_setup_cb_t *cb,
-				  void *cb_priv)
-{
 }
 
 static inline int tcf_classify(struct sk_buff *skb,
@@ -197,12 +210,26 @@ tcf_unbind_filter(struct tcf_proto *tp, struct tcf_result *r)
 	__tcf_unbind_filter(q, r);
 }
 
+static inline void tc_cls_bind_class(u32 classid, unsigned long cl,
+				     void *q, struct tcf_result *res,
+				     unsigned long base)
+{
+	if (res->classid == classid) {
+		if (cl)
+			__tcf_bind_filter(q, res, base);
+		else
+			__tcf_unbind_filter(q, res);
+	}
+}
+
 struct tcf_exts {
 #ifdef CONFIG_NET_CLS_ACT
 	__u32	type; /* for backward compat(TCA_OLD_COMPAT) */
 	int nr_actions;
 	struct tc_action **actions;
-	struct net *net;
+	struct net	*net;
+	netns_tracker	ns_tracker;
+	struct tcf_exts_miss_cookie_node *miss_cookie_node;
 #endif
 	/* Map to export classifier specific extension TLV types to the
 	 * generic extensions API. Unsupported extensions must be set to 0.
@@ -214,18 +241,11 @@ struct tcf_exts {
 static inline int tcf_exts_init(struct tcf_exts *exts, struct net *net,
 				int action, int police)
 {
-#ifdef CONFIG_NET_CLS_ACT
-	exts->type = 0;
-	exts->nr_actions = 0;
-	exts->net = net;
-	exts->actions = kcalloc(TCA_ACT_MAX_PRIO, sizeof(struct tc_action *),
-				GFP_KERNEL);
-	if (!exts->actions)
-		return -ENOMEM;
+#ifdef CONFIG_NET_CLS
+	return tcf_exts_init_ex(exts, net, action, police, NULL, 0, false);
+#else
+	return -EOPNOTSUPP;
 #endif
-	exts->action = action;
-	exts->police = police;
-	return 0;
 }
 
 /* Return false if the netns is being destroyed in cleanup_net(). Callers
@@ -236,6 +256,8 @@ static inline bool tcf_exts_get_net(struct tcf_exts *exts)
 {
 #ifdef CONFIG_NET_CLS_ACT
 	exts->net = maybe_get_net(exts->net);
+	if (exts->net)
+		netns_tracker_alloc(exts->net, &exts->ns_tracker, GFP_KERNEL);
 	return exts->net != NULL;
 #else
 	return true;
@@ -246,7 +268,7 @@ static inline void tcf_exts_put_net(struct tcf_exts *exts)
 {
 #ifdef CONFIG_NET_CLS_ACT
 	if (exts->net)
-		put_net(exts->net);
+		put_net_track(exts->net, &exts->ns_tracker);
 #endif
 }
 
@@ -258,26 +280,38 @@ static inline void tcf_exts_put_net(struct tcf_exts *exts)
 	for (; 0; (void)(i), (void)(a), (void)(exts))
 #endif
 
+#define tcf_act_for_each_action(i, a, actions) \
+	for (i = 0; i < TCA_ACT_MAX_PRIO && ((a) = actions[i]); i++)
+
+static inline bool tc_act_in_hw(struct tc_action *act)
+{
+	return !!act->in_hw_count;
+}
+
 static inline void
-tcf_exts_stats_update(const struct tcf_exts *exts,
-		      u64 bytes, u64 packets, u64 drops, u64 lastuse,
-		      u8 used_hw_stats, bool used_hw_stats_valid)
+tcf_exts_hw_stats_update(const struct tcf_exts *exts,
+			 struct flow_stats *stats,
+			 bool use_act_stats)
 {
 #ifdef CONFIG_NET_CLS_ACT
 	int i;
 
-	preempt_disable();
-
 	for (i = 0; i < exts->nr_actions; i++) {
 		struct tc_action *a = exts->actions[i];
 
-		tcf_action_stats_update(a, bytes, packets, drops,
-					lastuse, true);
-		a->used_hw_stats = used_hw_stats;
-		a->used_hw_stats_valid = used_hw_stats_valid;
-	}
+		if (use_act_stats || tc_act_in_hw(a)) {
+			if (!tcf_action_update_hw_stats(a))
+				continue;
+		}
 
-	preempt_enable();
+		preempt_disable();
+		tcf_action_stats_update(a, stats->bytes, stats->pkts, stats->drops,
+					stats->lastused, true);
+		preempt_enable();
+
+		a->used_hw_stats = stats->used_hw_stats;
+		a->used_hw_stats_valid = stats->used_hw_stats_valid;
+	}
 #endif
 }
 
@@ -285,7 +319,7 @@ tcf_exts_stats_update(const struct tcf_exts *exts,
  * tcf_exts_has_actions - check if at least one action is present
  * @exts: tc filter extensions handle
  *
- * Returns true if at least one action is present.
+ * Returns: true if at least one action is present.
  */
 static inline bool tcf_exts_has_actions(struct tcf_exts *exts)
 {
@@ -317,10 +351,25 @@ tcf_exts_exec(struct sk_buff *skb, struct tcf_exts *exts,
 	return TC_ACT_OK;
 }
 
+static inline int
+tcf_exts_exec_ex(struct sk_buff *skb, struct tcf_exts *exts, int act_index,
+		 struct tcf_result *res)
+{
+#ifdef CONFIG_NET_CLS_ACT
+	return tcf_action_exec(skb, exts->actions + act_index,
+			       exts->nr_actions - act_index, res);
+#else
+	return TC_ACT_OK;
+#endif
+}
+
 int tcf_exts_validate(struct net *net, struct tcf_proto *tp,
 		      struct nlattr **tb, struct nlattr *rate_tlv,
 		      struct tcf_exts *exts, u32 flags,
 		      struct netlink_ext_ack *extack);
+int tcf_exts_validate_ex(struct net *net, struct tcf_proto *tp, struct nlattr **tb,
+			 struct nlattr *rate_tlv, struct tcf_exts *exts,
+			 u32 flags, u32 fl_flags, struct netlink_ext_ack *extack);
 void tcf_exts_destroy(struct tcf_exts *exts);
 void tcf_exts_change(struct tcf_exts *dst, struct tcf_exts *src);
 int tcf_exts_dump(struct sk_buff *skb, struct tcf_exts *exts);
@@ -442,7 +491,7 @@ int __tcf_em_tree_match(struct sk_buff *, struct tcf_ematch_tree *,
 			struct tcf_pkt_info *);
 
 /**
- * tcf_em_tree_match - evaulate an ematch tree
+ * tcf_em_tree_match - evaluate an ematch tree
  *
  * @skb: socket buffer of the packet in question
  * @tree: ematch tree to be used for evaluation
@@ -452,7 +501,7 @@ int __tcf_em_tree_match(struct sk_buff *, struct tcf_ematch_tree *,
  * through all ematches respecting their logic relations returning
  * as soon as the result is obvious.
  *
- * Returns 1 if the ematch tree as-one matches, no ematches are configured
+ * Returns: 1 if the ematch tree as-one matches, no ematches are configured
  * or ematch is not enabled in the kernel, otherwise 0 is returned.
  */
 static inline int tcf_em_tree_match(struct sk_buff *skb,
@@ -487,6 +536,8 @@ static inline unsigned char * tcf_get_base_ptr(struct sk_buff *skb, int layer)
 		case TCF_LAYER_NETWORK:
 			return skb_network_header(skb);
 		case TCF_LAYER_TRANSPORT:
+			if (!skb_transport_header_was_set(skb))
+				break;
 			return skb_transport_header(skb);
 	}
 
@@ -532,9 +583,14 @@ tcf_match_indev(struct sk_buff *skb, int ifindex)
 	return ifindex == skb->skb_iif;
 }
 
-int tc_setup_flow_action(struct flow_action *flow_action,
-			 const struct tcf_exts *exts);
-void tc_cleanup_flow_action(struct flow_action *flow_action);
+int tc_setup_offload_action(struct flow_action *flow_action,
+			    const struct tcf_exts *exts,
+			    struct netlink_ext_ack *extack);
+void tc_cleanup_offload_action(struct flow_action *flow_action);
+int tc_setup_action(struct flow_action *flow_action,
+		    struct tc_action *actions[],
+		    u32 miss_cookie_base,
+		    struct netlink_ext_ack *extack);
 
 int tc_setup_cb_call(struct tcf_block *block, enum tc_setup_type type,
 		     void *type_data, bool err_stop, bool rtnl_held);
@@ -701,8 +757,18 @@ tc_cls_common_offload_init(struct flow_cls_common_offload *cls_common,
 	cls_common->chain_index = tp->chain->index;
 	cls_common->protocol = tp->protocol;
 	cls_common->prio = tp->prio >> 16;
+	cls_common->skip_sw = tc_skip_sw(flags);
 	if (tc_skip_sw(flags) || flags & TCA_CLS_FLAGS_VERBOSE)
 		cls_common->extack = extack;
+}
+
+static inline void tcf_proto_update_usesw(struct tcf_proto *tp, u32 flags)
+{
+	if (tp->usesw)
+		return;
+	if (tc_skip_sw(flags) && tc_in_hw(flags))
+		return;
+	tp->usesw = true;
 }
 
 #if IS_ENABLED(CONFIG_NET_TC_SKB_EXT)
@@ -727,6 +793,7 @@ struct tc_cls_matchall_offload {
 	enum tc_matchall_command command;
 	struct flow_rule *rule;
 	struct flow_stats stats;
+	bool use_act_stats;
 	unsigned long cookie;
 };
 
@@ -745,16 +812,6 @@ struct tc_cls_bpf_offload {
 	bool exts_integrated;
 };
 
-struct tc_mqprio_qopt_offload {
-	/* struct tc_mqprio_qopt must always be the first element */
-	struct tc_mqprio_qopt qopt;
-	u16 mode;
-	u16 shaper;
-	u32 flags;
-	u64 min_rate[TC_QOPT_MAX_QUEUE];
-	u64 max_rate[TC_QOPT_MAX_QUEUE];
-};
-
 /* This structure holds cookie structure that is passed from user
  * to the kernel for actions and classifiers
  */
@@ -765,7 +822,7 @@ struct tc_cookie {
 };
 
 struct tc_qopt_offload_stats {
-	struct gnet_stats_basic_packed *bstats;
+	struct gnet_stats_basic_sync *bstats;
 	struct gnet_stats_queue *qstats;
 };
 
@@ -819,8 +876,10 @@ struct tc_htb_qopt_offload {
 	u32 parent_classid;
 	u16 classid;
 	u16 qid;
+	u32 quantum;
 	u64 rate;
 	u64 ceil;
+	u8 prio;
 };
 
 #define TC_HTB_CLASSID_ROOT U32_MAX
@@ -885,7 +944,7 @@ struct tc_gred_qopt_offload_params {
 };
 
 struct tc_gred_qopt_offload_stats {
-	struct gnet_stats_basic_packed bstats[MAX_DPs];
+	struct gnet_stats_basic_sync bstats[MAX_DPs];
 	struct gnet_stats_queue qstats[MAX_DPs];
 	struct red_stats *xstats[MAX_DPs];
 };
@@ -977,6 +1036,7 @@ enum tc_tbf_command {
 	TC_TBF_REPLACE,
 	TC_TBF_DESTROY,
 	TC_TBF_STATS,
+	TC_TBF_GRAFT,
 };
 
 struct tc_tbf_qopt_offload_replace_params {
@@ -992,6 +1052,7 @@ struct tc_tbf_qopt_offload {
 	union {
 		struct tc_tbf_qopt_offload_replace_params replace_params;
 		struct tc_qopt_offload_stats stats;
+		u32 child_handle;
 	};
 };
 
@@ -1009,5 +1070,16 @@ struct tc_fifo_qopt_offload {
 		struct tc_qopt_offload_stats stats;
 	};
 };
+
+#ifdef CONFIG_NET_CLS_ACT
+DECLARE_STATIC_KEY_FALSE(tc_skb_ext_tc);
+void tc_skb_ext_tc_enable(void);
+void tc_skb_ext_tc_disable(void);
+#define tc_skb_ext_tc_enabled() static_branch_unlikely(&tc_skb_ext_tc)
+#else /* CONFIG_NET_CLS_ACT */
+static inline void tc_skb_ext_tc_enable(void) { }
+static inline void tc_skb_ext_tc_disable(void) { }
+#define tc_skb_ext_tc_enabled() false
+#endif
 
 #endif

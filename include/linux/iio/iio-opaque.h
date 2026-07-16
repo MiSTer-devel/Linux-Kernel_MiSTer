@@ -7,8 +7,14 @@
  * struct iio_dev_opaque - industrial I/O device opaque information
  * @indio_dev:			public industrial I/O device information
  * @id:			used to identify device internally
+ * @currentmode:		operating mode currently in use, may be eventually
+ *				checked by device drivers but should be considered
+ *				read-only as this is a core internal bit
  * @driver_module:		used to make it harder to undercut users
+ * @mlock:			lock used to prevent simultaneous device state changes
+ * @mlock_key:			lockdep class for iio_dev lock
  * @info_exist_lock:		lock to prevent use during removal
+ * @info_exist_key:		lockdep class for info_exist lock
  * @trig_readonly:		mark the current trigger immutable
  * @event_interface:		event chrdevs associated with interrupt lines
  * @attached_buffers:		array of buffers statically attached by the driver
@@ -23,6 +29,8 @@
  * @groupcounter:		index of next attribute group
  * @legacy_scan_el_group:	attribute group for legacy scan elements attribute group
  * @legacy_buffer_group:	attribute group for legacy buffer attributes group
+ * @bounce_buffer:		for devices that call iio_push_to_buffers_with_ts_unaligned()
+ * @bounce_buffer_size:		size of currently allocate bounce buffer
  * @scan_index_timestamp:	cache of the index to the timestamp
  * @clock_id:			timestamping clock posix identifier
  * @chrdev:			associated character device
@@ -34,9 +42,13 @@
  */
 struct iio_dev_opaque {
 	struct iio_dev			indio_dev;
+	int				currentmode;
 	int				id;
 	struct module			*driver_module;
+	struct mutex			mlock;
+	struct lock_class_key		mlock_key;
 	struct mutex			info_exist_lock;
+	struct lock_class_key		info_exist_key;
 	bool				trig_readonly;
 	struct iio_event_interface	*event_interface;
 	struct iio_buffer		**attached_buffers;
@@ -50,6 +62,8 @@ struct iio_dev_opaque {
 	int				groupcounter;
 	struct attribute_group		legacy_scan_el_group;
 	struct attribute_group		legacy_buffer_group;
+	void				*bounce_buffer;
+	size_t				bounce_buffer_size;
 
 	unsigned int			scan_index_timestamp;
 	clockid_t			clock_id;
@@ -58,7 +72,7 @@ struct iio_dev_opaque {
 
 #if defined(CONFIG_DEBUG_FS)
 	struct dentry			*debugfs_dentry;
-	unsigned			cached_reg_addr;
+	unsigned int			cached_reg_addr;
 	char				read_buf[20];
 	unsigned int			read_buf_len;
 #endif

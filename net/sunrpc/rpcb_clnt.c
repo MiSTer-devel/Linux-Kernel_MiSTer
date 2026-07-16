@@ -36,6 +36,7 @@
 #include "netns.h"
 
 #define RPCBIND_SOCK_PATHNAME	"/var/run/rpcbind.sock"
+#define RPCBIND_SOCK_ABSTRACT_NAME "\0/run/rpcbind.sock"
 
 #define RPCBIND_PROGRAM		(100000u)
 #define RPCBIND_PORT		(111u)
@@ -216,21 +217,22 @@ static void rpcb_set_local(struct net *net, struct rpc_clnt *clnt,
 	sn->rpcb_users = 1;
 }
 
+/* Evaluate to actual length of the `sockaddr_un' structure.  */
+# define SUN_LEN(ptr) (offsetof(struct sockaddr_un, sun_path)		\
+		      + 1 + strlen((ptr)->sun_path + 1))
+
 /*
  * Returns zero on success, otherwise a negative errno value
  * is returned.
  */
-static int rpcb_create_local_unix(struct net *net)
+static int rpcb_create_af_local(struct net *net,
+				const struct sockaddr_un *addr)
 {
-	static const struct sockaddr_un rpcb_localaddr_rpcbind = {
-		.sun_family		= AF_LOCAL,
-		.sun_path		= RPCBIND_SOCK_PATHNAME,
-	};
 	struct rpc_create_args args = {
 		.net		= net,
 		.protocol	= XPRT_TRANSPORT_LOCAL,
-		.address	= (struct sockaddr *)&rpcb_localaddr_rpcbind,
-		.addrsize	= sizeof(rpcb_localaddr_rpcbind),
+		.address	= (struct sockaddr *)addr,
+		.addrsize	= SUN_LEN(addr),
 		.servername	= "localhost",
 		.program	= &rpcb_program,
 		.version	= RPCBVERS_2,
@@ -267,6 +269,26 @@ static int rpcb_create_local_unix(struct net *net)
 
 out:
 	return result;
+}
+
+static int rpcb_create_local_abstract(struct net *net)
+{
+	static const struct sockaddr_un rpcb_localaddr_abstract = {
+		.sun_family		= AF_LOCAL,
+		.sun_path		= RPCBIND_SOCK_ABSTRACT_NAME,
+	};
+
+	return rpcb_create_af_local(net, &rpcb_localaddr_abstract);
+}
+
+static int rpcb_create_local_unix(struct net *net)
+{
+	static const struct sockaddr_un rpcb_localaddr_unix = {
+		.sun_family		= AF_LOCAL,
+		.sun_path		= RPCBIND_SOCK_PATHNAME,
+	};
+
+	return rpcb_create_af_local(net, &rpcb_localaddr_unix);
 }
 
 /*
@@ -332,7 +354,8 @@ int rpcb_create_local(struct net *net)
 	if (rpcb_get_local(net))
 		goto out;
 
-	if (rpcb_create_local_unix(net) != 0)
+	if (rpcb_create_local_abstract(net) != 0 &&
+	    rpcb_create_local_unix(net) != 0)
 		result = rpcb_create_local_net(net);
 
 out:
@@ -714,7 +737,7 @@ void rpcb_getport_async(struct rpc_task *task)
 		goto bailout_nofree;
 	}
 
-	map = kzalloc(sizeof(struct rpcbind_args), GFP_NOFS);
+	map = kzalloc(sizeof(struct rpcbind_args), rpc_task_gfp_mask());
 	if (!map) {
 		status = -ENOMEM;
 		goto bailout_release_client;
@@ -730,7 +753,7 @@ void rpcb_getport_async(struct rpc_task *task)
 	case RPCBVERS_4:
 	case RPCBVERS_3:
 		map->r_netid = xprt->address_strings[RPC_DISPLAY_NETID];
-		map->r_addr = rpc_sockaddr2uaddr(sap, GFP_NOFS);
+		map->r_addr = rpc_sockaddr2uaddr(sap, rpc_task_gfp_mask());
 		if (!map->r_addr) {
 			status = -ENOMEM;
 			goto bailout_free_args;
@@ -746,6 +769,10 @@ void rpcb_getport_async(struct rpc_task *task)
 
 	child = rpcb_call_async(rpcb_clnt, map, proc);
 	rpc_release_client(rpcb_clnt);
+	if (IS_ERR(child)) {
+		/* rpcb_map_release() has freed the arguments */
+		return;
+	}
 
 	xprt->stat.bind_count++;
 	rpc_put_task(child);
@@ -793,9 +820,10 @@ static void rpcb_getport_done(struct rpc_task *child, void *data)
 	}
 
 	trace_rpcb_setport(child, map->r_status, map->r_port);
-	xprt->ops->set_port(xprt, map->r_port);
-	if (map->r_port)
+	if (map->r_port) {
+		xprt->ops->set_port(xprt, map->r_port);
 		xprt_set_bound(xprt);
+	}
 }
 
 /*

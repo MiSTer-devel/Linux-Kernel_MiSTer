@@ -1,18 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * DMM IOMMU driver support functions for TI OMAP processors.
  *
  * Copyright (C) 2011 Texas Instruments Incorporated - https://www.ti.com/
  * Author: Rob Clark <rob@ti.com>
  *         Andy Gross <andy.gross@ti.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/completion.h>
@@ -25,6 +17,7 @@
 #include <linux/list.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h> /* platform_device() */
 #include <linux/sched.h>
 #include <linux/seq_file.h>
@@ -126,7 +119,7 @@ static u32 dmm_read_wa(struct dmm *dmm, u32 reg)
 	 * earlier than the DMA finished writing the value to memory.
 	 */
 	rmb();
-	return readl(dmm->wa_dma_data);
+	return readl((__iomem void *)dmm->wa_dma_data);
 }
 
 static void dmm_write_wa(struct dmm *dmm, u32 val, u32 reg)
@@ -134,7 +127,7 @@ static void dmm_write_wa(struct dmm *dmm, u32 val, u32 reg)
 	dma_addr_t src, dst;
 	int r;
 
-	writel(val, dmm->wa_dma_data);
+	writel(val, (__iomem void *)dmm->wa_dma_data);
 	/*
 	 * As per i878 workaround, the DMA is used to access the DMM registers.
 	 * Make sure that the writel is not moved by the compiler or the CPU, so
@@ -418,7 +411,7 @@ static int dmm_txn_commit(struct dmm_txn *txn, bool wait)
 	 */
 
 	/* read back to ensure the data is in RAM */
-	readl(&txn->last_pat->next_pa);
+	readl((__iomem void *)&txn->last_pat->next_pa);
 
 	/* write to PAT_DESCR to clear out any pending transaction */
 	dmm_write(dmm, 0x0, reg[PAT_DESCR][engine->id]);
@@ -730,7 +723,7 @@ bool dmm_is_available(void)
 	return omap_dmm ? true : false;
 }
 
-static int omap_dmm_remove(struct platform_device *dev)
+static void omap_dmm_remove(struct platform_device *dev)
 {
 	struct tiler_block *block, *_block;
 	int i;
@@ -770,8 +763,6 @@ static int omap_dmm_remove(struct platform_device *dev)
 		kfree(omap_dmm);
 		omap_dmm = NULL;
 	}
-
-	return 0;
 }
 
 static int omap_dmm_probe(struct platform_device *dev)
@@ -820,10 +811,8 @@ static int omap_dmm_probe(struct platform_device *dev)
 	}
 
 	omap_dmm->irq = platform_get_irq(dev, 0);
-	if (omap_dmm->irq < 0) {
-		dev_err(&dev->dev, "failed to get IRQ resource\n");
+	if (omap_dmm->irq < 0)
 		goto fail;
-	}
 
 	omap_dmm->dev = &dev->dev;
 
@@ -991,8 +980,7 @@ static int omap_dmm_probe(struct platform_device *dev)
 	return 0;
 
 fail:
-	if (omap_dmm_remove(dev))
-		dev_err(&dev->dev, "cleanup failed\n");
+	omap_dmm_remove(dev);
 	return ret;
 }
 
@@ -1224,7 +1212,6 @@ struct platform_driver omap_dmm_driver = {
 	.probe = omap_dmm_probe,
 	.remove = omap_dmm_remove,
 	.driver = {
-		.owner = THIS_MODULE,
 		.name = DMM_DRIVER_NAME,
 		.of_match_table = of_match_ptr(dmm_of_match),
 		.pm = &omap_dmm_pm_ops,

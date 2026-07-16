@@ -21,7 +21,6 @@
 #include <linux/sched.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
-#include <linux/fb.h>
 #include <linux/module.h>
 #include <linux/mm.h>
 #include <linux/console.h>
@@ -50,12 +49,10 @@ char __initdata command_line[COMMAND_LINE_SIZE];
 
 /* machine dependent timer functions */
 void (*mach_sched_init)(void) __initdata = NULL;
-int (*mach_hwclk) (int, struct rtc_time*);
 
 /* machine dependent reboot functions */
 void (*mach_reset)(void);
 void (*mach_halt)(void);
-void (*mach_power_off)(void);
 
 #ifdef CONFIG_M68000
 #if defined(CONFIG_M68328)
@@ -92,8 +89,7 @@ void __init setup_arch(char **cmdline_p)
 	config_BSP(&command_line[0], sizeof(command_line));
 
 #if defined(CONFIG_BOOTPARAM)
-	strncpy(&command_line[0], CONFIG_BOOTPARAM_STRING, sizeof(command_line));
-	command_line[sizeof(command_line) - 1] = 0;
+	strscpy(&command_line[0], CONFIG_BOOTPARAM_STRING, sizeof(command_line));
 #endif /* CONFIG_BOOTPARAM */
 
 	process_uboot_commandline(&command_line[0], sizeof(command_line));
@@ -141,7 +137,7 @@ void __init setup_arch(char **cmdline_p)
 
 	pr_debug("KERNEL -> TEXT=0x%p-0x%p DATA=0x%p-0x%p BSS=0x%p-0x%p\n",
 		 _stext, _etext, _sdata, _edata, __bss_start, __bss_stop);
-	pr_debug("MEMORY -> ROMFS=0x%p-0x%06lx MEM=0x%06lx-0x%06lx\n ",
+	pr_debug("MEMORY -> ROMFS=0x%p-0x%06lx MEM=0x%06lx-0x%06lx\n",
 		 __bss_stop, memory_start, memory_start, memory_end);
 
 	memblock_add(_rambase, memory_end - _rambase);
@@ -149,8 +145,7 @@ void __init setup_arch(char **cmdline_p)
 
 	/* Keep a copy of command line */
 	*cmdline_p = &command_line[0];
-	memcpy(boot_command_line, command_line, COMMAND_LINE_SIZE);
-	boot_command_line[COMMAND_LINE_SIZE-1] = 0;
+	strscpy(boot_command_line, command_line, COMMAND_LINE_SIZE);
 
 	/*
 	 * Give all the memory to the bootmap allocator, tell it to put the

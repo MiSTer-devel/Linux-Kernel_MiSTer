@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 // Copyright (C) 2020 Facebook
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
+#include <errno.h>
 #include <unistd.h>
 #include <linux/err.h>
 #include <bpf/libbpf.h>
@@ -34,7 +37,7 @@ static int do_pin(int argc, char **argv)
 				return -1;
 			}
 
-			map_fd = map_parse_fd(&argc, &argv);
+			map_fd = map_parse_fd(&argc, &argv, BPF_F_RDONLY);
 			if (map_fd < 0)
 				return -1;
 
@@ -46,7 +49,8 @@ static int do_pin(int argc, char **argv)
 	}
 
 	obj = bpf_object__open(objfile);
-	if (IS_ERR(obj)) {
+	if (!obj) {
+		err = -errno;
 		p_err("can't open objfile %s", objfile);
 		goto close_map_fd;
 	}
@@ -57,21 +61,22 @@ static int do_pin(int argc, char **argv)
 		goto close_obj;
 	}
 
-	prog = bpf_program__next(NULL, obj);
+	prog = bpf_object__next_program(obj, NULL);
 	if (!prog) {
+		err = -errno;
 		p_err("can't find bpf program in objfile %s", objfile);
 		goto close_obj;
 	}
 
 	link = bpf_program__attach_iter(prog, &iter_opts);
-	if (IS_ERR(link)) {
-		err = PTR_ERR(link);
+	if (!link) {
+		err = -errno;
 		p_err("attach_iter failed for program %s",
 		      bpf_program__name(prog));
 		goto close_obj;
 	}
 
-	err = mount_bpffs_for_pin(path);
+	err = mount_bpffs_for_file(path);
 	if (err)
 		goto close_link;
 

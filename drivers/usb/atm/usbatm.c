@@ -969,7 +969,7 @@ static int usbatm_do_heavy_init(void *arg)
 	instance->thread = NULL;
 	mutex_unlock(&instance->serialize);
 
-	complete_and_exit(&instance->thread_exited, ret);
+	kthread_complete_and_exit(&instance->thread_exited, ret);
 }
 
 static int usbatm_heavy_init(struct usbatm_data *instance)
@@ -993,7 +993,7 @@ static int usbatm_heavy_init(struct usbatm_data *instance)
 
 static void usbatm_tasklet_schedule(struct timer_list *t)
 {
-	struct usbatm_channel *channel = from_timer(channel, t, delay);
+	struct usbatm_channel *channel = timer_container_of(channel, t, delay);
 
 	tasklet_schedule(&channel->tasklet);
 }
@@ -1015,16 +1015,19 @@ int usbatm_usb_probe(struct usb_interface *intf, const struct usb_device_id *id,
 	int error = -ENOMEM;
 	int i, length;
 	unsigned int maxpacket, num_packets;
+	size_t size;
 
 	/* instance init */
-	instance = kzalloc(sizeof(*instance) + sizeof(struct urb *) * (num_rcv_urbs + num_snd_urbs), GFP_KERNEL);
+	size = struct_size(instance, urbs,
+			   size_add(num_rcv_urbs, num_snd_urbs));
+	instance = kzalloc(size, GFP_KERNEL);
 	if (!instance)
 		return -ENOMEM;
 
 	/* public fields */
 
 	instance->driver = driver;
-	strlcpy(instance->driver_name, driver->driver_name,
+	strscpy(instance->driver_name, driver->driver_name,
 		sizeof(instance->driver_name));
 
 	instance->usb_dev = usb_dev;
@@ -1089,7 +1092,7 @@ int usbatm_usb_probe(struct usb_interface *intf, const struct usb_device_id *id,
 			snd_buf_bytes - (snd_buf_bytes % instance->tx_channel.stride));
 
 	/* rx buffer size must be a positive multiple of the endpoint maxpacket */
-	maxpacket = usb_maxpacket(usb_dev, instance->rx_channel.endpoint, 0);
+	maxpacket = usb_maxpacket(usb_dev, instance->rx_channel.endpoint);
 
 	if ((maxpacket < 1) || (maxpacket > UDSL_MAX_BUF_SIZE)) {
 		dev_err(dev, "%s: invalid endpoint %02x!\n", __func__,
@@ -1155,7 +1158,7 @@ int usbatm_usb_probe(struct usb_interface *intf, const struct usb_device_id *id,
 		if (i >= num_rcv_urbs)
 			list_add_tail(&urb->urb_list, &channel->list);
 
-		vdbg(&intf->dev, "%s: alloced buffer 0x%p buf size %u urb 0x%p",
+		vdbg(&intf->dev, "%s: allocated buffer 0x%p buf size %u urb 0x%p",
 		     __func__, urb->transfer_buffer, urb->transfer_buffer_length, urb);
 	}
 
@@ -1234,8 +1237,8 @@ void usbatm_usb_disconnect(struct usb_interface *intf)
 	for (i = 0; i < num_rcv_urbs + num_snd_urbs; i++)
 		usb_kill_urb(instance->urbs[i]);
 
-	del_timer_sync(&instance->rx_channel.delay);
-	del_timer_sync(&instance->tx_channel.delay);
+	timer_delete_sync(&instance->rx_channel.delay);
+	timer_delete_sync(&instance->tx_channel.delay);
 
 	/* turn usbatm_[rt]x_process into something close to a no-op */
 	/* no need to take the spinlock */

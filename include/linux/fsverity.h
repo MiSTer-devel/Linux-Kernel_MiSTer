@@ -12,10 +12,30 @@
 #define _LINUX_FSVERITY_H
 
 #include <linux/fs.h>
+#include <linux/mm.h>
+#include <crypto/hash_info.h>
+#include <crypto/sha2.h>
 #include <uapi/linux/fsverity.h>
+
+/*
+ * Largest digest size among all hash algorithms supported by fs-verity.
+ * Currently assumed to be <= size of fsverity_descriptor::root_hash.
+ */
+#define FS_VERITY_MAX_DIGEST_SIZE	SHA512_DIGEST_SIZE
+
+/* Arbitrary limit to bound the kmalloc() size.  Can be changed. */
+#define FS_VERITY_MAX_DESCRIPTOR_SIZE	16384
+
+struct fsverity_info;
 
 /* Verity operations for filesystems */
 struct fsverity_operations {
+	/**
+	 * The offset of the pointer to struct fsverity_info in the
+	 * filesystem-specific part of the inode, relative to the beginning of
+	 * the common part of the inode (the 'struct inode').
+	 */
+	ptrdiff_t inode_info_offs;
 
 	/**
 	 * Begin enabling verity on the given file.
@@ -82,8 +102,7 @@ struct fsverity_operations {
 	 *		  isn't already cached.  Implementations may ignore this
 	 *		  argument; it's only a performance optimization.
 	 *
-	 * This can be called at any time on an open verity file, as well as
-	 * between ->begin_enable_verity() and ->end_enable_verity().  It may be
+	 * This can be called at any time on an open verity file.  It may be
 	 * called by multiple processes concurrently, even with the same page.
 	 *
 	 * Note that this must retrieve a *page*, not necessarily a *block*.
@@ -98,9 +117,9 @@ struct fsverity_operations {
 	 * Write a Merkle tree block to the given inode.
 	 *
 	 * @inode: the inode for which the Merkle tree is being built
-	 * @buf: block to write
-	 * @index: 0-based index of the block within the Merkle tree
-	 * @log_blocksize: log base 2 of the Merkle tree block size
+	 * @buf: the Merkle tree block to write
+	 * @pos: the position of the block in the Merkle tree (in bytes)
+	 * @size: the Merkle tree block size (in bytes)
 	 *
 	 * This is only called between ->begin_enable_verity() and
 	 * ->end_enable_verity().
@@ -108,20 +127,42 @@ struct fsverity_operations {
 	 * Return: 0 on success, -errno on failure
 	 */
 	int (*write_merkle_tree_block)(struct inode *inode, const void *buf,
-				       u64 index, int log_blocksize);
+				       u64 pos, unsigned int size);
 };
 
 #ifdef CONFIG_FS_VERITY
 
+/*
+ * Returns the address of the verity info pointer within the filesystem-specific
+ * part of the inode.  (To save memory on filesystems that don't support
+ * fsverity, a field in 'struct inode' itself is no longer used.)
+ */
+static inline struct fsverity_info **
+fsverity_info_addr(const struct inode *inode)
+{
+	VFS_WARN_ON_ONCE(inode->i_sb->s_vop->inode_info_offs == 0);
+	return (void *)inode + inode->i_sb->s_vop->inode_info_offs;
+}
+
 static inline struct fsverity_info *fsverity_get_info(const struct inode *inode)
 {
 	/*
-	 * Pairs with the cmpxchg_release() in fsverity_set_info().
-	 * I.e., another task may publish ->i_verity_info concurrently,
-	 * executing a RELEASE barrier.  We need to use smp_load_acquire() here
-	 * to safely ACQUIRE the memory the other task published.
+	 * Since this function can be called on inodes belonging to filesystems
+	 * that don't support fsverity at all, and fsverity_info_addr() doesn't
+	 * work on such filesystems, we have to start with an IS_VERITY() check.
+	 * Checking IS_VERITY() here is also useful to minimize the overhead of
+	 * fsverity_active() on non-verity files.
 	 */
-	return smp_load_acquire(&inode->i_verity_info);
+	if (!IS_VERITY(inode))
+		return NULL;
+
+	/*
+	 * Pairs with the cmpxchg_release() in fsverity_set_info().  I.e.,
+	 * another task may publish the inode's verity info concurrently,
+	 * executing a RELEASE barrier.  Use smp_load_acquire() here to safely
+	 * ACQUIRE the memory the other task published.
+	 */
+	return smp_load_acquire(fsverity_info_addr(inode));
 }
 
 /* enable.c */
@@ -131,12 +172,34 @@ int fsverity_ioctl_enable(struct file *filp, const void __user *arg);
 /* measure.c */
 
 int fsverity_ioctl_measure(struct file *filp, void __user *arg);
+int fsverity_get_digest(struct inode *inode,
+			u8 raw_digest[FS_VERITY_MAX_DIGEST_SIZE],
+			u8 *alg, enum hash_algo *halg);
 
 /* open.c */
 
-int fsverity_file_open(struct inode *inode, struct file *filp);
-int fsverity_prepare_setattr(struct dentry *dentry, struct iattr *attr);
-void fsverity_cleanup_inode(struct inode *inode);
+int __fsverity_file_open(struct inode *inode, struct file *filp);
+int __fsverity_prepare_setattr(struct dentry *dentry, struct iattr *attr);
+void __fsverity_cleanup_inode(struct inode *inode);
+
+/**
+ * fsverity_cleanup_inode() - free the inode's verity info, if present
+ * @inode: an inode being evicted
+ *
+ * Filesystems must call this on inode eviction to free the inode's verity info.
+ */
+static inline void fsverity_cleanup_inode(struct inode *inode)
+{
+	/*
+	 * Only IS_VERITY() inodes can have verity info, so start by checking
+	 * for IS_VERITY() (which is faster than retrieving the pointer to the
+	 * verity info).  This minimizes overhead for non-verity inodes.
+	 */
+	if (IS_VERITY(inode))
+		__fsverity_cleanup_inode(inode);
+	else
+		VFS_WARN_ON_ONCE(*fsverity_info_addr(inode) != NULL);
+}
 
 /* read_metadata.c */
 
@@ -144,7 +207,7 @@ int fsverity_ioctl_read_metadata(struct file *filp, const void __user *uarg);
 
 /* verify.c */
 
-bool fsverity_verify_page(struct page *page);
+bool fsverity_verify_blocks(struct folio *folio, size_t len, size_t offset);
 void fsverity_verify_bio(struct bio *bio);
 void fsverity_enqueue_verify_work(struct work_struct *work);
 
@@ -170,17 +233,28 @@ static inline int fsverity_ioctl_measure(struct file *filp, void __user *arg)
 	return -EOPNOTSUPP;
 }
 
-/* open.c */
-
-static inline int fsverity_file_open(struct inode *inode, struct file *filp)
+static inline int fsverity_get_digest(struct inode *inode,
+				      u8 raw_digest[FS_VERITY_MAX_DIGEST_SIZE],
+				      u8 *alg, enum hash_algo *halg)
 {
-	return IS_VERITY(inode) ? -EOPNOTSUPP : 0;
+	/*
+	 * fsverity is not enabled in the kernel configuration, so always report
+	 * that the file doesn't have fsverity enabled (digest size 0).
+	 */
+	return 0;
 }
 
-static inline int fsverity_prepare_setattr(struct dentry *dentry,
-					   struct iattr *attr)
+/* open.c */
+
+static inline int __fsverity_file_open(struct inode *inode, struct file *filp)
 {
-	return IS_VERITY(d_inode(dentry)) ? -EOPNOTSUPP : 0;
+	return -EOPNOTSUPP;
+}
+
+static inline int __fsverity_prepare_setattr(struct dentry *dentry,
+					     struct iattr *attr)
+{
+	return -EOPNOTSUPP;
 }
 
 static inline void fsverity_cleanup_inode(struct inode *inode)
@@ -197,40 +271,89 @@ static inline int fsverity_ioctl_read_metadata(struct file *filp,
 
 /* verify.c */
 
-static inline bool fsverity_verify_page(struct page *page)
+static inline bool fsverity_verify_blocks(struct folio *folio, size_t len,
+					  size_t offset)
 {
-	WARN_ON(1);
+	WARN_ON_ONCE(1);
 	return false;
 }
 
 static inline void fsverity_verify_bio(struct bio *bio)
 {
-	WARN_ON(1);
+	WARN_ON_ONCE(1);
 }
 
 static inline void fsverity_enqueue_verify_work(struct work_struct *work)
 {
-	WARN_ON(1);
+	WARN_ON_ONCE(1);
 }
 
 #endif	/* !CONFIG_FS_VERITY */
+
+static inline bool fsverity_verify_folio(struct folio *folio)
+{
+	return fsverity_verify_blocks(folio, folio_size(folio), 0);
+}
+
+static inline bool fsverity_verify_page(struct page *page)
+{
+	return fsverity_verify_blocks(page_folio(page), PAGE_SIZE, 0);
+}
 
 /**
  * fsverity_active() - do reads from the inode need to go through fs-verity?
  * @inode: inode to check
  *
- * This checks whether ->i_verity_info has been set.
+ * This checks whether the inode's verity info has been set.
  *
- * Filesystems call this from ->readpages() to check whether the pages need to
+ * Filesystems call this from ->readahead() to check whether the pages need to
  * be verified or not.  Don't use IS_VERITY() for this purpose; it's subject to
  * a race condition where the file is being read concurrently with
- * FS_IOC_ENABLE_VERITY completing.  (S_VERITY is set before ->i_verity_info.)
+ * FS_IOC_ENABLE_VERITY completing.  (S_VERITY is set before the verity info.)
  *
  * Return: true if reads need to go through fs-verity, otherwise false
  */
 static inline bool fsverity_active(const struct inode *inode)
 {
 	return fsverity_get_info(inode) != NULL;
+}
+
+/**
+ * fsverity_file_open() - prepare to open a verity file
+ * @inode: the inode being opened
+ * @filp: the struct file being set up
+ *
+ * When opening a verity file, deny the open if it is for writing.  Otherwise,
+ * set up the inode's verity info if not already done.
+ *
+ * When combined with fscrypt, this must be called after fscrypt_file_open().
+ * Otherwise, we won't have the key set up to decrypt the verity metadata.
+ *
+ * Return: 0 on success, -errno on failure
+ */
+static inline int fsverity_file_open(struct inode *inode, struct file *filp)
+{
+	if (IS_VERITY(inode))
+		return __fsverity_file_open(inode, filp);
+	return 0;
+}
+
+/**
+ * fsverity_prepare_setattr() - prepare to change a verity inode's attributes
+ * @dentry: dentry through which the inode is being changed
+ * @attr: attributes to change
+ *
+ * Verity files are immutable, so deny truncates.  This isn't covered by the
+ * open-time check because sys_truncate() takes a path, not a file descriptor.
+ *
+ * Return: 0 on success, -errno on failure
+ */
+static inline int fsverity_prepare_setattr(struct dentry *dentry,
+					   struct iattr *attr)
+{
+	if (IS_VERITY(d_inode(dentry)))
+		return __fsverity_prepare_setattr(dentry, attr);
+	return 0;
 }
 
 #endif	/* _LINUX_FSVERITY_H */

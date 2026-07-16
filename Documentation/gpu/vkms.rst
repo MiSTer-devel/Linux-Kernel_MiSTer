@@ -89,6 +89,17 @@ You can also run subtests if you do not want to run the entire test::
   sudo ./build/tests/kms_flip --run-subtest basic-plain-flip --device "sys:/sys/devices/platform/vkms"
   sudo IGT_DEVICE="sys:/sys/devices/platform/vkms" ./build/tests/kms_flip --run-subtest basic-plain-flip
 
+Testing With KUnit
+==================
+
+KUnit (Kernel unit testing framework) provides a common framework for unit tests
+within the Linux kernel.
+More information in ../dev-tools/kunit/index.rst .
+
+To run the VKMS KUnit tests::
+
+  tools/testing/kunit/kunit.py run --kunitconfig=drivers/gpu/drm/vkms/tests
+
 TODO
 ====
 
@@ -101,12 +112,6 @@ IGT better support
 Debugging:
 
 - kms_plane: some test cases are failing due to timeout on capturing CRC;
-
-- kms_flip: when running test cases in sequence, some successful individual
-  test cases are failing randomly; when individually, some successful test
-  cases display in the log the following error::
-
-  [drm:vkms_prepare_fb [vkms]] ERROR vmap failed: -4
 
 Virtual hardware (vblank-less) mode:
 
@@ -124,24 +129,12 @@ Add Plane Features
 
 There's lots of plane features we could add support for:
 
-- Multiple overlay planes. [Good to get started]
+- Add background color KMS property[Good to get started].
 
-- Clearing primary plane: clear primary plane before plane composition (at the
-  start) for correctness of pixel blend ops. It also guarantees alpha channel
-  is cleared in the target buffer for stable crc. [Good to get started]
+- Scaling.
 
-- ARGB format on primary plane: blend the primary plane into background with
-  translucent alpha.
-
-- Support when the primary plane isn't exactly matching the output size: blend
-  the primary plane into the black background.
-
-- Full alpha blending on all planes.
-
-- Rotation, scaling.
-
-- Additional buffer formats, especially YUV formats for video like NV12.
-  Low/high bpp RGB formats would also be interesting.
+- Additional buffer formats. Low/high bpp RGB formats would be interesting
+  [Good to get started].
 
 - Async updates (currently only possible on cursor plane using the legacy
   cursor api).

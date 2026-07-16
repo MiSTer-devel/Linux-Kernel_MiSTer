@@ -16,13 +16,16 @@
 #include <linux/debugfs.h>
 #include <linux/device.h>
 #include <linux/ethtool.h>
+#include <linux/ethtool_netlink.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/netdevice.h>
+#include <linux/ptp_mock.h>
 #include <linux/u64_stats_sync.h>
 #include <net/devlink.h>
 #include <net/udp_tunnel.h>
 #include <net/xdp.h>
+#include <net/macsec.h>
 
 #define DRV_NAME	"netdevsim"
 
@@ -33,6 +36,8 @@
 #define NSIM_IPSEC_MAX_SA_COUNT		33
 #define NSIM_IPSEC_VALID		BIT(31)
 #define NSIM_UDP_TUNNEL_N_PORTS		4
+
+#define NSIM_HDS_THRESHOLD_MAX		1024
 
 struct nsim_sa {
 	struct xfrm_state *xs;
@@ -49,7 +54,25 @@ struct nsim_ipsec {
 	struct dentry *pfile;
 	u32 count;
 	u32 tx;
-	u32 ok;
+};
+
+#define NSIM_MACSEC_MAX_SECY_COUNT 3
+#define NSIM_MACSEC_MAX_RXSC_COUNT 1
+struct nsim_rxsc {
+	sci_t sci;
+	bool used;
+};
+
+struct nsim_secy {
+	sci_t sci;
+	struct nsim_rxsc nsim_rxsc[NSIM_MACSEC_MAX_RXSC_COUNT];
+	u8 nsim_rxsc_count;
+	bool used;
+};
+
+struct nsim_macsec {
+	struct nsim_secy nsim_secy[NSIM_MACSEC_MAX_SECY_COUNT];
+	u8 nsim_secy_count;
 };
 
 struct nsim_ethtool_pauseparam {
@@ -62,20 +85,34 @@ struct nsim_ethtool_pauseparam {
 struct nsim_ethtool {
 	u32 get_err;
 	u32 set_err;
+	u32 channels;
 	struct nsim_ethtool_pauseparam pauseparam;
 	struct ethtool_coalesce coalesce;
 	struct ethtool_ringparam ring;
 	struct ethtool_fecparam fec;
 };
 
+struct nsim_rq {
+	struct napi_struct napi;
+	struct sk_buff_head skb_queue;
+	struct page_pool *page_pool;
+	struct hrtimer napi_timer;
+};
+
 struct netdevsim {
 	struct net_device *netdev;
 	struct nsim_dev *nsim_dev;
 	struct nsim_dev_port *nsim_dev_port;
+	struct mock_phc *phc;
+	struct nsim_rq **rq;
 
-	u64 tx_packets;
-	u64 tx_bytes;
-	struct u64_stats_sync syncp;
+	int rq_reset_mode;
+
+	struct {
+		struct psp_dev *dev;
+		u32 spi;
+		u32 assoc_cnt;
+	} psp;
 
 	struct nsim_bus_dev *nsim_bus_dev;
 
@@ -92,20 +129,31 @@ struct netdevsim {
 
 	bool bpf_map_accept;
 	struct nsim_ipsec ipsec;
+	struct nsim_macsec macsec;
 	struct {
 		u32 inject_error;
-		u32 sleep;
 		u32 __ports[2][NSIM_UDP_TUNNEL_N_PORTS];
 		u32 (*ports)[NSIM_UDP_TUNNEL_N_PORTS];
+		struct dentry *ddir;
 		struct debugfs_u32_array dfs_ports[2];
 	} udp_ports;
 
+	struct page *page;
+	struct dentry *pp_dfs;
+	struct dentry *qr_dfs;
+
 	struct nsim_ethtool ethtool;
+	struct netdevsim __rcu *peer;
+
+	struct notifier_block nb;
+	struct netdev_net_notifier nn;
 };
 
-struct netdevsim *
-nsim_create(struct nsim_dev *nsim_dev, struct nsim_dev_port *nsim_dev_port);
+struct netdevsim *nsim_create(struct nsim_dev *nsim_dev,
+			      struct nsim_dev_port *nsim_dev_port,
+			      u8 perm_addr[ETH_ALEN]);
 void nsim_destroy(struct netdevsim *ns);
+bool netdev_is_nsim(struct net_device *dev);
 
 void nsim_ethtool_init(struct netdevsim *ns);
 
@@ -183,6 +231,28 @@ struct nsim_dev_health {
 int nsim_dev_health_init(struct nsim_dev *nsim_dev, struct devlink *devlink);
 void nsim_dev_health_exit(struct nsim_dev *nsim_dev);
 
+struct nsim_dev_hwstats_netdev {
+	struct list_head list;
+	struct net_device *netdev;
+	struct rtnl_hw_stats64 stats;
+	bool enabled;
+	bool fail_enable;
+};
+
+struct nsim_dev_hwstats {
+	struct dentry *ddir;
+	struct dentry *l3_ddir;
+
+	struct mutex hwsdev_list_lock; /* protects hwsdev list(s) */
+	struct list_head l3_list;
+
+	struct notifier_block netdevice_nb;
+	struct delayed_work traffic_dw;
+};
+
+int nsim_dev_hwstats_init(struct nsim_dev *nsim_dev);
+void nsim_dev_hwstats_exit(struct nsim_dev *nsim_dev);
+
 #if IS_ENABLED(CONFIG_PSAMPLE)
 int nsim_dev_psample_init(struct nsim_dev *nsim_dev);
 void nsim_dev_psample_exit(struct nsim_dev *nsim_dev);
@@ -213,7 +283,21 @@ struct nsim_dev_port {
 	struct dentry *ddir;
 	struct dentry *rate_parent;
 	char *parent_name;
+	u32 tc_bw[DEVLINK_RATE_TCS_MAX];
 	struct netdevsim *ns;
+};
+
+struct nsim_vf_config {
+	int link_state;
+	u16 min_tx_rate;
+	u16 max_tx_rate;
+	u16 vlan;
+	__be16 vlan_proto;
+	u16 qos;
+	u8 vf_mac[ETH_ALEN];
+	bool spoofchk_enabled;
+	bool trusted;
+	bool rss_query_enabled;
 };
 
 struct nsim_dev {
@@ -223,8 +307,10 @@ struct nsim_dev {
 	struct dentry *ddir;
 	struct dentry *ports_ddir;
 	struct dentry *take_snapshot;
-	struct dentry *max_vfs;
 	struct dentry *nodes_ddir;
+
+	struct nsim_vf_config *vfconfigs;
+
 	struct bpf_offload_dev *bpf_dev;
 	bool bpf_bind_accept;
 	bool bpf_bind_verifier_accept;
@@ -233,17 +319,19 @@ struct nsim_dev {
 	u32 prog_id_gen;
 	struct list_head bpf_bound_progs;
 	struct list_head bpf_bound_maps;
+	struct mutex progs_list_lock;
 	struct netdev_phys_item_id switch_id;
 	struct list_head port_list;
-	struct mutex port_list_lock; /* protects port list */
 	bool fw_update_status;
 	u32 fw_update_overwrite_mask;
+	u32 fw_update_flash_chunk_time_ms;
 	u32 max_macs;
 	bool test1;
 	bool dont_allow_reload;
 	bool fail_reload;
 	struct devlink_region *dummy_region;
 	struct nsim_dev_health health;
+	struct nsim_dev_hwstats hwstats;
 	struct flow_action_cookie *fa_cookie;
 	spinlock_t fa_cookie_lock; /* protects fa_cookie */
 	bool fail_trap_group_set;
@@ -258,14 +346,10 @@ struct nsim_dev {
 		bool ipv4_only;
 		bool shared;
 		bool static_iana_vxlan;
-		u32 sleep;
 	} udp_ports;
 	struct nsim_dev_psample *psample;
 	u16 esw_mode;
 };
-
-int nsim_esw_legacy_enable(struct nsim_dev *nsim_dev, struct netlink_ext_ack *extack);
-int nsim_esw_switchdev_enable(struct nsim_dev *nsim_dev, struct netlink_ext_ack *extack);
 
 static inline bool nsim_esw_mode_is_legacy(struct nsim_dev *nsim_dev)
 {
@@ -284,28 +368,24 @@ static inline struct net *nsim_dev_net(struct nsim_dev *nsim_dev)
 
 int nsim_dev_init(void);
 void nsim_dev_exit(void);
-int nsim_dev_probe(struct nsim_bus_dev *nsim_bus_dev);
-void nsim_dev_remove(struct nsim_bus_dev *nsim_bus_dev);
-int nsim_dev_port_add(struct nsim_bus_dev *nsim_bus_dev,
+int nsim_drv_probe(struct nsim_bus_dev *nsim_bus_dev);
+void nsim_drv_remove(struct nsim_bus_dev *nsim_bus_dev);
+int nsim_drv_port_add(struct nsim_bus_dev *nsim_bus_dev,
+		      enum nsim_dev_port_type type, unsigned int port_index,
+		      u8 perm_addr[ETH_ALEN]);
+int nsim_drv_port_del(struct nsim_bus_dev *nsim_bus_dev,
 		      enum nsim_dev_port_type type,
 		      unsigned int port_index);
-int nsim_dev_port_del(struct nsim_bus_dev *nsim_bus_dev,
-		      enum nsim_dev_port_type type,
-		      unsigned int port_index);
+int nsim_drv_configure_vfs(struct nsim_bus_dev *nsim_bus_dev,
+			   unsigned int num_vfs);
+
+unsigned int nsim_dev_get_vfs(struct nsim_dev *nsim_dev);
 
 struct nsim_fib_data *nsim_fib_create(struct devlink *devlink,
 				      struct netlink_ext_ack *extack);
 void nsim_fib_destroy(struct devlink *devlink, struct nsim_fib_data *fib_data);
 u64 nsim_fib_get_val(struct nsim_fib_data *fib_data,
 		     enum nsim_resource_id res_id, bool max);
-
-ssize_t nsim_bus_dev_max_vfs_read(struct file *file,
-				  char __user *data,
-				  size_t count, loff_t *ppos);
-ssize_t nsim_bus_dev_max_vfs_write(struct file *file,
-				   const char __user *data,
-				   size_t count, loff_t *ppos);
-void nsim_bus_dev_vfs_disable(struct nsim_bus_dev *nsim_bus_dev);
 
 static inline bool nsim_dev_port_is_pf(struct nsim_dev_port *nsim_dev_port)
 {
@@ -335,18 +415,39 @@ static inline bool nsim_ipsec_tx(struct netdevsim *ns, struct sk_buff *skb)
 }
 #endif
 
-struct nsim_vf_config {
-	int link_state;
-	u16 min_tx_rate;
-	u16 max_tx_rate;
-	u16 vlan;
-	__be16 vlan_proto;
-	u16 qos;
-	u8 vf_mac[ETH_ALEN];
-	bool spoofchk_enabled;
-	bool trusted;
-	bool rss_query_enabled;
-};
+#if IS_ENABLED(CONFIG_MACSEC)
+void nsim_macsec_init(struct netdevsim *ns);
+void nsim_macsec_teardown(struct netdevsim *ns);
+#else
+static inline void nsim_macsec_init(struct netdevsim *ns)
+{
+}
+
+static inline void nsim_macsec_teardown(struct netdevsim *ns)
+{
+}
+#endif
+
+#if IS_ENABLED(CONFIG_INET_PSP)
+int nsim_psp_init(struct netdevsim *ns);
+void nsim_psp_uninit(struct netdevsim *ns);
+void nsim_psp_handle_ext(struct sk_buff *skb, struct skb_ext *psp_ext);
+enum skb_drop_reason
+nsim_do_psp(struct sk_buff *skb, struct netdevsim *ns,
+	    struct netdevsim *peer_ns, struct skb_ext **psp_ext);
+#else
+static inline int nsim_psp_init(struct netdevsim *ns) { return 0; }
+static inline void nsim_psp_uninit(struct netdevsim *ns) {}
+static inline enum skb_drop_reason
+nsim_do_psp(struct sk_buff *skb, struct netdevsim *ns,
+	    struct netdevsim *peer_ns, struct skb_ext **psp_ext)
+{
+	return 0;
+}
+
+static inline void
+nsim_psp_handle_ext(struct sk_buff *skb, struct skb_ext *psp_ext) {}
+#endif
 
 struct nsim_bus_dev {
 	struct device dev;
@@ -358,11 +459,6 @@ struct nsim_bus_dev {
 				  */
 	unsigned int max_vfs;
 	unsigned int num_vfs;
-	struct mutex vfs_lock;  /* Protects vfconfigs */
-	struct nsim_vf_config *vfconfigs;
-	/* Lock for devlink->reload_enabled in netdevsim module */
-	struct mutex nsim_bus_reload_lock;
-	bool in_reload;
 	bool init;
 };
 

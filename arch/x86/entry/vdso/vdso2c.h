@@ -150,26 +150,6 @@ static void BITSFUNC(go)(void *raw_addr, size_t raw_len,
 		}
 	}
 
-	/* Validate mapping addresses. */
-	for (i = 0; i < sizeof(special_pages) / sizeof(special_pages[0]); i++) {
-		INT_BITS symval = syms[special_pages[i]];
-
-		if (!symval)
-			continue;  /* The mapping isn't used; ignore it. */
-
-		if (symval % 4096)
-			fail("%s must be a multiple of 4096\n",
-			     required_syms[i].name);
-		if (symval + 4096 < syms[sym_vvar_start])
-			fail("%s underruns vvar_start\n",
-			     required_syms[i].name);
-		if (symval + 4096 > 0)
-			fail("%s is on the wrong side of the vdso text\n",
-			     required_syms[i].name);
-	}
-	if (syms[sym_vvar_start] % 4096)
-		fail("vvar_begin must be a multiple of 4096\n");
-
 	if (!image_name) {
 		fwrite(stripped_addr, stripped_len, 1, outfile);
 		return;
@@ -179,6 +159,7 @@ static void BITSFUNC(go)(void *raw_addr, size_t raw_len,
 
 	fprintf(outfile, "/* AUTOMATICALLY GENERATED -- DO NOT EDIT */\n\n");
 	fprintf(outfile, "#include <linux/linkage.h>\n");
+	fprintf(outfile, "#include <linux/init.h>\n");
 	fprintf(outfile, "#include <asm/page_types.h>\n");
 	fprintf(outfile, "#include <asm/vdso.h>\n");
 	fprintf(outfile, "\n");
@@ -218,5 +199,10 @@ static void BITSFUNC(go)(void *raw_addr, size_t raw_len,
 			fprintf(outfile, "\t.sym_%s = %" PRIi64 ",\n",
 				required_syms[i].name, (int64_t)syms[i]);
 	}
+	fprintf(outfile, "};\n\n");
+	fprintf(outfile, "static __init int init_%s(void) {\n", image_name);
+	fprintf(outfile, "\treturn init_vdso_image(&%s);\n", image_name);
 	fprintf(outfile, "};\n");
+	fprintf(outfile, "subsys_initcall(init_%s);\n", image_name);
+
 }

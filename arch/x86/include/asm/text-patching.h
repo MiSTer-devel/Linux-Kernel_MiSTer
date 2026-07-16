@@ -6,26 +6,16 @@
 #include <linux/stddef.h>
 #include <asm/ptrace.h>
 
-struct paravirt_patch_site;
-#ifdef CONFIG_PARAVIRT
-void apply_paravirt(struct paravirt_patch_site *start,
-		    struct paravirt_patch_site *end);
-#else
-static inline void apply_paravirt(struct paravirt_patch_site *start,
-				  struct paravirt_patch_site *end)
-{}
-#define __parainstructions	NULL
-#define __parainstructions_end	NULL
-#endif
-
 /*
  * Currently, the max observed size in the kernel code is
  * JUMP_LABEL_NOP_SIZE/RELATIVEJUMP_SIZE, which are 5.
  * Raise it if needed.
  */
-#define POKE_MAX_OPCODE_SIZE	5
+#define TEXT_POKE_MAX_OPCODE_SIZE	5
 
 extern void text_poke_early(void *addr, const void *opcode, size_t len);
+
+extern void text_poke_apply_relocation(u8 *buf, const u8 * const instr, size_t instrlen, u8 *repl, size_t repl_len);
 
 /*
  * Clear and restore the kernel write-protection flag on the local CPU.
@@ -42,13 +32,17 @@ extern void text_poke_early(void *addr, const void *opcode, size_t len);
  * an inconsistent instruction while you patch.
  */
 extern void *text_poke(void *addr, const void *opcode, size_t len);
-extern void text_poke_sync(void);
+extern void smp_text_poke_sync_each_cpu(void);
 extern void *text_poke_kgdb(void *addr, const void *opcode, size_t len);
-extern int poke_int3_handler(struct pt_regs *regs);
-extern void text_poke_bp(void *addr, const void *opcode, size_t len, const void *emulate);
+extern void *text_poke_copy(void *addr, const void *opcode, size_t len);
+#define text_poke_copy text_poke_copy
+extern void *text_poke_copy_locked(void *addr, const void *opcode, size_t len, bool core_ok);
+extern void *text_poke_set(void *addr, int c, size_t len);
+extern int smp_text_poke_int3_handler(struct pt_regs *regs);
+extern void smp_text_poke_single(void *addr, const void *opcode, size_t len, const void *emulate);
 
-extern void text_poke_queue(void *addr, const void *opcode, size_t len, const void *emulate);
-extern void text_poke_finish(void);
+extern void smp_text_poke_batch_add(void *addr, const void *opcode, size_t len, const void *emulate);
+extern void smp_text_poke_batch_finish(void);
 
 #define INT3_INSN_SIZE		1
 #define INT3_INSN_OPCODE	0xCC
@@ -88,7 +82,7 @@ static __always_inline int text_opcode_size(u8 opcode)
 }
 
 union text_poke_insn {
-	u8 text[POKE_MAX_OPCODE_SIZE];
+	u8 text[TEXT_POKE_MAX_OPCODE_SIZE];
 	struct {
 		u8 opcode;
 		s32 disp;
@@ -96,30 +90,46 @@ union text_poke_insn {
 };
 
 static __always_inline
+void __text_gen_insn(void *buf, u8 opcode, const void *addr, const void *dest, int size)
+{
+	union text_poke_insn *insn = buf;
+
+	BUG_ON(size < text_opcode_size(opcode));
+
+	/*
+	 * Hide the addresses to avoid the compiler folding in constants when
+	 * referencing code, these can mess up annotations like
+	 * ANNOTATE_NOENDBR.
+	 */
+	OPTIMIZER_HIDE_VAR(insn);
+	OPTIMIZER_HIDE_VAR(addr);
+	OPTIMIZER_HIDE_VAR(dest);
+
+	insn->opcode = opcode;
+
+	if (size > 1) {
+		insn->disp = (long)dest - (long)(addr + size);
+		if (size == 2) {
+			/*
+			 * Ensure that for JMP8 the displacement
+			 * actually fits the signed byte.
+			 */
+			BUG_ON((insn->disp >> 31) != (insn->disp >> 7));
+		}
+	}
+}
+
+static __always_inline
 void *text_gen_insn(u8 opcode, const void *addr, const void *dest)
 {
 	static union text_poke_insn insn; /* per instance */
-	int size = text_opcode_size(opcode);
-
-	insn.opcode = opcode;
-
-	if (size > 1) {
-		insn.disp = (long)dest - (long)(addr + size);
-		if (size == 2) {
-			/*
-			 * Ensure that for JMP9 the displacement
-			 * actually fits the signed byte.
-			 */
-			BUG_ON((insn.disp >> 31) != (insn.disp >> 7));
-		}
-	}
-
+	__text_gen_insn(&insn, opcode, addr, dest, text_opcode_size(opcode));
 	return &insn.text;
 }
 
 extern int after_bootmem;
-extern __ro_after_init struct mm_struct *poking_mm;
-extern __ro_after_init unsigned long poking_addr;
+extern __ro_after_init struct mm_struct *text_poke_mm;
+extern __ro_after_init unsigned long text_poke_mm_addr;
 
 #ifndef CONFIG_UML_X86
 static __always_inline
@@ -132,13 +142,14 @@ static __always_inline
 void int3_emulate_push(struct pt_regs *regs, unsigned long val)
 {
 	/*
-	 * The int3 handler in entry_64.S adds a gap between the
+	 * The INT3 handler in entry_64.S adds a gap between the
 	 * stack where the break point happened, and the saving of
 	 * pt_regs. We can extend the original stack because of
-	 * this gap. See the idtentry macro's create_gap option.
+	 * this gap. See the idtentry macro's X86_TRAP_BP logic.
 	 *
-	 * Similarly entry_32.S will have a gap on the stack for (any) hardware
-	 * exception and pt_regs; see FIXUP_FRAME.
+	 * Similarly, entry_32.S will have a gap on the stack for
+	 * (any) hardware exception and pt_regs; see the
+	 * FIXUP_FRAME macro.
 	 */
 	regs->sp -= sizeof(unsigned long);
 	*(unsigned long *)regs->sp = val;
@@ -165,6 +176,43 @@ void int3_emulate_ret(struct pt_regs *regs)
 	unsigned long ip = int3_emulate_pop(regs);
 	int3_emulate_jmp(regs, ip);
 }
+
+static __always_inline
+bool __emulate_cc(unsigned long flags, u8 cc)
+{
+	static const unsigned long cc_mask[6] = {
+		[0] = X86_EFLAGS_OF,
+		[1] = X86_EFLAGS_CF,
+		[2] = X86_EFLAGS_ZF,
+		[3] = X86_EFLAGS_CF | X86_EFLAGS_ZF,
+		[4] = X86_EFLAGS_SF,
+		[5] = X86_EFLAGS_PF,
+	};
+
+	bool invert = cc & 1;
+	bool match;
+
+	if (cc < 0xc) {
+		match = flags & cc_mask[cc >> 1];
+	} else {
+		match = ((flags & X86_EFLAGS_SF) >> X86_EFLAGS_SF_BIT) ^
+			((flags & X86_EFLAGS_OF) >> X86_EFLAGS_OF_BIT);
+		if (cc >= 0xe)
+			match = match || (flags & X86_EFLAGS_ZF);
+	}
+
+	return (match && !invert) || (!match && invert);
+}
+
+static __always_inline
+void int3_emulate_jcc(struct pt_regs *regs, u8 cc, unsigned long ip, unsigned long disp)
+{
+	if (__emulate_cc(regs->flags, cc))
+		ip += disp;
+
+	int3_emulate_jmp(regs, ip);
+}
+
 #endif /* !CONFIG_UML_X86 */
 
 #endif /* _ASM_X86_TEXT_PATCHING_H */

@@ -35,11 +35,9 @@
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/interrupt.h>
-
-#include "../comedidev.h"
-
-#include "comedi_isadma.h"
-#include "comedi_8254.h"
+#include <linux/comedi/comedidev.h>
+#include <linux/comedi/comedi_8254.h>
+#include <linux/comedi/comedi_isadma.h>
 
 /*
  * Register I/O map
@@ -617,10 +615,10 @@ static int pcl816_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 	/* an IRQ and DMA are required to support async commands */
 	pcl816_alloc_irq_and_dma(dev, it);
 
-	dev->pacer = comedi_8254_init(dev->iobase + PCL816_TIMER_BASE,
-				      I8254_OSC_BASE_10MHZ, I8254_IO8, 0);
-	if (!dev->pacer)
-		return -ENOMEM;
+	dev->pacer = comedi_8254_io_alloc(dev->iobase + PCL816_TIMER_BASE,
+					  I8254_OSC_BASE_10MHZ, I8254_IO8, 0);
+	if (IS_ERR(dev->pacer))
+		return PTR_ERR(dev->pacer);
 
 	ret = comedi_alloc_subdevices(dev, 4);
 	if (ret)

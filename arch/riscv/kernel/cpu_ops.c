@@ -8,39 +8,26 @@
 #include <linux/of.h>
 #include <linux/string.h>
 #include <linux/sched.h>
-#include <linux/sched/task_stack.h>
 #include <asm/cpu_ops.h>
+#include <asm/cpu_ops_sbi.h>
 #include <asm/sbi.h>
 #include <asm/smp.h>
 
-const struct cpu_operations *cpu_ops[NR_CPUS] __ro_after_init;
-
-void *__cpu_up_stack_pointer[NR_CPUS] __section(".data");
-void *__cpu_up_task_pointer[NR_CPUS] __section(".data");
+const struct cpu_operations *cpu_ops __ro_after_init = &cpu_ops_spinwait;
 
 extern const struct cpu_operations cpu_ops_sbi;
-extern const struct cpu_operations cpu_ops_spinwait;
+#ifndef CONFIG_RISCV_BOOT_SPINWAIT
+const struct cpu_operations cpu_ops_spinwait = {
+	.cpu_start	= NULL,
+};
+#endif
 
-void cpu_update_secondary_bootdata(unsigned int cpuid,
-				   struct task_struct *tidle)
-{
-	int hartid = cpuid_to_hartid_map(cpuid);
-
-	/* Make sure tidle is updated */
-	smp_mb();
-	WRITE_ONCE(__cpu_up_stack_pointer[hartid],
-		   task_stack_page(tidle) + THREAD_SIZE);
-	WRITE_ONCE(__cpu_up_task_pointer[hartid], tidle);
-}
-
-void __init cpu_set_ops(int cpuid)
+void __init cpu_set_ops(void)
 {
 #if IS_ENABLED(CONFIG_RISCV_SBI)
-	if (sbi_probe_extension(SBI_EXT_HSM) > 0) {
-		if (!cpuid)
-			pr_info("SBI v0.2 HSM extension detected\n");
-		cpu_ops[cpuid] = &cpu_ops_sbi;
-	} else
+	if (sbi_probe_extension(SBI_EXT_HSM)) {
+		pr_info("SBI HSM extension detected\n");
+		cpu_ops = &cpu_ops_sbi;
+	}
 #endif
-		cpu_ops[cpuid] = &cpu_ops_spinwait;
 }

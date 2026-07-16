@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2014      Protonic Holland,
  *                         David Jander
- * Copyright (C) 2014-2021 Pengutronix,
+ * Copyright (C) 2014-2021, 2023 Pengutronix,
  *                         Marc Kleine-Budde <kernel@pengutronix.de>
  */
 
@@ -54,8 +54,11 @@ static int can_rx_offload_napi_poll(struct napi_struct *napi, int quota)
 		struct can_frame *cf = (struct can_frame *)skb->data;
 
 		work_done++;
-		stats->rx_packets++;
-		stats->rx_bytes += cf->len;
+		if (!(cf->can_id & CAN_ERR_FLAG)) {
+			stats->rx_packets++;
+			if (!(cf->can_id & CAN_RTR_FLAG))
+				stats->rx_bytes += cf->len;
+		}
 		netif_receive_skb(skb);
 	}
 
@@ -64,10 +67,8 @@ static int can_rx_offload_napi_poll(struct napi_struct *napi, int quota)
 
 		/* Check if there was another interrupt */
 		if (!skb_queue_empty(&offload->skb_queue))
-			napi_reschedule(&offload->napi);
+			napi_schedule(&offload->napi);
 	}
-
-	can_led_event(offload->dev, CAN_LED_EVENT_RX);
 
 	return work_done;
 }
@@ -218,8 +219,8 @@ int can_rx_offload_irq_offload_fifo(struct can_rx_offload *offload)
 }
 EXPORT_SYMBOL_GPL(can_rx_offload_irq_offload_fifo);
 
-int can_rx_offload_queue_sorted(struct can_rx_offload *offload,
-				struct sk_buff *skb, u32 timestamp)
+int can_rx_offload_queue_timestamp(struct can_rx_offload *offload,
+				   struct sk_buff *skb, u32 timestamp)
 {
 	struct can_rx_offload_cb *cb;
 
@@ -237,23 +238,24 @@ int can_rx_offload_queue_sorted(struct can_rx_offload *offload,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(can_rx_offload_queue_sorted);
+EXPORT_SYMBOL_GPL(can_rx_offload_queue_timestamp);
 
-unsigned int can_rx_offload_get_echo_skb(struct can_rx_offload *offload,
-					 unsigned int idx, u32 timestamp,
-					 unsigned int *frame_len_ptr)
+unsigned int
+can_rx_offload_get_echo_skb_queue_timestamp(struct can_rx_offload *offload,
+					    unsigned int idx, u32 timestamp,
+					    unsigned int *frame_len_ptr)
 {
 	struct net_device *dev = offload->dev;
 	struct net_device_stats *stats = &dev->stats;
 	struct sk_buff *skb;
-	u8 len;
+	unsigned int len;
 	int err;
 
 	skb = __can_get_echo_skb(dev, idx, &len, frame_len_ptr);
 	if (!skb)
 		return 0;
 
-	err = can_rx_offload_queue_sorted(offload, skb, timestamp);
+	err = can_rx_offload_queue_timestamp(offload, skb, timestamp);
 	if (err) {
 		stats->rx_errors++;
 		stats->tx_fifo_errors++;
@@ -261,7 +263,7 @@ unsigned int can_rx_offload_get_echo_skb(struct can_rx_offload *offload,
 
 	return len;
 }
-EXPORT_SYMBOL_GPL(can_rx_offload_get_echo_skb);
+EXPORT_SYMBOL_GPL(can_rx_offload_get_echo_skb_queue_timestamp);
 
 int can_rx_offload_queue_tail(struct can_rx_offload *offload,
 			      struct sk_buff *skb)
@@ -277,6 +279,31 @@ int can_rx_offload_queue_tail(struct can_rx_offload *offload,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(can_rx_offload_queue_tail);
+
+unsigned int
+can_rx_offload_get_echo_skb_queue_tail(struct can_rx_offload *offload,
+				       unsigned int idx,
+				       unsigned int *frame_len_ptr)
+{
+	struct net_device *dev = offload->dev;
+	struct net_device_stats *stats = &dev->stats;
+	struct sk_buff *skb;
+	unsigned int len;
+	int err;
+
+	skb = __can_get_echo_skb(dev, idx, &len, frame_len_ptr);
+	if (!skb)
+		return 0;
+
+	err = can_rx_offload_queue_tail(offload, skb);
+	if (err) {
+		stats->rx_errors++;
+		stats->tx_fifo_errors++;
+	}
+
+	return len;
+}
+EXPORT_SYMBOL_GPL(can_rx_offload_get_echo_skb_queue_tail);
 
 void can_rx_offload_irq_finish(struct can_rx_offload *offload)
 {
@@ -328,13 +355,14 @@ static int can_rx_offload_init_queue(struct net_device *dev,
 {
 	offload->dev = dev;
 
-	/* Limit queue len to 4x the weight (rounted to next power of two) */
+	/* Limit queue len to 4x the weight (rounded to next power of two) */
 	offload->skb_queue_len_max = 2 << fls(weight);
 	offload->skb_queue_len_max *= 4;
 	skb_queue_head_init(&offload->skb_queue);
 	__skb_queue_head_init(&offload->skb_irq_queue);
 
-	netif_napi_add(dev, &offload->napi, can_rx_offload_napi_poll, weight);
+	netif_napi_add_weight(dev, &offload->napi, can_rx_offload_napi_poll,
+			      weight);
 
 	dev_dbg(dev->dev.parent, "%s: skb_queue_len_max=%d\n",
 		__func__, offload->skb_queue_len_max);

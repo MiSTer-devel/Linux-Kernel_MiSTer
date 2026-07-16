@@ -44,8 +44,8 @@ struct stp_sstpi {
 	u32		: 32;
 	u32 ctnid[3];
 	u32		: 32;
-	u32 todoff[4];
-	u32 rsvd[48];
+	u64 todoff;
+	u32 rsvd[50];
 } __packed;
 
 struct stp_tzib {
@@ -94,5 +94,6 @@ struct stp_stzi {
 int stp_sync_check(void);
 int stp_island_check(void);
 void stp_queue_work(void);
+bool stp_enabled(void);
 
 #endif /* __S390_STP_H */

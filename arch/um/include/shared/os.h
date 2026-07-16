@@ -11,6 +11,12 @@
 #include <irq_user.h>
 #include <longjmp.h>
 #include <mm_id.h>
+/* This is to get size_t */
+#ifndef __UM_HOST__
+#include <linux/types.h>
+#else
+#include <sys/types.h>
+#endif
 
 #define CATCH_EINTR(expr) while ((errno = 0, ((expr) < 0)) && (errno == EINTR))
 
@@ -137,9 +143,7 @@ extern int os_access(const char *file, int mode);
 extern int os_set_exec_close(int fd);
 extern int os_ioctl_generic(int fd, unsigned int cmd, unsigned long arg);
 extern int os_get_ifname(int fd, char *namebuf);
-extern int os_set_slip(int fd);
 extern int os_mode_fd(int fd, int mode);
-extern int os_fsync_file(int fd);
 
 extern int os_seek_file(int fd, unsigned long long offset);
 extern int os_open_file(const char *file, struct openflags flags, int mode);
@@ -157,30 +161,26 @@ extern int os_set_fd_block(int fd, int blocking);
 extern int os_accept_connection(int fd);
 extern int os_create_unix_socket(const char *file, int len, int close_on_exec);
 extern int os_shutdown_socket(int fd, int r, int w);
+extern int os_dup_file(int fd);
 extern void os_close_file(int fd);
-extern int os_rcv_fd(int fd, int *helper_pid_out);
-extern int create_unix_socket(char *file, int len, int close_on_exec);
+ssize_t os_rcv_fd_msg(int fd, int *fds, unsigned int n_fds,
+		      void *data, size_t data_len);
 extern int os_connect_socket(const char *name);
 extern int os_file_type(char *file);
 extern int os_file_mode(const char *file, struct openflags *mode_out);
 extern int os_lock_file(int fd, int excl);
 extern void os_flush_stdout(void);
-extern int os_stat_filesystem(char *path, long *bsize_out,
-			      long long *blocks_out, long long *bfree_out,
-			      long long *bavail_out, long long *files_out,
-			      long long *ffree_out, void *fsid_out,
-			      int fsid_size, long *namelen_out,
-			      long *spare_out);
-extern int os_change_dir(char *dir);
-extern int os_fchange_dir(int fd);
 extern unsigned os_major(unsigned long long dev);
 extern unsigned os_minor(unsigned long long dev);
 extern unsigned long long os_makedev(unsigned major, unsigned minor);
 extern int os_falloc_punch(int fd, unsigned long long offset, int count);
+extern int os_falloc_zeroes(int fd, unsigned long long offset, int count);
 extern int os_eventfd(unsigned int initval, int flags);
 extern int os_sendmsg_fds(int fd, const void *buf, unsigned int len,
 			  const int *fds, unsigned int fds_num);
 int os_poll(unsigned int n, const int *fds);
+void *os_mmap_rw_shared(int fd, size_t size);
+void *os_mremap_rw_shared(void *old_addr, size_t old_size, size_t new_size);
 
 /* start_up.c */
 extern void os_early_checks(void);
@@ -193,16 +193,16 @@ extern void get_host_cpu_features(
 /* mem.c */
 extern int create_mem_file(unsigned long long len);
 
+/* tlb.c */
+extern void report_enomem(void);
+
 /* process.c */
-extern unsigned long os_process_pc(int pid);
-extern int os_process_parent(int pid);
+pid_t os_reap_child(void);
 extern void os_alarm_process(int pid);
-extern void os_stop_process(int pid);
 extern void os_kill_process(int pid, int reap_child);
 extern void os_kill_ptraced_process(int pid, int reap_child);
 
 extern int os_getpid(void);
-extern int os_getpgrp(void);
 
 extern void init_new_thread_signals(void);
 
@@ -213,7 +213,8 @@ extern int os_protect_memory(void *addr, unsigned long len,
 extern int os_unmap_memory(void *addr, int len);
 extern int os_drop_memory(void *addr, int length);
 extern int can_drop_memory(void);
-extern int os_mincore(void *addr, unsigned long len);
+
+void os_set_pdeathsig(void);
 
 /* execvp.c */
 extern int execvp_noalloc(char *buf, const char *file, char *const argv[]);
@@ -223,6 +224,11 @@ extern int run_helper_thread(int (*proc)(void *), void *arg,
 			     unsigned int flags, unsigned long *stack_out);
 extern int helper_wait(int pid);
 
+struct os_helper_thread;
+int os_run_helper_thread(struct os_helper_thread **td_out,
+			 void *(*routine)(void *), void *arg);
+void os_kill_helper_thread(struct os_helper_thread *td);
+void os_fix_helper_thread_signals(void);
 
 /* umid.c */
 extern int umid_file_name(char *name, char *buf, int len);
@@ -232,15 +238,13 @@ extern char *get_umid(void);
 /* signal.c */
 extern void timer_set_signal_handler(void);
 extern void set_sigstack(void *sig_stack, int size);
-extern void remove_sigstack(void);
 extern void set_handler(int sig);
 extern void send_sigio_to_self(void);
 extern int change_sig(int signal, int on);
 extern void block_signals(void);
 extern void unblock_signals(void);
-extern int set_signals(int enable);
-extern int set_signals_trace(int enable);
-extern int os_is_signal_stack(void);
+extern int um_set_signals(int enable);
+extern int um_set_signals_trace(int enable);
 extern void deliver_alarm(void);
 extern void register_pm_wake_signal(void);
 extern void block_signals_hard(void);
@@ -252,6 +256,7 @@ extern void stack_protections(unsigned long address);
 extern int raw(int fd);
 extern void setup_machinename(char *machine_out);
 extern void setup_hostinfo(char *buf, int len);
+extern ssize_t os_getrandom(void *buf, size_t len, unsigned int flags);
 extern void os_dump_core(void) __attribute__ ((noreturn));
 extern void um_early_printk(const char *s, unsigned int n);
 extern void os_fix_helper_signals(void);
@@ -266,32 +271,23 @@ extern int os_timer_create(void);
 extern int os_timer_set_interval(unsigned long long nsecs);
 extern int os_timer_one_shot(unsigned long long nsecs);
 extern void os_timer_disable(void);
-extern void uml_idle_timer(void);
 extern long long os_persistent_clock_emulation(void);
 extern long long os_nsecs(void);
 
 /* skas/mem.c */
-extern long run_syscall_stub(struct mm_id * mm_idp,
-			     int syscall, unsigned long *args, long expected,
-			     void **addr, int done);
-extern long syscall_stub_data(struct mm_id * mm_idp,
-			      unsigned long *data, int data_count,
-			      void **addr, void **stub_addr);
-extern int map(struct mm_id * mm_idp, unsigned long virt,
-	       unsigned long len, int prot, int phys_fd,
-	       unsigned long long offset, int done, void **data);
-extern int unmap(struct mm_id * mm_idp, unsigned long addr, unsigned long len,
-		 int done, void **data);
-extern int protect(struct mm_id * mm_idp, unsigned long addr,
-		   unsigned long len, unsigned int prot, int done, void **data);
+int syscall_stub_flush(struct mm_id *mm_idp);
+struct stub_syscall *syscall_stub_alloc(struct mm_id *mm_idp);
+void syscall_stub_dump_error(struct mm_id *mm_idp);
+
+int map(struct mm_id *mm_idp, unsigned long virt,
+	unsigned long len, int prot, int phys_fd,
+	unsigned long long offset);
+int unmap(struct mm_id *mm_idp, unsigned long addr, unsigned long len);
 
 /* skas/process.c */
 extern int is_skas_winch(int pid, int fd, void *data);
-extern int start_userspace(unsigned long stub_stack);
-extern int copy_context_skas0(unsigned long stack, int pid);
-extern void userspace(struct uml_pt_regs *regs, unsigned long *aux_fp_regs);
-extern int map_stub_pages(int fd, unsigned long code, unsigned long data,
-			  unsigned long stack);
+extern int start_userspace(struct mm_id *mm_id);
+extern void userspace(struct uml_pt_regs *regs);
 extern void new_thread(void *stack, jmp_buf *buf, void (*handler)(void));
 extern void switch_threads(jmp_buf *me, jmp_buf *you);
 extern int start_idle_thread(void *stack, jmp_buf *switch_buf);
@@ -318,7 +314,7 @@ extern void um_irqs_resume(void);
 extern int add_sigio_fd(int fd);
 extern int ignore_sigio_fd(int fd);
 extern void maybe_sigio_broken(int fd);
-extern void sigio_broken(int fd);
+extern void sigio_broken(void);
 /*
  * unlocked versions for IRQ controller code.
  *
@@ -328,14 +324,8 @@ extern void sigio_broken(int fd);
 extern int __add_sigio_fd(int fd);
 extern int __ignore_sigio_fd(int fd);
 
-/* prctl.c */
-extern int os_arch_prctl(int pid, int option, unsigned long *arg2);
-
 /* tty.c */
 extern int get_pty(void);
-
-/* sys-$ARCH/task_size.c */
-extern unsigned long os_get_top_address(void);
 
 long syscall(long number, ...);
 

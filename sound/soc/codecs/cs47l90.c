@@ -37,56 +37,56 @@ struct cs47l90 {
 	struct madera_fll fll[3];
 };
 
-static const struct wm_adsp_region cs47l90_dsp1_regions[] = {
+static const struct cs_dsp_region cs47l90_dsp1_regions[] = {
 	{ .type = WMFW_ADSP2_PM, .base = 0x080000 },
 	{ .type = WMFW_ADSP2_ZM, .base = 0x0e0000 },
 	{ .type = WMFW_ADSP2_XM, .base = 0x0a0000 },
 	{ .type = WMFW_ADSP2_YM, .base = 0x0c0000 },
 };
 
-static const struct wm_adsp_region cs47l90_dsp2_regions[] = {
+static const struct cs_dsp_region cs47l90_dsp2_regions[] = {
 	{ .type = WMFW_ADSP2_PM, .base = 0x100000 },
 	{ .type = WMFW_ADSP2_ZM, .base = 0x160000 },
 	{ .type = WMFW_ADSP2_XM, .base = 0x120000 },
 	{ .type = WMFW_ADSP2_YM, .base = 0x140000 },
 };
 
-static const struct wm_adsp_region cs47l90_dsp3_regions[] = {
+static const struct cs_dsp_region cs47l90_dsp3_regions[] = {
 	{ .type = WMFW_ADSP2_PM, .base = 0x180000 },
 	{ .type = WMFW_ADSP2_ZM, .base = 0x1e0000 },
 	{ .type = WMFW_ADSP2_XM, .base = 0x1a0000 },
 	{ .type = WMFW_ADSP2_YM, .base = 0x1c0000 },
 };
 
-static const struct wm_adsp_region cs47l90_dsp4_regions[] = {
+static const struct cs_dsp_region cs47l90_dsp4_regions[] = {
 	{ .type = WMFW_ADSP2_PM, .base = 0x200000 },
 	{ .type = WMFW_ADSP2_ZM, .base = 0x260000 },
 	{ .type = WMFW_ADSP2_XM, .base = 0x220000 },
 	{ .type = WMFW_ADSP2_YM, .base = 0x240000 },
 };
 
-static const struct wm_adsp_region cs47l90_dsp5_regions[] = {
+static const struct cs_dsp_region cs47l90_dsp5_regions[] = {
 	{ .type = WMFW_ADSP2_PM, .base = 0x280000 },
 	{ .type = WMFW_ADSP2_ZM, .base = 0x2e0000 },
 	{ .type = WMFW_ADSP2_XM, .base = 0x2a0000 },
 	{ .type = WMFW_ADSP2_YM, .base = 0x2c0000 },
 };
 
-static const struct wm_adsp_region cs47l90_dsp6_regions[] = {
+static const struct cs_dsp_region cs47l90_dsp6_regions[] = {
 	{ .type = WMFW_ADSP2_PM, .base = 0x300000 },
 	{ .type = WMFW_ADSP2_ZM, .base = 0x360000 },
 	{ .type = WMFW_ADSP2_XM, .base = 0x320000 },
 	{ .type = WMFW_ADSP2_YM, .base = 0x340000 },
 };
 
-static const struct wm_adsp_region cs47l90_dsp7_regions[] = {
+static const struct cs_dsp_region cs47l90_dsp7_regions[] = {
 	{ .type = WMFW_ADSP2_PM, .base = 0x380000 },
 	{ .type = WMFW_ADSP2_ZM, .base = 0x3e0000 },
 	{ .type = WMFW_ADSP2_XM, .base = 0x3a0000 },
 	{ .type = WMFW_ADSP2_YM, .base = 0x3c0000 },
 };
 
-static const struct wm_adsp_region *cs47l90_dsp_regions[] = {
+static const struct cs_dsp_region *cs47l90_dsp_regions[] = {
 	cs47l90_dsp1_regions,
 	cs47l90_dsp2_regions,
 	cs47l90_dsp3_regions,
@@ -2168,6 +2168,10 @@ static int cs47l90_set_fll(struct snd_soc_component *component, int fll_id,
 	}
 }
 
+static const struct snd_soc_dai_ops cs47l90_dai_ops = {
+	.compress_new = snd_soc_new_compress,
+};
+
 static struct snd_soc_dai_driver cs47l90_dai[] = {
 	{
 		.name = "cs47l90-aif1",
@@ -2323,7 +2327,7 @@ static struct snd_soc_dai_driver cs47l90_dai[] = {
 			.rates = MADERA_RATES,
 			.formats = MADERA_FORMATS,
 		},
-		.compress_new = &snd_soc_new_compress,
+		.ops = &cs47l90_dai_ops,
 	},
 	{
 		.name = "cs47l90-dsp-voicectrl",
@@ -2344,7 +2348,7 @@ static struct snd_soc_dai_driver cs47l90_dai[] = {
 			.rates = MADERA_RATES,
 			.formats = MADERA_FORMATS,
 		},
-		.compress_new = &snd_soc_new_compress,
+		.ops = &cs47l90_dai_ops,
 	},
 	{
 		.name = "cs47l90-dsp-trace",
@@ -2367,14 +2371,14 @@ static int cs47l90_open(struct snd_soc_component *component,
 	struct madera *madera = priv->madera;
 	int n_adsp;
 
-	if (strcmp(asoc_rtd_to_codec(rtd, 0)->name, "cs47l90-dsp-voicectrl") == 0) {
+	if (strcmp(snd_soc_rtd_to_codec(rtd, 0)->name, "cs47l90-dsp-voicectrl") == 0) {
 		n_adsp = 5;
-	} else if (strcmp(asoc_rtd_to_codec(rtd, 0)->name, "cs47l90-dsp-trace") == 0) {
+	} else if (strcmp(snd_soc_rtd_to_codec(rtd, 0)->name, "cs47l90-dsp-trace") == 0) {
 		n_adsp = 0;
 	} else {
 		dev_err(madera->dev,
 			"No suitable compressed stream for DAI '%s'\n",
-			asoc_rtd_to_codec(rtd, 0)->name);
+			snd_soc_rtd_to_codec(rtd, 0)->name);
 		return -EINVAL;
 	}
 
@@ -2497,7 +2501,6 @@ static const struct snd_soc_component_driver soc_component_dev_cs47l90 = {
 	.num_dapm_routes	= ARRAY_SIZE(cs47l90_dapm_routes),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static int cs47l90_probe(struct platform_device *pdev)
@@ -2543,18 +2546,18 @@ static int cs47l90_probe(struct platform_device *pdev)
 
 	for (i = 0; i < CS47L90_NUM_ADSP; i++) {
 		cs47l90->core.adsp[i].part = "cs47l90";
-		cs47l90->core.adsp[i].num = i + 1;
-		cs47l90->core.adsp[i].type = WMFW_ADSP2;
-		cs47l90->core.adsp[i].rev = 2;
-		cs47l90->core.adsp[i].dev = madera->dev;
-		cs47l90->core.adsp[i].regmap = madera->regmap_32bit;
+		cs47l90->core.adsp[i].cs_dsp.num = i + 1;
+		cs47l90->core.adsp[i].cs_dsp.type = WMFW_ADSP2;
+		cs47l90->core.adsp[i].cs_dsp.rev = 2;
+		cs47l90->core.adsp[i].cs_dsp.dev = madera->dev;
+		cs47l90->core.adsp[i].cs_dsp.regmap = madera->regmap_32bit;
 
-		cs47l90->core.adsp[i].base = cs47l90_dsp_control_bases[i];
-		cs47l90->core.adsp[i].mem = cs47l90_dsp_regions[i];
-		cs47l90->core.adsp[i].num_mems =
+		cs47l90->core.adsp[i].cs_dsp.base = cs47l90_dsp_control_bases[i];
+		cs47l90->core.adsp[i].cs_dsp.mem = cs47l90_dsp_regions[i];
+		cs47l90->core.adsp[i].cs_dsp.num_mems =
 			ARRAY_SIZE(cs47l90_dsp1_regions);
 
-		cs47l90->core.adsp[i].lock_regions = WM_ADSP2_REGION_1_9;
+		cs47l90->core.adsp[i].cs_dsp.lock_regions = CS_ADSP2_REGION_1_9;
 
 		ret = wm_adsp2_init(&cs47l90->core.adsp[i]);
 
@@ -2619,7 +2622,7 @@ error_core:
 	return ret;
 }
 
-static int cs47l90_remove(struct platform_device *pdev)
+static void cs47l90_remove(struct platform_device *pdev)
 {
 	struct cs47l90 *cs47l90 = platform_get_drvdata(pdev);
 	int i;
@@ -2634,8 +2637,6 @@ static int cs47l90_remove(struct platform_device *pdev)
 	madera_set_irq_wake(cs47l90->core.madera, MADERA_IRQ_DSP_IRQ1, 0);
 	madera_free_irq(cs47l90->core.madera, MADERA_IRQ_DSP_IRQ1, cs47l90);
 	madera_core_free(&cs47l90->core);
-
-	return 0;
 }
 
 static struct platform_driver cs47l90_codec_driver = {
@@ -2643,7 +2644,7 @@ static struct platform_driver cs47l90_codec_driver = {
 		.name = "cs47l90-codec",
 	},
 	.probe = &cs47l90_probe,
-	.remove = &cs47l90_remove,
+	.remove = cs47l90_remove,
 };
 
 module_platform_driver(cs47l90_codec_driver);

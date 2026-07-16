@@ -238,11 +238,11 @@ static irqreturn_t ite_cir_isr(int irq, void *data)
 	/* Check for RX overflow */
 	if (iflags & ITE_IRQ_RX_FIFO_OVERRUN) {
 		dev_warn(&dev->rdev->dev, "receive overflow\n");
-		ir_raw_event_reset(dev->rdev);
+		ir_raw_event_overflow(dev->rdev);
 	}
 
 	/* check for the receive interrupt */
-	if (iflags & ITE_IRQ_RX_FIFO) {
+	if (iflags & (ITE_IRQ_RX_FIFO | ITE_IRQ_RX_FIFO_OVERRUN)) {
 		/* read the FIFO bytes */
 		rx_bytes = dev->params->get_rx_bytes(dev, rx_buf,
 						    ITE_RX_FIFO_LEN);
@@ -1380,7 +1380,6 @@ static int ite_probe(struct pnp_dev *pdev, const struct pnp_device_id
 	rdev->timeout = IR_DEFAULT_TIMEOUT;
 	rdev->max_timeout = 10 * IR_DEFAULT_TIMEOUT;
 	rdev->rx_resolution = ITE_BAUDRATE_DIVISOR * sample_period / 1000;
-	rdev->tx_resolution = ITE_BAUDRATE_DIVISOR * sample_period / 1000;
 
 	/* set up transmitter related values */
 	rdev->tx_ir = ite_tx_ir;
@@ -1415,7 +1414,6 @@ exit_release_cir_addr:
 	release_region(itdev->cir_addr, itdev->params->io_region_size);
 exit_unregister_device:
 	rc_unregister_device(rdev);
-	rdev = NULL;
 exit_free_dev_rdev:
 	rc_free_device(rdev);
 	kfree(itdev);
@@ -1440,6 +1438,7 @@ static void ite_remove(struct pnp_dev *pdev)
 	release_region(dev->cir_addr, dev->params->io_region_size);
 
 	rc_unregister_device(dev->rdev);
+	rc_free_device(dev->rdev);
 
 	kfree(dev);
 }

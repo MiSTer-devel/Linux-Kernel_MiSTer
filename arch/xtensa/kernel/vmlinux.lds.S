@@ -94,7 +94,9 @@ SECTIONS
     . = ALIGN(PAGE_SIZE);
     _vecbase = .;
 
+#ifdef SUPPORT_WINDOWED
     SECTION_VECTOR2 (.WindowVectors.text, WINDOW_VECTORS_VADDR)
+#endif
 #if XCHAL_EXCM_LEVEL >= 2
     SECTION_VECTOR2 (.Level2InterruptVector.text, INTLEVEL2_VECTOR_VADDR)
 #endif
@@ -116,6 +118,7 @@ SECTIONS
     SECTION_VECTOR2 (.DoubleExceptionVector.text, DOUBLEEXC_VECTOR_VADDR)
 
     *(.exception.text)
+    *(.xiptext)
 #endif
 
     IRQENTRY_TEXT
@@ -123,7 +126,6 @@ SECTIONS
     ENTRY_TEXT
     TEXT_TEXT
     SCHED_TEXT
-    CPUIDLE_TEXT
     LOCK_TEXT
     *(.fixup)
   }
@@ -166,8 +168,10 @@ SECTIONS
     __boot_reloc_table_start = ABSOLUTE(.);
 
 #if !MERGED_VECTORS
+#ifdef SUPPORT_WINDOWED
     RELOCATE_ENTRY(_WindowVectors_text,
 		   .WindowVectors.text);
+#endif
 #if XCHAL_EXCM_LEVEL >= 2
     RELOCATE_ENTRY(_Level2InterruptVector_text,
 		   .Level2InterruptVector.text);
@@ -198,12 +202,15 @@ SECTIONS
 		   .DebugInterruptVector.text);
     RELOCATE_ENTRY(_exception_text,
 		   .exception.text);
+#ifdef CONFIG_XIP_KERNEL
+    RELOCATE_ENTRY(_xip_text, .xiptext);
+#endif
 #endif
 #ifdef CONFIG_XIP_KERNEL
     RELOCATE_ENTRY(_xip_data, .data);
     RELOCATE_ENTRY(_xip_init_data, .init.data);
 #endif
-#if defined(CONFIG_SMP)
+#if defined(CONFIG_SECONDARY_RESET_VECTOR)
     RELOCATE_ENTRY(_SecondaryResetVector_text,
 		   .SecondaryResetVector.text);
 #endif
@@ -229,14 +236,18 @@ SECTIONS
 #if !MERGED_VECTORS
   /* The vectors are relocated to the real position at startup time */
 
+#ifdef SUPPORT_WINDOWED
   SECTION_VECTOR4 (_WindowVectors_text,
 		  .WindowVectors.text,
 		  WINDOW_VECTORS_VADDR,
-		  .dummy)
+		  LAST)
+#undef LAST
+#define LAST	.WindowVectors.text
+#endif
   SECTION_VECTOR4 (_DebugInterruptVector_text,
 		  .DebugInterruptVector.text,
 		  DEBUG_VECTOR_VADDR,
-		  .WindowVectors.text)
+		  LAST)
 #undef LAST
 #define LAST	.DebugInterruptVector.text
 #if XCHAL_EXCM_LEVEL >= 2
@@ -295,7 +306,7 @@ SECTIONS
 #define LAST .DoubleExceptionVector.text
 
 #endif
-#if defined(CONFIG_SMP)
+#if defined(CONFIG_SECONDARY_RESET_VECTOR)
 
   SECTION_VECTOR4 (_SecondaryResetVector_text,
 		  .SecondaryResetVector.text,
@@ -312,7 +323,12 @@ SECTIONS
 		  LAST)
 #undef LAST
 #define LAST .exception.text
-
+  SECTION_VECTOR4 (_xip_text,
+		  .xiptext,
+		  ,
+		  LAST)
+#undef LAST
+#define LAST .xiptext
 #endif
   . = (LOADADDR(LAST) + SIZEOF(LAST) + 3) & ~ 3;
 

@@ -9,16 +9,18 @@
 #ifndef __ASM_PARISC_PROCESSOR_H
 #define __ASM_PARISC_PROCESSOR_H
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <linux/threads.h>
+#include <linux/irqreturn.h>
 
+#include <asm/assembly.h>
 #include <asm/prefetch.h>
 #include <asm/hardware.h>
 #include <asm/pdc.h>
 #include <asm/ptrace.h>
 #include <asm/types.h>
 #include <asm/percpu.h>
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 #define HAVE_ARCH_PICK_MMAP_LAYOUT
 
@@ -37,18 +39,16 @@
 #define DEFAULT_MAP_BASE	DEFAULT_MAP_BASE32
 #endif
 
-#ifdef __KERNEL__
-
 /* XXX: STACK_TOP actually should be STACK_BOTTOM for parisc.
  * prumpf */
 
 #define STACK_TOP	TASK_SIZE
 #define STACK_TOP_MAX	DEFAULT_TASK_SIZE
 
-#endif
+#ifndef __ASSEMBLER__
 
-#ifndef __ASSEMBLY__
-
+struct rlimit;
+unsigned long mmap_upper_limit(const struct rlimit *rlim_stack);
 unsigned long calc_max_stack_size(unsigned long stack_max);
 
 /*
@@ -98,10 +98,9 @@ struct cpuinfo_parisc {
 
 extern struct system_cpuinfo_parisc boot_cpu_data;
 DECLARE_PER_CPU(struct cpuinfo_parisc, cpu_data);
+extern int time_keeper_id;		/* CPU used for timekeeping */
 
 #define CPU_HVERSION ((boot_cpu_data.hversion >> 4) & 0x0FFF)
-
-#define ARCH_MIN_TASKALIGN	8
 
 struct thread_struct {
 	struct pt_regs regs;
@@ -241,7 +240,7 @@ on downward growing arches, it looks like this:
 
 #define start_thread(regs, new_pc, new_sp) do {		\
 	elf_addr_t *sp = (elf_addr_t *)new_sp;		\
-	__u32 spaceid = (__u32)current->mm->context;	\
+	__u32 spaceid = (__u32)current->mm->context.space_id;	\
 	elf_addr_t pc = (elf_addr_t)new_pc | 3;		\
 	elf_caddr_t *argv = (elf_caddr_t *)bprm->exec + 1;	\
 							\
@@ -270,10 +269,7 @@ on downward growing arches, it looks like this:
 
 struct mm_struct;
 
-/* Free all resources held by a thread. */
-extern void release_thread(struct task_struct *);
-
-extern unsigned long get_wchan(struct task_struct *p);
+extern unsigned long __get_wchan(struct task_struct *p);
 
 #define KSTK_EIP(tsk)	((tsk)->thread.regs.iaoq[0])
 #define KSTK_ESP(tsk)	((tsk)->thread.regs.gr[30])
@@ -293,7 +289,42 @@ extern int _parisc_requires_coherency;
 #endif
 
 extern int running_on_qemu;
+extern int parisc_narrow_firmware;
 
-#endif /* __ASSEMBLY__ */
+extern void __noreturn toc_intr(struct pt_regs *regs);
+extern void toc_handler(void);
+extern unsigned int toc_handler_size;
+extern unsigned int toc_handler_csum;
+extern void do_cpu_irq_mask(struct pt_regs *);
+extern irqreturn_t timer_interrupt(int, void *);
+extern irqreturn_t ipi_interrupt(int, void *);
+extern void parisc_clockevent_init(void);
+extern void handle_interruption(int, struct pt_regs *);
+
+/* called from assembly code: */
+extern void start_parisc(void);
+extern void smp_callin(unsigned long);
+extern void sys_rt_sigreturn(struct pt_regs *, int);
+extern void do_notify_resume(struct pt_regs *, long);
+extern long do_syscall_trace_enter(struct pt_regs *);
+extern void do_syscall_trace_exit(struct pt_regs *);
+
+/* CPU startup and info */
+struct seq_file;
+extern void early_trap_init(void);
+extern void collect_boot_cpu_data(void);
+extern void btlb_init_per_cpu(void);
+extern int show_cpuinfo (struct seq_file *m, void *v);
+
+/* driver code in driver/parisc */
+extern void processor_init(void);
+struct parisc_device;
+struct resource;
+extern void sba_distributed_lmmio(struct parisc_device *, struct resource *);
+extern void sba_directed_lmmio(struct parisc_device *, struct resource *);
+extern void lba_set_iregs(struct parisc_device *lba, u32 ibase, u32 imask);
+extern void ccio_cujo20_fixup(struct parisc_device *dev, u32 iovp);
+
+#endif /* __ASSEMBLER__ */
 
 #endif /* __ASM_PARISC_PROCESSOR_H */

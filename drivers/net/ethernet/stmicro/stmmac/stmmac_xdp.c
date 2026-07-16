@@ -117,9 +117,12 @@ int stmmac_xdp_set_prog(struct stmmac_priv *priv, struct bpf_prog *prog,
 		return -EOPNOTSUPP;
 	}
 
+	if (!prog)
+		xdp_features_clear_redirect_target(dev);
+
 	need_update = !!priv->xdp_prog != !!prog;
 	if (if_running && need_update)
-		stmmac_release(dev);
+		stmmac_xdp_release(dev);
 
 	old_prog = xchg(&priv->xdp_prog, prog);
 	if (old_prog)
@@ -129,7 +132,10 @@ int stmmac_xdp_set_prog(struct stmmac_priv *priv, struct bpf_prog *prog,
 	priv->sph = priv->sph_cap && !stmmac_xdp_is_enabled(priv);
 
 	if (if_running && need_update)
-		stmmac_open(dev);
+		stmmac_xdp_open(dev);
+
+	if (prog)
+		xdp_features_set_redirect_target(dev, false);
 
 	return 0;
 }

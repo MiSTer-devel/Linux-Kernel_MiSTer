@@ -10,6 +10,7 @@
 #include <linux/debugfs.h>
 #include <linux/device.h>
 #include <linux/err.h>
+#include <linux/of.h>
 #include <linux/init.h>
 #include <linux/limits.h>
 #include <linux/slab.h>
@@ -36,10 +37,12 @@ static ssize_t bw_name_read(struct file *fp, char __user *userbuf,
 			    size_t count, loff_t *ppos)
 {
 	struct icc_path *path = fp->private_data;
+	const char *name = icc_get_name(path);
 	char buf[64];
-	int i;
+	int i = 0;
 
-	i = scnprintf(buf, sizeof(buf), "%.62s\n", icc_get_name(path));
+	if (name)
+		i = scnprintf(buf, sizeof(buf), "%.62s\n", name);
 
 	return simple_read_from_buffer(userbuf, count, ppos, buf, i);
 }
@@ -55,11 +58,11 @@ static void opp_debug_create_bw(struct dev_pm_opp *opp,
 				struct dentry *pdentry)
 {
 	struct dentry *d;
-	char name[11];
+	char name[] = "icc-path-XXXXXXXXXXX"; /* Integers can take 11 chars max */
 	int i;
 
 	for (i = 0; i < opp_table->path_count; i++) {
-		snprintf(name, sizeof(name), "icc-path-%.1d", i);
+		snprintf(name, sizeof(name), "icc-path-%d", i);
 
 		/* Create per-path directory */
 		d = debugfs_create_dir(name, pdentry);
@@ -73,6 +76,24 @@ static void opp_debug_create_bw(struct dev_pm_opp *opp,
 	}
 }
 
+static void opp_debug_create_clks(struct dev_pm_opp *opp,
+				  struct opp_table *opp_table,
+				  struct dentry *pdentry)
+{
+	char name[] = "rate_hz_XXXXXXXXXXX"; /* Integers can take 11 chars max */
+	int i;
+
+	if (opp_table->clk_count == 1) {
+		debugfs_create_ulong("rate_hz", S_IRUGO, pdentry, &opp->rates[0]);
+		return;
+	}
+
+	for (i = 0; i < opp_table->clk_count; i++) {
+		snprintf(name, sizeof(name), "rate_hz_%d", i);
+		debugfs_create_ulong(name, S_IRUGO, pdentry, &opp->rates[i]);
+	}
+}
+
 static void opp_debug_create_supplies(struct dev_pm_opp *opp,
 				      struct opp_table *opp_table,
 				      struct dentry *pdentry)
@@ -81,7 +102,7 @@ static void opp_debug_create_supplies(struct dev_pm_opp *opp,
 	int i;
 
 	for (i = 0; i < opp_table->regulator_count; i++) {
-		char name[15];
+		char name[] = "supply-XXXXXXXXXXX"; /* Integers can take 11 chars max */
 
 		snprintf(name, sizeof(name), "supply-%d", i);
 
@@ -99,6 +120,9 @@ static void opp_debug_create_supplies(struct dev_pm_opp *opp,
 
 		debugfs_create_ulong("u_amp", S_IRUGO, d,
 				     &opp->supplies[i].u_amp);
+
+		debugfs_create_ulong("u_watt", S_IRUGO, d,
+				     &opp->supplies[i].u_watt);
 	}
 }
 
@@ -106,21 +130,24 @@ void opp_debug_create_one(struct dev_pm_opp *opp, struct opp_table *opp_table)
 {
 	struct dentry *pdentry = opp_table->dentry;
 	struct dentry *d;
-	unsigned long id;
-	char name[25];	/* 20 chars for 64 bit value + 5 (opp:\0) */
+	char name[36];	/* "opp:"(4) + u64(20) + "-" (1) + u32(10) + NULL(1) */
 
 	/*
 	 * Get directory name for OPP.
 	 *
-	 * - Normally rate is unique to each OPP, use it to get unique opp-name.
-	 * - For some devices rate isn't available, use index instead.
+	 * - Normally rate is unique to each OPP, use it to get unique opp-name,
+	 *   together with performance level if available.
+	 * - For some devices rate isn't available or there are multiple, use
+	 *   index instead for them.
 	 */
-	if (likely(opp->rate))
-		id = opp->rate;
-	else
-		id = _get_opp_count(opp_table);
-
-	snprintf(name, sizeof(name), "opp:%lu", id);
+	if (likely(opp_table->clk_count == 1 && opp->rates[0])) {
+		if (opp->level == OPP_LEVEL_UNSET)
+			snprintf(name, sizeof(name), "opp:%lu", opp->rates[0]);
+		else
+			snprintf(name, sizeof(name), "opp:%lu-%u", opp->rates[0], opp->level);
+	} else {
+		snprintf(name, sizeof(name), "opp:%u", _get_opp_count(opp_table));
+	}
 
 	/* Create per-opp directory */
 	d = debugfs_create_dir(name, pdentry);
@@ -129,11 +156,14 @@ void opp_debug_create_one(struct dev_pm_opp *opp, struct opp_table *opp_table)
 	debugfs_create_bool("dynamic", S_IRUGO, d, &opp->dynamic);
 	debugfs_create_bool("turbo", S_IRUGO, d, &opp->turbo);
 	debugfs_create_bool("suspend", S_IRUGO, d, &opp->suspend);
-	debugfs_create_u32("performance_state", S_IRUGO, d, &opp->pstate);
-	debugfs_create_ulong("rate_hz", S_IRUGO, d, &opp->rate);
+	debugfs_create_u32("level", S_IRUGO, d, &opp->level);
 	debugfs_create_ulong("clock_latency_ns", S_IRUGO, d,
 			     &opp->clock_latency_ns);
 
+	opp->of_name = of_node_full_name(opp->np);
+	debugfs_create_str("of_name", S_IRUGO, d, (char **)&opp->of_name);
+
+	opp_debug_create_clks(opp, opp_table, d);
 	opp_debug_create_supplies(opp, opp_table, d);
 	opp_debug_create_bw(opp, opp_table, d);
 
@@ -187,14 +217,18 @@ void opp_debug_register(struct opp_device *opp_dev, struct opp_table *opp_table)
 static void opp_migrate_dentry(struct opp_device *opp_dev,
 			       struct opp_table *opp_table)
 {
-	struct opp_device *new_dev;
+	struct opp_device *new_dev = NULL, *iter;
 	const struct device *dev;
-	struct dentry *dentry;
+	int err;
 
 	/* Look for next opp-dev */
-	list_for_each_entry(new_dev, &opp_table->dev_list, node)
-		if (new_dev != opp_dev)
+	list_for_each_entry(iter, &opp_table->dev_list, node)
+		if (iter != opp_dev) {
+			new_dev = iter;
 			break;
+		}
+
+	BUG_ON(!new_dev);
 
 	/* new_dev is guaranteed to be valid here */
 	dev = new_dev->dev;
@@ -202,16 +236,14 @@ static void opp_migrate_dentry(struct opp_device *opp_dev,
 
 	opp_set_dev_name(dev, opp_table->dentry_name);
 
-	dentry = debugfs_rename(rootdir, opp_dev->dentry, rootdir,
-				opp_table->dentry_name);
-	if (!dentry) {
+	err = debugfs_change_name(opp_dev->dentry, "%s", opp_table->dentry_name);
+	if (err) {
 		dev_err(dev, "%s: Failed to rename link from: %s to %s\n",
 			__func__, dev_name(opp_dev->dev), dev_name(dev));
 		return;
 	}
 
-	new_dev->dentry = dentry;
-	opp_table->dentry = dentry;
+	new_dev->dentry = opp_table->dentry = opp_dev->dentry;
 }
 
 /**

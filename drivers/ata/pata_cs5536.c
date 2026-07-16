@@ -27,7 +27,7 @@
 #include <scsi/scsi_host.h>
 #include <linux/dmi.h>
 
-#ifdef CONFIG_X86_32
+#if defined(CONFIG_X86) && defined(CONFIG_X86_32)
 #include <asm/msr.h>
 static int use_msr;
 module_param_named(msr, use_msr, int, 0644);
@@ -217,7 +217,7 @@ static void cs5536_set_dmamode(struct ata_port *ap, struct ata_device *adev)
 	cs5536_write(pdev, ETC, etc);
 }
 
-static struct scsi_host_template cs5536_sht = {
+static const struct scsi_host_template cs5536_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -263,12 +263,12 @@ static int cs5536_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 	ppi[1] = &ata_dummy_port_info;
 
 	if (use_msr)
-		printk(KERN_ERR DRV_NAME ": Using MSR regs instead of PCI\n");
+		dev_err(&dev->dev, DRV_NAME ": Using MSR regs instead of PCI\n");
 
 	cs5536_read(dev, CFG, &cfg);
 
 	if ((cfg & IDE_CFG_CHANEN) == 0) {
-		printk(KERN_ERR DRV_NAME ": disabled by BIOS\n");
+		dev_err(&dev->dev, DRV_NAME ": disabled by BIOS\n");
 		return -ENODEV;
 	}
 

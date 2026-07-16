@@ -134,8 +134,11 @@ static void do_recv_one(int fdr, struct timed_send *ts)
 	if (rbuf[0] != ts->data)
 		error(1, 0, "payload mismatch. expected %c", ts->data);
 
-	if (llabs(tstop - texpect) > cfg_variance_us)
-		error(1, 0, "exceeds variance (%d us)", cfg_variance_us);
+	if (llabs(tstop - texpect) > cfg_variance_us) {
+		fprintf(stderr, "exceeds variance (%d us)\n", cfg_variance_us);
+		if (!getenv("KSFT_MACHINE_SLOW"))
+			exit(1);
+	}
 }
 
 static void do_recv_verify_empty(int fdr)
@@ -421,7 +424,7 @@ static void usage(const char *progname)
 			"Options:\n"
 			"  -4            only IPv4\n"
 			"  -6            only IPv6\n"
-			"  -c <clock>    monotonic (default) or tai\n"
+			"  -c <clock>    monotonic or tai (default)\n"
 			"  -D <addr>     destination IP address (server)\n"
 			"  -S <addr>     source IP address (client)\n"
 			"  -r            run rx mode\n"
@@ -475,7 +478,7 @@ static void parse_opts(int argc, char **argv)
 			cfg_rx = true;
 			break;
 		case 't':
-			cfg_start_time_ns = strtol(optarg, NULL, 0);
+			cfg_start_time_ns = strtoll(optarg, NULL, 0);
 			break;
 		case 'm':
 			cfg_mark = strtol(optarg, NULL, 0);

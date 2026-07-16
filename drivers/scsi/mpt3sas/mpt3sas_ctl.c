@@ -186,6 +186,9 @@ _ctl_display_some_debug(struct MPT3SAS_ADAPTER *ioc, u16 smid,
 	case MPI2_FUNCTION_NVME_ENCAPSULATED:
 		desc = "nvme_encapsulated";
 		break;
+	case MPI2_FUNCTION_MCTP_PASSTHROUGH:
+		desc = "mctp_passthrough";
+		break;
 	}
 
 	if (!desc)
@@ -578,7 +581,7 @@ static int
 _ctl_set_task_mid(struct MPT3SAS_ADAPTER *ioc, struct mpt3_ioctl_command *karg,
 	Mpi2SCSITaskManagementRequest_t *tm_request)
 {
-	u8 found = 0;
+	bool found = false;
 	u16 smid;
 	u16 handle;
 	struct scsi_cmnd *scmd;
@@ -600,6 +603,7 @@ _ctl_set_task_mid(struct MPT3SAS_ADAPTER *ioc, struct mpt3_ioctl_command *karg,
 	handle = le16_to_cpu(tm_request->DevHandle);
 	for (smid = ioc->scsiio_depth; smid && !found; smid--) {
 		struct scsiio_tracker *st;
+		__le16 task_mid;
 
 		scmd = mpt3sas_scsih_scsi_lookup_get(ioc, smid);
 		if (!scmd)
@@ -618,10 +622,10 @@ _ctl_set_task_mid(struct MPT3SAS_ADAPTER *ioc, struct mpt3_ioctl_command *karg,
 		 * first outstanding smid will be picked up.  Otherwise,
 		 * targeted smid will be the one.
 		 */
-		if (!tm_request->TaskMID || tm_request->TaskMID == st->smid) {
-			tm_request->TaskMID = cpu_to_le16(st->smid);
-			found = 1;
-		}
+		task_mid = cpu_to_le16(st->smid);
+		if (!tm_request->TaskMID)
+			tm_request->TaskMID = task_mid;
+		found = tm_request->TaskMID == task_mid;
 	}
 
 	if (!found) {
@@ -652,6 +656,40 @@ _ctl_set_task_mid(struct MPT3SAS_ADAPTER *ioc, struct mpt3_ioctl_command *karg,
 }
 
 /**
+ * _ctl_send_mctp_passthru_req - Send an MCTP passthru request
+ * @ioc: per adapter object
+ * @mctp_passthru_req: MPI mctp passhthru request from caller
+ * @psge: pointer to the H2DSGL
+ * @data_out_dma: DMA buffer for H2D SGL
+ * @data_out_sz: H2D length
+ * @data_in_dma: DMA buffer for D2H SGL
+ * @data_in_sz: D2H length
+ * @smid: SMID to submit the request
+ *
+ */
+static void
+_ctl_send_mctp_passthru_req(
+	struct MPT3SAS_ADAPTER *ioc,
+	Mpi26MctpPassthroughRequest_t *mctp_passthru_req, void *psge,
+	dma_addr_t data_out_dma, int data_out_sz,
+	dma_addr_t data_in_dma, int data_in_sz,
+	u16 smid)
+{
+	mctp_passthru_req->H2DLength = data_out_sz;
+	mctp_passthru_req->D2HLength = data_in_sz;
+
+	/* Build the H2D SGL from the data out buffer */
+	ioc->build_sg(ioc, psge, data_out_dma, data_out_sz, 0, 0);
+
+	psge += ioc->sge_size_ieee;
+
+	/* Build the D2H SGL for the data in buffer */
+	ioc->build_sg(ioc, psge, 0, 0, data_in_dma, data_in_sz);
+
+	ioc->put_smid_default(ioc, smid);
+}
+
+/**
  * _ctl_do_mpt_command - main handler for MPT3COMMAND opcode
  * @ioc: per adapter object
  * @karg: (struct mpt3_ioctl_command)
@@ -678,6 +716,7 @@ _ctl_do_mpt_command(struct MPT3SAS_ADAPTER *ioc, struct mpt3_ioctl_command karg,
 	size_t data_in_sz = 0;
 	long ret;
 	u16 device_handle = MPT3SAS_INVALID_DEVICE_HANDLE;
+	int tm_ret;
 
 	issue_reset = 0;
 
@@ -791,6 +830,23 @@ _ctl_do_mpt_command(struct MPT3SAS_ADAPTER *ioc, struct mpt3_ioctl_command karg,
 
 	init_completion(&ioc->ctl_cmds.done);
 	switch (mpi_request->Function) {
+	case MPI2_FUNCTION_MCTP_PASSTHROUGH:
+	{
+		Mpi26MctpPassthroughRequest_t *mctp_passthru_req =
+						(Mpi26MctpPassthroughRequest_t *)request;
+
+		if (!(ioc->facts.IOCCapabilities & MPI26_IOCFACTS_CAPABILITY_MCTP_PASSTHRU)) {
+			ioc_err(ioc, "%s: MCTP Passthrough request not supported\n",
+				__func__);
+			mpt3sas_base_free_smid(ioc, smid);
+			ret = -EINVAL;
+			goto out;
+		}
+
+		_ctl_send_mctp_passthru_req(ioc, mctp_passthru_req, psge, data_out_dma,
+					data_out_sz, data_in_dma, data_in_sz, smid);
+		break;
+	}
 	case MPI2_FUNCTION_NVME_ENCAPSULATED:
 	{
 		nvme_encap_request = (Mpi26NVMeEncapsulatedRequest_t *)request;
@@ -947,6 +1003,14 @@ _ctl_do_mpt_command(struct MPT3SAS_ADAPTER *ioc, struct mpt3_ioctl_command karg,
 		break;
 	}
 	case MPI2_FUNCTION_FW_DOWNLOAD:
+	{
+		if (ioc->pdev->vendor == MPI2_MFGPAGE_VENDORID_ATTO) {
+			ioc_info(ioc, "Firmware download not supported for ATTO HBA.\n");
+			ret = -EPERM;
+			break;
+		}
+		fallthrough;
+	}
 	case MPI2_FUNCTION_FW_UPLOAD:
 	{
 		ioc->build_sg(ioc, psge, data_out_dma, data_out_sz, data_in_dma,
@@ -1111,18 +1175,25 @@ _ctl_do_mpt_command(struct MPT3SAS_ADAPTER *ioc, struct mpt3_ioctl_command karg,
 			if (pcie_device && (!ioc->tm_custom_handling) &&
 			    (!(mpt3sas_scsih_is_pcie_scsi_device(
 			    pcie_device->device_info))))
-				mpt3sas_scsih_issue_locked_tm(ioc,
+				tm_ret = mpt3sas_scsih_issue_locked_tm(ioc,
 				  le16_to_cpu(mpi_request->FunctionDependent1),
 				  0, 0, 0,
 				  MPI2_SCSITASKMGMT_TASKTYPE_TARGET_RESET, 0,
 				  0, pcie_device->reset_timeout,
 			MPI26_SCSITASKMGMT_MSGFLAGS_PROTOCOL_LVL_RST_PCIE);
 			else
-				mpt3sas_scsih_issue_locked_tm(ioc,
+				tm_ret = mpt3sas_scsih_issue_locked_tm(ioc,
 				  le16_to_cpu(mpi_request->FunctionDependent1),
 				  0, 0, 0,
 				  MPI2_SCSITASKMGMT_TASKTYPE_TARGET_RESET, 0,
 				  0, 30, MPI2_SCSITASKMGMT_MSGFLAGS_LINK_RESET);
+
+			if (tm_ret != SUCCESS) {
+				ioc_info(ioc,
+					 "target reset failed, issue hard reset: handle (0x%04x)\n",
+					 le16_to_cpu(mpi_request->FunctionDependent1));
+				mpt3sas_base_hard_reset_handler(ioc, FORCE_BIG_HAMMER);
+			}
 		} else
 			mpt3sas_base_hard_reset_handler(ioc, FORCE_BIG_HAMMER);
 	}
@@ -1190,6 +1261,8 @@ _ctl_getiocinfo(struct MPT3SAS_ADAPTER *ioc, void __user *arg)
 		break;
 	}
 	karg.bios_version = le32_to_cpu(ioc->bios_pg3.BiosVersion);
+
+	karg.driver_capability |= MPT3_IOCTL_IOCINFO_DRIVER_CAP_MCTP_PASSTHRU;
 
 	if (copy_to_user(arg, &karg, sizeof(karg))) {
 		pr_err("failure at %s:%d/%s()!\n",
@@ -1685,6 +1758,7 @@ _ctl_diag_register_2(struct MPT3SAS_ADAPTER *ioc,
 	ioc->ctl_cmds.status = MPT3_CMD_PENDING;
 	memset(ioc->ctl_cmds.reply, 0, ioc->reply_sz);
 	mpi_request = mpt3sas_base_get_msg_frame(ioc, smid);
+	memset(mpi_request, 0, ioc->request_sz);
 	ioc->ctl_cmds.smid = smid;
 
 	request_data = ioc->diag_buffer[buffer_type];
@@ -1786,6 +1860,7 @@ _ctl_diag_register_2(struct MPT3SAS_ADAPTER *ioc,
 	if (rc && request_data) {
 		dma_free_coherent(&ioc->pdev->dev, request_data_sz,
 		    request_data, request_data_dma);
+		ioc->diag_buffer[buffer_type] = NULL;
 		ioc->diag_buffer_status[buffer_type] &=
 		    ~MPT3_DIAG_BUFFER_IS_DRIVER_ALLOCATED;
 	}
@@ -1873,7 +1948,7 @@ mpt3sas_enable_diag_buffer(struct MPT3SAS_ADAPTER *ioc, u8 bits_to_register)
 			    diag_register.requested_buffer_size>>10);
 		else if (ioc->diag_buffer_status[MPI2_DIAG_BUF_TYPE_TRACE]
 		    & MPT3_DIAG_BUFFER_IS_REGISTERED) {
-			ioc_err(ioc, "Trace buffer memory %d KB allocated\n",
+			ioc_info(ioc, "Trace buffer memory %d KB allocated\n",
 			    diag_register.requested_buffer_size>>10);
 			if (ioc->hba_mpi_version_belonged != MPI2_VERSION)
 				ioc->diag_buffer_status[
@@ -2162,6 +2237,7 @@ mpt3sas_send_diag_release(struct MPT3SAS_ADAPTER *ioc, u8 buffer_type,
 	ioc->ctl_cmds.status = MPT3_CMD_PENDING;
 	memset(ioc->ctl_cmds.reply, 0, ioc->reply_sz);
 	mpi_request = mpt3sas_base_get_msg_frame(ioc, smid);
+	memset(mpi_request, 0, ioc->request_sz);
 	ioc->ctl_cmds.smid = smid;
 
 	mpi_request->Function = MPI2_FUNCTION_DIAG_RELEASE;
@@ -2416,6 +2492,7 @@ _ctl_diag_read_buffer(struct MPT3SAS_ADAPTER *ioc, void __user *arg)
 	ioc->ctl_cmds.status = MPT3_CMD_PENDING;
 	memset(ioc->ctl_cmds.reply, 0, ioc->reply_sz);
 	mpi_request = mpt3sas_base_get_msg_frame(ioc, smid);
+	memset(mpi_request, 0, ioc->request_sz);
 	ioc->ctl_cmds.smid = smid;
 
 	mpi_request->Function = MPI2_FUNCTION_DIAG_BUFFER_POST;
@@ -2527,6 +2604,56 @@ out:
 		    __func__, arg);
 		return -EFAULT;
 	}
+	return 0;
+}
+
+/**
+ * _ctl_enable_diag_sbr_reload - enable sbr reload bit
+ * @ioc: per adapter object
+ * @arg: user space buffer containing ioctl content
+ *
+ * Enable the SBR reload bit
+ */
+static int
+_ctl_enable_diag_sbr_reload(struct MPT3SAS_ADAPTER *ioc, void __user *arg)
+{
+	u32 ioc_state, host_diagnostic;
+
+	if (ioc->shost_recovery ||
+	    ioc->pci_error_recovery || ioc->is_driver_loading ||
+	    ioc->remove_host)
+		return -EAGAIN;
+
+	ioc_state = mpt3sas_base_get_iocstate(ioc, 1);
+
+	if (ioc_state != MPI2_IOC_STATE_OPERATIONAL)
+		return -EFAULT;
+
+	host_diagnostic = ioc->base_readl(&ioc->chip->HostDiagnostic);
+
+	if (host_diagnostic & MPI2_DIAG_SBR_RELOAD)
+		return 0;
+
+	if (mutex_trylock(&ioc->hostdiag_unlock_mutex)) {
+		if (mpt3sas_base_unlock_and_get_host_diagnostic(ioc, &host_diagnostic)) {
+			mutex_unlock(&ioc->hostdiag_unlock_mutex);
+				return -EFAULT;
+		}
+	} else
+		return -EAGAIN;
+
+	host_diagnostic |= MPI2_DIAG_SBR_RELOAD;
+	writel(host_diagnostic, &ioc->chip->HostDiagnostic);
+	host_diagnostic = ioc->base_readl(&ioc->chip->HostDiagnostic);
+	mpt3sas_base_lock_host_diagnostic(ioc);
+	mutex_unlock(&ioc->hostdiag_unlock_mutex);
+
+	if (!(host_diagnostic & MPI2_DIAG_SBR_RELOAD)) {
+		ioc_err(ioc, "%s: Failed to set Diag SBR Reload Bit\n", __func__);
+		return -EFAULT;
+	}
+
+	ioc_info(ioc, "%s: Successfully set the Diag SBR Reload Bit\n", __func__);
 	return 0;
 }
 
@@ -2706,6 +2833,10 @@ _ctl_ioctl_main(struct file *file, unsigned int cmd, void __user *arg,
 		if (_IOC_SIZE(cmd) == sizeof(struct mpt3_addnl_diag_query))
 			ret = _ctl_addnl_diag_query(ioc, arg);
 		break;
+	case MPT3ENABLEDIAGSBRRELOAD:
+		if (_IOC_SIZE(cmd) == sizeof(struct mpt3_enable_diag_sbr_reload))
+			ret = _ctl_enable_diag_sbr_reload(ioc, arg);
+		break;
 	default:
 		dctlprintk(ioc,
 			   ioc_info(ioc, "unsupported ioctl opcode(0x%08x)\n",
@@ -2718,6 +2849,215 @@ out_unlock_pciaccess:
 	mutex_unlock(&ioc->pci_access_mutex);
 	return ret;
 }
+
+/**
+ * _ctl_get_mpt_mctp_passthru_adapter - Traverse the IOC list and return the IOC at
+ *					dev_index positionthat support MCTP passhtru
+ * @dev_index: position in the mpt3sas_ioc_list to search for
+ * Return pointer to the IOC on success
+ *	  NULL if device not found error
+ */
+static struct MPT3SAS_ADAPTER *
+_ctl_get_mpt_mctp_passthru_adapter(int dev_index)
+{
+	struct MPT3SAS_ADAPTER *ioc = NULL;
+	int count = 0;
+
+	spin_lock(&gioc_lock);
+	/* Traverse ioc list and return number of IOC that support MCTP passthru */
+	list_for_each_entry(ioc, &mpt3sas_ioc_list, list) {
+		if (ioc->facts.IOCCapabilities & MPI26_IOCFACTS_CAPABILITY_MCTP_PASSTHRU) {
+			if (count == dev_index) {
+				spin_unlock(&gioc_lock);
+				return ioc;
+			}
+			count++;
+		}
+	}
+	spin_unlock(&gioc_lock);
+
+	return NULL;
+}
+
+/**
+ * mpt3sas_get_device_count - Retrieve the count of MCTP passthrough
+ *				capable devices managed by the driver.
+ *
+ * Returns number of devices that support MCTP passthrough.
+ */
+int
+mpt3sas_get_device_count(void)
+{
+	int count = 0;
+	struct MPT3SAS_ADAPTER *ioc = NULL;
+
+	spin_lock(&gioc_lock);
+	/* Traverse ioc list and return number of IOC that support MCTP passthru */
+	list_for_each_entry(ioc, &mpt3sas_ioc_list, list)
+		if (ioc->facts.IOCCapabilities & MPI26_IOCFACTS_CAPABILITY_MCTP_PASSTHRU)
+			count++;
+
+	spin_unlock(&gioc_lock);
+
+	return count;
+}
+EXPORT_SYMBOL(mpt3sas_get_device_count);
+
+/**
+ * mpt3sas_send_passthru_cmd - Send an MPI MCTP passthrough command to
+ *				firmware
+ * @command: The MPI MCTP passthrough command to send to firmware
+ *
+ * Returns 0 on success, anything else is error.
+ */
+int mpt3sas_send_mctp_passthru_req(struct mpt3_passthru_command *command)
+{
+	struct MPT3SAS_ADAPTER *ioc;
+	MPI2RequestHeader_t *mpi_request = NULL, *request;
+	Mpi26MctpPassthroughRequest_t *mctp_passthru_req;
+	u16 smid;
+	unsigned long timeout;
+	u8 issue_reset = 0;
+	u32 sz;
+	void *psge;
+	void *data_out = NULL;
+	dma_addr_t data_out_dma = 0;
+	size_t data_out_sz = 0;
+	void *data_in = NULL;
+	dma_addr_t data_in_dma = 0;
+	size_t data_in_sz = 0;
+	long ret;
+
+	/* Retrieve ioc from dev_index */
+	ioc = _ctl_get_mpt_mctp_passthru_adapter(command->dev_index);
+	if (!ioc)
+		return -ENODEV;
+
+	mutex_lock(&ioc->pci_access_mutex);
+	if (ioc->shost_recovery ||
+	    ioc->pci_error_recovery || ioc->is_driver_loading ||
+	    ioc->remove_host) {
+		ret = -EAGAIN;
+		goto unlock_pci_access;
+	}
+
+	/* Lock the ctl_cmds mutex to ensure a single ctl cmd is pending */
+	if (mutex_lock_interruptible(&ioc->ctl_cmds.mutex)) {
+		ret = -ERESTARTSYS;
+		goto unlock_pci_access;
+	}
+
+	if (ioc->ctl_cmds.status != MPT3_CMD_NOT_USED) {
+		ioc_err(ioc, "%s: ctl_cmd in use\n", __func__);
+		ret = -EAGAIN;
+		goto unlock_ctl_cmds;
+	}
+
+	ret = mpt3sas_wait_for_ioc(ioc,	IOC_OPERATIONAL_WAIT_COUNT);
+	if (ret)
+		goto unlock_ctl_cmds;
+
+	mpi_request = (MPI2RequestHeader_t *)command->mpi_request;
+	if (mpi_request->Function != MPI2_FUNCTION_MCTP_PASSTHROUGH) {
+		ioc_err(ioc, "%s: Invalid request received, Function 0x%x\n",
+			__func__, mpi_request->Function);
+		ret = -EINVAL;
+		goto unlock_ctl_cmds;
+	}
+
+	/* Use first reserved smid for passthrough commands */
+	smid = ioc->scsiio_depth - INTERNAL_SCSIIO_CMDS_COUNT + 1;
+	ret = 0;
+	ioc->ctl_cmds.status = MPT3_CMD_PENDING;
+	memset(ioc->ctl_cmds.reply, 0, ioc->reply_sz);
+	request = mpt3sas_base_get_msg_frame(ioc, smid);
+	memset(request, 0, ioc->request_sz);
+	memcpy(request, command->mpi_request, sizeof(Mpi26MctpPassthroughRequest_t));
+	ioc->ctl_cmds.smid = smid;
+	data_out_sz = command->data_out_size;
+	data_in_sz = command->data_in_size;
+
+	/* obtain dma-able memory for data transfer */
+	if (data_out_sz) /* WRITE */ {
+		data_out = dma_alloc_coherent(&ioc->pdev->dev, data_out_sz,
+					      &data_out_dma, GFP_ATOMIC);
+		if (!data_out) {
+			ret = -ENOMEM;
+			mpt3sas_base_free_smid(ioc, smid);
+			goto out;
+		}
+		memcpy(data_out, command->data_out_buf_ptr, data_out_sz);
+
+	}
+
+	if (data_in_sz) /* READ */ {
+		data_in = dma_alloc_coherent(&ioc->pdev->dev, data_in_sz,
+					     &data_in_dma, GFP_ATOMIC);
+		if (!data_in) {
+			ret = -ENOMEM;
+			mpt3sas_base_free_smid(ioc, smid);
+			goto out;
+		}
+	}
+
+	psge = &((Mpi26MctpPassthroughRequest_t *)request)->H2DSGL;
+
+	init_completion(&ioc->ctl_cmds.done);
+
+	mctp_passthru_req = (Mpi26MctpPassthroughRequest_t *)request;
+
+	_ctl_send_mctp_passthru_req(ioc, mctp_passthru_req, psge, data_out_dma,
+				data_out_sz, data_in_dma, data_in_sz, smid);
+
+	timeout = command->timeout;
+	if (timeout < MPT3_IOCTL_DEFAULT_TIMEOUT)
+		timeout = MPT3_IOCTL_DEFAULT_TIMEOUT;
+
+	wait_for_completion_timeout(&ioc->ctl_cmds.done, timeout*HZ);
+	if (!(ioc->ctl_cmds.status & MPT3_CMD_COMPLETE)) {
+		mpt3sas_check_cmd_timeout(ioc,
+		    ioc->ctl_cmds.status, mpi_request,
+		    sizeof(Mpi26MctpPassthroughRequest_t) / 4, issue_reset);
+		goto issue_host_reset;
+	}
+
+	/* copy out xdata to user */
+	if (data_in_sz)
+		memcpy(command->data_in_buf_ptr, data_in, data_in_sz);
+
+	/* copy out reply message frame to user */
+	if (command->max_reply_bytes) {
+		sz = min_t(u32, command->max_reply_bytes, ioc->reply_sz);
+		memcpy(command->reply_frame_buf_ptr, ioc->ctl_cmds.reply, sz);
+	}
+
+issue_host_reset:
+	if (issue_reset) {
+		ret = -ENODATA;
+		mpt3sas_base_hard_reset_handler(ioc, FORCE_BIG_HAMMER);
+	}
+
+out:
+	/* free memory associated with sg buffers */
+	if (data_in)
+		dma_free_coherent(&ioc->pdev->dev, data_in_sz, data_in,
+		    data_in_dma);
+
+	if (data_out)
+		dma_free_coherent(&ioc->pdev->dev, data_out_sz, data_out,
+		    data_out_dma);
+
+	ioc->ctl_cmds.status = MPT3_CMD_NOT_USED;
+
+unlock_ctl_cmds:
+	mutex_unlock(&ioc->ctl_cmds.mutex);
+
+unlock_pci_access:
+	mutex_unlock(&ioc->pci_access_mutex);
+	return ret;
+
+}
+EXPORT_SYMBOL(mpt3sas_send_mctp_passthru_req);
 
 /**
  * _ctl_ioctl - mpt3ctl main ioctl entry point (unlocked)
@@ -3533,11 +3873,31 @@ diag_trigger_master_store(struct device *cdev,
 {
 	struct Scsi_Host *shost = class_to_shost(cdev);
 	struct MPT3SAS_ADAPTER *ioc = shost_priv(shost);
+	struct SL_WH_MASTER_TRIGGER_T *master_tg;
 	unsigned long flags;
 	ssize_t rc;
+	bool set = 1;
+
+	rc = min(sizeof(struct SL_WH_MASTER_TRIGGER_T), count);
+
+	if (ioc->supports_trigger_pages) {
+		master_tg = kzalloc(sizeof(struct SL_WH_MASTER_TRIGGER_T),
+		    GFP_KERNEL);
+		if (!master_tg)
+			return -ENOMEM;
+
+		memcpy(master_tg, buf, rc);
+		if (!master_tg->MasterData)
+			set = 0;
+		if (mpt3sas_config_update_driver_trigger_pg1(ioc, master_tg,
+		    set)) {
+			kfree(master_tg);
+			return -EFAULT;
+		}
+		kfree(master_tg);
+	}
 
 	spin_lock_irqsave(&ioc->diag_trigger_lock, flags);
-	rc = min(sizeof(struct SL_WH_MASTER_TRIGGER_T), count);
 	memset(&ioc->diag_trigger_master, 0,
 	    sizeof(struct SL_WH_MASTER_TRIGGER_T));
 	memcpy(&ioc->diag_trigger_master, buf, rc);
@@ -3589,11 +3949,31 @@ diag_trigger_event_store(struct device *cdev,
 {
 	struct Scsi_Host *shost = class_to_shost(cdev);
 	struct MPT3SAS_ADAPTER *ioc = shost_priv(shost);
+	struct SL_WH_EVENT_TRIGGERS_T *event_tg;
 	unsigned long flags;
 	ssize_t sz;
+	bool set = 1;
+
+	sz = min(sizeof(struct SL_WH_EVENT_TRIGGERS_T), count);
+	if (ioc->supports_trigger_pages) {
+		event_tg = kzalloc(sizeof(struct SL_WH_EVENT_TRIGGERS_T),
+		    GFP_KERNEL);
+		if (!event_tg)
+			return -ENOMEM;
+
+		memcpy(event_tg, buf, sz);
+		if (!event_tg->ValidEntries)
+			set = 0;
+		if (mpt3sas_config_update_driver_trigger_pg2(ioc, event_tg,
+		    set)) {
+			kfree(event_tg);
+			return -EFAULT;
+		}
+		kfree(event_tg);
+	}
 
 	spin_lock_irqsave(&ioc->diag_trigger_lock, flags);
-	sz = min(sizeof(struct SL_WH_EVENT_TRIGGERS_T), count);
+
 	memset(&ioc->diag_trigger_event, 0,
 	    sizeof(struct SL_WH_EVENT_TRIGGERS_T));
 	memcpy(&ioc->diag_trigger_event, buf, sz);
@@ -3644,11 +4024,31 @@ diag_trigger_scsi_store(struct device *cdev,
 {
 	struct Scsi_Host *shost = class_to_shost(cdev);
 	struct MPT3SAS_ADAPTER *ioc = shost_priv(shost);
+	struct SL_WH_SCSI_TRIGGERS_T *scsi_tg;
 	unsigned long flags;
 	ssize_t sz;
+	bool set = 1;
+
+	sz = min(sizeof(struct SL_WH_SCSI_TRIGGERS_T), count);
+	if (ioc->supports_trigger_pages) {
+		scsi_tg = kzalloc(sizeof(struct SL_WH_SCSI_TRIGGERS_T),
+		    GFP_KERNEL);
+		if (!scsi_tg)
+			return -ENOMEM;
+
+		memcpy(scsi_tg, buf, sz);
+		if (!scsi_tg->ValidEntries)
+			set = 0;
+		if (mpt3sas_config_update_driver_trigger_pg3(ioc, scsi_tg,
+		    set)) {
+			kfree(scsi_tg);
+			return -EFAULT;
+		}
+		kfree(scsi_tg);
+	}
 
 	spin_lock_irqsave(&ioc->diag_trigger_lock, flags);
-	sz = min(sizeof(ioc->diag_trigger_scsi), count);
+
 	memset(&ioc->diag_trigger_scsi, 0, sizeof(ioc->diag_trigger_scsi));
 	memcpy(&ioc->diag_trigger_scsi, buf, sz);
 	if (ioc->diag_trigger_scsi.ValidEntries > NUM_VALID_ENTRIES)
@@ -3698,11 +4098,30 @@ diag_trigger_mpi_store(struct device *cdev,
 {
 	struct Scsi_Host *shost = class_to_shost(cdev);
 	struct MPT3SAS_ADAPTER *ioc = shost_priv(shost);
+	struct SL_WH_MPI_TRIGGERS_T *mpi_tg;
 	unsigned long flags;
 	ssize_t sz;
+	bool set = 1;
+
+	sz = min(sizeof(struct SL_WH_MPI_TRIGGERS_T), count);
+	if (ioc->supports_trigger_pages) {
+		mpi_tg = kzalloc(sizeof(struct SL_WH_MPI_TRIGGERS_T),
+		    GFP_KERNEL);
+		if (!mpi_tg)
+			return -ENOMEM;
+
+		memcpy(mpi_tg, buf, sz);
+		if (!mpi_tg->ValidEntries)
+			set = 0;
+		if (mpt3sas_config_update_driver_trigger_pg4(ioc, mpi_tg,
+		    set)) {
+			kfree(mpi_tg);
+			return -EFAULT;
+		}
+		kfree(mpi_tg);
+	}
 
 	spin_lock_irqsave(&ioc->diag_trigger_lock, flags);
-	sz = min(sizeof(struct SL_WH_MPI_TRIGGERS_T), count);
 	memset(&ioc->diag_trigger_mpi, 0,
 	    sizeof(ioc->diag_trigger_mpi));
 	memcpy(&ioc->diag_trigger_mpi, buf, sz);
@@ -3842,35 +4261,44 @@ enable_sdev_max_qd_store(struct device *cdev,
 }
 static DEVICE_ATTR_RW(enable_sdev_max_qd);
 
-struct device_attribute *mpt3sas_host_attrs[] = {
-	&dev_attr_version_fw,
-	&dev_attr_version_bios,
-	&dev_attr_version_mpi,
-	&dev_attr_version_product,
-	&dev_attr_version_nvdata_persistent,
-	&dev_attr_version_nvdata_default,
-	&dev_attr_board_name,
-	&dev_attr_board_assembly,
-	&dev_attr_board_tracer,
-	&dev_attr_io_delay,
-	&dev_attr_device_delay,
-	&dev_attr_logging_level,
-	&dev_attr_fwfault_debug,
-	&dev_attr_fw_queue_depth,
-	&dev_attr_host_sas_address,
-	&dev_attr_ioc_reset_count,
-	&dev_attr_host_trace_buffer_size,
-	&dev_attr_host_trace_buffer,
-	&dev_attr_host_trace_buffer_enable,
-	&dev_attr_reply_queue_count,
-	&dev_attr_diag_trigger_master,
-	&dev_attr_diag_trigger_event,
-	&dev_attr_diag_trigger_scsi,
-	&dev_attr_diag_trigger_mpi,
-	&dev_attr_drv_support_bitmap,
-	&dev_attr_BRM_status,
-	&dev_attr_enable_sdev_max_qd,
+static struct attribute *mpt3sas_host_attrs[] = {
+	&dev_attr_version_fw.attr,
+	&dev_attr_version_bios.attr,
+	&dev_attr_version_mpi.attr,
+	&dev_attr_version_product.attr,
+	&dev_attr_version_nvdata_persistent.attr,
+	&dev_attr_version_nvdata_default.attr,
+	&dev_attr_board_name.attr,
+	&dev_attr_board_assembly.attr,
+	&dev_attr_board_tracer.attr,
+	&dev_attr_io_delay.attr,
+	&dev_attr_device_delay.attr,
+	&dev_attr_logging_level.attr,
+	&dev_attr_fwfault_debug.attr,
+	&dev_attr_fw_queue_depth.attr,
+	&dev_attr_host_sas_address.attr,
+	&dev_attr_ioc_reset_count.attr,
+	&dev_attr_host_trace_buffer_size.attr,
+	&dev_attr_host_trace_buffer.attr,
+	&dev_attr_host_trace_buffer_enable.attr,
+	&dev_attr_reply_queue_count.attr,
+	&dev_attr_diag_trigger_master.attr,
+	&dev_attr_diag_trigger_event.attr,
+	&dev_attr_diag_trigger_scsi.attr,
+	&dev_attr_diag_trigger_mpi.attr,
+	&dev_attr_drv_support_bitmap.attr,
+	&dev_attr_BRM_status.attr,
+	&dev_attr_enable_sdev_max_qd.attr,
 	NULL,
+};
+
+static const struct attribute_group mpt3sas_host_attr_group = {
+	.attrs = mpt3sas_host_attrs
+};
+
+const struct attribute_group *mpt3sas_host_groups[] = {
+	&mpt3sas_host_attr_group,
+	NULL
 };
 
 /* device attributes */
@@ -3933,7 +4361,7 @@ sas_ncq_prio_supported_show(struct device *dev,
 {
 	struct scsi_device *sdev = to_scsi_device(dev);
 
-	return sysfs_emit(buf, "%d\n", scsih_ncq_prio_supp(sdev));
+	return sysfs_emit(buf, "%d\n", sas_ata_ncq_prio_supported(sdev));
 }
 static DEVICE_ATTR_RO(sas_ncq_prio_supported);
 
@@ -3968,7 +4396,7 @@ sas_ncq_prio_enable_store(struct device *dev,
 	if (kstrtobool(buf, &ncq_prio_enable))
 		return -EINVAL;
 
-	if (!scsih_ncq_prio_supp(sdev))
+	if (!sas_ata_ncq_prio_supported(sdev))
 		return -EINVAL;
 
 	sas_device_priv_data->ncq_prio_enable = ncq_prio_enable;
@@ -3976,12 +4404,21 @@ sas_ncq_prio_enable_store(struct device *dev,
 }
 static DEVICE_ATTR_RW(sas_ncq_prio_enable);
 
-struct device_attribute *mpt3sas_dev_attrs[] = {
-	&dev_attr_sas_address,
-	&dev_attr_sas_device_handle,
-	&dev_attr_sas_ncq_prio_supported,
-	&dev_attr_sas_ncq_prio_enable,
+static struct attribute *mpt3sas_dev_attrs[] = {
+	&dev_attr_sas_address.attr,
+	&dev_attr_sas_device_handle.attr,
+	&dev_attr_sas_ncq_prio_supported.attr,
+	&dev_attr_sas_ncq_prio_enable.attr,
 	NULL,
+};
+
+static const struct attribute_group mpt3sas_dev_attr_group = {
+	.attrs = mpt3sas_dev_attrs
+};
+
+const struct attribute_group *mpt3sas_dev_groups[] = {
+	&mpt3sas_dev_attr_group,
+	NULL
 };
 
 /* file operations table for mpt3ctl device */
@@ -4047,31 +4484,37 @@ mpt3sas_ctl_init(ushort hbas_to_enumerate)
 }
 
 /**
+ * mpt3sas_ctl_release - release dma for ctl
+ * @ioc: per adapter object
+ */
+void
+mpt3sas_ctl_release(struct MPT3SAS_ADAPTER *ioc)
+{
+	int i;
+
+	/* free memory associated to diag buffers */
+	for (i = 0; i < MPI2_DIAG_BUF_TYPE_COUNT; i++) {
+		if (!ioc->diag_buffer[i])
+			continue;
+		dma_free_coherent(&ioc->pdev->dev,
+				  ioc->diag_buffer_sz[i],
+				  ioc->diag_buffer[i],
+				  ioc->diag_buffer_dma[i]);
+		ioc->diag_buffer[i] = NULL;
+		ioc->diag_buffer_status[i] = 0;
+	}
+
+	kfree(ioc->event_log);
+}
+
+/**
  * mpt3sas_ctl_exit - exit point for ctl
  * @hbas_to_enumerate: ?
  */
 void
 mpt3sas_ctl_exit(ushort hbas_to_enumerate)
 {
-	struct MPT3SAS_ADAPTER *ioc;
-	int i;
 
-	list_for_each_entry(ioc, &mpt3sas_ioc_list, list) {
-
-		/* free memory associated to diag buffers */
-		for (i = 0; i < MPI2_DIAG_BUF_TYPE_COUNT; i++) {
-			if (!ioc->diag_buffer[i])
-				continue;
-			dma_free_coherent(&ioc->pdev->dev,
-					  ioc->diag_buffer_sz[i],
-					  ioc->diag_buffer[i],
-					  ioc->diag_buffer_dma[i]);
-			ioc->diag_buffer[i] = NULL;
-			ioc->diag_buffer_status[i] = 0;
-		}
-
-		kfree(ioc->event_log);
-	}
 	if (hbas_to_enumerate != 1)
 		misc_deregister(&ctl_dev);
 	if (hbas_to_enumerate != 2)

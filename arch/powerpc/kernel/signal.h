@@ -1,10 +1,7 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0-or-later
+ *
  *    Copyright (c) 2007 Benjamin Herrenschmidt, IBM Corporation
  *    Extracted from signal_32.c and signal_64.c
- *
- * This file is subject to the terms and conditions of the GNU General
- * Public License.  See the file README.legal in the main directory of
- * this archive for more details.
  */
 
 #ifndef _POWERPC_ARCH_SIGNAL_H
@@ -25,8 +22,14 @@ static inline int __get_user_sigset(sigset_t *dst, const sigset_t __user *src)
 
 	return __get_user(dst->sig[0], (u64 __user *)&src->sig[0]);
 }
-#define unsafe_get_user_sigset(dst, src, label) \
-	unsafe_get_user((dst)->sig[0], (u64 __user *)&(src)->sig[0], label)
+#define unsafe_get_user_sigset(dst, src, label) do {			\
+	sigset_t *__dst = dst;						\
+	const sigset_t __user *__src = src;				\
+	int i;								\
+									\
+	for (i = 0; i < _NSIG_WORDS; i++)				\
+		unsafe_get_user(__dst->sig[i], &__src->sig[i], label);	\
+} while (0)
 
 #ifdef CONFIG_VSX
 extern unsigned long copy_vsx_to_user(void __user *to,
@@ -189,9 +192,6 @@ extern int handle_rt_signal64(struct ksignal *ksig, sigset_t *set,
 			      struct task_struct *tsk);
 
 #else /* CONFIG_PPC64 */
-
-extern long sys_rt_sigreturn(void);
-extern long sys_sigreturn(void);
 
 static inline int handle_rt_signal64(struct ksignal *ksig, sigset_t *set,
 				     struct task_struct *tsk)

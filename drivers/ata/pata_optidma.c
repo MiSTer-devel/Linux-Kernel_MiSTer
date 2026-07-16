@@ -153,7 +153,7 @@ static void optidma_mode_setup(struct ata_port *ap, struct ata_device *adev, u8 
 	if (pair) {
 		u8 pair_addr;
 		/* Hardware constraint */
-		if (pair->dma_mode)
+		if (ata_dma_enabled(pair))
 			pair_addr = 0;
 		else
 			pair_addr = addr_timing[pci_clock][pair->pio_mode - XFER_PIO_0];
@@ -301,7 +301,7 @@ static u8 optidma_make_bits43(struct ata_device *adev)
 	};
 	if (!ata_dev_enabled(adev))
 		return 0;
-	if (adev->dma_mode)
+	if (ata_dma_enabled(adev))
 		return adev->dma_mode - XFER_MW_DMA_0;
 	return bits43[adev->pio_mode - XFER_PIO_0];
 }
@@ -322,7 +322,9 @@ static int optidma_set_mode(struct ata_link *link, struct ata_device **r_failed)
 	u8 r;
 	int nybble = 4 * ap->port_no;
 	struct pci_dev *pdev = to_pci_dev(ap->host->dev);
-	int rc  = ata_do_set_mode(link, r_failed);
+	int rc;
+
+	rc = ata_set_mode(link, r_failed);
 	if (rc == 0) {
 		pci_read_config_byte(pdev, 0x43, &r);
 
@@ -334,7 +336,7 @@ static int optidma_set_mode(struct ata_link *link, struct ata_device **r_failed)
 	return rc;
 }
 
-static struct scsi_host_template optidma_sht = {
+static const struct scsi_host_template optidma_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -344,7 +346,7 @@ static struct ata_port_operations optidma_port_ops = {
 	.set_piomode	= optidma_set_pio_mode,
 	.set_dmamode	= optidma_set_dma_mode,
 	.set_mode	= optidma_set_mode,
-	.prereset	= optidma_pre_reset,
+	.reset.prereset	= optidma_pre_reset,
 };
 
 static struct ata_port_operations optiplus_port_ops = {

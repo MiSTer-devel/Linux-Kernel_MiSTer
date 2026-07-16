@@ -42,8 +42,7 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/sched.h>
-
-#include "../comedi_pci.h"
+#include <linux/comedi/comedi_pci.h>
 
 #include "mite.h"
 
@@ -747,8 +746,6 @@ static int ni_pcidio_change(struct comedi_device *dev,
 	ret = mite_buf_change(devpriv->di_mite_ring, s);
 	if (ret < 0)
 		return ret;
-
-	memset(s->async->prealloc_buf, 0xaa, s->async->prealloc_bufsz);
 
 	return 0;
 }

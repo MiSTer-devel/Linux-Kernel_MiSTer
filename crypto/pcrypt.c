@@ -63,11 +63,14 @@ static void pcrypt_aead_serial(struct padata_priv *padata)
 	aead_request_complete(req->base.data, padata->info);
 }
 
-static void pcrypt_aead_done(struct crypto_async_request *areq, int err)
+static void pcrypt_aead_done(void *data, int err)
 {
-	struct aead_request *req = areq->data;
+	struct aead_request *req = data;
 	struct pcrypt_request *preq = aead_request_ctx(req);
 	struct padata_priv *padata = pcrypt_request_padata(preq);
+
+	if (err == -EINPROGRESS)
+		return;
 
 	padata->info = err;
 
@@ -78,12 +81,14 @@ static void pcrypt_aead_enc(struct padata_priv *padata)
 {
 	struct pcrypt_request *preq = pcrypt_padata_request(padata);
 	struct aead_request *req = pcrypt_request_ctx(preq);
+	int ret;
 
-	padata->info = crypto_aead_encrypt(req);
+	ret = crypto_aead_encrypt(req);
 
-	if (padata->info == -EINPROGRESS)
+	if (ret == -EINPROGRESS || ret == -EBUSY)
 		return;
 
+	padata->info = ret;
 	padata_do_serial(padata);
 }
 
@@ -115,6 +120,10 @@ static int pcrypt_aead_encrypt(struct aead_request *req)
 	err = padata_do_parallel(ictx->psenc, padata, &ctx->cb_cpu);
 	if (!err)
 		return -EINPROGRESS;
+	if (err == -EBUSY) {
+		/* try non-parallel mode */
+		return crypto_aead_encrypt(creq);
+	}
 
 	return err;
 }
@@ -123,12 +132,14 @@ static void pcrypt_aead_dec(struct padata_priv *padata)
 {
 	struct pcrypt_request *preq = pcrypt_padata_request(padata);
 	struct aead_request *req = pcrypt_request_ctx(preq);
+	int ret;
 
-	padata->info = crypto_aead_decrypt(req);
+	ret = crypto_aead_decrypt(req);
 
-	if (padata->info == -EINPROGRESS)
+	if (ret == -EINPROGRESS || ret == -EBUSY)
 		return;
 
+	padata->info = ret;
 	padata_do_serial(padata);
 }
 
@@ -160,13 +171,17 @@ static int pcrypt_aead_decrypt(struct aead_request *req)
 	err = padata_do_parallel(ictx->psdec, padata, &ctx->cb_cpu);
 	if (!err)
 		return -EINPROGRESS;
+	if (err == -EBUSY) {
+		/* try non-parallel mode */
+		return crypto_aead_decrypt(creq);
+	}
 
 	return err;
 }
 
 static int pcrypt_aead_init_tfm(struct crypto_aead *tfm)
 {
-	int cpu, cpu_index;
+	int cpu_index;
 	struct aead_instance *inst = aead_alg_instance(tfm);
 	struct pcrypt_instance_ctx *ictx = aead_instance_ctx(inst);
 	struct pcrypt_aead_ctx *ctx = crypto_aead_ctx(tfm);
@@ -175,10 +190,7 @@ static int pcrypt_aead_init_tfm(struct crypto_aead *tfm)
 	cpu_index = (unsigned int)atomic_inc_return(&ictx->tfm_count) %
 		    cpumask_weight(cpu_online_mask);
 
-	ctx->cb_cpu = cpumask_first(cpu_online_mask);
-	for (cpu = 0; cpu < cpu_index; cpu++)
-		ctx->cb_cpu = cpumask_next(ctx->cb_cpu, cpu_online_mask);
-
+	ctx->cb_cpu = cpumask_nth(cpu_index, cpu_online_mask);
 	cipher = crypto_spawn_aead(&ictx->spawn);
 
 	if (IS_ERR(cipher))
@@ -369,7 +381,7 @@ static void __exit pcrypt_exit(void)
 	kset_unregister(pcrypt_kset);
 }
 
-subsys_initcall(pcrypt_init);
+module_init(pcrypt_init);
 module_exit(pcrypt_exit);
 
 MODULE_LICENSE("GPL");

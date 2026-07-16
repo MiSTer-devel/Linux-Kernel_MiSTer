@@ -41,6 +41,7 @@
 #include <linux/ethtool.h>
 #include <linux/rtnetlink.h>
 #include <linux/inetdevice.h>
+#include <net/addrconf.h>
 #include <linux/io.h>
 
 #include <asm/irq.h>
@@ -112,6 +113,9 @@ static int c4iw_alloc_ucontext(struct ib_ucontext *ucontext,
 		mm->key = uresp.status_page_key;
 		mm->addr = virt_to_phys(rhp->rdev.status_page);
 		mm->len = PAGE_SIZE;
+		mm->vaddr = NULL;
+		mm->dma_addr = 0;
+		insert_flag_to_mmap(&rhp->rdev, mm, mm->addr);
 		insert_mmap(context, mm);
 	}
 	return 0;
@@ -130,6 +134,11 @@ static int c4iw_mmap(struct ib_ucontext *context, struct vm_area_struct *vma)
 	struct c4iw_mm_entry *mm;
 	struct c4iw_ucontext *ucontext;
 	u64 addr;
+	u8 mmap_flag;
+	size_t size;
+	void *vaddr;
+	unsigned long vm_pgoff;
+	dma_addr_t dma_addr;
 
 	pr_debug("pgoff 0x%lx key 0x%x len %d\n", vma->vm_pgoff,
 		 key, len);
@@ -144,47 +153,38 @@ static int c4iw_mmap(struct ib_ucontext *context, struct vm_area_struct *vma)
 	if (!mm)
 		return -EINVAL;
 	addr = mm->addr;
+	vaddr = mm->vaddr;
+	dma_addr = mm->dma_addr;
+	size = mm->len;
+	mmap_flag = mm->mmap_flag;
 	kfree(mm);
 
-	if ((addr >= pci_resource_start(rdev->lldi.pdev, 0)) &&
-	    (addr < (pci_resource_start(rdev->lldi.pdev, 0) +
-		    pci_resource_len(rdev->lldi.pdev, 0)))) {
-
-		/*
-		 * MA_SYNC register...
-		 */
-		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+	switch (mmap_flag) {
+	case CXGB4_MMAP_BAR:
+		ret = io_remap_pfn_range(vma, vma->vm_start, addr >> PAGE_SHIFT,
+					 len,
+					 pgprot_noncached(vma->vm_page_prot));
+		break;
+	case CXGB4_MMAP_BAR_WC:
+		ret = io_remap_pfn_range(vma, vma->vm_start,
+					 addr >> PAGE_SHIFT,
+					 len, t4_pgprot_wc(vma->vm_page_prot));
+		break;
+	case CXGB4_MMAP_CONTIG:
 		ret = io_remap_pfn_range(vma, vma->vm_start,
 					 addr >> PAGE_SHIFT,
 					 len, vma->vm_page_prot);
-	} else if ((addr >= pci_resource_start(rdev->lldi.pdev, 2)) &&
-		   (addr < (pci_resource_start(rdev->lldi.pdev, 2) +
-		    pci_resource_len(rdev->lldi.pdev, 2)))) {
-
-		/*
-		 * Map user DB or OCQP memory...
-		 */
-		if (addr >= rdev->oc_mw_pa)
-			vma->vm_page_prot = t4_pgprot_wc(vma->vm_page_prot);
-		else {
-			if (!is_t4(rdev->lldi.adapter_type))
-				vma->vm_page_prot =
-					t4_pgprot_wc(vma->vm_page_prot);
-			else
-				vma->vm_page_prot =
-					pgprot_noncached(vma->vm_page_prot);
-		}
-		ret = io_remap_pfn_range(vma, vma->vm_start,
-					 addr >> PAGE_SHIFT,
-					 len, vma->vm_page_prot);
-	} else {
-
-		/*
-		 * Map WQ or CQ contig dma memory...
-		 */
-		ret = remap_pfn_range(vma, vma->vm_start,
-				      addr >> PAGE_SHIFT,
-				      len, vma->vm_page_prot);
+		break;
+	case CXGB4_MMAP_NON_CONTIG:
+		vm_pgoff = vma->vm_pgoff;
+		vma->vm_pgoff = 0;
+		ret = dma_mmap_coherent(&rdev->lldi.pdev->dev, vma,
+					vaddr, dma_addr, size);
+		vma->vm_pgoff = vm_pgoff;
+		break;
+	default:
+		ret = -EINVAL;
+		break;
 	}
 
 	return ret;
@@ -264,10 +264,14 @@ static int c4iw_query_device(struct ib_device *ibdev, struct ib_device_attr *pro
 		return -EINVAL;
 
 	dev = to_c4iw_dev(ibdev);
-	memcpy(&props->sys_image_guid, dev->rdev.lldi.ports[0]->dev_addr, 6);
+	addrconf_addr_eui48((u8 *)&props->sys_image_guid,
+			    dev->rdev.lldi.ports[0]->dev_addr);
 	props->hw_ver = CHELSIO_CHIP_RELEASE(dev->rdev.lldi.adapter_type);
 	props->fw_ver = dev->rdev.lldi.fw_vers;
-	props->device_cap_flags = dev->device_cap_flags;
+	props->device_cap_flags = IB_DEVICE_MEM_WINDOW;
+	props->kernel_cap_flags = IBK_LOCAL_DMA_LKEY;
+	if (fastreg_support)
+		props->device_cap_flags |= IB_DEVICE_MEM_MGT_EXTENSIONS;
 	props->page_size_cap = T4_PAGESIZE_MASK;
 	props->vendor_id = (u32)dev->rdev.lldi.pdev->vendor;
 	props->vendor_part_id = (u32)dev->rdev.lldi.pdev->device;
@@ -366,23 +370,23 @@ enum counters {
 	NR_COUNTERS
 };
 
-static const char * const names[] = {
-	[IP4INSEGS] = "ip4InSegs",
-	[IP4OUTSEGS] = "ip4OutSegs",
-	[IP4RETRANSSEGS] = "ip4RetransSegs",
-	[IP4OUTRSTS] = "ip4OutRsts",
-	[IP6INSEGS] = "ip6InSegs",
-	[IP6OUTSEGS] = "ip6OutSegs",
-	[IP6RETRANSSEGS] = "ip6RetransSegs",
-	[IP6OUTRSTS] = "ip6OutRsts"
+static const struct rdma_stat_desc cxgb4_descs[] = {
+	[IP4INSEGS].name = "ip4InSegs",
+	[IP4OUTSEGS].name = "ip4OutSegs",
+	[IP4RETRANSSEGS].name = "ip4RetransSegs",
+	[IP4OUTRSTS].name = "ip4OutRsts",
+	[IP6INSEGS].name = "ip6InSegs",
+	[IP6OUTSEGS].name = "ip6OutSegs",
+	[IP6RETRANSSEGS].name = "ip6RetransSegs",
+	[IP6OUTRSTS].name = "ip6OutRsts"
 };
 
 static struct rdma_hw_stats *c4iw_alloc_device_stats(struct ib_device *ibdev)
 {
-	BUILD_BUG_ON(ARRAY_SIZE(names) != NR_COUNTERS);
+	BUILD_BUG_ON(ARRAY_SIZE(cxgb4_descs) != NR_COUNTERS);
 
 	/* FIXME: these look like port stats */
-	return rdma_alloc_hw_stats_struct(names, NR_COUNTERS,
+	return rdma_alloc_hw_stats_struct(cxgb4_descs, NR_COUNTERS,
 					  RDMA_HW_STATS_DEFAULT_LIFESPAN);
 }
 
@@ -469,6 +473,7 @@ static const struct ib_device_ops c4iw_dev_ops = {
 	.fill_res_cq_entry = c4iw_fill_res_cq_entry,
 	.fill_res_cm_id_entry = c4iw_fill_res_cm_id_entry,
 	.fill_res_mr_entry = c4iw_fill_res_mr_entry,
+	.fill_res_qp_entry = c4iw_fill_res_qp_entry,
 	.get_dev_fw_str = get_dev_fw_str,
 	.get_dma_mr = c4iw_get_dma_mr,
 	.get_hw_stats = c4iw_get_mib,
@@ -525,11 +530,8 @@ void c4iw_register_device(struct work_struct *work)
 	struct c4iw_dev *dev = ctx->dev;
 
 	pr_debug("c4iw_dev %p\n", dev);
-	memset(&dev->ibdev.node_guid, 0, sizeof(dev->ibdev.node_guid));
-	memcpy(&dev->ibdev.node_guid, dev->rdev.lldi.ports[0]->dev_addr, 6);
-	dev->device_cap_flags = IB_DEVICE_LOCAL_DMA_LKEY | IB_DEVICE_MEM_WINDOW;
-	if (fastreg_support)
-		dev->device_cap_flags |= IB_DEVICE_MEM_MGT_EXTENSIONS;
+	addrconf_addr_eui48((u8 *)&dev->ibdev.node_guid,
+			    dev->rdev.lldi.ports[0]->dev_addr);
 	dev->ibdev.local_dma_lkey = 0;
 	dev->ibdev.node_type = RDMA_NODE_RNIC;
 	BUILD_BUG_ON(sizeof(C4IW_NODE_DESC) > IB_DEVICE_NODE_DESC_MAX);

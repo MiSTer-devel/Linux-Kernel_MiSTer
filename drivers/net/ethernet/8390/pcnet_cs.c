@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-1.0+
 /*======================================================================
 
     A PCMCIA ethernet driver for NS8390-based cards
@@ -17,9 +18,7 @@
 
     Written 1992,1993 by Donald Becker.
     Copyright 1993 United States Government as represented by the
-    Director, National Security Agency.  This software may be used and
-    distributed according to the terms of the GNU General Public License,
-    incorporated herein by reference.
+    Director, National Security Agency.
     Donald Becker may be reached at becker@scyld.com
 
     Based also on Keith Moore's changes to Don Becker's code, for IBM
@@ -278,6 +277,7 @@ static struct hw_info *get_hwinfo(struct pcmcia_device *link)
 {
     struct net_device *dev = link->priv;
     u_char __iomem *base, *virt;
+    u8 addr[ETH_ALEN];
     int i, j;
 
     /* Allocate a small memory window */
@@ -302,7 +302,8 @@ static struct hw_info *get_hwinfo(struct pcmcia_device *link)
 	    (readb(base+2) == hw_info[i].a1) &&
 	    (readb(base+4) == hw_info[i].a2)) {
 		for (j = 0; j < 6; j++)
-		    dev->dev_addr[j] = readb(base + (j<<1));
+			addr[j] = readb(base + (j<<1));
+		eth_hw_addr_set(dev, addr);
 		break;
 	}
     }
@@ -324,6 +325,7 @@ static struct hw_info *get_prom(struct pcmcia_device *link)
 {
     struct net_device *dev = link->priv;
     unsigned int ioaddr = dev->base_addr;
+    u8 addr[ETH_ALEN];
     u_char prom[32];
     int i, j;
 
@@ -362,7 +364,8 @@ static struct hw_info *get_prom(struct pcmcia_device *link)
     }
     if ((i < NR_INFO) || ((prom[28] == 0x57) && (prom[30] == 0x57))) {
 	for (j = 0; j < 6; j++)
-	    dev->dev_addr[j] = prom[j<<1];
+	    addr[j] = prom[j<<1];
+	eth_hw_addr_set(dev, addr);
 	return (i < NR_INFO) ? hw_info+i : &default_info;
     }
     return NULL;
@@ -377,6 +380,7 @@ static struct hw_info *get_prom(struct pcmcia_device *link)
 static struct hw_info *get_dl10019(struct pcmcia_device *link)
 {
     struct net_device *dev = link->priv;
+    u8 addr[ETH_ALEN];
     int i;
     u_char sum;
 
@@ -385,7 +389,8 @@ static struct hw_info *get_dl10019(struct pcmcia_device *link)
     if (sum != 0xff)
 	return NULL;
     for (i = 0; i < 6; i++)
-	dev->dev_addr[i] = inb_p(dev->base_addr + 0x14 + i);
+	addr[i] = inb_p(dev->base_addr + 0x14 + i);
+    eth_hw_addr_set(dev, addr);
     i = inb(dev->base_addr + 0x1f);
     return ((i == 0x91)||(i == 0x99)) ? &dl10022_info : &dl10019_info;
 }
@@ -400,6 +405,7 @@ static struct hw_info *get_ax88190(struct pcmcia_device *link)
 {
     struct net_device *dev = link->priv;
     unsigned int ioaddr = dev->base_addr;
+    u8 addr[ETH_ALEN];
     int i, j;
 
     /* Not much of a test, but the alternatives are messy */
@@ -413,9 +419,10 @@ static struct hw_info *get_ax88190(struct pcmcia_device *link)
 
     for (i = 0; i < 6; i += 2) {
 	j = inw(ioaddr + PCNET_DATAPORT);
-	dev->dev_addr[i] = j & 0xff;
-	dev->dev_addr[i+1] = j >> 8;
+	addr[i] = j & 0xff;
+	addr[i+1] = j >> 8;
     }
+    eth_hw_addr_set(dev, addr);
     return NULL;
 }
 
@@ -430,6 +437,7 @@ static struct hw_info *get_ax88190(struct pcmcia_device *link)
 static struct hw_info *get_hwired(struct pcmcia_device *link)
 {
     struct net_device *dev = link->priv;
+    u8 addr[ETH_ALEN];
     int i;
 
     for (i = 0; i < 6; i++)
@@ -438,7 +446,8 @@ static struct hw_info *get_hwired(struct pcmcia_device *link)
 	return NULL;
 
     for (i = 0; i < 6; i++)
-	dev->dev_addr[i] = hw_addr[i];
+	addr[i] = hw_addr[i];
+    eth_hw_addr_set(dev, addr);
 
     return &default_info;
 } /* get_hwired */
@@ -938,7 +947,7 @@ static int pcnet_close(struct net_device *dev)
 
     link->open--;
     netif_stop_queue(dev);
-    del_timer_sync(&info->watchdog);
+    timer_delete_sync(&info->watchdog);
 
     return 0;
 } /* pcnet_close */
@@ -985,7 +994,7 @@ static int set_config(struct net_device *dev, struct ifmap *map)
 	    return -EOPNOTSUPP;
 	else if ((map->port < 1) || (map->port > 2))
 	    return -EINVAL;
-	dev->if_port = map->port;
+	WRITE_ONCE(dev->if_port, map->port);
 	netdev_info(dev, "switched to %s port\n", if_names[dev->if_port]);
 	NS8390_init(dev, 1);
     }
@@ -1009,7 +1018,7 @@ static irqreturn_t ei_irq_wrapper(int irq, void *dev_id)
 
 static void ei_watchdog(struct timer_list *t)
 {
-    struct pcnet_dev *info = from_timer(info, t, watchdog);
+    struct pcnet_dev *info = timer_container_of(info, t, watchdog);
     struct net_device *dev = info->p_dev->priv;
     unsigned int nic_base = dev->base_addr;
     unsigned int mii_addr = nic_base + DLINK_GPIO;

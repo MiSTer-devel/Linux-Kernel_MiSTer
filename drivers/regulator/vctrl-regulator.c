@@ -10,7 +10,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/regulator/coupler.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/of_regulator.h>
@@ -185,10 +185,7 @@ static int vctrl_set_voltage_sel(struct regulator_dev *rdev,
 		unsigned int next_sel;
 		int delay;
 
-		if (selector >= vctrl->vtable[vctrl->sel].ovp_min_sel)
-			next_sel = selector;
-		else
-			next_sel = vctrl->vtable[vctrl->sel].ovp_min_sel;
+		next_sel = max_t(unsigned int, selector, vctrl->vtable[vctrl->sel].ovp_min_sel);
 
 		ret = regulator_set_voltage_rdev(rdev->supply->rdev,
 					    vctrl->vtable[next_sel].ctrl,
@@ -546,6 +543,7 @@ static struct platform_driver vctrl_driver = {
 	.probe		= vctrl_probe,
 	.driver		= {
 		.name		= "vctrl-regulator",
+		.probe_type	= PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = of_match_ptr(vctrl_of_match),
 	},
 };

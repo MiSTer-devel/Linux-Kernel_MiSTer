@@ -1,6 +1,5 @@
+/* SPDX-License-Identifier: MIT */
 /*
- * SPDX-License-Identifier: MIT
- *
  * Copyright © 2019 Intel Corporation
  */
 
@@ -78,13 +77,16 @@ enum i915_gem_engine_type {
 
 	/** @I915_GEM_ENGINE_TYPE_BALANCED: A load-balanced engine set */
 	I915_GEM_ENGINE_TYPE_BALANCED,
+
+	/** @I915_GEM_ENGINE_TYPE_PARALLEL: A parallel engine set */
+	I915_GEM_ENGINE_TYPE_PARALLEL,
 };
 
 /**
  * struct i915_gem_proto_engine - prototype engine
  *
  * This struct describes an engine that a context may contain.  Engines
- * have three types:
+ * have four types:
  *
  *  - I915_GEM_ENGINE_TYPE_INVALID: Invalid engines can be created but they
  *    show up as a NULL in i915_gem_engines::engines[i] and any attempt to
@@ -97,6 +99,10 @@ enum i915_gem_engine_type {
  *
  *  - I915_GEM_ENGINE_TYPE_BALANCED: A load-balanced engine set, described
  *    i915_gem_proto_engine::num_siblings and i915_gem_proto_engine::siblings.
+ *
+ *  - I915_GEM_ENGINE_TYPE_PARALLEL: A parallel submission engine set, described
+ *    i915_gem_proto_engine::width, i915_gem_proto_engine::num_siblings, and
+ *    i915_gem_proto_engine::siblings.
  */
 struct i915_gem_proto_engine {
 	/** @type: Type of this engine */
@@ -105,10 +111,13 @@ struct i915_gem_proto_engine {
 	/** @engine: Engine, for physical */
 	struct intel_engine_cs *engine;
 
-	/** @num_siblings: Number of balanced siblings */
+	/** @num_siblings: Number of balanced or parallel siblings */
 	unsigned int num_siblings;
 
-	/** @siblings: Balanced siblings */
+	/** @width: Width of each sibling */
+	unsigned int width;
+
+	/** @siblings: Balanced siblings or num_siblings * width for parallel */
 	struct intel_engine_cs **siblings;
 
 	/** @sseu: Client-set SSEU parameters */
@@ -178,6 +187,9 @@ struct i915_gem_proto_engine {
  * CONTEXT_CREATE_SET_PARAM during GEM_CONTEXT_CREATE.
  */
 struct i915_gem_proto_context {
+	/** @fpriv: Client which creates the context */
+	struct drm_i915_file_private *fpriv;
+
 	/** @vm: See &i915_gem_context.vm */
 	struct i915_address_space *vm;
 
@@ -198,6 +210,12 @@ struct i915_gem_proto_context {
 
 	/** @single_timeline: See See &i915_gem_context.syncobj */
 	bool single_timeline;
+
+	/** @uses_protected_content: See &i915_gem_context.uses_protected_content */
+	bool uses_protected_content;
+
+	/** @pxp_wakeref: See &i915_gem_context.pxp_wakeref */
+	intel_wakeref_t pxp_wakeref;
 };
 
 /**
@@ -226,9 +244,9 @@ struct i915_gem_context {
 	 * Execbuf uses the I915_EXEC_RING_MASK as an index into this
 	 * array to select which HW context + engine to execute on. For
 	 * the default array, the user_ring_map[] is used to translate
-	 * the legacy uABI onto the approprate index (e.g. both
+	 * the legacy uABI onto the appropriate index (e.g. both
 	 * I915_EXEC_DEFAULT and I915_EXEC_RENDER select the same
-	 * context, and I915_EXEC_BSD is weird). For a use defined
+	 * context, and I915_EXEC_BSD is weird). For a user defined
 	 * array, execbuf uses I915_EXEC_RING_MASK as a plain index.
 	 *
 	 * User defined by I915_CONTEXT_PARAM_ENGINE (when the
@@ -257,12 +275,12 @@ struct i915_gem_context {
 	 * @vm: unique address space (GTT)
 	 *
 	 * In full-ppgtt mode, each context has its own address space ensuring
-	 * complete seperation of one client from all others.
+	 * complete separation of one client from all others.
 	 *
 	 * In other modes, this is a NULL pointer with the expectation that
 	 * the caller uses the shared global GTT.
 	 */
-	struct i915_address_space __rcu *vm;
+	struct i915_address_space *vm;
 
 	/**
 	 * @pid: process id of creator
@@ -277,6 +295,12 @@ struct i915_gem_context {
 	/** @link: place with &drm_i915_private.context_list */
 	struct list_head link;
 
+	/** @client: struct i915_drm_client */
+	struct i915_drm_client *client;
+
+	/** @client_link: for linking onto &i915_drm_client.ctx_list */
+	struct list_head client_link;
+
 	/**
 	 * @ref: reference count
 	 *
@@ -287,6 +311,18 @@ struct i915_gem_context {
 	 * i915_gem_context_put() for access.
 	 */
 	struct kref ref;
+
+	/**
+	 * @release_work:
+	 *
+	 * Work item for deferred cleanup, since i915_gem_context_put() tends to
+	 * be called from hardirq context.
+	 *
+	 * FIXME: The only real reason for this is &i915_gem_engines.fence, all
+	 * other callers are from process context and need at most some mild
+	 * shuffling to pull the i915_gem_context_put() call out of a spinlock.
+	 */
+	struct work_struct release_work;
 
 	/**
 	 * @rcu: rcu_head for deferred freeing.
@@ -301,6 +337,7 @@ struct i915_gem_context {
 #define UCONTEXT_BANNABLE		2
 #define UCONTEXT_RECOVERABLE		3
 #define UCONTEXT_PERSISTENCE		4
+#define UCONTEXT_LOW_LATENCY		5
 
 	/**
 	 * @flags: small set of booleans
@@ -308,6 +345,28 @@ struct i915_gem_context {
 	unsigned long flags;
 #define CONTEXT_CLOSED			0
 #define CONTEXT_USER_ENGINES		1
+
+	/**
+	 * @uses_protected_content: context uses PXP-encrypted objects.
+	 *
+	 * This flag can only be set at ctx creation time and it's immutable for
+	 * the lifetime of the context. See I915_CONTEXT_PARAM_PROTECTED_CONTENT
+	 * in uapi/drm/i915_drm.h for more info on setting restrictions and
+	 * expected behaviour of marked contexts.
+	 */
+	bool uses_protected_content;
+
+	/**
+	 * @pxp_wakeref: wakeref to keep the device awake when PXP is in use
+	 *
+	 * PXP sessions are invalidated when the device is suspended, which in
+	 * turns invalidates all contexts and objects using it. To keep the
+	 * flow simple, we keep the device awake when contexts using PXP objects
+	 * are in use. It is expected that the userspace application only uses
+	 * PXP when the display is on, so taking a wakeref here shouldn't worsen
+	 * our power metrics.
+	 */
+	intel_wakeref_t pxp_wakeref;
 
 	/** @mutex: guards everything that isn't engines or handles_vma */
 	struct mutex mutex;
@@ -353,9 +412,9 @@ struct i915_gem_context {
 
 	/** @stale: tracks stale engines to be destroyed */
 	struct {
-		/** @lock: guards engines */
+		/** @stale.lock: guards engines */
 		spinlock_t lock;
-		/** @engines: list of stale engines */
+		/** @stale.engines: list of stale engines */
 		struct list_head engines;
 	} stale;
 };

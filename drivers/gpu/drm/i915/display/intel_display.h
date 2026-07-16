@@ -27,99 +27,26 @@
 
 #include <drm/drm_util.h>
 
-enum link_m_n_set;
-enum drm_scaling_filter;
-struct dpll;
-struct drm_connector;
+#include "i915_reg_defs.h"
+#include "intel_display_limits.h"
+
+struct drm_atomic_state;
 struct drm_device;
 struct drm_display_mode;
 struct drm_encoder;
-struct drm_file;
-struct drm_format_info;
-struct drm_framebuffer;
-struct drm_i915_gem_object;
-struct drm_i915_private;
-struct drm_mode_fb_cmd2;
 struct drm_modeset_acquire_ctx;
-struct drm_plane;
-struct drm_plane_state;
-struct i915_address_space;
-struct i915_ggtt_view;
 struct intel_atomic_state;
 struct intel_crtc;
 struct intel_crtc_state;
 struct intel_digital_port;
-struct intel_dp;
+struct intel_display;
 struct intel_encoder;
-struct intel_initial_plane_config;
-struct intel_load_detect_pipe;
+struct intel_link_m_n;
 struct intel_plane;
 struct intel_plane_state;
-struct intel_remapped_info;
-struct intel_rotation_info;
-
-enum i915_gpio {
-	GPIOA,
-	GPIOB,
-	GPIOC,
-	GPIOD,
-	GPIOE,
-	GPIOF,
-	GPIOG,
-	GPIOH,
-	__GPIOI_UNUSED,
-	GPIOJ,
-	GPIOK,
-	GPIOL,
-	GPIOM,
-	GPION,
-	GPIOO,
-};
-
-/*
- * Keep the pipe enum values fixed: the code assumes that PIPE_A=0, the
- * rest have consecutive values and match the enum values of transcoders
- * with a 1:1 transcoder -> pipe mapping.
- */
-enum pipe {
-	INVALID_PIPE = -1,
-
-	PIPE_A = 0,
-	PIPE_B,
-	PIPE_C,
-	PIPE_D,
-	_PIPE_EDP,
-
-	I915_MAX_PIPES = _PIPE_EDP
-};
+struct intel_power_domain_mask;
 
 #define pipe_name(p) ((p) + 'A')
-
-enum transcoder {
-	INVALID_TRANSCODER = -1,
-	/*
-	 * The following transcoders have a 1:1 transcoder -> pipe mapping,
-	 * keep their values fixed: the code assumes that TRANSCODER_A=0, the
-	 * rest have consecutive values and match the enum values of the pipes
-	 * they map to.
-	 */
-	TRANSCODER_A = PIPE_A,
-	TRANSCODER_B = PIPE_B,
-	TRANSCODER_C = PIPE_C,
-	TRANSCODER_D = PIPE_D,
-
-	/*
-	 * The following transcoders can map to any pipe, their enum value
-	 * doesn't need to stay fixed.
-	 */
-	TRANSCODER_EDP,
-	TRANSCODER_DSI_0,
-	TRANSCODER_DSI_1,
-	TRANSCODER_DSI_A = TRANSCODER_DSI_0,	/* legacy DSI */
-	TRANSCODER_DSI_C = TRANSCODER_DSI_1,	/* legacy DSI */
-
-	I915_MAX_TRANSCODERS
-};
 
 static inline const char *transcoder_name(enum transcoder transcoder)
 {
@@ -148,41 +75,7 @@ static inline bool transcoder_is_dsi(enum transcoder transcoder)
 	return transcoder == TRANSCODER_DSI_A || transcoder == TRANSCODER_DSI_C;
 }
 
-/*
- * Global legacy plane identifier. Valid only for primary/sprite
- * planes on pre-g4x, and only for primary planes on g4x-bdw.
- */
-enum i9xx_plane_id {
-	PLANE_A,
-	PLANE_B,
-	PLANE_C,
-};
-
 #define plane_name(p) ((p) + 'A')
-#define sprite_name(p, s) ((p) * RUNTIME_INFO(dev_priv)->num_sprites[(p)] + (s) + 'A')
-
-/*
- * Per-pipe plane identifier.
- * I915_MAX_PLANES in the enum below is the maximum (across all platforms)
- * number of planes per CRTC.  Not all platforms really have this many planes,
- * which means some arrays of size I915_MAX_PLANES may have unused entries
- * between the topmost sprite plane and the cursor plane.
- *
- * This is expected to be passed to various register macros
- * (eg. PLANE_CTL(), PS_PLANE_SEL(), etc.) so adjust with care.
- */
-enum plane_id {
-	PLANE_PRIMARY,
-	PLANE_SPRITE0,
-	PLANE_SPRITE1,
-	PLANE_SPRITE2,
-	PLANE_SPRITE3,
-	PLANE_SPRITE4,
-	PLANE_SPRITE5,
-	PLANE_CURSOR,
-
-	I915_MAX_PLANES,
-};
 
 #define for_each_plane_id_on_crtc(__crtc, __p) \
 	for ((__p) = PLANE_PRIMARY; (__p) < I915_MAX_PLANES; (__p)++) \
@@ -190,39 +83,11 @@ enum plane_id {
 
 #define for_each_dbuf_slice(__dev_priv, __slice) \
 	for ((__slice) = DBUF_S1; (__slice) < I915_MAX_DBUF_SLICES; (__slice)++) \
-		for_each_if(INTEL_INFO(__dev_priv)->dbuf.slice_mask & BIT(__slice))
+		for_each_if(DISPLAY_INFO(__dev_priv)->dbuf.slice_mask & BIT(__slice))
 
 #define for_each_dbuf_slice_in_mask(__dev_priv, __slice, __mask) \
 	for_each_dbuf_slice((__dev_priv), (__slice)) \
 		for_each_if((__mask) & BIT(__slice))
-
-enum port {
-	PORT_NONE = -1,
-
-	PORT_A = 0,
-	PORT_B,
-	PORT_C,
-	PORT_D,
-	PORT_E,
-	PORT_F,
-	PORT_G,
-	PORT_H,
-	PORT_I,
-
-	/* tgl+ */
-	PORT_TC1 = PORT_D,
-	PORT_TC2,
-	PORT_TC3,
-	PORT_TC4,
-	PORT_TC5,
-	PORT_TC6,
-
-	/* XE_LPD repositions D/E offsets and bitfields */
-	PORT_D_XELPD = PORT_TC5,
-	PORT_E_XELPD,
-
-	I915_MAX_PORTS
-};
 
 #define port_name(p) ((p) + 'A')
 
@@ -269,24 +134,9 @@ enum tc_port {
 	I915_MAX_TC_PORTS
 };
 
-enum tc_port_mode {
-	TC_PORT_TBT_ALT,
-	TC_PORT_DP_ALT,
-	TC_PORT_LEGACY,
-};
-
-enum dpio_channel {
-	DPIO_CH0,
-	DPIO_CH1
-};
-
-enum dpio_phy {
-	DPIO_PHY0,
-	DPIO_PHY1,
-	DPIO_PHY2,
-};
-
 enum aux_ch {
+	AUX_CH_NONE = -1,
+
 	AUX_CH_A,
 	AUX_CH_B,
 	AUX_CH_C,
@@ -308,17 +158,6 @@ enum aux_ch {
 	/* XE_LPD repositions D/E offsets and bitfields */
 	AUX_CH_D_XELPD = AUX_CH_USBC5,
 	AUX_CH_E_XELPD,
-};
-
-#define aux_ch_name(a) ((a) + 'A')
-
-/* Used by dp and fdi links */
-struct intel_link_m_n {
-	u32 tu;
-	u32 gmch_m;
-	u32 gmch_n;
-	u32 link_m;
-	u32 link_n;
 };
 
 enum phy {
@@ -345,9 +184,12 @@ enum phy_fia {
 	FIA3,
 };
 
+#define for_each_hpd_pin(__pin) \
+	for ((__pin) = (HPD_NONE + 1); (__pin) < HPD_NUM_PINS; (__pin)++)
+
 #define for_each_pipe(__dev_priv, __p) \
 	for ((__p) = 0; (__p) < I915_MAX_PIPES; (__p)++) \
-		for_each_if(INTEL_INFO(__dev_priv)->pipe_mask & BIT(__p))
+		for_each_if(DISPLAY_RUNTIME_INFO(__dev_priv)->pipe_mask & BIT(__p))
 
 #define for_each_pipe_masked(__dev_priv, __p, __mask) \
 	for_each_pipe(__dev_priv, __p) \
@@ -355,7 +197,7 @@ enum phy_fia {
 
 #define for_each_cpu_transcoder(__dev_priv, __t) \
 	for ((__t) = 0; (__t) < I915_MAX_TRANSCODERS; (__t)++)	\
-		for_each_if (INTEL_INFO(__dev_priv)->cpu_transcoder_mask & BIT(__t))
+		for_each_if (DISPLAY_RUNTIME_INFO(__dev_priv)->cpu_transcoder_mask & BIT(__t))
 
 #define for_each_cpu_transcoder_masked(__dev_priv, __t, __mask) \
 	for_each_cpu_transcoder(__dev_priv, __t) \
@@ -363,7 +205,7 @@ enum phy_fia {
 
 #define for_each_sprite(__dev_priv, __p, __s)				\
 	for ((__s) = 0;							\
-	     (__s) < RUNTIME_INFO(__dev_priv)->num_sprites[(__p)];	\
+	     (__s) < DISPLAY_RUNTIME_INFO(__dev_priv)->num_sprites[(__p)];	\
 	     (__s)++)
 
 #define for_each_port(__port) \
@@ -376,9 +218,6 @@ enum phy_fia {
 #define for_each_phy_masked(__phy, __phys_mask) \
 	for ((__phy) = PHY_A; (__phy) < I915_MAX_PHYS; (__phy)++)	\
 		for_each_if((__phys_mask) & BIT(__phy))
-
-#define for_each_crtc(dev, crtc) \
-	list_for_each_entry(crtc, &(dev)->mode_config.crtc_list, head)
 
 #define for_each_intel_plane(dev, intel_plane) \
 	list_for_each_entry(intel_plane,			\
@@ -403,11 +242,17 @@ enum phy_fia {
 			    &(dev)->mode_config.crtc_list,		\
 			    base.head)
 
-#define for_each_intel_crtc_mask(dev, intel_crtc, crtc_mask)		\
+#define for_each_intel_crtc_in_pipe_mask(dev, intel_crtc, pipe_mask)	\
 	list_for_each_entry(intel_crtc,					\
 			    &(dev)->mode_config.crtc_list,		\
 			    base.head)					\
-		for_each_if((crtc_mask) & drm_crtc_mask(&intel_crtc->base))
+		for_each_if((pipe_mask) & BIT(intel_crtc->pipe))
+
+#define for_each_intel_crtc_in_pipe_mask_reverse(dev, intel_crtc, pipe_mask)	\
+	list_for_each_entry_reverse((intel_crtc),				\
+				    &(dev)->mode_config.crtc_list,		\
+				    base.head)					\
+		for_each_if((pipe_mask) & BIT((intel_crtc)->pipe))
 
 #define for_each_intel_encoder(dev, intel_encoder)		\
 	list_for_each_entry(intel_encoder,			\
@@ -441,10 +286,6 @@ enum phy_fia {
 	list_for_each_entry((intel_encoder), &(dev)->mode_config.encoder_list, base.head) \
 		for_each_if((intel_encoder)->base.crtc == (__crtc))
 
-#define for_each_connector_on_encoder(dev, __encoder, intel_connector) \
-	list_for_each_entry((intel_connector), &(dev)->mode_config.connector_list, base.head) \
-		for_each_if((intel_connector)->base.encoder == (__encoder))
-
 #define for_each_old_intel_plane_in_state(__state, plane, old_plane_state, __i) \
 	for ((__i) = 0; \
 	     (__i) < (__state)->base.dev->mode_config.num_total_plane && \
@@ -452,6 +293,14 @@ enum phy_fia {
 		      (old_plane_state) = to_intel_plane_state((__state)->base.planes[__i].old_state), 1); \
 	     (__i)++) \
 		for_each_if(plane)
+
+#define for_each_old_intel_crtc_in_state(__state, crtc, old_crtc_state, __i) \
+	for ((__i) = 0; \
+	     (__i) < (__state)->base.dev->mode_config.num_crtc && \
+		     ((crtc) = to_intel_crtc((__state)->base.crtcs[__i].ptr), \
+		      (old_crtc_state) = to_intel_crtc_state((__state)->base.crtcs[__i].old_state), 1); \
+	     (__i)++) \
+		for_each_if(crtc)
 
 #define for_each_new_intel_plane_in_state(__state, plane, new_plane_state, __i) \
 	for ((__i) = 0; \
@@ -467,6 +316,14 @@ enum phy_fia {
 		     ((crtc) = to_intel_crtc((__state)->base.crtcs[__i].ptr), \
 		      (new_crtc_state) = to_intel_crtc_state((__state)->base.crtcs[__i].new_state), 1); \
 	     (__i)++) \
+		for_each_if(crtc)
+
+#define for_each_new_intel_crtc_in_state_reverse(__state, crtc, new_crtc_state, __i) \
+	for ((__i) = (__state)->base.dev->mode_config.num_crtc - 1; \
+	     (__i) >= 0  && \
+	     ((crtc) = to_intel_crtc((__state)->base.crtcs[__i].ptr), \
+	      (new_crtc_state) = to_intel_crtc_state((__state)->base.crtcs[__i].new_state), 1); \
+	     (__i)--) \
 		for_each_if(crtc)
 
 #define for_each_oldnew_intel_plane_in_state(__state, plane, old_plane_state, new_plane_state, __i) \
@@ -512,178 +369,195 @@ enum phy_fia {
 			     ((connector) = to_intel_connector((__state)->base.connectors[__i].ptr), \
 			     (new_connector_state) = to_intel_digital_connector_state((__state)->base.connectors[__i].new_state), 1))
 
-int intel_atomic_add_affected_planes(struct intel_atomic_state *state,
-				     struct intel_crtc *crtc);
+#define for_each_crtc_in_masks(display, crtc, first_pipes, second_pipes, i) \
+	for ((i) = 0; \
+	     (i) < (I915_MAX_PIPES * 2) && ((crtc) = intel_crtc_for_pipe(display, (i) % I915_MAX_PIPES), 1); \
+	     (i)++) \
+		for_each_if((crtc) && ((first_pipes) | ((second_pipes) << I915_MAX_PIPES)) & BIT(i))
+
+#define for_each_crtc_in_masks_reverse(display, crtc, first_pipes, second_pipes, i) \
+	for ((i) = (I915_MAX_PIPES * 2 - 1); \
+	     (i) >= 0 && ((crtc) = intel_crtc_for_pipe(display, (i) % I915_MAX_PIPES), 1); \
+	     (i)--) \
+		for_each_if((crtc) && ((first_pipes) | ((second_pipes) << I915_MAX_PIPES)) & BIT(i))
+
+#define for_each_pipe_crtc_modeset_disable(display, crtc, crtc_state, i) \
+	for_each_crtc_in_masks(display, crtc, \
+			       _intel_modeset_primary_pipes(crtc_state), \
+			       _intel_modeset_secondary_pipes(crtc_state), \
+			       i)
+
+#define for_each_pipe_crtc_modeset_enable(display, crtc, crtc_state, i) \
+	for_each_crtc_in_masks_reverse(display, crtc, \
+				       _intel_modeset_primary_pipes(crtc_state), \
+				       _intel_modeset_secondary_pipes(crtc_state), \
+				       i)
+
+int intel_atomic_check(struct drm_device *dev, struct drm_atomic_state *state);
 u8 intel_calc_active_pipes(struct intel_atomic_state *state,
 			   u8 active_pipes);
 void intel_link_compute_m_n(u16 bpp, int nlanes,
 			    int pixel_clock, int link_clock,
-			    struct intel_link_m_n *m_n,
-			    bool constant_n, bool fec_enable);
-void lpt_disable_clkout_dp(struct drm_i915_private *dev_priv);
-u32 intel_plane_fb_max_stride(struct drm_i915_private *dev_priv,
+			    int bw_overhead,
+			    struct intel_link_m_n *m_n);
+u32 intel_plane_fb_max_stride(struct drm_device *drm,
 			      u32 pixel_format, u64 modifier);
 enum drm_mode_status
-intel_mode_valid_max_plane_size(struct drm_i915_private *dev_priv,
+intel_mode_valid_max_plane_size(struct intel_display *display,
 				const struct drm_display_mode *mode,
-				bool bigjoiner);
-enum phy intel_port_to_phy(struct drm_i915_private *i915, enum port port);
+				int num_joined_pipes);
+enum drm_mode_status
+intel_cpu_transcoder_mode_valid(struct intel_display *display,
+				const struct drm_display_mode *mode);
+enum phy intel_port_to_phy(struct intel_display *display, enum port port);
 bool is_trans_port_sync_mode(const struct intel_crtc_state *state);
+bool is_trans_port_sync_master(const struct intel_crtc_state *state);
+u8 intel_crtc_joined_pipe_mask(const struct intel_crtc_state *crtc_state);
+bool intel_crtc_is_joiner_secondary(const struct intel_crtc_state *crtc_state);
+bool intel_crtc_is_joiner_primary(const struct intel_crtc_state *crtc_state);
+bool intel_crtc_is_bigjoiner_primary(const struct intel_crtc_state *crtc_state);
+bool intel_crtc_is_bigjoiner_secondary(const struct intel_crtc_state *crtc_state);
+bool intel_crtc_is_ultrajoiner(const struct intel_crtc_state *crtc_state);
+bool intel_crtc_is_ultrajoiner_primary(const struct intel_crtc_state *crtc_state);
+bool intel_crtc_ultrajoiner_enable_needed(const struct intel_crtc_state *crtc_state);
+u8 intel_crtc_joiner_secondary_pipes(const struct intel_crtc_state *crtc_state);
+u8 _intel_modeset_primary_pipes(const struct intel_crtc_state *crtc_state);
+u8 _intel_modeset_secondary_pipes(const struct intel_crtc_state *crtc_state);
+struct intel_crtc *intel_primary_crtc(const struct intel_crtc_state *crtc_state);
+bool intel_crtc_get_pipe_config(struct intel_crtc_state *crtc_state);
+bool intel_pipe_config_compare(const struct intel_crtc_state *current_config,
+			       const struct intel_crtc_state *pipe_config,
+			       bool fastset);
 
-void intel_plane_destroy(struct drm_plane *plane);
-void intel_enable_pipe(const struct intel_crtc_state *new_crtc_state);
-void intel_disable_pipe(const struct intel_crtc_state *old_crtc_state);
-void i830_enable_pipe(struct drm_i915_private *dev_priv, enum pipe pipe);
-void i830_disable_pipe(struct drm_i915_private *dev_priv, enum pipe pipe);
-enum pipe intel_crtc_pch_transcoder(struct intel_crtc *crtc);
-int vlv_get_hpll_vco(struct drm_i915_private *dev_priv);
-int vlv_get_cck_clock(struct drm_i915_private *dev_priv,
+void i9xx_set_pipeconf(const struct intel_crtc_state *crtc_state);
+void ilk_set_pipeconf(const struct intel_crtc_state *crtc_state);
+void intel_enable_transcoder(const struct intel_crtc_state *new_crtc_state);
+void intel_disable_transcoder(const struct intel_crtc_state *old_crtc_state);
+void i830_enable_pipe(struct intel_display *display, enum pipe pipe);
+void i830_disable_pipe(struct intel_display *display, enum pipe pipe);
+int vlv_get_hpll_vco(struct drm_device *drm);
+int vlv_get_cck_clock(struct drm_device *drm,
 		      const char *name, u32 reg, int ref_freq);
-int vlv_get_cck_clock_hpll(struct drm_i915_private *dev_priv,
+int vlv_get_cck_clock_hpll(struct drm_device *drm,
 			   const char *name, u32 reg);
-void lpt_pch_enable(const struct intel_crtc_state *crtc_state);
-void lpt_disable_pch_transcoder(struct drm_i915_private *dev_priv);
-void lpt_disable_iclkip(struct drm_i915_private *dev_priv);
-void intel_init_display_hooks(struct drm_i915_private *dev_priv);
-unsigned int intel_fb_xy_to_linear(int x, int y,
-				   const struct intel_plane_state *state,
-				   int plane);
-unsigned int intel_fb_align_height(const struct drm_framebuffer *fb,
-				   int color_plane, unsigned int height);
-void intel_add_fb_offsets(int *x, int *y,
-			  const struct intel_plane_state *state, int plane);
-unsigned int intel_rotation_info_size(const struct intel_rotation_info *rot_info);
-unsigned int intel_remapped_info_size(const struct intel_remapped_info *rem_info);
-bool intel_has_pending_fb_unpin(struct drm_i915_private *dev_priv);
-int intel_display_suspend(struct drm_device *dev);
+bool intel_has_pending_fb_unpin(struct intel_display *display);
 void intel_encoder_destroy(struct drm_encoder *encoder);
 struct drm_display_mode *
 intel_encoder_current_mode(struct intel_encoder *encoder);
-bool intel_phy_is_combo(struct drm_i915_private *dev_priv, enum phy phy);
-bool intel_phy_is_tc(struct drm_i915_private *dev_priv, enum phy phy);
-bool intel_phy_is_snps(struct drm_i915_private *dev_priv, enum phy phy);
-enum tc_port intel_port_to_tc(struct drm_i915_private *dev_priv,
-			      enum port port);
-int intel_get_pipe_from_crtc_id_ioctl(struct drm_device *dev, void *data,
-				      struct drm_file *file_priv);
+void intel_encoder_get_config(struct intel_encoder *encoder,
+			      struct intel_crtc_state *crtc_state);
+bool intel_phy_is_combo(struct intel_display *display, enum phy phy);
+bool intel_phy_is_tc(struct intel_display *display, enum phy phy);
+bool intel_phy_is_snps(struct intel_display *display, enum phy phy);
+enum tc_port intel_port_to_tc(struct intel_display *display, enum port port);
+
+enum phy intel_encoder_to_phy(struct intel_encoder *encoder);
+bool intel_encoder_is_combo(struct intel_encoder *encoder);
+bool intel_encoder_is_snps(struct intel_encoder *encoder);
+bool intel_encoder_is_tc(struct intel_encoder *encoder);
+enum tc_port intel_encoder_to_tc(struct intel_encoder *encoder);
 
 int ilk_get_lanes_required(int target_clock, int link_bw, int bpp);
-void vlv_wait_port_ready(struct drm_i915_private *dev_priv,
-			 struct intel_digital_port *dig_port,
-			 unsigned int expected_mask);
-int intel_get_load_detect_pipe(struct drm_connector *connector,
-			       struct intel_load_detect_pipe *old,
-			       struct drm_modeset_acquire_ctx *ctx);
-void intel_release_load_detect_pipe(struct drm_connector *connector,
-				    struct intel_load_detect_pipe *old,
-				    struct drm_modeset_acquire_ctx *ctx);
-struct i915_vma *
-intel_pin_and_fence_fb_obj(struct drm_framebuffer *fb, bool phys_cursor,
-			   const struct i915_ggtt_view *view,
-			   bool uses_fence,
-			   unsigned long *out_flags);
-void intel_unpin_fb_vma(struct i915_vma *vma, unsigned long flags);
-struct drm_framebuffer *
-intel_framebuffer_create(struct drm_i915_gem_object *obj,
-			 struct drm_mode_fb_cmd2 *mode_cmd);
-int intel_prepare_plane_fb(struct drm_plane *plane,
-			   struct drm_plane_state *new_state);
-void intel_cleanup_plane_fb(struct drm_plane *plane,
-			    struct drm_plane_state *old_state);
 
-void assert_pch_transcoder_disabled(struct drm_i915_private *dev_priv,
-				    enum pipe pipe);
-
-int lpt_get_iclkip(struct drm_i915_private *dev_priv);
 bool intel_fuzzy_clock_check(int clock1, int clock2);
 
-void intel_display_prepare_reset(struct drm_i915_private *dev_priv);
-void intel_display_finish_reset(struct drm_i915_private *dev_priv);
-void intel_dp_get_m_n(struct intel_crtc *crtc,
-		      struct intel_crtc_state *pipe_config);
-void intel_dp_set_m_n(const struct intel_crtc_state *crtc_state,
-		      enum link_m_n_set m_n);
+void intel_zero_m_n(struct intel_link_m_n *m_n);
+void intel_set_m_n(struct intel_display *display,
+		   const struct intel_link_m_n *m_n,
+		   i915_reg_t data_m_reg, i915_reg_t data_n_reg,
+		   i915_reg_t link_m_reg, i915_reg_t link_n_reg);
+void intel_get_m_n(struct intel_display *display,
+		   struct intel_link_m_n *m_n,
+		   i915_reg_t data_m_reg, i915_reg_t data_n_reg,
+		   i915_reg_t link_m_reg, i915_reg_t link_n_reg);
+bool intel_cpu_transcoder_has_m2_n2(struct intel_display *display,
+				    enum transcoder transcoder);
+void intel_cpu_transcoder_set_m1_n1(struct intel_crtc *crtc,
+				    enum transcoder cpu_transcoder,
+				    const struct intel_link_m_n *m_n);
+void intel_cpu_transcoder_set_m2_n2(struct intel_crtc *crtc,
+				    enum transcoder cpu_transcoder,
+				    const struct intel_link_m_n *m_n);
+void intel_cpu_transcoder_get_m1_n1(struct intel_crtc *crtc,
+				    enum transcoder cpu_transcoder,
+				    struct intel_link_m_n *m_n);
+void intel_cpu_transcoder_get_m2_n2(struct intel_crtc *crtc,
+				    enum transcoder cpu_transcoder,
+				    struct intel_link_m_n *m_n);
 int intel_dotclock_calculate(int link_freq, const struct intel_link_m_n *m_n);
-
-bool hsw_crtc_state_ips_capable(const struct intel_crtc_state *crtc_state);
-void hsw_enable_ips(const struct intel_crtc_state *crtc_state);
-void hsw_disable_ips(const struct intel_crtc_state *crtc_state);
-enum intel_display_power_domain intel_port_to_power_domain(enum port port);
+int intel_crtc_dotclock(const struct intel_crtc_state *pipe_config);
+enum intel_display_power_domain intel_port_to_power_domain(struct intel_digital_port *dig_port);
 enum intel_display_power_domain
 intel_aux_power_domain(struct intel_digital_port *dig_port);
-enum intel_display_power_domain
-intel_legacy_aux_to_power_domain(enum aux_ch aux_ch);
 void intel_crtc_arm_fifo_underrun(struct intel_crtc *crtc,
 				  struct intel_crtc_state *crtc_state);
-void ilk_pfit_disable(const struct intel_crtc_state *old_crtc_state);
-
-int bdw_get_pipemisc_bpp(struct intel_crtc *crtc);
+int bdw_get_pipe_misc_bpp(struct intel_crtc *crtc);
 unsigned int intel_plane_fence_y_offset(const struct intel_plane_state *plane_state);
 
-bool
-intel_format_info_is_yuv_semiplanar(const struct drm_format_info *info,
-				    u64 modifier);
-
-int intel_plane_pin_fb(struct intel_plane_state *plane_state);
-void intel_plane_unpin_fb(struct intel_plane_state *old_plane_state);
 struct intel_encoder *
 intel_get_crtc_new_encoder(const struct intel_atomic_state *state,
 			   const struct intel_crtc_state *crtc_state);
+void intel_plane_disable_noatomic(struct intel_crtc *crtc,
+				  struct intel_plane *plane);
+void intel_set_plane_visible(struct intel_crtc_state *crtc_state,
+			     struct intel_plane_state *plane_state,
+			     bool visible);
+void intel_plane_fixup_bitmasks(struct intel_crtc_state *crtc_state);
 
-unsigned int intel_surf_alignment(const struct drm_framebuffer *fb,
-				  int color_plane);
-unsigned int intel_tile_width_bytes(const struct drm_framebuffer *fb, int color_plane);
+bool intel_crtc_vrr_disabling(struct intel_atomic_state *state,
+			      struct intel_crtc *crtc);
 
-void intel_display_driver_register(struct drm_i915_private *i915);
-void intel_display_driver_unregister(struct drm_i915_private *i915);
+int intel_display_min_pipe_bpp(void);
+int intel_display_max_pipe_bpp(struct intel_display *display);
 
 /* modesetting */
-void intel_modeset_init_hw(struct drm_i915_private *i915);
-int intel_modeset_init_noirq(struct drm_i915_private *i915);
-int intel_modeset_init_nogem(struct drm_i915_private *i915);
-int intel_modeset_init(struct drm_i915_private *i915);
-void intel_modeset_driver_remove(struct drm_i915_private *i915);
-void intel_modeset_driver_remove_noirq(struct drm_i915_private *i915);
-void intel_modeset_driver_remove_nogem(struct drm_i915_private *i915);
-void intel_display_resume(struct drm_device *dev);
-void intel_init_pch_refclk(struct drm_i915_private *dev_priv);
-int intel_modeset_all_pipes(struct intel_atomic_state *state);
+int intel_modeset_pipes_in_mask_early(struct intel_atomic_state *state,
+				      const char *reason, u8 pipe_mask);
+int intel_modeset_all_pipes_late(struct intel_atomic_state *state,
+				 const char *reason);
+int intel_modeset_commit_pipes(struct intel_display *display,
+			       u8 pipe_mask,
+			       struct drm_modeset_acquire_ctx *ctx);
+void intel_modeset_get_crtc_power_domains(struct intel_crtc_state *crtc_state,
+					  struct intel_power_domain_mask *old_domains);
+void intel_modeset_put_crtc_power_domains(struct intel_crtc *crtc,
+					  struct intel_power_domain_mask *domains);
+
+/* interface for intel_display_driver.c */
+void intel_init_display_hooks(struct intel_display *display);
+void intel_setup_outputs(struct intel_display *display);
+int intel_initial_commit(struct intel_display *display);
+void intel_panel_sanitize_ssc(struct intel_display *display);
+void intel_update_czclk(struct intel_display *display);
+enum drm_mode_status intel_mode_valid(struct drm_device *dev,
+				      const struct drm_display_mode *mode);
+int intel_atomic_commit(struct drm_device *dev, struct drm_atomic_state *_state,
+			bool nonblock);
 
 /* modesetting asserts */
-void assert_panel_unlocked(struct drm_i915_private *dev_priv,
-			   enum pipe pipe);
-void assert_pll(struct drm_i915_private *dev_priv,
-		enum pipe pipe, bool state);
-#define assert_pll_enabled(d, p) assert_pll(d, p, true)
-#define assert_pll_disabled(d, p) assert_pll(d, p, false)
-void assert_dsi_pll(struct drm_i915_private *dev_priv, bool state);
-#define assert_dsi_pll_enabled(d) assert_dsi_pll(d, true)
-#define assert_dsi_pll_disabled(d) assert_dsi_pll(d, false)
-void assert_fdi_rx_pll(struct drm_i915_private *dev_priv,
-		       enum pipe pipe, bool state);
-#define assert_fdi_rx_pll_enabled(d, p) assert_fdi_rx_pll(d, p, true)
-#define assert_fdi_rx_pll_disabled(d, p) assert_fdi_rx_pll(d, p, false)
-void assert_pipe(struct drm_i915_private *dev_priv,
-		 enum transcoder cpu_transcoder, bool state);
-#define assert_pipe_enabled(d, t) assert_pipe(d, t, true)
-#define assert_pipe_disabled(d, t) assert_pipe(d, t, false)
+void assert_transcoder(struct intel_display *display,
+		       enum transcoder cpu_transcoder, bool state);
+#define assert_transcoder_enabled(d, t) assert_transcoder(d, t, true)
+#define assert_transcoder_disabled(d, t) assert_transcoder(d, t, false)
 
-/* Use I915_STATE_WARN(x) and I915_STATE_WARN_ON() (rather than WARN() and
- * WARN_ON()) for hw state sanity checks to check for unexpected conditions
- * which may not necessarily be a user visible problem.  This will either
- * WARN() or DRM_ERROR() depending on the verbose_checks moduleparam, to
- * enable distros and users to tailor their preferred amount of i915 abrt
- * spam.
+bool assert_port_valid(struct intel_display *display, enum port port);
+
+/*
+ * Use INTEL_DISPLAY_STATE_WARN(x) (rather than WARN() and WARN_ON()) for hw
+ * state sanity checks to check for unexpected conditions which may not
+ * necessarily be a user visible problem. This will either drm_WARN() or
+ * drm_err() depending on the verbose_state_checks module param, to enable
+ * distros and users to tailor their preferred amount of i915 abrt spam.
  */
-#define I915_STATE_WARN(condition, format...) ({			\
+#define INTEL_DISPLAY_STATE_WARN(__display, condition, format...) ({	\
 	int __ret_warn_on = !!(condition);				\
 	if (unlikely(__ret_warn_on))					\
-		if (!WARN(i915_modparams.verbose_state_checks, format))	\
-			DRM_ERROR(format);				\
+		if (!drm_WARN((__display)->drm, (__display)->params.verbose_state_checks, format)) \
+			drm_err((__display)->drm, format);		\
 	unlikely(__ret_warn_on);					\
 })
 
-#define I915_STATE_WARN_ON(x)						\
-	I915_STATE_WARN((x), "%s", "WARN_ON(" __stringify(x) ")")
+bool intel_scanout_needs_vtd_wa(struct intel_display *display);
+int intel_crtc_num_joined_pipes(const struct intel_crtc_state *crtc_state);
 
 #endif

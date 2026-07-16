@@ -8,7 +8,7 @@ Description:
 		more bits set in the dimm-health-bitmap retrieved in
 		response to H_SCM_HEALTH hcall. The details of the bit
 		flags returned in response to this hcall is available
-		at 'Documentation/powerpc/papr_hcalls.rst' . Below are
+		at 'Documentation/arch/powerpc/papr_hcalls.rst' . Below are
 		the flags reported in this sysfs file:
 
 		* "not_armed"
@@ -30,7 +30,7 @@ Description:
 				  Indicating that contents of the
 				  NVDIMM have been scrubbed.
 		* "locked"
-				  Indicating that NVDIMM contents cant
+				  Indicating that NVDIMM contents can't
 				  be modified until next power cycle.
 
 What:		/sys/bus/nd/devices/nmemX/papr/perf_stats
@@ -61,3 +61,15 @@ Description:
 		* "CchRHCnt" : Cache Read Hit Count
 		* "CchWHCnt" : Cache Write Hit Count
 		* "FastWCnt" : Fast Write Count
+
+What:		/sys/bus/nd/devices/nmemX/papr/health_bitmap_inject
+Date:		Jan, 2022
+KernelVersion:	v5.17
+Contact:	linuxppc-dev <linuxppc-dev@lists.ozlabs.org>, nvdimm@lists.linux.dev,
+Description:
+		(RO) Reports the health bitmap inject bitmap that is applied to
+		bitmap received from PowerVM via the H_SCM_HEALTH. This is used
+		to forcibly set specific bits returned from Hcall. These is then
+		used to simulate various health or shutdown states for an nvdimm
+		and are set by user-space tools like ndctl by issuing a PAPR DSM.
+

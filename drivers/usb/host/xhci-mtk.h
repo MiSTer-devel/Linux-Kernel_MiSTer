@@ -11,10 +11,12 @@
 
 #include <linux/clk.h>
 #include <linux/hashtable.h>
+#include <linux/regulator/consumer.h>
 
 #include "xhci.h"
 
-#define BULK_CLKS_NUM	5
+#define BULK_CLKS_NUM	6
+#define BULK_VREGS_NUM	2
 
 /* support at most 64 ep, use 32 size hash table */
 #define SCH_EP_HASH_BITS	5
@@ -28,12 +30,23 @@
 #define XHCI_MTK_MAX_ESIT	(1 << 6)
 #define XHCI_MTK_BW_INDEX(x)	((x) & (XHCI_MTK_MAX_ESIT - 1))
 
+#define UFRAMES_PER_FRAME	8
+#define XHCI_MTK_FRAMES_CNT	(XHCI_MTK_MAX_ESIT / UFRAMES_PER_FRAME)
+
 /**
- * @fs_bus_bw: array to keep track of bandwidth already used for FS
+ * @fs_bus_bw_out: save bandwidth used by FS/LS OUT eps in each uframes
+ * @fs_bus_bw_in: save bandwidth used by FS/LS IN eps in each uframes
+ * @ls_bus_bw: save bandwidth used by LS eps in each uframes
+ * @fs_frame_bw: save bandwidth used by FS/LS eps in each FS frames
+ * @in_ss_cnt: the count of Start-Split for IN eps
  * @ep_list: Endpoints using this TT
  */
 struct mu3h_sch_tt {
-	u32 fs_bus_bw[XHCI_MTK_MAX_ESIT];
+	u16 fs_bus_bw_out[XHCI_MTK_MAX_ESIT];
+	u16 fs_bus_bw_in[XHCI_MTK_MAX_ESIT];
+	u8 ls_bus_bw[XHCI_MTK_MAX_ESIT];
+	u16 fs_frame_bw[XHCI_MTK_FRAMES_CNT];
+	u8 in_ss_cnt[XHCI_MTK_MAX_ESIT];
 	struct list_head ep_list;
 };
 
@@ -56,7 +69,6 @@ struct mu3h_sch_bw_info {
  * @num_esit: number of @esit in a period
  * @num_budget_microframes: number of continuous uframes
  *		(@repeat==1) scheduled within the interval
- * @bw_cost_per_microframe: bandwidth cost per microframe
  * @hentry: hash table entry
  * @endpoint: linked into bandwidth domain which it belongs to
  * @tt_endpoint: linked into mu3h_sch_tt's list which it belongs to
@@ -87,7 +99,6 @@ struct mu3h_sch_ep_info {
 	u32 esit;
 	u32 num_esit;
 	u32 num_budget_microframes;
-	u32 bw_cost_per_microframe;
 	struct list_head endpoint;
 	struct hlist_node hentry;
 	struct list_head tt_endpoint;
@@ -150,9 +161,8 @@ struct xhci_hcd_mtk {
 	int num_u3_ports;
 	int u2p_dis_msk;
 	int u3p_dis_msk;
-	struct regulator *vusb33;
-	struct regulator *vbus;
 	struct clk_bulk_data clks[BULK_CLKS_NUM];
+	struct regulator_bulk_data supplies[BULK_VREGS_NUM];
 	unsigned int has_ippc:1;
 	unsigned int lpm_support:1;
 	unsigned int u2_lpm_disable:1;
@@ -161,6 +171,8 @@ struct xhci_hcd_mtk {
 	struct regmap *uwk;
 	u32 uwk_reg_base;
 	u32 uwk_vers;
+	/* quirk */
+	u32 rxfifo_depth;
 };
 
 static inline struct xhci_hcd_mtk *hcd_to_mtk(struct usb_hcd *hcd)

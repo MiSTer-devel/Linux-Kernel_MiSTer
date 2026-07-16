@@ -17,7 +17,7 @@
 /**
  * struct pie_params - contains pie parameters
  * @target:		target delay in pschedtime
- * @tudpate:		interval at which drop probability is calculated
+ * @tupdate:		interval at which drop probability is calculated
  * @limit:		total number of packets that can be in the queue
  * @alpha:		parameter to control drop probability
  * @beta:		parameter to control drop probability
@@ -104,7 +104,7 @@ static inline void pie_vars_init(struct pie_vars *vars)
 	vars->dq_tstamp = DTIME_INVALID;
 	vars->accu_prob = 0;
 	vars->dq_count = DQCOUNT_INVALID;
-	vars->avg_dq_rate = 0;
+	WRITE_ONCE(vars->avg_dq_rate, 0);
 }
 
 static inline struct pie_skb_cb *get_pie_cb(const struct sk_buff *skb)

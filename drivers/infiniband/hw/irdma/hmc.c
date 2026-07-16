@@ -1,11 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB
+// SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB
 /* Copyright (c) 2015 - 2021 Intel Corporation */
 #include "osdep.h"
-#include "status.h"
 #include "hmc.h"
 #include "defs.h"
 #include "type.h"
 #include "protos.h"
+#include "virtchnl.h"
 
 /**
  * irdma_find_sd_index_limit - finds segment descriptor index limit
@@ -121,10 +121,8 @@ static inline void irdma_invalidate_pf_hmc_pd(struct irdma_sc_dev *dev, u32 sd_i
  * @type: paged or direct sd
  * @setsd: flag to set or clear sd
  */
-enum irdma_status_code irdma_hmc_sd_one(struct irdma_sc_dev *dev, u8 hmc_fn_id,
-					u64 pa, u32 sd_idx,
-					enum irdma_sd_entry_type type,
-					bool setsd)
+int irdma_hmc_sd_one(struct irdma_sc_dev *dev, u8 hmc_fn_id, u64 pa, u32 sd_idx,
+		     enum irdma_sd_entry_type type, bool setsd)
 {
 	struct irdma_update_sds_info sdinfo;
 
@@ -145,16 +143,15 @@ enum irdma_status_code irdma_hmc_sd_one(struct irdma_sc_dev *dev, u8 hmc_fn_id,
  * @sd_cnt: number of sd entries
  * @setsd: flag to set or clear sd
  */
-static enum irdma_status_code irdma_hmc_sd_grp(struct irdma_sc_dev *dev,
-					       struct irdma_hmc_info *hmc_info,
-					       u32 sd_index, u32 sd_cnt,
-					       bool setsd)
+static int irdma_hmc_sd_grp(struct irdma_sc_dev *dev,
+			    struct irdma_hmc_info *hmc_info, u32 sd_index,
+			    u32 sd_cnt, bool setsd)
 {
 	struct irdma_hmc_sd_entry *sd_entry;
 	struct irdma_update_sds_info sdinfo = {};
 	u64 pa;
 	u32 i;
-	enum irdma_status_code ret_code = 0;
+	int ret_code = 0;
 
 	sdinfo.hmc_fn_id = hmc_info->hmc_fn_id;
 	for (i = sd_index; i < sd_index + sd_cnt; i++) {
@@ -196,16 +193,15 @@ static enum irdma_status_code irdma_hmc_sd_grp(struct irdma_sc_dev *dev,
  * @dev: pointer to the device structure
  * @info: create obj info
  */
-static enum irdma_status_code
-irdma_hmc_finish_add_sd_reg(struct irdma_sc_dev *dev,
-			    struct irdma_hmc_create_obj_info *info)
+static int irdma_hmc_finish_add_sd_reg(struct irdma_sc_dev *dev,
+				       struct irdma_hmc_create_obj_info *info)
 {
 	if (info->start_idx >= info->hmc_info->hmc_obj[info->rsrc_type].cnt)
-		return IRDMA_ERR_INVALID_HMC_OBJ_INDEX;
+		return -EINVAL;
 
 	if ((info->start_idx + info->count) >
 	    info->hmc_info->hmc_obj[info->rsrc_type].cnt)
-		return IRDMA_ERR_INVALID_HMC_OBJ_COUNT;
+		return -EINVAL;
 
 	if (!info->add_sd_cnt)
 		return 0;
@@ -222,9 +218,8 @@ irdma_hmc_finish_add_sd_reg(struct irdma_sc_dev *dev,
  * This will allocate memory for PDs and backing pages and populate
  * the sd and pd entries.
  */
-enum irdma_status_code
-irdma_sc_create_hmc_obj(struct irdma_sc_dev *dev,
-			struct irdma_hmc_create_obj_info *info)
+int irdma_sc_create_hmc_obj(struct irdma_sc_dev *dev,
+			    struct irdma_hmc_create_obj_info *info)
 {
 	struct irdma_hmc_sd_entry *sd_entry;
 	u32 sd_idx, sd_lmt;
@@ -232,10 +227,14 @@ irdma_sc_create_hmc_obj(struct irdma_sc_dev *dev,
 	u32 pd_idx1 = 0, pd_lmt1 = 0;
 	u32 i, j;
 	bool pd_error = false;
-	enum irdma_status_code ret_code = 0;
+	int ret_code = 0;
+
+	if (dev->hw_attrs.uk_attrs.hw_rev >= IRDMA_GEN_3 &&
+	    dev->hmc_info->hmc_obj[info->rsrc_type].mem_loc == IRDMA_LOC_MEM)
+		return 0;
 
 	if (info->start_idx >= info->hmc_info->hmc_obj[info->rsrc_type].cnt)
-		return IRDMA_ERR_INVALID_HMC_OBJ_INDEX;
+		return -EINVAL;
 
 	if ((info->start_idx + info->count) >
 	    info->hmc_info->hmc_obj[info->rsrc_type].cnt) {
@@ -243,7 +242,7 @@ irdma_sc_create_hmc_obj(struct irdma_sc_dev *dev,
 			  "HMC: error type %u, start = %u, req cnt %u, cnt = %u\n",
 			  info->rsrc_type, info->start_idx, info->count,
 			  info->hmc_info->hmc_obj[info->rsrc_type].cnt);
-		return IRDMA_ERR_INVALID_HMC_OBJ_COUNT;
+		return -EINVAL;
 	}
 
 	irdma_find_sd_index_limit(info->hmc_info, info->rsrc_type,
@@ -251,7 +250,7 @@ irdma_sc_create_hmc_obj(struct irdma_sc_dev *dev,
 				  &sd_lmt);
 	if (sd_idx >= info->hmc_info->sd_table.sd_cnt ||
 	    sd_lmt > info->hmc_info->sd_table.sd_cnt) {
-		return IRDMA_ERR_INVALID_SD_INDEX;
+		return -EINVAL;
 	}
 
 	irdma_find_pd_index_limit(info->hmc_info, info->rsrc_type,
@@ -312,7 +311,7 @@ exit_sd_error:
 			irdma_prep_remove_pd_page(info->hmc_info, (j - 1));
 			break;
 		default:
-			ret_code = IRDMA_ERR_INVALID_SD_TYPE;
+			ret_code = -EINVAL;
 			break;
 		}
 		j--;
@@ -327,16 +326,16 @@ exit_sd_error:
  * @info: dele obj info
  * @reset: true if called before reset
  */
-static enum irdma_status_code
-irdma_finish_del_sd_reg(struct irdma_sc_dev *dev,
-			struct irdma_hmc_del_obj_info *info, bool reset)
+static int irdma_finish_del_sd_reg(struct irdma_sc_dev *dev,
+				   struct irdma_hmc_del_obj_info *info,
+				   bool reset)
 {
 	struct irdma_hmc_sd_entry *sd_entry;
-	enum irdma_status_code ret_code = 0;
+	int ret_code = 0;
 	u32 i, sd_idx;
 	struct irdma_dma_mem *mem;
 
-	if (!reset)
+	if (dev->privileged && !reset)
 		ret_code = irdma_hmc_sd_grp(dev, info->hmc_info,
 					    info->hmc_info->sd_indexes[0],
 					    info->del_sd_cnt, false);
@@ -373,22 +372,24 @@ irdma_finish_del_sd_reg(struct irdma_sc_dev *dev,
  * caller should deallocate memory allocated previously for
  * book-keeping information about PDs and backing storage.
  */
-enum irdma_status_code irdma_sc_del_hmc_obj(struct irdma_sc_dev *dev,
-					    struct irdma_hmc_del_obj_info *info,
-					    bool reset)
+int irdma_sc_del_hmc_obj(struct irdma_sc_dev *dev,
+			 struct irdma_hmc_del_obj_info *info, bool reset)
 {
 	struct irdma_hmc_pd_table *pd_table;
 	u32 sd_idx, sd_lmt;
 	u32 pd_idx, pd_lmt, rel_pd_idx;
 	u32 i, j;
-	enum irdma_status_code ret_code = 0;
+	int ret_code = 0;
+
+	if (dev->hmc_info->hmc_obj[info->rsrc_type].mem_loc == IRDMA_LOC_MEM)
+		return 0;
 
 	if (info->start_idx >= info->hmc_info->hmc_obj[info->rsrc_type].cnt) {
 		ibdev_dbg(to_ibdev(dev),
 			  "HMC: error start_idx[%04d]  >= [type %04d].cnt[%04d]\n",
 			  info->start_idx, info->rsrc_type,
 			  info->hmc_info->hmc_obj[info->rsrc_type].cnt);
-		return IRDMA_ERR_INVALID_HMC_OBJ_INDEX;
+		return -EINVAL;
 	}
 
 	if ((info->start_idx + info->count) >
@@ -397,7 +398,7 @@ enum irdma_status_code irdma_sc_del_hmc_obj(struct irdma_sc_dev *dev,
 			  "HMC: error start_idx[%04d] + count %04d  >= [type %04d].cnt[%04d]\n",
 			  info->start_idx, info->count, info->rsrc_type,
 			  info->hmc_info->hmc_obj[info->rsrc_type].cnt);
-		return IRDMA_ERR_INVALID_HMC_OBJ_COUNT;
+		return -EINVAL;
 	}
 
 	irdma_find_pd_index_limit(info->hmc_info, info->rsrc_type,
@@ -433,7 +434,7 @@ enum irdma_status_code irdma_sc_del_hmc_obj(struct irdma_sc_dev *dev,
 	if (sd_idx >= info->hmc_info->sd_table.sd_cnt ||
 	    sd_lmt > info->hmc_info->sd_table.sd_cnt) {
 		ibdev_dbg(to_ibdev(dev), "HMC: invalid sd_idx\n");
-		return IRDMA_ERR_INVALID_SD_INDEX;
+		return -EINVAL;
 	}
 
 	for (i = sd_idx; i < sd_lmt; i++) {
@@ -477,11 +478,9 @@ enum irdma_status_code irdma_sc_del_hmc_obj(struct irdma_sc_dev *dev,
  * @type: what type of segment descriptor we're manipulating
  * @direct_mode_sz: size to alloc in direct mode
  */
-enum irdma_status_code irdma_add_sd_table_entry(struct irdma_hw *hw,
-						struct irdma_hmc_info *hmc_info,
-						u32 sd_index,
-						enum irdma_sd_entry_type type,
-						u64 direct_mode_sz)
+int irdma_add_sd_table_entry(struct irdma_hw *hw,
+			     struct irdma_hmc_info *hmc_info, u32 sd_index,
+			     enum irdma_sd_entry_type type, u64 direct_mode_sz)
 {
 	struct irdma_hmc_sd_entry *sd_entry;
 	struct irdma_dma_mem dma_mem;
@@ -499,7 +498,7 @@ enum irdma_status_code irdma_add_sd_table_entry(struct irdma_hw *hw,
 		dma_mem.va = dma_alloc_coherent(hw->device, dma_mem.size,
 						&dma_mem.pa, GFP_KERNEL);
 		if (!dma_mem.va)
-			return IRDMA_ERR_NO_MEMORY;
+			return -ENOMEM;
 		if (type == IRDMA_SD_TYPE_PAGED) {
 			struct irdma_virt_mem *vmem =
 				&sd_entry->u.pd_table.pd_entry_virt_mem;
@@ -510,7 +509,7 @@ enum irdma_status_code irdma_add_sd_table_entry(struct irdma_hw *hw,
 				dma_free_coherent(hw->device, dma_mem.size,
 						  dma_mem.va, dma_mem.pa);
 				dma_mem.va = NULL;
-				return IRDMA_ERR_NO_MEMORY;
+				return -ENOMEM;
 			}
 			sd_entry->u.pd_table.pd_entry = vmem->va;
 
@@ -549,10 +548,9 @@ enum irdma_status_code irdma_add_sd_table_entry(struct irdma_hw *hw,
  *	   aligned on 4K boundary and zeroed memory.
  *	2. It should be 4K in size.
  */
-enum irdma_status_code irdma_add_pd_table_entry(struct irdma_sc_dev *dev,
-						struct irdma_hmc_info *hmc_info,
-						u32 pd_index,
-						struct irdma_dma_mem *rsrc_pg)
+int irdma_add_pd_table_entry(struct irdma_sc_dev *dev,
+			     struct irdma_hmc_info *hmc_info, u32 pd_index,
+			     struct irdma_dma_mem *rsrc_pg)
 {
 	struct irdma_hmc_pd_table *pd_table;
 	struct irdma_hmc_pd_entry *pd_entry;
@@ -563,7 +561,7 @@ enum irdma_status_code irdma_add_pd_table_entry(struct irdma_sc_dev *dev,
 	u64 page_desc;
 
 	if (pd_index / IRDMA_HMC_PD_CNT_IN_SD >= hmc_info->sd_table.sd_cnt)
-		return IRDMA_ERR_INVALID_PAGE_DESC_INDEX;
+		return -EINVAL;
 
 	sd_idx = (pd_index / IRDMA_HMC_PD_CNT_IN_SD);
 	if (hmc_info->sd_table.sd_entry[sd_idx].entry_type !=
@@ -584,7 +582,7 @@ enum irdma_status_code irdma_add_pd_table_entry(struct irdma_sc_dev *dev,
 						      page->size, &page->pa,
 						      GFP_KERNEL);
 			if (!page->va)
-				return IRDMA_ERR_NO_MEMORY;
+				return -ENOMEM;
 
 			pd_entry->rsrc_pg = false;
 		}
@@ -599,7 +597,10 @@ enum irdma_status_code irdma_add_pd_table_entry(struct irdma_sc_dev *dev,
 		pd_entry->sd_index = sd_idx;
 		pd_entry->valid = true;
 		pd_table->use_cnt++;
-		irdma_invalidate_pf_hmc_pd(dev, sd_idx, rel_pd_idx);
+
+		if (hmc_info->hmc_fn_id < dev->hw_attrs.first_hw_vf_fpm_id &&
+		    dev->privileged)
+			irdma_invalidate_pf_hmc_pd(dev, sd_idx, rel_pd_idx);
 	}
 	pd_entry->bp.use_cnt++;
 
@@ -621,9 +622,8 @@ enum irdma_status_code irdma_add_pd_table_entry(struct irdma_sc_dev *dev,
  *	1. Caller can deallocate the memory used by backing storage after this
  *	   function returns.
  */
-enum irdma_status_code irdma_remove_pd_bp(struct irdma_sc_dev *dev,
-					  struct irdma_hmc_info *hmc_info,
-					  u32 idx)
+int irdma_remove_pd_bp(struct irdma_sc_dev *dev,
+		       struct irdma_hmc_info *hmc_info, u32 idx)
 {
 	struct irdma_hmc_pd_entry *pd_entry;
 	struct irdma_hmc_pd_table *pd_table;
@@ -635,11 +635,11 @@ enum irdma_status_code irdma_remove_pd_bp(struct irdma_sc_dev *dev,
 	sd_idx = idx / IRDMA_HMC_PD_CNT_IN_SD;
 	rel_pd_idx = idx % IRDMA_HMC_PD_CNT_IN_SD;
 	if (sd_idx >= hmc_info->sd_table.sd_cnt)
-		return IRDMA_ERR_INVALID_PAGE_DESC_INDEX;
+		return -EINVAL;
 
 	sd_entry = &hmc_info->sd_table.sd_entry[sd_idx];
 	if (sd_entry->entry_type != IRDMA_SD_TYPE_PAGED)
-		return IRDMA_ERR_INVALID_SD_TYPE;
+		return -EINVAL;
 
 	pd_table = &hmc_info->sd_table.sd_entry[sd_idx].u.pd_table;
 	pd_entry = &pd_table->pd_entry[rel_pd_idx];
@@ -651,12 +651,13 @@ enum irdma_status_code irdma_remove_pd_bp(struct irdma_sc_dev *dev,
 	pd_addr = pd_table->pd_page_addr.va;
 	pd_addr += rel_pd_idx;
 	memset(pd_addr, 0, sizeof(u64));
-	irdma_invalidate_pf_hmc_pd(dev, sd_idx, idx);
+	if (dev->privileged && dev->hmc_fn_id == hmc_info->hmc_fn_id)
+		irdma_invalidate_pf_hmc_pd(dev, sd_idx, idx);
 
 	if (!pd_entry->rsrc_pg) {
 		mem = &pd_entry->bp.addr;
 		if (!mem || !mem->va)
-			return IRDMA_ERR_PARAM;
+			return -EINVAL;
 
 		dma_free_coherent(dev->hw->device, mem->size, mem->va,
 				  mem->pa);
@@ -673,14 +674,13 @@ enum irdma_status_code irdma_remove_pd_bp(struct irdma_sc_dev *dev,
  * @hmc_info: pointer to the HMC configuration information structure
  * @idx: the page index
  */
-enum irdma_status_code irdma_prep_remove_sd_bp(struct irdma_hmc_info *hmc_info,
-					       u32 idx)
+int irdma_prep_remove_sd_bp(struct irdma_hmc_info *hmc_info, u32 idx)
 {
 	struct irdma_hmc_sd_entry *sd_entry;
 
 	sd_entry = &hmc_info->sd_table.sd_entry[idx];
 	if (--sd_entry->u.bp.use_cnt)
-		return IRDMA_ERR_NOT_READY;
+		return -EBUSY;
 
 	hmc_info->sd_table.use_cnt--;
 	sd_entry->valid = false;
@@ -693,15 +693,14 @@ enum irdma_status_code irdma_prep_remove_sd_bp(struct irdma_hmc_info *hmc_info,
  * @hmc_info: pointer to the HMC configuration information structure
  * @idx: segment descriptor index to find the relevant page descriptor
  */
-enum irdma_status_code
-irdma_prep_remove_pd_page(struct irdma_hmc_info *hmc_info, u32 idx)
+int irdma_prep_remove_pd_page(struct irdma_hmc_info *hmc_info, u32 idx)
 {
 	struct irdma_hmc_sd_entry *sd_entry;
 
 	sd_entry = &hmc_info->sd_table.sd_entry[idx];
 
 	if (sd_entry->u.pd_table.use_cnt)
-		return IRDMA_ERR_NOT_READY;
+		return -EBUSY;
 
 	sd_entry->valid = false;
 	hmc_info->sd_table.use_cnt--;

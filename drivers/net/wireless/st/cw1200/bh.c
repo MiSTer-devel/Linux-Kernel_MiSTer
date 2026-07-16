@@ -85,8 +85,6 @@ void cw1200_unregister_bh(struct cw1200_common *priv)
 	atomic_inc(&priv->bh_term);
 	wake_up(&priv->bh_wq);
 
-	flush_workqueue(priv->bh_workqueue);
-
 	destroy_workqueue(priv->bh_workqueue);
 	priv->bh_workqueue = NULL;
 
@@ -319,28 +317,24 @@ static int cw1200_bh_rx_helper(struct cw1200_common *priv,
 
 	if (wsm_id & 0x0400) {
 		int rc = wsm_release_tx_buffer(priv, 1);
-		if (WARN_ON(rc < 0))
+		if (WARN_ON(rc < 0)) {
+			dev_kfree_skb(skb_rx);
 			return rc;
-		else if (rc > 0)
+		} else if (rc > 0) {
 			*tx = 1;
+		}
 	}
 
 	/* cw1200_wsm_rx takes care on SKB livetime */
 	if (WARN_ON(wsm_handle_rx(priv, wsm_id, wsm, &skb_rx)))
 		goto err;
 
-	if (skb_rx) {
-		dev_kfree_skb(skb_rx);
-		skb_rx = NULL;
-	}
+	dev_kfree_skb(skb_rx);
 
 	return 0;
 
 err:
-	if (skb_rx) {
-		dev_kfree_skb(skb_rx);
-		skb_rx = NULL;
-	}
+	dev_kfree_skb(skb_rx);
 	return -1;
 }
 

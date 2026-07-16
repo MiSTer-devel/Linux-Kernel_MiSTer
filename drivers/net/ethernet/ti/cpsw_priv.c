@@ -18,8 +18,9 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/skbuff.h>
-#include <net/page_pool.h>
+#include <net/page_pool/helpers.h>
 #include <net/pkt_cls.h>
+#include <net/pkt_sched.h>
 
 #include "cpsw.h"
 #include "cpts.h"
@@ -31,6 +32,7 @@
 #define CPTS_N_ETX_TS 4
 
 int (*cpsw_slave_index)(struct cpsw_common *cpsw, struct cpsw_priv *priv);
+EXPORT_SYMBOL_GPL(cpsw_slave_index);
 
 void cpsw_intr_enable(struct cpsw_common *cpsw)
 {
@@ -39,6 +41,7 @@ void cpsw_intr_enable(struct cpsw_common *cpsw)
 
 	cpdma_ctlr_int_ctrl(cpsw->dma, true);
 }
+EXPORT_SYMBOL_GPL(cpsw_intr_enable);
 
 void cpsw_intr_disable(struct cpsw_common *cpsw)
 {
@@ -47,6 +50,7 @@ void cpsw_intr_disable(struct cpsw_common *cpsw)
 
 	cpdma_ctlr_int_ctrl(cpsw->dma, false);
 }
+EXPORT_SYMBOL_GPL(cpsw_intr_disable);
 
 void cpsw_tx_handler(void *token, int len, int status)
 {
@@ -81,6 +85,7 @@ void cpsw_tx_handler(void *token, int len, int status)
 	ndev->stats.tx_packets++;
 	ndev->stats.tx_bytes += len;
 }
+EXPORT_SYMBOL_GPL(cpsw_tx_handler);
 
 irqreturn_t cpsw_tx_interrupt(int irq, void *dev_id)
 {
@@ -97,6 +102,7 @@ irqreturn_t cpsw_tx_interrupt(int irq, void *dev_id)
 	napi_schedule(&cpsw->napi_tx);
 	return IRQ_HANDLED;
 }
+EXPORT_SYMBOL_GPL(cpsw_tx_interrupt);
 
 irqreturn_t cpsw_rx_interrupt(int irq, void *dev_id)
 {
@@ -113,6 +119,7 @@ irqreturn_t cpsw_rx_interrupt(int irq, void *dev_id)
 	napi_schedule(&cpsw->napi_rx);
 	return IRQ_HANDLED;
 }
+EXPORT_SYMBOL_GPL(cpsw_rx_interrupt);
 
 irqreturn_t cpsw_misc_interrupt(int irq, void *dev_id)
 {
@@ -125,6 +132,7 @@ irqreturn_t cpsw_misc_interrupt(int irq, void *dev_id)
 
 	return IRQ_HANDLED;
 }
+EXPORT_SYMBOL_GPL(cpsw_misc_interrupt);
 
 int cpsw_tx_mq_poll(struct napi_struct *napi_tx, int budget)
 {
@@ -157,6 +165,7 @@ int cpsw_tx_mq_poll(struct napi_struct *napi_tx, int budget)
 
 	return num_tx;
 }
+EXPORT_SYMBOL_GPL(cpsw_tx_mq_poll);
 
 int cpsw_tx_poll(struct napi_struct *napi_tx, int budget)
 {
@@ -175,6 +184,7 @@ int cpsw_tx_poll(struct napi_struct *napi_tx, int budget)
 
 	return num_tx;
 }
+EXPORT_SYMBOL_GPL(cpsw_tx_poll);
 
 int cpsw_rx_mq_poll(struct napi_struct *napi_rx, int budget)
 {
@@ -207,6 +217,7 @@ int cpsw_rx_mq_poll(struct napi_struct *napi_rx, int budget)
 
 	return num_rx;
 }
+EXPORT_SYMBOL_GPL(cpsw_rx_mq_poll);
 
 int cpsw_rx_poll(struct napi_struct *napi_rx, int budget)
 {
@@ -225,6 +236,7 @@ int cpsw_rx_poll(struct napi_struct *napi_rx, int budget)
 
 	return num_rx;
 }
+EXPORT_SYMBOL_GPL(cpsw_rx_poll);
 
 void cpsw_rx_vlan_encap(struct sk_buff *skb)
 {
@@ -267,14 +279,16 @@ void cpsw_rx_vlan_encap(struct sk_buff *skb)
 		skb_pull(skb, VLAN_HLEN);
 	}
 }
+EXPORT_SYMBOL_GPL(cpsw_rx_vlan_encap);
 
 void cpsw_set_slave_mac(struct cpsw_slave *slave, struct cpsw_priv *priv)
 {
 	slave_write(slave, mac_hi(priv->mac_addr), SA_HI);
 	slave_write(slave, mac_lo(priv->mac_addr), SA_LO);
 }
+EXPORT_SYMBOL_GPL(cpsw_set_slave_mac);
 
-void soft_reset(const char *module, void __iomem *reg)
+void cpsw_soft_reset(const char *module, void __iomem *reg)
 {
 	unsigned long timeout = jiffies + HZ;
 
@@ -285,6 +299,7 @@ void soft_reset(const char *module, void __iomem *reg)
 
 	WARN(readl_relaxed(reg) & 1, "failed to soft-reset %s\n", module);
 }
+EXPORT_SYMBOL_GPL(cpsw_soft_reset);
 
 void cpsw_ndo_tx_timeout(struct net_device *ndev, unsigned int txqueue)
 {
@@ -304,6 +319,7 @@ void cpsw_ndo_tx_timeout(struct net_device *ndev, unsigned int txqueue)
 	netif_trans_update(ndev);
 	netif_tx_wake_all_queues(ndev);
 }
+EXPORT_SYMBOL_GPL(cpsw_ndo_tx_timeout);
 
 static int cpsw_get_common_speed(struct cpsw_common *cpsw)
 {
@@ -342,6 +358,7 @@ int cpsw_need_resplit(struct cpsw_common *cpsw)
 
 	return 1;
 }
+EXPORT_SYMBOL_GPL(cpsw_need_resplit);
 
 void cpsw_split_res(struct cpsw_common *cpsw)
 {
@@ -364,7 +381,7 @@ void cpsw_split_res(struct cpsw_common *cpsw)
 	if (cpsw->tx_ch_num == rlim_ch_num) {
 		max_rate = consumed_rate;
 	} else if (!rlim_ch_num) {
-		ch_budget = CPSW_POLL_WEIGHT / cpsw->tx_ch_num;
+		ch_budget = NAPI_POLL_WEIGHT / cpsw->tx_ch_num;
 		bigest_rate = 0;
 		max_rate = consumed_rate;
 	} else {
@@ -379,19 +396,19 @@ void cpsw_split_res(struct cpsw_common *cpsw)
 		if (max_rate < consumed_rate)
 			max_rate *= 10;
 
-		ch_budget = (consumed_rate * CPSW_POLL_WEIGHT) / max_rate;
-		ch_budget = (CPSW_POLL_WEIGHT - ch_budget) /
+		ch_budget = (consumed_rate * NAPI_POLL_WEIGHT) / max_rate;
+		ch_budget = (NAPI_POLL_WEIGHT - ch_budget) /
 			    (cpsw->tx_ch_num - rlim_ch_num);
 		bigest_rate = (max_rate - consumed_rate) /
 			      (cpsw->tx_ch_num - rlim_ch_num);
 	}
 
 	/* split tx weight/budget */
-	budget = CPSW_POLL_WEIGHT;
+	budget = NAPI_POLL_WEIGHT;
 	for (i = 0; i < cpsw->tx_ch_num; i++) {
 		ch_rate = cpdma_chan_get_rate(txv[i].ch);
 		if (ch_rate) {
-			txv[i].budget = (ch_rate * CPSW_POLL_WEIGHT) / max_rate;
+			txv[i].budget = (ch_rate * NAPI_POLL_WEIGHT) / max_rate;
 			if (!txv[i].budget)
 				txv[i].budget++;
 			if (ch_rate > bigest_rate) {
@@ -417,7 +434,7 @@ void cpsw_split_res(struct cpsw_common *cpsw)
 		txv[bigest_rate_ch].budget += budget;
 
 	/* split rx budget */
-	budget = CPSW_POLL_WEIGHT;
+	budget = NAPI_POLL_WEIGHT;
 	ch_budget = budget / cpsw->rx_ch_num;
 	for (i = 0; i < cpsw->rx_ch_num; i++) {
 		cpsw->rxv[i].budget = ch_budget;
@@ -427,6 +444,7 @@ void cpsw_split_res(struct cpsw_common *cpsw)
 	if (budget)
 		cpsw->rxv[0].budget += budget;
 }
+EXPORT_SYMBOL_GPL(cpsw_split_res);
 
 int cpsw_init_common(struct cpsw_common *cpsw, void __iomem *ss_regs,
 		     int ale_ageout, phys_addr_t desc_mem_phys,
@@ -502,6 +520,7 @@ int cpsw_init_common(struct cpsw_common *cpsw, void __iomem *ss_regs,
 	ale_params.ale_ageout		= ale_ageout;
 	ale_params.ale_ports		= CPSW_ALE_PORTS_NUM;
 	ale_params.dev_id		= "cpsw";
+	ale_params.bus_freq		= cpsw->bus_freq_mhz * 1000000;
 
 	cpsw->ale = cpsw_ale_create(&ale_params);
 	if (IS_ERR(cpsw->ale)) {
@@ -546,6 +565,7 @@ int cpsw_init_common(struct cpsw_common *cpsw, void __iomem *ss_regs,
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(cpsw_init_common);
 
 #if IS_ENABLED(CONFIG_TI_CPTS)
 
@@ -612,28 +632,29 @@ static void cpsw_hwtstamp_v2(struct cpsw_priv *priv)
 	writel_relaxed(ETH_P_8021Q, &cpsw->regs->vlan_ltype);
 }
 
-static int cpsw_hwtstamp_set(struct net_device *dev, struct ifreq *ifr)
+int cpsw_hwtstamp_set(struct net_device *dev,
+		      struct kernel_hwtstamp_config *cfg,
+		      struct netlink_ext_ack *extack)
 {
 	struct cpsw_priv *priv = netdev_priv(dev);
 	struct cpsw_common *cpsw = priv->cpsw;
-	struct hwtstamp_config cfg;
+
+	/* This will only execute if dev->see_all_hwtstamp_requests is set */
+	if (cfg->source != HWTSTAMP_SOURCE_NETDEV) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "Switch mode only supports MAC timestamping");
+		return -EOPNOTSUPP;
+	}
 
 	if (cpsw->version != CPSW_VERSION_1 &&
 	    cpsw->version != CPSW_VERSION_2 &&
 	    cpsw->version != CPSW_VERSION_3)
 		return -EOPNOTSUPP;
 
-	if (copy_from_user(&cfg, ifr->ifr_data, sizeof(cfg)))
-		return -EFAULT;
-
-	/* reserved for future extensions */
-	if (cfg.flags)
-		return -EINVAL;
-
-	if (cfg.tx_type != HWTSTAMP_TX_OFF && cfg.tx_type != HWTSTAMP_TX_ON)
+	if (cfg->tx_type != HWTSTAMP_TX_OFF && cfg->tx_type != HWTSTAMP_TX_ON)
 		return -ERANGE;
 
-	switch (cfg.rx_filter) {
+	switch (cfg->rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
 		priv->rx_ts_enabled = 0;
 		break;
@@ -653,13 +674,13 @@ static int cpsw_hwtstamp_set(struct net_device *dev, struct ifreq *ifr)
 	case HWTSTAMP_FILTER_PTP_V2_SYNC:
 	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
 		priv->rx_ts_enabled = HWTSTAMP_FILTER_PTP_V2_EVENT;
-		cfg.rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
+		cfg->rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
 		break;
 	default:
 		return -ERANGE;
 	}
 
-	priv->tx_ts_enabled = cfg.tx_type == HWTSTAMP_TX_ON;
+	priv->tx_ts_enabled = cfg->tx_type == HWTSTAMP_TX_ON;
 
 	switch (cpsw->version) {
 	case CPSW_VERSION_1:
@@ -673,58 +694,43 @@ static int cpsw_hwtstamp_set(struct net_device *dev, struct ifreq *ifr)
 		WARN_ON(1);
 	}
 
-	return copy_to_user(ifr->ifr_data, &cfg, sizeof(cfg)) ? -EFAULT : 0;
+	return 0;
 }
+EXPORT_SYMBOL_GPL(cpsw_hwtstamp_set);
 
-static int cpsw_hwtstamp_get(struct net_device *dev, struct ifreq *ifr)
+int cpsw_hwtstamp_get(struct net_device *dev,
+		      struct kernel_hwtstamp_config *cfg)
 {
 	struct cpsw_common *cpsw = ndev_to_cpsw(dev);
 	struct cpsw_priv *priv = netdev_priv(dev);
-	struct hwtstamp_config cfg;
 
 	if (cpsw->version != CPSW_VERSION_1 &&
 	    cpsw->version != CPSW_VERSION_2 &&
 	    cpsw->version != CPSW_VERSION_3)
 		return -EOPNOTSUPP;
 
-	cfg.flags = 0;
-	cfg.tx_type = priv->tx_ts_enabled ? HWTSTAMP_TX_ON : HWTSTAMP_TX_OFF;
-	cfg.rx_filter = priv->rx_ts_enabled;
+	cfg->tx_type = priv->tx_ts_enabled ? HWTSTAMP_TX_ON : HWTSTAMP_TX_OFF;
+	cfg->rx_filter = priv->rx_ts_enabled;
 
-	return copy_to_user(ifr->ifr_data, &cfg, sizeof(cfg)) ? -EFAULT : 0;
+	return 0;
 }
+EXPORT_SYMBOL_GPL(cpsw_hwtstamp_get);
 #else
-static int cpsw_hwtstamp_get(struct net_device *dev, struct ifreq *ifr)
+int cpsw_hwtstamp_get(struct net_device *dev,
+		      struct kernel_hwtstamp_config *cfg)
 {
 	return -EOPNOTSUPP;
 }
+EXPORT_SYMBOL_GPL(cpsw_hwtstamp_set);
 
-static int cpsw_hwtstamp_set(struct net_device *dev, struct ifreq *ifr)
+int cpsw_hwtstamp_set(struct net_device *dev,
+		      struct kernel_hwtstamp_config *cfg,
+		      struct netlink_ext_ack *extack)
 {
 	return -EOPNOTSUPP;
 }
+EXPORT_SYMBOL_GPL(cpsw_hwtstamp_get);
 #endif /*CONFIG_TI_CPTS*/
-
-int cpsw_ndo_ioctl(struct net_device *dev, struct ifreq *req, int cmd)
-{
-	struct cpsw_priv *priv = netdev_priv(dev);
-	struct cpsw_common *cpsw = priv->cpsw;
-	int slave_no = cpsw_slave_index(cpsw, priv);
-
-	if (!netif_running(dev))
-		return -EINVAL;
-
-	switch (cmd) {
-	case SIOCSHWTSTAMP:
-		return cpsw_hwtstamp_set(dev, req);
-	case SIOCGHWTSTAMP:
-		return cpsw_hwtstamp_get(dev, req);
-	}
-
-	if (!cpsw->slaves[slave_no].phy)
-		return -EOPNOTSUPP;
-	return phy_mii_ioctl(cpsw->slaves[slave_no].phy, req, cmd);
-}
 
 int cpsw_ndo_set_tx_maxrate(struct net_device *ndev, int queue, u32 rate)
 {
@@ -752,11 +758,9 @@ int cpsw_ndo_set_tx_maxrate(struct net_device *ndev, int queue, u32 rate)
 		return -EINVAL;
 	}
 
-	ret = pm_runtime_get_sync(cpsw->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(cpsw->dev);
+	ret = pm_runtime_resume_and_get(cpsw->dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	ret = cpdma_chan_set_rate(cpsw->txv[queue].ch, ch_rate);
 	pm_runtime_put(cpsw->dev);
@@ -776,6 +780,7 @@ int cpsw_ndo_set_tx_maxrate(struct net_device *ndev, int queue, u32 rate)
 	cpsw_split_res(cpsw);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(cpsw_ndo_set_tx_maxrate);
 
 static int cpsw_tc_to_fifo(int tc, int num_tc)
 {
@@ -800,6 +805,7 @@ bool cpsw_shp_is_off(struct cpsw_priv *priv)
 
 	return !val;
 }
+EXPORT_SYMBOL_GPL(cpsw_shp_is_off);
 
 static void cpsw_fifo_shp_on(struct cpsw_priv *priv, int fifo, int on)
 {
@@ -968,11 +974,9 @@ static int cpsw_set_cbs(struct net_device *ndev,
 		return -1;
 	}
 
-	ret = pm_runtime_get_sync(cpsw->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(cpsw->dev);
+	ret = pm_runtime_resume_and_get(cpsw->dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	bw = qopt->enable ? qopt->idleslope : 0;
 	ret = cpsw_set_fifo_rlimit(priv, fifo, bw);
@@ -1006,11 +1010,9 @@ static int cpsw_set_mqprio(struct net_device *ndev, void *type_data)
 	if (mqprio->mode != TC_MQPRIO_MODE_DCB)
 		return -EINVAL;
 
-	ret = pm_runtime_get_sync(cpsw->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(cpsw->dev);
+	ret = pm_runtime_resume_and_get(cpsw->dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	if (num_tc) {
 		for (i = 0; i < 8; i++) {
@@ -1046,6 +1048,8 @@ static int cpsw_set_mqprio(struct net_device *ndev, void *type_data)
 	return 0;
 }
 
+static int cpsw_qos_setup_tc_block(struct net_device *ndev, struct flow_block_offload *f);
+
 int cpsw_ndo_setup_tc(struct net_device *ndev, enum tc_setup_type type,
 		      void *type_data)
 {
@@ -1056,10 +1060,14 @@ int cpsw_ndo_setup_tc(struct net_device *ndev, enum tc_setup_type type,
 	case TC_SETUP_QDISC_MQPRIO:
 		return cpsw_set_mqprio(ndev, type_data);
 
+	case TC_SETUP_BLOCK:
+		return cpsw_qos_setup_tc_block(ndev, type_data);
+
 	default:
 		return -EOPNOTSUPP;
 	}
 }
+EXPORT_SYMBOL_GPL(cpsw_ndo_setup_tc);
 
 void cpsw_cbs_resume(struct cpsw_slave *slave, struct cpsw_priv *priv)
 {
@@ -1073,6 +1081,7 @@ void cpsw_cbs_resume(struct cpsw_slave *slave, struct cpsw_priv *priv)
 		cpsw_set_fifo_rlimit(priv, fifo, bw);
 	}
 }
+EXPORT_SYMBOL_GPL(cpsw_cbs_resume);
 
 void cpsw_mqprio_resume(struct cpsw_slave *slave, struct cpsw_priv *priv)
 {
@@ -1095,6 +1104,7 @@ void cpsw_mqprio_resume(struct cpsw_slave *slave, struct cpsw_priv *priv)
 
 	slave_write(slave, tx_prio_map, tx_prio_rg);
 }
+EXPORT_SYMBOL_GPL(cpsw_mqprio_resume);
 
 int cpsw_fill_rx_channels(struct cpsw_priv *priv)
 {
@@ -1120,7 +1130,7 @@ int cpsw_fill_rx_channels(struct cpsw_priv *priv)
 			xmeta->ndev = priv->ndev;
 			xmeta->ch = ch;
 
-			dma = page_pool_get_dma_addr(page) + CPSW_HEADROOM;
+			dma = page_pool_get_dma_addr(page) + CPSW_HEADROOM_NA;
 			ret = cpdma_chan_idle_submit_mapped(cpsw->rxv[ch].ch,
 							    page, dma,
 							    cpsw->rx_packet_max,
@@ -1140,11 +1150,12 @@ int cpsw_fill_rx_channels(struct cpsw_priv *priv)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cpsw_fill_rx_channels);
 
 static struct page_pool *cpsw_create_page_pool(struct cpsw_common *cpsw,
 					       int size)
 {
-	struct page_pool_params pp_params;
+	struct page_pool_params pp_params = {};
 	struct page_pool *pool;
 
 	pp_params.order = 0;
@@ -1225,6 +1236,7 @@ void cpsw_destroy_xdp_rxqs(struct cpsw_common *cpsw)
 		cpsw->page_pool[ch] = NULL;
 	}
 }
+EXPORT_SYMBOL_GPL(cpsw_destroy_xdp_rxqs);
 
 int cpsw_create_xdp_rxqs(struct cpsw_common *cpsw)
 {
@@ -1257,6 +1269,7 @@ err_cleanup:
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(cpsw_create_xdp_rxqs);
 
 static int cpsw_xdp_prog_setup(struct cpsw_priv *priv, struct netdev_bpf *bpf)
 {
@@ -1284,6 +1297,7 @@ int cpsw_ndo_bpf(struct net_device *ndev, struct netdev_bpf *bpf)
 		return -EINVAL;
 	}
 }
+EXPORT_SYMBOL_GPL(cpsw_ndo_bpf);
 
 int cpsw_xdp_tx_frame(struct cpsw_priv *priv, struct xdp_frame *xdpf,
 		      struct page *page, int port)
@@ -1317,6 +1331,7 @@ int cpsw_xdp_tx_frame(struct cpsw_priv *priv, struct xdp_frame *xdpf,
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(cpsw_xdp_tx_frame);
 
 int cpsw_run_xdp(struct cpsw_priv *priv, int ch, struct xdp_buff *xdp,
 		 struct page *page, int port, int *len)
@@ -1357,10 +1372,10 @@ int cpsw_run_xdp(struct cpsw_priv *priv, int ch, struct xdp_buff *xdp,
 		 *  particular hardware is sharing a common queue, so the
 		 *  incoming device might change per packet.
 		 */
-		xdp_do_flush_map();
+		xdp_do_flush();
 		break;
 	default:
-		bpf_warn_invalid_xdp_action(act);
+		bpf_warn_invalid_xdp_action(ndev, prog, act);
 		fallthrough;
 	case XDP_ABORTED:
 		trace_xdp_exception(ndev, prog, act);
@@ -1379,3 +1394,210 @@ drop:
 	page_pool_recycle_direct(cpsw->page_pool[ch], page);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(cpsw_run_xdp);
+
+static int cpsw_qos_clsflower_add_policer(struct cpsw_priv *priv,
+					  struct netlink_ext_ack *extack,
+					  struct flow_cls_offload *cls,
+					  u64 rate_pkt_ps)
+{
+	struct flow_rule *rule = flow_cls_offload_flow_rule(cls);
+	struct flow_dissector *dissector = rule->match.dissector;
+	static const u8 mc_mac[] = {0x01, 0x00, 0x00, 0x00, 0x00, 0x00};
+	struct flow_match_eth_addrs match;
+	u32 port_id;
+	int ret;
+
+	if (dissector->used_keys &
+	    ~(BIT_ULL(FLOW_DISSECTOR_KEY_BASIC) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_CONTROL) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_ETH_ADDRS))) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "Unsupported keys used");
+		return -EOPNOTSUPP;
+	}
+
+	if (flow_rule_match_has_control_flags(rule, extack))
+		return -EOPNOTSUPP;
+
+	if (!flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_ETH_ADDRS)) {
+		NL_SET_ERR_MSG_MOD(extack, "Not matching on eth address");
+		return -EOPNOTSUPP;
+	}
+
+	flow_rule_match_eth_addrs(rule, &match);
+
+	if (!is_zero_ether_addr(match.mask->src)) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "Matching on source MAC not supported");
+		return -EOPNOTSUPP;
+	}
+
+	port_id = cpsw_slave_index(priv->cpsw, priv) + 1;
+
+	if (is_broadcast_ether_addr(match.key->dst) &&
+	    is_broadcast_ether_addr(match.mask->dst)) {
+		ret = cpsw_ale_rx_ratelimit_bc(priv->cpsw->ale, port_id, rate_pkt_ps);
+		if (ret)
+			return ret;
+
+		priv->ale_bc_ratelimit.cookie = cls->cookie;
+		priv->ale_bc_ratelimit.rate_packet_ps = rate_pkt_ps;
+	} else if (ether_addr_equal_unaligned(match.key->dst, mc_mac) &&
+		   ether_addr_equal_unaligned(match.mask->dst, mc_mac)) {
+		ret = cpsw_ale_rx_ratelimit_mc(priv->cpsw->ale, port_id, rate_pkt_ps);
+		if (ret)
+			return ret;
+
+		priv->ale_mc_ratelimit.cookie = cls->cookie;
+		priv->ale_mc_ratelimit.rate_packet_ps = rate_pkt_ps;
+	} else {
+		NL_SET_ERR_MSG_MOD(extack, "Not supported matching key");
+		return -EOPNOTSUPP;
+	}
+
+	return 0;
+}
+
+static int cpsw_qos_clsflower_policer_validate(const struct flow_action *action,
+					       const struct flow_action_entry *act,
+					       struct netlink_ext_ack *extack)
+{
+	if (act->police.exceed.act_id != FLOW_ACTION_DROP) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "Offload not supported when exceed action is not drop");
+		return -EOPNOTSUPP;
+	}
+
+	if (act->police.notexceed.act_id != FLOW_ACTION_PIPE &&
+	    act->police.notexceed.act_id != FLOW_ACTION_ACCEPT) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "Offload not supported when conform action is not pipe or ok");
+		return -EOPNOTSUPP;
+	}
+
+	if (act->police.notexceed.act_id == FLOW_ACTION_ACCEPT &&
+	    !flow_action_is_last_entry(action, act)) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "Offload not supported when conform action is ok, but action is not last");
+		return -EOPNOTSUPP;
+	}
+
+	if (act->police.rate_bytes_ps || act->police.peakrate_bytes_ps ||
+	    act->police.avrate || act->police.overhead) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "Offload not supported when bytes per second/peakrate/avrate/overhead is configured");
+		return -EOPNOTSUPP;
+	}
+
+	return 0;
+}
+
+static int cpsw_qos_configure_clsflower(struct cpsw_priv *priv, struct flow_cls_offload *cls)
+{
+	struct flow_rule *rule = flow_cls_offload_flow_rule(cls);
+	struct netlink_ext_ack *extack = cls->common.extack;
+	const struct flow_action_entry *act;
+	int i, ret;
+
+	flow_action_for_each(i, act, &rule->action) {
+		switch (act->id) {
+		case FLOW_ACTION_POLICE:
+			ret = cpsw_qos_clsflower_policer_validate(&rule->action, act, extack);
+			if (ret)
+				return ret;
+
+			return cpsw_qos_clsflower_add_policer(priv, extack, cls,
+							      act->police.rate_pkt_ps);
+		default:
+			NL_SET_ERR_MSG_MOD(extack, "Action not supported");
+			return -EOPNOTSUPP;
+		}
+	}
+	return -EOPNOTSUPP;
+}
+
+static int cpsw_qos_delete_clsflower(struct cpsw_priv *priv, struct flow_cls_offload *cls)
+{
+	u32 port_id = cpsw_slave_index(priv->cpsw, priv) + 1;
+
+	if (cls->cookie == priv->ale_bc_ratelimit.cookie) {
+		priv->ale_bc_ratelimit.cookie = 0;
+		priv->ale_bc_ratelimit.rate_packet_ps = 0;
+		cpsw_ale_rx_ratelimit_bc(priv->cpsw->ale, port_id, 0);
+	}
+
+	if (cls->cookie == priv->ale_mc_ratelimit.cookie) {
+		priv->ale_mc_ratelimit.cookie = 0;
+		priv->ale_mc_ratelimit.rate_packet_ps = 0;
+		cpsw_ale_rx_ratelimit_mc(priv->cpsw->ale, port_id, 0);
+	}
+
+	return 0;
+}
+
+static int cpsw_qos_setup_tc_clsflower(struct cpsw_priv *priv, struct flow_cls_offload *cls_flower)
+{
+	switch (cls_flower->command) {
+	case FLOW_CLS_REPLACE:
+		return cpsw_qos_configure_clsflower(priv, cls_flower);
+	case FLOW_CLS_DESTROY:
+		return cpsw_qos_delete_clsflower(priv, cls_flower);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static int cpsw_qos_setup_tc_block_cb(enum tc_setup_type type, void *type_data, void *cb_priv)
+{
+	struct cpsw_priv *priv = cb_priv;
+	int ret;
+
+	if (!tc_cls_can_offload_and_chain0(priv->ndev, type_data))
+		return -EOPNOTSUPP;
+
+	ret = pm_runtime_get_sync(priv->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(priv->dev);
+		return ret;
+	}
+
+	switch (type) {
+	case TC_SETUP_CLSFLOWER:
+		ret = cpsw_qos_setup_tc_clsflower(priv, type_data);
+		break;
+	default:
+		ret = -EOPNOTSUPP;
+	}
+
+	pm_runtime_put(priv->dev);
+	return ret;
+}
+
+static LIST_HEAD(cpsw_qos_block_cb_list);
+
+static int cpsw_qos_setup_tc_block(struct net_device *ndev, struct flow_block_offload *f)
+{
+	struct cpsw_priv *priv = netdev_priv(ndev);
+
+	return flow_block_cb_setup_simple(f, &cpsw_qos_block_cb_list,
+					  cpsw_qos_setup_tc_block_cb,
+					  priv, priv, true);
+}
+
+void cpsw_qos_clsflower_resume(struct cpsw_priv *priv)
+{
+	u32 port_id = cpsw_slave_index(priv->cpsw, priv) + 1;
+
+	if (priv->ale_bc_ratelimit.cookie)
+		cpsw_ale_rx_ratelimit_bc(priv->cpsw->ale, port_id,
+					 priv->ale_bc_ratelimit.rate_packet_ps);
+
+	if (priv->ale_mc_ratelimit.cookie)
+		cpsw_ale_rx_ratelimit_mc(priv->cpsw->ale, port_id,
+					 priv->ale_mc_ratelimit.rate_packet_ps);
+}
+EXPORT_SYMBOL_GPL(cpsw_qos_clsflower_resume);
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("TI CPSW Ethernet Switch Driver");

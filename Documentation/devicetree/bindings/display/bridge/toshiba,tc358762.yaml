@@ -21,6 +21,9 @@ properties:
     maxItems: 1
     description: virtual channel number of a DSI peripheral
 
+  reset-gpios:
+    maxItems: 1
+
   vddc-supply:
     description: Regulator for 1.2V internal core power.
 
@@ -39,7 +42,6 @@ properties:
           Video port for MIPI DPI output (panel or connector).
 
     required:
-      - port@0
       - port@1
 
 required:
@@ -52,7 +54,7 @@ additionalProperties: false
 
 examples:
   - |
-    i2c1 {
+    i2c {
       #address-cells = <1>;
       #size-cells = <0>;
 

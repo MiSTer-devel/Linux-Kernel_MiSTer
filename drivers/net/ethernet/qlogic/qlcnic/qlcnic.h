@@ -1608,7 +1608,6 @@ void qlcnic_release_tx_buffers(struct qlcnic_adapter *,
 			       struct qlcnic_host_tx_ring *);
 
 int qlcnic_check_fw_status(struct qlcnic_adapter *adapter);
-void qlcnic_watchdog_task(struct work_struct *work);
 void qlcnic_post_rx_buffers(struct qlcnic_adapter *adapter,
 		struct qlcnic_host_rds_ring *rds_ring, u8 ring_id);
 void qlcnic_set_multi(struct net_device *netdev);
@@ -1698,7 +1697,7 @@ int qlcnic_set_vxlan_port(struct qlcnic_adapter *adapter, u16 port);
 int qlcnic_set_vxlan_parsing(struct qlcnic_adapter *adapter, u16 port);
 int qlcnic_83xx_configure_opmode(struct qlcnic_adapter *adapter);
 int qlcnic_read_mac_addr(struct qlcnic_adapter *);
-int qlcnic_setup_netdev(struct qlcnic_adapter *, struct net_device *, int);
+int qlcnic_setup_netdev(struct qlcnic_adapter *, struct net_device *);
 void qlcnic_set_netdev_features(struct qlcnic_adapter *,
 				struct qlcnic_esw_func_cfg *);
 void qlcnic_sriov_vf_set_multi(struct net_device *);

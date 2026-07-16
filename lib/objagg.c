@@ -167,6 +167,9 @@ static int objagg_obj_parent_assign(struct objagg *objagg,
 {
 	void *delta_priv;
 
+	if (WARN_ON(!objagg_obj_is_root(parent)))
+		return -EINVAL;
+
 	delta_priv = objagg->ops->delta_create(objagg->priv, parent->obj,
 					       objagg_obj->obj);
 	if (IS_ERR(delta_priv))
@@ -421,7 +424,7 @@ static struct objagg_obj *__objagg_obj_get(struct objagg *objagg, void *obj)
  *
  * There are 3 main options this function wraps:
  * 1) The object according to "obj" already exist. In that case
- *    the reference counter is incrementes and the object is returned.
+ *    the reference counter is incremented and the object is returned.
  * 2) The object does not exist, but it can be aggregated within
  *    another object. In that case, user ops->delta_create() is called
  *    to obtain delta data and a new object is created with returned
@@ -781,7 +784,6 @@ static struct objagg_tmp_graph *objagg_tmp_graph_create(struct objagg *objagg)
 	struct objagg_tmp_node *node;
 	struct objagg_tmp_node *pnode;
 	struct objagg_obj *objagg_obj;
-	size_t alloc_size;
 	int i, j;
 
 	graph = kzalloc(sizeof(*graph), GFP_KERNEL);
@@ -793,9 +795,7 @@ static struct objagg_tmp_graph *objagg_tmp_graph_create(struct objagg *objagg)
 		goto err_nodes_alloc;
 	graph->nodes_count = nodes_count;
 
-	alloc_size = BITS_TO_LONGS(nodes_count * nodes_count) *
-		     sizeof(unsigned long);
-	graph->edges = kzalloc(alloc_size, GFP_KERNEL);
+	graph->edges = bitmap_zalloc(nodes_count * nodes_count, GFP_KERNEL);
 	if (!graph->edges)
 		goto err_edges_alloc;
 
@@ -833,7 +833,7 @@ err_nodes_alloc:
 
 static void objagg_tmp_graph_destroy(struct objagg_tmp_graph *graph)
 {
-	kfree(graph->edges);
+	bitmap_free(graph->edges);
 	kfree(graph->nodes);
 	kfree(graph);
 }
@@ -906,20 +906,6 @@ static const struct objagg_opt_algo *objagg_opt_algos[] = {
 	[OBJAGG_OPT_ALGO_SIMPLE_GREEDY] = &objagg_opt_simple_greedy,
 };
 
-static int objagg_hints_obj_cmp(struct rhashtable_compare_arg *arg,
-				const void *obj)
-{
-	struct rhashtable *ht = arg->ht;
-	struct objagg_hints *objagg_hints =
-			container_of(ht, struct objagg_hints, node_ht);
-	const struct objagg_ops *ops = objagg_hints->ops;
-	const char *ptr = obj;
-
-	ptr += ht->p.key_offset;
-	return ops->hints_obj_cmp ? ops->hints_obj_cmp(ptr, arg->key) :
-				    memcmp(ptr, arg->key, ht->p.key_len);
-}
-
 /**
  * objagg_hints_get - obtains hints instance
  * @objagg:		objagg instance
@@ -958,7 +944,6 @@ struct objagg_hints *objagg_hints_get(struct objagg *objagg,
 				offsetof(struct objagg_hints_node, obj);
 	objagg_hints->ht_params.head_offset =
 				offsetof(struct objagg_hints_node, ht_node);
-	objagg_hints->ht_params.obj_cmpfn = objagg_hints_obj_cmp;
 
 	err = rhashtable_init(&objagg_hints->node_ht, &objagg_hints->ht_params);
 	if (err)

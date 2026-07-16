@@ -18,12 +18,12 @@
  * defined before including "unwind.h"
  */
 #define LIBUNWIND__ARCH_REG_ID(regnum) libunwind__arm64_reg_id(regnum)
-#define LIBUNWIND__ARCH_REG_IP PERF_REG_ARM64_PC
-#define LIBUNWIND__ARCH_REG_SP PERF_REG_ARM64_SP
 
 #include "unwind.h"
 #include "libunwind-aarch64.h"
-#include <../../../../arch/arm64/include/uapi/asm/perf_regs.h>
+#define perf_event_arm_regs perf_event_arm64_regs
+#include <../../../arch/arm64/include/uapi/asm/perf_regs.h>
+#undef perf_event_arm_regs
 #include "../../arch/arm64/util/unwind-libunwind.c"
 
 /* NO_LIBUNWIND_DEBUG_FRAME is a feature flag for local libunwind,

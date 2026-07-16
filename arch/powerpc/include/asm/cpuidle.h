@@ -68,7 +68,7 @@
 #define ERR_EC_ESL_MISMATCH		-1
 #define ERR_DEEP_STATE_ESL_MISMATCH	-2
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #define PNV_IDLE_NAME_LEN    16
 struct pnv_idle_states_t {
@@ -85,7 +85,7 @@ extern struct pnv_idle_states_t *pnv_idle_states;
 extern int nr_pnv_idle_states;
 
 unsigned long pnv_cpu_offline(unsigned int cpu);
-int validate_psscr_val_mask(u64 *psscr_val, u64 *psscr_mask, u32 flags);
+int __init validate_psscr_val_mask(u64 *psscr_val, u64 *psscr_mask, u32 flags);
 static inline void report_invalid_psscr_val(u64 psscr_val, int err)
 {
 	switch (err) {

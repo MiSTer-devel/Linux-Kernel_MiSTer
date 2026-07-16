@@ -3,7 +3,7 @@
 The ivtv driver
 ===============
 
-Author: Hans Verkuil <hverkuil@xs4all.nl>
+Author: Hans Verkuil <hverkuil@kernel.org>
 
 This is a v4l2 device driver for the Conexant cx23415/6 MPEG encoder/decoder.
 The cx23415 can do both encoding and decoding, the cx23416 can only do MPEG
@@ -159,7 +159,7 @@ whatever). Otherwise the device numbers can get confusing. The ivtv
   Read-only
 
   The raw YUV video output from the current video input. The YUV format
-  is non-standard (V4L2_PIX_FMT_HM12).
+  is a 16x16 linear tiled NV12 format (V4L2_PIX_FMT_NV12_16L16)
 
   Note that the YUV and PCM streams are not synchronized, so they are of
   limited use.

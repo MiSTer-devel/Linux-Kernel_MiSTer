@@ -12,17 +12,19 @@
  * and mono/stereo Class-D speaker driver.
  */
 
+#include <linux/unaligned.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/init.h>
+#include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/pm.h>
 #include <linux/i2c.h>
 #include <linux/gpio/consumer.h>
 #include <linux/regulator/consumer.h>
 #include <linux/acpi.h>
+#include <linux/firmware.h>
 #include <linux/of.h>
-#include <linux/of_gpio.h>
 #include <linux/slab.h>
 #include <sound/core.h>
 #include <sound/jack.h>
@@ -31,7 +33,7 @@
 #include <sound/soc.h>
 #include <sound/initval.h>
 #include <sound/tlv.h>
-#include <dt-bindings/sound/tlv320aic31xx-micbias.h>
+#include <dt-bindings/sound/tlv320aic31xx.h>
 
 #include "tlv320aic31xx.h"
 
@@ -169,6 +171,7 @@ struct aic31xx_priv {
 	struct regulator_bulk_data supplies[AIC31XX_NUM_SUPPLIES];
 	struct aic31xx_disable_nb disable_nb[AIC31XX_NUM_SUPPLIES];
 	struct snd_soc_jack *jack;
+	u32 sysclk_id;
 	unsigned int sysclk;
 	u8 p_div;
 	int rate_div_line;
@@ -180,6 +183,7 @@ struct aic31xx_priv {
 struct aic31xx_rate_divs {
 	u32 mclk_p;
 	u32 rate;
+	u8 pll_r;
 	u8 pll_j;
 	u16 pll_d;
 	u16 dosr;
@@ -192,51 +196,71 @@ struct aic31xx_rate_divs {
 
 /* ADC dividers can be disabled by configuring them to 0 */
 static const struct aic31xx_rate_divs aic31xx_divs[] = {
-	/* mclk/p    rate  pll: j     d        dosr ndac mdac  aors nadc madc */
+	/* mclk/p    rate  pll: r  j     d     dosr ndac mdac  aors nadc madc */
 	/* 8k rate */
-	{12000000,   8000,	8, 1920,	128,  48,  2,	128,  48,  2},
-	{12000000,   8000,	8, 1920,	128,  32,  3,	128,  32,  3},
-	{12500000,   8000,	7, 8643,	128,  48,  2,	128,  48,  2},
+	{  512000,   8000,	4, 48,   0,	128,  48,  2,   128,  48,  2},
+	{12000000,   8000,	1, 8, 1920,	128,  48,  2,	128,  48,  2},
+	{12000000,   8000,	1, 8, 1920,	128,  32,  3,	128,  32,  3},
+	{12500000,   8000,	1, 7, 8643,	128,  48,  2,	128,  48,  2},
 	/* 11.025k rate */
-	{12000000,  11025,	7, 5264,	128,  32,  2,	128,  32,  2},
-	{12000000,  11025,	8, 4672,	128,  24,  3,	128,  24,  3},
-	{12500000,  11025,	7, 2253,	128,  32,  2,	128,  32,  2},
+	{  705600,  11025,	3, 48,   0,	128,  24,  3,	128,  24,  3},
+	{12000000,  11025,	1, 7, 5264,	128,  32,  2,	128,  32,  2},
+	{12000000,  11025,	1, 8, 4672,	128,  24,  3,	128,  24,  3},
+	{12500000,  11025,	1, 7, 2253,	128,  32,  2,	128,  32,  2},
 	/* 16k rate */
-	{12000000,  16000,	8, 1920,	128,  24,  2,	128,  24,  2},
-	{12000000,  16000,	8, 1920,	128,  16,  3,	128,  16,  3},
-	{12500000,  16000,	7, 8643,	128,  24,  2,	128,  24,  2},
+	{  512000,  16000,	4, 48,   0,	128,  16,  3,	128,  16,  3},
+	{ 1024000,  16000,	2, 48,   0,	128,  16,  3,	128,  16,  3},
+	{12000000,  16000,	1, 8, 1920,	128,  24,  2,	128,  24,  2},
+	{12000000,  16000,	1, 8, 1920,	128,  16,  3,	128,  16,  3},
+	{12500000,  16000,	1, 7, 8643,	128,  24,  2,	128,  24,  2},
 	/* 22.05k rate */
-	{12000000,  22050,	7, 5264,	128,  16,  2,	128,  16,  2},
-	{12000000,  22050,	8, 4672,	128,  12,  3,	128,  12,  3},
-	{12500000,  22050,	7, 2253,	128,  16,  2,	128,  16,  2},
+	{  705600,  22050,	4, 36,   0,	128,  12,  3,	128,  12,  3},
+	{ 1411200,  22050,	2, 36,   0,	128,  12,  3,	128,  12,  3},
+	{12000000,  22050,	1, 7, 5264,	128,  16,  2,	128,  16,  2},
+	{12000000,  22050,	1, 8, 4672,	128,  12,  3,	128,  12,  3},
+	{12500000,  22050,	1, 7, 2253,	128,  16,  2,	128,  16,  2},
 	/* 32k rate */
-	{12000000,  32000,	8, 1920,	128,  12,  2,	128,  12,  2},
-	{12000000,  32000,	8, 1920,	128,   8,  3,	128,   8,  3},
-	{12500000,  32000,	7, 8643,	128,  12,  2,	128,  12,  2},
+	{ 1024000,  32000,      2, 48,   0,	128,  12,  2,	128,  12,  2},
+	{ 2048000,  32000,      1, 48,   0,	128,  12,  2,	128,  12,  2},
+	{12000000,  32000,	1, 8, 1920,	128,  12,  2,	128,  12,  2},
+	{12000000,  32000,	1, 8, 1920,	128,   8,  3,	128,   8,  3},
+	{12500000,  32000,	1, 7, 8643,	128,  12,  2,	128,  12,  2},
 	/* 44.1k rate */
-	{12000000,  44100,	7, 5264,	128,   8,  2,	128,   8,  2},
-	{12000000,  44100,	8, 4672,	128,   6,  3,	128,   6,  3},
-	{12500000,  44100,	7, 2253,	128,   8,  2,	128,   8,  2},
+	{ 1411200,  44100,	2, 32,   0,	128,   8,  2,	128,   8,  2},
+	{ 2822400,  44100,	1, 32,   0,	128,   8,  2,	128,   8,  2},
+	{12000000,  44100,	1, 7, 5264,	128,   8,  2,	128,   8,  2},
+	{12000000,  44100,	1, 8, 4672,	128,   6,  3,	128,   6,  3},
+	{12500000,  44100,	1, 7, 2253,	128,   8,  2,	128,   8,  2},
 	/* 48k rate */
-	{12000000,  48000,	8, 1920,	128,   8,  2,	128,   8,  2},
-	{12000000,  48000,	7, 6800,	 96,   5,  4,	 96,   5,  4},
-	{12500000,  48000,	7, 8643,	128,   8,  2,	128,   8,  2},
+	{ 1536000,  48000,	2, 32,   0,	128,   8,  2,	128,   8,  2},
+	{ 3072000,  48000,	1, 32,   0,	128,   8,  2,	128,   8,  2},
+	{12000000,  48000,	1, 8, 1920,	128,   8,  2,	128,   8,  2},
+	{12000000,  48000,	1, 7, 6800,	 96,   5,  4,	 96,   5,  4},
+	{12500000,  48000,	1, 7, 8643,	128,   8,  2,	128,   8,  2},
 	/* 88.2k rate */
-	{12000000,  88200,	7, 5264,	 64,   8,  2,	 64,   8,  2},
-	{12000000,  88200,	8, 4672,	 64,   6,  3,	 64,   6,  3},
-	{12500000,  88200,	7, 2253,	 64,   8,  2,	 64,   8,  2},
+	{ 2822400,  88200,	2, 16,   0,	 64,   8,  2,	 64,   8,  2},
+	{ 5644800,  88200,	1, 16,   0,	 64,   8,  2,	 64,   8,  2},
+	{12000000,  88200,	1, 7, 5264,	 64,   8,  2,	 64,   8,  2},
+	{12000000,  88200,	1, 8, 4672,	 64,   6,  3,	 64,   6,  3},
+	{12500000,  88200,	1, 7, 2253,	 64,   8,  2,	 64,   8,  2},
 	/* 96k rate */
-	{12000000,  96000,	8, 1920,	 64,   8,  2,	 64,   8,  2},
-	{12000000,  96000,	7, 6800,	 48,   5,  4,	 48,   5,  4},
-	{12500000,  96000,	7, 8643,	 64,   8,  2,	 64,   8,  2},
+	{ 3072000,  96000,	2, 16,   0,	 64,   8,  2,	 64,   8,  2},
+	{ 6144000,  96000,	1, 16,   0,	 64,   8,  2,	 64,   8,  2},
+	{12000000,  96000,	1, 8, 1920,	 64,   8,  2,	 64,   8,  2},
+	{12000000,  96000,	1, 7, 6800,	 48,   5,  4,	 48,   5,  4},
+	{12500000,  96000,	1, 7, 8643,	 64,   8,  2,	 64,   8,  2},
 	/* 176.4k rate */
-	{12000000, 176400,	7, 5264,	 32,   8,  2,	 32,   8,  2},
-	{12000000, 176400,	8, 4672,	 32,   6,  3,	 32,   6,  3},
-	{12500000, 176400,	7, 2253,	 32,   8,  2,	 32,   8,  2},
+	{ 5644800, 176400,	2, 8,    0,	 32,   8,  2,	 32,   8,  2},
+	{11289600, 176400,	1, 8,    0,	 32,   8,  2,	 32,   8,  2},
+	{12000000, 176400,	1, 7, 5264,	 32,   8,  2,	 32,   8,  2},
+	{12000000, 176400,	1, 8, 4672,	 32,   6,  3,	 32,   6,  3},
+	{12500000, 176400,	1, 7, 2253,	 32,   8,  2,	 32,   8,  2},
 	/* 192k rate */
-	{12000000, 192000,	8, 1920,	 32,   8,  2,	 32,   8,  2},
-	{12000000, 192000,	7, 6800,	 24,   5,  4,	 24,   5,  4},
-	{12500000, 192000,	7, 8643,	 32,   8,  2,	 32,   8,  2},
+	{ 6144000, 192000,	2, 8,	 0,	 32,   8,  2,	 32,   8,  2},
+	{12288000, 192000,	1, 8,	 0,	 32,   8,  2,	 32,   8,  2},
+	{12000000, 192000,	1, 8, 1920,	 32,   8,  2,	 32,   8,  2},
+	{12000000, 192000,	1, 7, 6800,	 24,   5,  4,	 24,   5,  4},
+	{12500000, 192000,	1, 7, 8643,	 32,   8,  2,	 32,   8,  2},
 };
 
 static const char * const ldac_in_text[] = {
@@ -871,7 +895,7 @@ static int aic31xx_setup_pll(struct snd_soc_component *component,
 		dev_err(component->dev,
 			"%s: Sample rate (%u) and format not supported\n",
 			__func__, params_rate(params));
-		/* See bellow for details how fix this. */
+		/* See below for details on how to fix this. */
 		return -EINVAL;
 	}
 	if (bclk_score != 0) {
@@ -888,7 +912,7 @@ static int aic31xx_setup_pll(struct snd_soc_component *component,
 
 	/* PLL configuration */
 	snd_soc_component_update_bits(component, AIC31XX_PLLPR, AIC31XX_PLL_MASK,
-			    (aic31xx->p_div << 4) | 0x01);
+			    (aic31xx->p_div << 4) | aic31xx_divs[i].pll_r);
 	snd_soc_component_write(component, AIC31XX_PLLJ, aic31xx_divs[i].pll_j);
 
 	snd_soc_component_write(component, AIC31XX_PLLDMSB,
@@ -941,6 +965,7 @@ static int aic31xx_hw_params(struct snd_pcm_substream *substream,
 			     struct snd_soc_dai *dai)
 {
 	struct snd_soc_component *component = dai->component;
+	struct aic31xx_priv *aic31xx = snd_soc_component_get_drvdata(component);
 	u8 data = 0;
 
 	dev_dbg(component->dev, "## %s: width %d rate %d\n",
@@ -972,6 +997,16 @@ static int aic31xx_hw_params(struct snd_pcm_substream *substream,
 			    AIC31XX_IFACE1_DATALEN_MASK,
 			    data);
 
+	/*
+	 * If BCLK is used as PLL input, the sysclk is determined by the hw
+	 * params. So it must be updated here to match the input frequency.
+	 */
+	if (aic31xx->sysclk_id == AIC31XX_PLL_CLKIN_BCLK) {
+		aic31xx->sysclk = params_rate(params) * params_width(params) *
+				  params_channels(params);
+		aic31xx->p_div = 1;
+	}
+
 	return aic31xx_setup_pll(component, params);
 }
 
@@ -999,8 +1034,8 @@ static int aic31xx_clock_master_routes(struct snd_soc_component *component,
 	struct aic31xx_priv *aic31xx = snd_soc_component_get_drvdata(component);
 	int ret;
 
-	fmt &= SND_SOC_DAIFMT_MASTER_MASK;
-	if (fmt == SND_SOC_DAIFMT_CBS_CFS &&
+	fmt &= SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK;
+	if (fmt == SND_SOC_DAIFMT_CBC_CFC &&
 	    aic31xx->master_dapm_route_applied) {
 		/*
 		 * Remove the DAPM route(s) for codec clock master modes,
@@ -1017,7 +1052,7 @@ static int aic31xx_clock_master_routes(struct snd_soc_component *component,
 			return ret;
 
 		aic31xx->master_dapm_route_applied = false;
-	} else if (fmt != SND_SOC_DAIFMT_CBS_CFS &&
+	} else if (fmt != SND_SOC_DAIFMT_CBC_CFC &&
 		   !aic31xx->master_dapm_route_applied) {
 		/*
 		 * Add the needed DAPM route(s) for codec clock master modes,
@@ -1049,21 +1084,20 @@ static int aic31xx_set_dai_fmt(struct snd_soc_dai *codec_dai,
 
 	dev_dbg(component->dev, "## %s: fmt = 0x%x\n", __func__, fmt);
 
-	/* set master/slave audio interface */
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_CBP_CFP:
 		iface_reg1 |= AIC31XX_BCLK_MASTER | AIC31XX_WCLK_MASTER;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFM:
+	case SND_SOC_DAIFMT_CBC_CFP:
 		iface_reg1 |= AIC31XX_WCLK_MASTER;
 		break;
-	case SND_SOC_DAIFMT_CBM_CFS:
+	case SND_SOC_DAIFMT_CBP_CFC:
 		iface_reg1 |= AIC31XX_BCLK_MASTER;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		break;
 	default:
-		dev_err(component->dev, "Invalid DAI master/slave interface\n");
+		dev_err(component->dev, "Invalid DAI clock provider\n");
 		return -EINVAL;
 	}
 
@@ -1156,6 +1190,7 @@ static int aic31xx_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 	snd_soc_component_update_bits(component, AIC31XX_CLKMUX, AIC31XX_PLL_CLKIN_MASK,
 			    clk_id << AIC31XX_PLL_CLKIN_SHIFT);
 
+	aic31xx->sysclk_id = clk_id;
 	aic31xx->sysclk = freq;
 
 	return 0;
@@ -1174,7 +1209,7 @@ static int aic31xx_regulator_event(struct notifier_block *nb,
 		 * supplies was disabled.
 		 */
 		if (aic31xx->gpio_reset)
-			gpiod_set_value(aic31xx->gpio_reset, 1);
+			gpiod_set_value_cansleep(aic31xx->gpio_reset, 1);
 
 		regcache_mark_dirty(aic31xx->regmap);
 		dev_dbg(aic31xx->dev, "## %s: DISABLE received\n", __func__);
@@ -1188,9 +1223,9 @@ static int aic31xx_reset(struct aic31xx_priv *aic31xx)
 	int ret = 0;
 
 	if (aic31xx->gpio_reset) {
-		gpiod_set_value(aic31xx->gpio_reset, 1);
+		gpiod_set_value_cansleep(aic31xx->gpio_reset, 1);
 		ndelay(10); /* At least 10ns */
-		gpiod_set_value(aic31xx->gpio_reset, 0);
+		gpiod_set_value_cansleep(aic31xx->gpio_reset, 0);
 	} else {
 		ret = regmap_write(aic31xx->regmap, AIC31XX_RESET, 1);
 	}
@@ -1383,7 +1418,6 @@ static const struct snd_soc_component_driver soc_codec_driver_aic31xx = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct snd_soc_dai_ops aic31xx_dai_ops = {
@@ -1593,15 +1627,116 @@ static void aic31xx_configure_ocmv(struct aic31xx_priv *priv)
 	}
 }
 
-static int aic31xx_i2c_probe(struct i2c_client *i2c,
-			     const struct i2c_device_id *id)
+static const struct i2c_device_id aic31xx_i2c_id[] = {
+	{ "tlv320aic310x", AIC3100 },
+	{ "tlv320aic311x", AIC3110 },
+	{ "tlv320aic3100", AIC3100 },
+	{ "tlv320aic3110", AIC3110 },
+	{ "tlv320aic3120", AIC3120 },
+	{ "tlv320aic3111", AIC3111 },
+	{ "tlv320dac3100", DAC3100 },
+	{ "tlv320dac3101", DAC3101 },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, aic31xx_i2c_id);
+
+static int tlv320dac3100_fw_load(struct aic31xx_priv *aic31xx,
+				 const u8 *data, size_t size)
+{
+	int ret, reg;
+	u16 val16;
+
+	/*
+	 * Coefficients firmware binary structure. Multi-byte values are big-endian.
+	 *
+	 * @0, 16bits: Magic (0xB30C)
+	 * @2, 16bits: Version (0x0100 for version 1.0)
+	 * @4, 8bits: DAC Processing Block Selection
+	 * @5, 62 16-bit values: Page 8 buffer A DAC programmable filter coefficients
+	 * @129, 12 16-bit values: Page 9 Buffer A DAC programmable filter coefficients
+	 *
+	 * Filter coefficients are interpreted as two's complement values
+	 * ranging from -32 768 to 32 767. For more details on filter coefficients,
+	 * please refer to the TLV320DAC3100 datasheet, tables 6-120 and 6-123.
+	 */
+
+	if (size != 153) {
+		dev_err(aic31xx->dev, "firmware size is %zu, expected 153 bytes\n", size);
+		return -EINVAL;
+	}
+
+	/* Check magic */
+	val16 = get_unaligned_be16(data);
+	if (val16 != 0xb30c) {
+		dev_err(aic31xx->dev, "fw magic is 0x%04x expected 0xb30c\n", val16);
+		return -EINVAL;
+	}
+	data += 2;
+
+	/* Check version */
+	val16 = get_unaligned_be16(data);
+	if (val16 != 0x0100) {
+		dev_err(aic31xx->dev, "invalid firmware version 0x%04x! expected 1", val16);
+		return -EINVAL;
+	}
+	data += 2;
+
+	ret = regmap_write(aic31xx->regmap, AIC31XX_DACPRB, *data);
+	if (ret) {
+		dev_err(aic31xx->dev, "failed to write PRB index: err %d\n", ret);
+		return ret;
+	}
+	data += 1;
+
+	/* Page 8 Buffer A coefficients */
+	for (reg = 2; reg < 126; reg++) {
+		ret = regmap_write(aic31xx->regmap, AIC31XX_REG(8, reg), *data);
+		if (ret) {
+			dev_err(aic31xx->dev,
+				"failed to write page 8 filter coefficient %d: err %d\n", reg, ret);
+			return ret;
+		}
+		data++;
+	}
+
+	/* Page 9 Buffer A coefficients */
+	for (reg = 2; reg < 26; reg++) {
+		ret = regmap_write(aic31xx->regmap, AIC31XX_REG(9, reg), *data);
+		if (ret) {
+			dev_err(aic31xx->dev,
+				"failed to write page 9 filter coefficient %d: err %d\n", reg, ret);
+			return ret;
+		}
+		data++;
+	}
+
+	dev_info(aic31xx->dev, "done loading DAC filter coefficients\n");
+
+	return ret;
+}
+
+static int tlv320dac3100_load_coeffs(struct aic31xx_priv *aic31xx,
+				     const char *fw_name)
+{
+	const struct firmware *fw;
+	int ret;
+
+	ret = request_firmware(&fw, fw_name, aic31xx->dev);
+	if (ret)
+		return ret;
+
+	ret = tlv320dac3100_fw_load(aic31xx, fw->data, fw->size);
+
+	release_firmware(fw);
+
+	return ret;
+}
+
+static int aic31xx_i2c_probe(struct i2c_client *i2c)
 {
 	struct aic31xx_priv *aic31xx;
 	unsigned int micbias_value = MICBIAS_2_0V;
 	int i, ret;
-
-	dev_dbg(&i2c->dev, "## %s: %s codec_type = %d\n", __func__,
-		id->name, (int)id->driver_data);
 
 	aic31xx = devm_kzalloc(&i2c->dev, sizeof(*aic31xx), GFP_KERNEL);
 	if (!aic31xx)
@@ -1619,7 +1754,7 @@ static int aic31xx_i2c_probe(struct i2c_client *i2c,
 	aic31xx->dev = &i2c->dev;
 	aic31xx->irq = i2c->irq;
 
-	aic31xx->codec_type = id->driver_data;
+	aic31xx->codec_type = (uintptr_t)i2c_get_match_data(i2c);
 
 	dev_set_drvdata(aic31xx->dev, aic31xx);
 
@@ -1645,11 +1780,9 @@ static int aic31xx_i2c_probe(struct i2c_client *i2c,
 
 	aic31xx->gpio_reset = devm_gpiod_get_optional(aic31xx->dev, "reset",
 						      GPIOD_OUT_LOW);
-	if (IS_ERR(aic31xx->gpio_reset)) {
-		if (PTR_ERR(aic31xx->gpio_reset) != -EPROBE_DEFER)
-			dev_err(aic31xx->dev, "not able to acquire gpio\n");
-		return PTR_ERR(aic31xx->gpio_reset);
-	}
+	if (IS_ERR(aic31xx->gpio_reset))
+		return dev_err_probe(aic31xx->dev, PTR_ERR(aic31xx->gpio_reset),
+				     "not able to acquire gpio\n");
 
 	for (i = 0; i < ARRAY_SIZE(aic31xx->supplies); i++)
 		aic31xx->supplies[i].supply = aic31xx_supply_names[i];
@@ -1657,12 +1790,8 @@ static int aic31xx_i2c_probe(struct i2c_client *i2c,
 	ret = devm_regulator_bulk_get(aic31xx->dev,
 				      ARRAY_SIZE(aic31xx->supplies),
 				      aic31xx->supplies);
-	if (ret) {
-		if (ret != -EPROBE_DEFER)
-			dev_err(aic31xx->dev,
-				"Failed to request supplies: %d\n", ret);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(aic31xx->dev, ret, "Failed to request supplies\n");
 
 	aic31xx_configure_ocmv(aic31xx);
 
@@ -1688,6 +1817,12 @@ static int aic31xx_i2c_probe(struct i2c_client *i2c,
 		}
 	}
 
+	if (aic31xx->codec_type == DAC3100) {
+		ret = tlv320dac3100_load_coeffs(aic31xx, "tlv320dac3100-coeffs.bin");
+		if (ret)
+			dev_warn(aic31xx->dev, "Did not load any filter coefficients\n");
+	}
+
 	if (aic31xx->codec_type & DAC31XX_BIT)
 		return devm_snd_soc_register_component(&i2c->dev,
 				&soc_codec_driver_aic31xx,
@@ -1699,19 +1834,6 @@ static int aic31xx_i2c_probe(struct i2c_client *i2c,
 				aic31xx_dai_driver,
 				ARRAY_SIZE(aic31xx_dai_driver));
 }
-
-static const struct i2c_device_id aic31xx_i2c_id[] = {
-	{ "tlv320aic310x", AIC3100 },
-	{ "tlv320aic311x", AIC3110 },
-	{ "tlv320aic3100", AIC3100 },
-	{ "tlv320aic3110", AIC3110 },
-	{ "tlv320aic3120", AIC3120 },
-	{ "tlv320aic3111", AIC3111 },
-	{ "tlv320dac3100", DAC3100 },
-	{ "tlv320dac3101", DAC3101 },
-	{ }
-};
-MODULE_DEVICE_TABLE(i2c, aic31xx_i2c_id);
 
 static struct i2c_driver aic31xx_i2c_driver = {
 	.driver = {

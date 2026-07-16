@@ -19,10 +19,10 @@
 #include <linux/miscdevice.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
-#include <linux/export.h>
 #include <linux/mutex.h>
 #include <linux/cma.h>
 #include <linux/mm.h>
+#include <asm/machine.h>
 #include <asm/cpcmd.h>
 #include <asm/debug.h>
 #include <asm/vmcp.h>
@@ -52,7 +52,7 @@ early_param("vmcp_cma", early_parse_vmcp_cma);
 
 void __init vmcp_cma_reserve(void)
 {
-	if (!MACHINE_IS_VM)
+	if (!machine_is_vm())
 		return;
 	cma_declare_contiguous(0, vmcp_cma_size, 0, 0, 0, false, "vmcp", &vmcp_cma);
 }
@@ -72,7 +72,7 @@ static void vmcp_response_alloc(struct vmcp_session *session)
 	if (order > 2)
 		page = cma_alloc(vmcp_cma, nr_pages, 0, false);
 	if (page) {
-		session->response = (char *)page_to_phys(page);
+		session->response = (char *)page_to_virt(page);
 		session->cma_alloc = 1;
 		return;
 	}
@@ -89,7 +89,7 @@ static void vmcp_response_free(struct vmcp_session *session)
 	order = get_order(session->bufsize);
 	nr_pages = ALIGN(session->bufsize, PAGE_SIZE) >> PAGE_SHIFT;
 	if (session->cma_alloc) {
-		page = phys_to_page((unsigned long)session->response);
+		page = virt_to_page(session->response);
 		cma_release(vmcp_cma, page, nr_pages);
 		session->cma_alloc = 0;
 	} else {
@@ -242,7 +242,6 @@ static const struct file_operations vmcp_fops = {
 	.write		= vmcp_write,
 	.unlocked_ioctl	= vmcp_ioctl,
 	.compat_ioctl	= vmcp_ioctl,
-	.llseek		= no_llseek,
 };
 
 static struct miscdevice vmcp_dev = {
@@ -255,7 +254,7 @@ static int __init vmcp_init(void)
 {
 	int ret;
 
-	if (!MACHINE_IS_VM)
+	if (!machine_is_vm())
 		return 0;
 
 	vmcp_debug = debug_register("vmcp", 1, 1, 240);

@@ -27,42 +27,34 @@ __xfs_printk(
 	printk("%sXFS: %pV\n", level, vaf);
 }
 
-#define define_xfs_printk_level(func, kern_level)		\
-void func(const struct xfs_mount *mp, const char *fmt, ...)	\
-{								\
-	struct va_format	vaf;				\
-	va_list			args;				\
-	int			level;				\
-								\
-	va_start(args, fmt);					\
-								\
-	vaf.fmt = fmt;						\
-	vaf.va = &args;						\
-								\
-	__xfs_printk(kern_level, mp, &vaf);			\
-	va_end(args);						\
-								\
-	if (!kstrtoint(kern_level, 0, &level) &&		\
-	    level <= LOGLEVEL_ERR &&				\
-	    xfs_error_level >= XFS_ERRLEVEL_HIGH)		\
-		xfs_stack_trace();				\
-}								\
+void
+xfs_printk_level(
+	const char *kern_level,
+	const struct xfs_mount *mp,
+	const char *fmt, ...)
+{
+	struct va_format	vaf;
+	va_list			args;
+	int			level;
 
-define_xfs_printk_level(xfs_emerg, KERN_EMERG);
-define_xfs_printk_level(xfs_alert, KERN_ALERT);
-define_xfs_printk_level(xfs_crit, KERN_CRIT);
-define_xfs_printk_level(xfs_err, KERN_ERR);
-define_xfs_printk_level(xfs_warn, KERN_WARNING);
-define_xfs_printk_level(xfs_notice, KERN_NOTICE);
-define_xfs_printk_level(xfs_info, KERN_INFO);
-#ifdef DEBUG
-define_xfs_printk_level(xfs_debug, KERN_DEBUG);
-#endif
+	va_start(args, fmt);
+	vaf.fmt = fmt;
+	vaf.va = &args;
+
+	__xfs_printk(kern_level, mp, &vaf);
+
+	va_end(args);
+
+	if (!kstrtoint(kern_level, 0, &level) &&
+	    level <= LOGLEVEL_ERR &&
+	    xfs_error_level >= XFS_ERRLEVEL_HIGH)
+		xfs_stack_trace();
+}
 
 void
-xfs_alert_tag(
+_xfs_alert_tag(
 	const struct xfs_mount	*mp,
-	int			panic_tag,
+	uint32_t		panic_tag,
 	const char		*fmt, ...)
 {
 	struct va_format	vaf;
@@ -138,4 +130,43 @@ xfs_buf_alert_ratelimited(
 	vaf.va = &args;
 	__xfs_printk(KERN_ALERT, mp, &vaf);
 	va_end(args);
+}
+
+void
+xfs_warn_experimental(
+	struct xfs_mount		*mp,
+	enum xfs_experimental_feat	feat)
+{
+	static const struct {
+		const char		*name;
+		long			opstate;
+	} features[] = {
+		[XFS_EXPERIMENTAL_SHRINK] = {
+			.opstate	= XFS_OPSTATE_WARNED_SHRINK,
+			.name		= "online shrink",
+		},
+		[XFS_EXPERIMENTAL_LARP] = {
+			.opstate	= XFS_OPSTATE_WARNED_LARP,
+			.name		= "logged extended attributes",
+		},
+		[XFS_EXPERIMENTAL_LBS] = {
+			.opstate	= XFS_OPSTATE_WARNED_LBS,
+			.name		= "large block size",
+		},
+		[XFS_EXPERIMENTAL_METADIR] = {
+			.opstate	= XFS_OPSTATE_WARNED_METADIR,
+			.name		= "metadata directory tree",
+		},
+		[XFS_EXPERIMENTAL_ZONED] = {
+			.opstate	= XFS_OPSTATE_WARNED_ZONED,
+			.name		= "zoned RT device",
+		},
+	};
+	ASSERT(feat >= 0 && feat < XFS_EXPERIMENTAL_MAX);
+	BUILD_BUG_ON(ARRAY_SIZE(features) != XFS_EXPERIMENTAL_MAX);
+
+	if (xfs_should_warn(mp, features[feat].opstate))
+		xfs_warn(mp,
+ "EXPERIMENTAL %s feature enabled.  Use at your own risk!",
+				features[feat].name);
 }

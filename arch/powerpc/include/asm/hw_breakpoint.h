@@ -10,7 +10,6 @@
 #define _PPC_BOOK3S_64_HW_BREAKPOINT_H
 
 #include <asm/cpu_has_feature.h>
-#include <asm/inst.h>
 
 #ifdef	__KERNEL__
 struct arch_hw_breakpoint {
@@ -19,6 +18,7 @@ struct arch_hw_breakpoint {
 	u16		len; /* length of the target data symbol */
 	u16		hw_len; /* length programmed in hw */
 	u8		flags;
+	bool		perf_single_step; /* temporarily uninstalled for a perf single step */
 };
 
 /* Note: Don't change the first 6 bits below as they are in the same order
@@ -56,11 +56,11 @@ static inline int nr_wp_slots(void)
 	return cpu_has_feature(CPU_FTR_DAWR1) ? 2 : 1;
 }
 
-bool wp_check_constraints(struct pt_regs *regs, struct ppc_inst instr,
+bool wp_check_constraints(struct pt_regs *regs, ppc_inst_t instr,
 			  unsigned long ea, int type, int size,
 			  struct arch_hw_breakpoint *info);
 
-void wp_get_instr_detail(struct pt_regs *regs, struct ppc_inst *instr,
+void wp_get_instr_detail(struct pt_regs *regs, ppc_inst_t *instr,
 			 int *type, int *size, unsigned long *ea);
 
 #ifdef CONFIG_HAVE_HW_BREAKPOINT

@@ -24,7 +24,7 @@ static int run_dir(const char *d)
 {
 	char filename[PATH_MAX];
 	char debugfile[PATH_MAX];
-	struct build_id bid;
+	struct build_id bid = { .size = 0, };
 	char debuglink[PATH_MAX];
 	char expect_build_id[] = {
 		0x5a, 0x0f, 0xd8, 0x82, 0xb5, 0x30, 0x84, 0x22,
@@ -34,9 +34,10 @@ static int run_dir(const char *d)
 	struct dso *dso;
 	struct symbol *sym;
 	int ret;
+	size_t idx;
 
 	scnprintf(filename, PATH_MAX, "%s/pe-file.exe", d);
-	ret = filename__read_build_id(filename, &bid);
+	ret = filename__read_build_id(filename, &bid, /*block=*/true);
 	TEST_ASSERT_VAL("Failed to read build_id",
 			ret == sizeof(expect_build_id));
 	TEST_ASSERT_VAL("Wrong build_id", !memcmp(bid.data, expect_build_id,
@@ -48,7 +49,7 @@ static int run_dir(const char *d)
 			!strcmp(debuglink, expect_debuglink));
 
 	scnprintf(debugfile, PATH_MAX, "%s/%s", d, debuglink);
-	ret = filename__read_build_id(debugfile, &bid);
+	ret = filename__read_build_id(debugfile, &bid, /*block=*/true);
 	TEST_ASSERT_VAL("Failed to read debug file build_id",
 			ret == sizeof(expect_build_id));
 	TEST_ASSERT_VAL("Wrong build_id", !memcmp(bid.data, expect_build_id,
@@ -61,14 +62,14 @@ static int run_dir(const char *d)
 	TEST_ASSERT_VAL("Failed to load symbols", ret == 0);
 
 	dso__sort_by_name(dso);
-	sym = dso__find_symbol_by_name(dso, "main");
+	sym = dso__find_symbol_by_name(dso, "main", &idx);
 	TEST_ASSERT_VAL("Failed to find main", sym);
 	dso__delete(dso);
 
 	return TEST_OK;
 }
 
-int test__pe_file_parsing(struct test *test __maybe_unused,
+static int test__pe_file_parsing(struct test_suite *test __maybe_unused,
 			  int subtest __maybe_unused)
 {
 	struct stat st;
@@ -89,10 +90,12 @@ int test__pe_file_parsing(struct test *test __maybe_unused,
 
 #else
 
-int test__pe_file_parsing(struct test *test __maybe_unused,
+static int test__pe_file_parsing(struct test_suite *test __maybe_unused,
 			  int subtest __maybe_unused)
 {
 	return TEST_SKIP;
 }
 
 #endif
+
+DEFINE_SUITE("PE file support", pe_file_parsing);

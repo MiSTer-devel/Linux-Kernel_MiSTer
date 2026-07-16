@@ -6,7 +6,7 @@
 
 #include <linux/clk.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/reset/reset-simple.h>
@@ -23,19 +23,24 @@ struct uniphier_glue_reset_soc_data {
 
 struct uniphier_glue_reset_priv {
 	struct clk_bulk_data clk[MAX_CLKS];
-	struct reset_control *rst[MAX_RSTS];
+	struct reset_control_bulk_data rst[MAX_RSTS];
 	struct reset_simple_data rdata;
 	const struct uniphier_glue_reset_soc_data *data;
 };
+
+static void uniphier_clk_disable(void *_priv)
+{
+	struct uniphier_glue_reset_priv *priv = _priv;
+
+	clk_bulk_disable_unprepare(priv->data->nclks, priv->clk);
+}
 
 static int uniphier_glue_reset_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct uniphier_glue_reset_priv *priv;
 	struct resource *res;
-	resource_size_t size;
-	const char *name;
-	int i, ret, nr;
+	int i, ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -46,9 +51,7 @@ static int uniphier_glue_reset_probe(struct platform_device *pdev)
 		    priv->data->nrsts > MAX_RSTS))
 		return -EINVAL;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	size = resource_size(res);
-	priv->rdata.membase = devm_ioremap_resource(dev, res);
+	priv->rdata.membase = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(priv->rdata.membase))
 		return PTR_ERR(priv->rdata.membase);
 
@@ -58,58 +61,30 @@ static int uniphier_glue_reset_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	for (i = 0; i < priv->data->nrsts; i++) {
-		name = priv->data->reset_names[i];
-		priv->rst[i] = devm_reset_control_get_shared(dev, name);
-		if (IS_ERR(priv->rst[i]))
-			return PTR_ERR(priv->rst[i]);
-	}
-
 	ret = clk_bulk_prepare_enable(priv->data->nclks, priv->clk);
 	if (ret)
 		return ret;
 
-	for (nr = 0; nr < priv->data->nrsts; nr++) {
-		ret = reset_control_deassert(priv->rst[nr]);
-		if (ret)
-			goto out_rst_assert;
-	}
+	ret = devm_add_action_or_reset(dev, uniphier_clk_disable, priv);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < priv->data->nrsts; i++)
+		priv->rst[i].id = priv->data->reset_names[i];
+	ret = devm_reset_control_bulk_get_shared_deasserted(dev,
+							    priv->data->nrsts,
+							    priv->rst);
+	if (ret)
+		return ret;
 
 	spin_lock_init(&priv->rdata.lock);
 	priv->rdata.rcdev.owner = THIS_MODULE;
-	priv->rdata.rcdev.nr_resets = size * BITS_PER_BYTE;
+	priv->rdata.rcdev.nr_resets = resource_size(res) * BITS_PER_BYTE;
 	priv->rdata.rcdev.ops = &reset_simple_ops;
 	priv->rdata.rcdev.of_node = dev->of_node;
 	priv->rdata.active_low = true;
 
-	platform_set_drvdata(pdev, priv);
-
-	ret = devm_reset_controller_register(dev, &priv->rdata.rcdev);
-	if (ret)
-		goto out_rst_assert;
-
-	return 0;
-
-out_rst_assert:
-	while (nr--)
-		reset_control_assert(priv->rst[nr]);
-
-	clk_bulk_disable_unprepare(priv->data->nclks, priv->clk);
-
-	return ret;
-}
-
-static int uniphier_glue_reset_remove(struct platform_device *pdev)
-{
-	struct uniphier_glue_reset_priv *priv = platform_get_drvdata(pdev);
-	int i;
-
-	for (i = 0; i < priv->data->nrsts; i++)
-		reset_control_assert(priv->rst[i]);
-
-	clk_bulk_disable_unprepare(priv->data->nclks, priv->clk);
-
-	return 0;
+	return devm_reset_controller_register(dev, &priv->rdata.rcdev);
 }
 
 static const char * const uniphier_pro4_clock_reset_names[] = {
@@ -156,6 +131,10 @@ static const struct of_device_id uniphier_glue_reset_match[] = {
 		.data = &uniphier_pxs2_data,
 	},
 	{
+		.compatible = "socionext,uniphier-nx1-usb3-reset",
+		.data = &uniphier_pxs2_data,
+	},
+	{
 		.compatible = "socionext,uniphier-pro4-ahci-reset",
 		.data = &uniphier_pro4_data,
 	},
@@ -173,7 +152,6 @@ MODULE_DEVICE_TABLE(of, uniphier_glue_reset_match);
 
 static struct platform_driver uniphier_glue_reset_driver = {
 	.probe = uniphier_glue_reset_probe,
-	.remove = uniphier_glue_reset_remove,
 	.driver = {
 		.name = "uniphier-glue-reset",
 		.of_match_table = uniphier_glue_reset_match,

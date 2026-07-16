@@ -27,7 +27,9 @@ static dev_t lirc_base_dev;
 static DEFINE_IDA(lirc_ida);
 
 /* Only used for sysfs but defined to void otherwise */
-static struct class *lirc_class;
+static const struct class lirc_class = {
+	.name = "lirc",
+};
 
 /**
  * lirc_raw_event() - Send raw IR data to lirc to be relayed to userspace
@@ -41,17 +43,16 @@ void lirc_raw_event(struct rc_dev *dev, struct ir_raw_event ev)
 	struct lirc_fh *fh;
 	int sample;
 
-	/* Packet start */
-	if (ev.reset) {
+	/* Receiver overflow, data missing */
+	if (ev.overflow) {
 		/*
-		 * Userspace expects a long space event before the start of
-		 * the signal to use as a sync.  This may be done with repeat
-		 * packets and normal samples.  But if a reset has been sent
-		 * then we assume that a long time has passed, so we send a
-		 * space with the maximum time value.
+		 * Send lirc overflow message. This message is unknown to
+		 * lircd, but it will interpret this as a long space as
+		 * long as the value is set to high value. This resets its
+		 * decoder state.
 		 */
-		sample = LIRC_SPACE(LIRC_VALUE_MASK);
-		dev_dbg(&dev->dev, "delivering reset sync space to lirc_dev\n");
+		sample = LIRC_OVERFLOW(LIRC_VALUE_MASK);
+		dev_dbg(&dev->dev, "delivering overflow to lirc_dev\n");
 
 	/* Carrier reports */
 	} else if (ev.carrier_report) {
@@ -60,32 +61,25 @@ void lirc_raw_event(struct rc_dev *dev, struct ir_raw_event ev)
 
 	/* Packet end */
 	} else if (ev.timeout) {
-		if (dev->gap)
-			return;
-
 		dev->gap_start = ktime_get();
-		dev->gap = true;
-		dev->gap_duration = ev.duration;
 
 		sample = LIRC_TIMEOUT(ev.duration);
 		dev_dbg(&dev->dev, "timeout report (duration: %d)\n", sample);
 
 	/* Normal sample */
 	} else {
-		if (dev->gap) {
-			dev->gap_duration += ktime_to_us(ktime_sub(ktime_get(),
-							 dev->gap_start));
+		if (dev->gap_start) {
+			u64 duration = ktime_us_delta(ktime_get(),
+						      dev->gap_start);
 
 			/* Cap by LIRC_VALUE_MASK */
-			dev->gap_duration = min_t(u64, dev->gap_duration,
-						  LIRC_VALUE_MASK);
+			duration = min_t(u64, duration, LIRC_VALUE_MASK);
 
 			spin_lock_irqsave(&dev->lirc_fh_lock, flags);
 			list_for_each_entry(fh, &dev->lirc_fh, list)
-				kfifo_put(&fh->rawir,
-					  LIRC_SPACE(dev->gap_duration));
+				kfifo_put(&fh->rawir, LIRC_SPACE(duration));
 			spin_unlock_irqrestore(&dev->lirc_fh_lock, flags);
-			dev->gap = false;
+			dev->gap_start = 0;
 		}
 
 		sample = ev.pulse ? LIRC_PULSE(ev.duration) :
@@ -102,8 +96,6 @@ void lirc_raw_event(struct rc_dev *dev, struct ir_raw_event ev)
 
 	spin_lock_irqsave(&dev->lirc_fh_lock, flags);
 	list_for_each_entry(fh, &dev->lirc_fh, list) {
-		if (LIRC_IS_TIMEOUT(sample) && !fh->send_timeout_reports)
-			continue;
 		if (kfifo_put(&fh->rawir, sample))
 			wake_up_poll(&fh->wait_poll, EPOLLIN | EPOLLRDNORM);
 	}
@@ -166,7 +158,6 @@ static int lirc_open(struct inode *inode, struct file *file)
 
 	fh->send_mode = LIRC_MODE_PULSE;
 	fh->rc = dev;
-	fh->send_timeout_reports = true;
 
 	if (dev->driver_type == RC_DRIVER_SCANCODE)
 		fh->rec_mode = LIRC_MODE_SCANCODE;
@@ -287,7 +278,11 @@ static ssize_t lirc_transmit(struct file *file, const char __user *buf,
 		if (ret < 0)
 			goto out_kfree_raw;
 
-		count = ret;
+		/* drop trailing space */
+		if (!(ret % 2))
+			count = ret - 1;
+		else
+			count = ret;
 
 		txbuf = kmalloc_array(count, sizeof(unsigned int), GFP_KERNEL);
 		if (!txbuf) {
@@ -570,8 +565,6 @@ static long lirc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case LIRC_SET_REC_TIMEOUT_REPORTS:
 		if (dev->driver_type != RC_DRIVER_IR_RAW)
 			ret = -ENOTTY;
-		else
-			fh->send_timeout_reports = !!val;
 		break;
 
 	default:
@@ -713,7 +706,6 @@ static const struct file_operations lirc_fops = {
 	.poll		= lirc_poll,
 	.open		= lirc_open,
 	.release	= lirc_close,
-	.llseek		= no_llseek,
 };
 
 static void lirc_release_device(struct device *ld)
@@ -728,12 +720,12 @@ int lirc_register(struct rc_dev *dev)
 	const char *rx_type, *tx_type;
 	int err, minor;
 
-	minor = ida_simple_get(&lirc_ida, 0, RC_DEV_MAX, GFP_KERNEL);
+	minor = ida_alloc_max(&lirc_ida, RC_DEV_MAX - 1, GFP_KERNEL);
 	if (minor < 0)
 		return minor;
 
 	device_initialize(&dev->lirc_dev);
-	dev->lirc_dev.class = lirc_class;
+	dev->lirc_dev.class = &lirc_class;
 	dev->lirc_dev.parent = &dev->dev;
 	dev->lirc_dev.release = lirc_release_device;
 	dev->lirc_dev.devt = MKDEV(MAJOR(lirc_base_dev), minor);
@@ -744,11 +736,11 @@ int lirc_register(struct rc_dev *dev)
 
 	cdev_init(&dev->lirc_cdev, &lirc_fops);
 
+	get_device(&dev->dev);
+
 	err = cdev_device_add(&dev->lirc_cdev, &dev->lirc_dev);
 	if (err)
-		goto out_ida;
-
-	get_device(&dev->dev);
+		goto out_put_device;
 
 	switch (dev->driver_type) {
 	case RC_DRIVER_SCANCODE:
@@ -772,8 +764,9 @@ int lirc_register(struct rc_dev *dev)
 
 	return 0;
 
-out_ida:
-	ida_simple_remove(&lirc_ida, minor);
+out_put_device:
+	put_device(&dev->lirc_dev);
+	ida_free(&lirc_ida, minor);
 	return err;
 }
 
@@ -791,22 +784,20 @@ void lirc_unregister(struct rc_dev *dev)
 	spin_unlock_irqrestore(&dev->lirc_fh_lock, flags);
 
 	cdev_device_del(&dev->lirc_cdev, &dev->lirc_dev);
-	ida_simple_remove(&lirc_ida, MINOR(dev->lirc_dev.devt));
+	ida_free(&lirc_ida, MINOR(dev->lirc_dev.devt));
 }
 
 int __init lirc_dev_init(void)
 {
 	int retval;
 
-	lirc_class = class_create(THIS_MODULE, "lirc");
-	if (IS_ERR(lirc_class)) {
-		pr_err("class_create failed\n");
-		return PTR_ERR(lirc_class);
-	}
+	retval = class_register(&lirc_class);
+	if (retval)
+		return retval;
 
 	retval = alloc_chrdev_region(&lirc_base_dev, 0, RC_DEV_MAX, "lirc");
 	if (retval) {
-		class_destroy(lirc_class);
+		class_unregister(&lirc_class);
 		pr_err("alloc_chrdev_region failed\n");
 		return retval;
 	}
@@ -819,29 +810,29 @@ int __init lirc_dev_init(void)
 
 void __exit lirc_dev_exit(void)
 {
-	class_destroy(lirc_class);
+	class_unregister(&lirc_class);
 	unregister_chrdev_region(lirc_base_dev, RC_DEV_MAX);
 }
 
-struct rc_dev *rc_dev_get_from_fd(int fd)
+struct rc_dev *rc_dev_get_from_fd(int fd, bool write)
 {
-	struct fd f = fdget(fd);
+	CLASS(fd, f)(fd);
 	struct lirc_fh *fh;
 	struct rc_dev *dev;
 
-	if (!f.file)
+	if (fd_empty(f))
 		return ERR_PTR(-EBADF);
 
-	if (f.file->f_op != &lirc_fops) {
-		fdput(f);
+	if (fd_file(f)->f_op != &lirc_fops)
 		return ERR_PTR(-EINVAL);
-	}
 
-	fh = f.file->private_data;
+	if (write && !(fd_file(f)->f_mode & FMODE_WRITE))
+		return ERR_PTR(-EPERM);
+
+	fh = fd_file(f)->private_data;
 	dev = fh->rc;
 
 	get_device(&dev->dev);
-	fdput(f);
 
 	return dev;
 }

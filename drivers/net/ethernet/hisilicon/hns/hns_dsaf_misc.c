@@ -326,69 +326,6 @@ static void hns_dsaf_xge_srst_by_port_acpi(struct dsaf_device *dsaf_dev,
 				   HNS_XGE_RESET_FUNC, port, dereset);
 }
 
-/**
- * hns_dsaf_srst_chns - reset dsaf channels
- * @dsaf_dev: dsaf device struct pointer
- * @msk: xbar channels mask value:
- * @dereset: false - request reset , true - drop reset
- *
- * bit0-5 for xge0-5
- * bit6-11 for ppe0-5
- * bit12-17 for roce0-5
- * bit18-19 for com/dfx
- */
-static void
-hns_dsaf_srst_chns(struct dsaf_device *dsaf_dev, u32 msk, bool dereset)
-{
-	u32 reg_addr;
-
-	if (!dereset)
-		reg_addr = DSAF_SUB_SC_DSAF_RESET_REQ_REG;
-	else
-		reg_addr = DSAF_SUB_SC_DSAF_RESET_DREQ_REG;
-
-	dsaf_write_sub(dsaf_dev, reg_addr, msk);
-}
-
-/**
- * hns_dsaf_srst_chns_acpi - reset dsaf channels
- * @dsaf_dev: dsaf device struct pointer
- * @msk: xbar channels mask value:
- * @dereset: false - request reset , true - drop reset
- *
- * bit0-5 for xge0-5
- * bit6-11 for ppe0-5
- * bit12-17 for roce0-5
- * bit18-19 for com/dfx
- */
-static void
-hns_dsaf_srst_chns_acpi(struct dsaf_device *dsaf_dev, u32 msk, bool dereset)
-{
-	hns_dsaf_acpi_srst_by_port(dsaf_dev, HNS_OP_RESET_FUNC,
-				   HNS_DSAF_CHN_RESET_FUNC,
-				   msk, dereset);
-}
-
-static void hns_dsaf_roce_srst(struct dsaf_device *dsaf_dev, bool dereset)
-{
-	if (!dereset) {
-		dsaf_write_sub(dsaf_dev, DSAF_SUB_SC_ROCEE_RESET_REQ_REG, 1);
-	} else {
-		dsaf_write_sub(dsaf_dev,
-			       DSAF_SUB_SC_ROCEE_CLK_DIS_REG, 1);
-		dsaf_write_sub(dsaf_dev,
-			       DSAF_SUB_SC_ROCEE_RESET_DREQ_REG, 1);
-		msleep(20);
-		dsaf_write_sub(dsaf_dev, DSAF_SUB_SC_ROCEE_CLK_EN_REG, 1);
-	}
-}
-
-static void hns_dsaf_roce_srst_acpi(struct dsaf_device *dsaf_dev, bool dereset)
-{
-	hns_dsaf_acpi_srst_by_port(dsaf_dev, HNS_OP_RESET_FUNC,
-				   HNS_ROCE_RESET_FUNC, 0, dereset);
-}
-
 static void hns_dsaf_ge_srst_by_port(struct dsaf_device *dsaf_dev, u32 port,
 				     bool dereset)
 {
@@ -400,6 +337,10 @@ static void hns_dsaf_ge_srst_by_port(struct dsaf_device *dsaf_dev, u32 port,
 		return;
 
 	if (!HNS_DSAF_IS_DEBUG(dsaf_dev)) {
+		/* DSAF_MAX_PORT_NUM is 6, but DSAF_GE_NUM is 8.
+		   We need check to prevent array overflow */
+		if (port >= DSAF_MAX_PORT_NUM)
+			return;
 		reg_val_1  = 0x1 << port;
 		port_rst_off = dsaf_dev->mac_cb[port]->port_rst_off;
 		/* there is difference between V1 and V2 in register.*/
@@ -550,11 +491,11 @@ static phy_interface_t hns_mac_get_phy_if_acpi(struct hns_mac_cb *mac_cb)
 	argv4.package.count = 1;
 	argv4.package.elements = &obj_args;
 
-	obj = acpi_evaluate_dsm(ACPI_HANDLE(mac_cb->dev),
-				&hns_dsaf_acpi_dsm_guid, 0,
-				HNS_OP_GET_PORT_TYPE_FUNC, &argv4);
-
-	if (!obj || obj->type != ACPI_TYPE_INTEGER)
+	obj = acpi_evaluate_dsm_typed(ACPI_HANDLE(mac_cb->dev),
+				      &hns_dsaf_acpi_dsm_guid, 0,
+				      HNS_OP_GET_PORT_TYPE_FUNC, &argv4,
+				      ACPI_TYPE_INTEGER);
+	if (!obj)
 		return phy_if;
 
 	phy_if = obj->integer.value ?
@@ -597,11 +538,11 @@ static int hns_mac_get_sfp_prsnt_acpi(struct hns_mac_cb *mac_cb, int *sfp_prsnt)
 	argv4.package.count = 1;
 	argv4.package.elements = &obj_args;
 
-	obj = acpi_evaluate_dsm(ACPI_HANDLE(mac_cb->dev),
-				&hns_dsaf_acpi_dsm_guid, 0,
-				HNS_OP_GET_SFP_STAT_FUNC, &argv4);
-
-	if (!obj || obj->type != ACPI_TYPE_INTEGER)
+	obj = acpi_evaluate_dsm_typed(ACPI_HANDLE(mac_cb->dev),
+				      &hns_dsaf_acpi_dsm_guid, 0,
+				      HNS_OP_GET_SFP_STAT_FUNC, &argv4,
+				      ACPI_TYPE_INTEGER);
+	if (!obj)
 		return -ENODEV;
 
 	*sfp_prsnt = obj->integer.value;
@@ -725,8 +666,6 @@ struct dsaf_misc_op *hns_misc_op_get(struct dsaf_device *dsaf_dev)
 		misc_op->ge_srst = hns_dsaf_ge_srst_by_port;
 		misc_op->ppe_srst = hns_ppe_srst_by_port;
 		misc_op->ppe_comm_srst = hns_ppe_com_srst;
-		misc_op->hns_dsaf_srst_chns = hns_dsaf_srst_chns;
-		misc_op->hns_dsaf_roce_srst = hns_dsaf_roce_srst;
 
 		misc_op->get_phy_if = hns_mac_get_phy_if;
 		misc_op->get_sfp_prsnt = hns_mac_get_sfp_prsnt;
@@ -742,8 +681,6 @@ struct dsaf_misc_op *hns_misc_op_get(struct dsaf_device *dsaf_dev)
 		misc_op->ge_srst = hns_dsaf_ge_srst_by_port_acpi;
 		misc_op->ppe_srst = hns_ppe_srst_by_port_acpi;
 		misc_op->ppe_comm_srst = hns_ppe_com_srst;
-		misc_op->hns_dsaf_srst_chns = hns_dsaf_srst_chns_acpi;
-		misc_op->hns_dsaf_roce_srst = hns_dsaf_roce_srst_acpi;
 
 		misc_op->get_phy_if = hns_mac_get_phy_if_acpi;
 		misc_op->get_sfp_prsnt = hns_mac_get_sfp_prsnt_acpi;

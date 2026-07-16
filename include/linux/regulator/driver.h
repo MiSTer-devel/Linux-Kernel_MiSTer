@@ -51,12 +51,7 @@ enum regulator_detection_severity {
 
 /* Initialize struct linear_range for regulators */
 #define REGULATOR_LINEAR_RANGE(_min_uV, _min_sel, _max_sel, _step_uV)	\
-{									\
-	.min		= _min_uV,					\
-	.min_sel	= _min_sel,					\
-	.max_sel	= _max_sel,					\
-	.step		= _step_uV,					\
-}
+	LINEAR_RANGE(_min_uV, _min_sel, _max_sel, _step_uV)
 
 /**
  * struct regulator_ops - regulator operations.
@@ -90,22 +85,28 @@ enum regulator_detection_severity {
  * @set_over_current_protection: Support enabling of and setting limits for over
  *	current situation detection. Detection can be configured for three
  *	levels of severity.
- *	REGULATOR_SEVERITY_PROT should automatically shut down the regulator(s).
- *	REGULATOR_SEVERITY_ERR should indicate that over-current situation is
- *		caused by an unrecoverable error but HW does not perform
- *		automatic shut down.
- *	REGULATOR_SEVERITY_WARN should indicate situation where hardware is
- *		still believed to not be damaged but that a board sepcific
- *		recovery action is needed. If lim_uA is 0 the limit should not
- *		be changed but the detection should just be enabled/disabled as
- *		is requested.
+ *
+ *	- REGULATOR_SEVERITY_PROT should automatically shut down the regulator(s).
+ *
+ *	- REGULATOR_SEVERITY_ERR should indicate that over-current situation is
+ *		  caused by an unrecoverable error but HW does not perform
+ *		  automatic shut down.
+ *
+ *	- REGULATOR_SEVERITY_WARN should indicate situation where hardware is
+ *		  still believed to not be damaged but that a board sepcific
+ *		  recovery action is needed. If lim_uA is 0 the limit should not
+ *		  be changed but the detection should just be enabled/disabled as
+ *		  is requested.
+ *
  * @set_over_voltage_protection: Support enabling of and setting limits for over
  *	voltage situation detection. Detection can be configured for same
- *	severities as over current protection.
+ *	severities as over current protection. Units of uV.
  * @set_under_voltage_protection: Support enabling of and setting limits for
- *	under situation detection.
+ *	under voltage situation detection. Detection can be configured for same
+ *	severities as over current protection. Units of uV.
  * @set_thermal_protection: Support enabling of and setting limits for over
- *	temperature situation detection.
+ *	temperature situation detection.Detection can be configured for same
+ *	severities as over current protection. Units of degree Kelvin.
  *
  * @set_active_discharge: Set active discharge enable/disable of regulators.
  *
@@ -268,6 +269,11 @@ enum regulator_type {
  *               config but it cannot store it for later usage.
  *               Callback should return 0 on success or negative ERRNO
  *               indicating failure.
+ * @init_cb: Optional callback called after the parsing of init_data.
+ *           Allows the regulator to perform runtime init if necessary,
+ *           such as synching the regulator and the parsed constraints.
+ *           Callback should return 0 on success or negative ERRNO
+ *           indicating failure.
  * @id: Numerical identifier for the regulator.
  * @ops: Regulator operations table.
  * @irq: Interrupt number for the regulator.
@@ -286,17 +292,20 @@ enum regulator_type {
  * @ramp_delay: Time to settle down after voltage change (unit: uV/us)
  * @min_dropout_uV: The minimum dropout voltage this regulator can handle
  * @linear_ranges: A constant table of possible voltage ranges.
- * @linear_range_selectors: A constant table of voltage range selectors.
- *			    If pickable ranges are used each range must
- *			    have corresponding selector here.
+ * @linear_range_selectors_bitfield: A constant table of voltage range
+ *                                   selectors as bitfield values. If
+ *                                   pickable ranges are used each range
+ *                                   must have corresponding selector here.
  * @n_linear_ranges: Number of entries in the @linear_ranges (and in
- *		     linear_range_selectors if used) table(s).
+ *		     linear_range_selectors_bitfield if used) table(s).
  * @volt_table: Voltage mapping table (if table based mapping)
  * @curr_table: Current limit mapping table (if table based mapping)
  *
  * @vsel_range_reg: Register for range selector when using pickable ranges
  *		    and ``regulator_map_*_voltage_*_pickable`` functions.
  * @vsel_range_mask: Mask for register bitfield used for range selector
+ * @range_applied_by_vsel: A flag to indicate that changes to vsel_range_reg
+ *			   are only effective after vsel_reg is written
  * @vsel_reg: Register for selector when using ``regulator_map_*_voltage_*``
  * @vsel_mask: Mask for register bitfield used for selector
  * @vsel_step: Specify the resolution of selector stepping when setting
@@ -342,6 +351,7 @@ enum regulator_type {
  * @ramp_delay_table:	Table for mapping the regulator ramp-rate values. Values
  *			should be given in units of V/S (uV/uS). See the
  *			regulator_set_ramp_delay_regmap().
+ * @n_ramp_values:	number of elements at @ramp_delay_table.
  *
  * @enable_time: Time taken for initial enable of regulator (in uS).
  * @off_on_delay: guard time (in uS), before re-enabling a regulator
@@ -360,6 +370,8 @@ struct regulator_desc {
 	int (*of_parse_cb)(struct device_node *,
 			    const struct regulator_desc *,
 			    struct regulator_config *);
+	int (*init_cb)(struct regulator_dev *,
+		       struct regulator_config *);
 	int id;
 	unsigned int continuous_voltage_range:1;
 	unsigned n_voltages;
@@ -377,7 +389,7 @@ struct regulator_desc {
 	int min_dropout_uV;
 
 	const struct linear_range *linear_ranges;
-	const unsigned int *linear_range_selectors;
+	const unsigned int *linear_range_selectors_bitfield;
 
 	int n_linear_ranges;
 
@@ -386,6 +398,7 @@ struct regulator_desc {
 
 	unsigned int vsel_range_reg;
 	unsigned int vsel_range_mask;
+	bool range_applied_by_vsel;
 	unsigned int vsel_reg;
 	unsigned int vsel_mask;
 	unsigned int vsel_step;
@@ -499,7 +512,8 @@ struct regulator_irq_data {
  *		best to shut-down regulator(s) or reboot the SOC if error
  *		handling is repeatedly failing. If fatal_cnt is given the IRQ
  *		handling is aborted if it fails for fatal_cnt times and die()
- *		callback (if populated) or BUG() is called to try to prevent
+ *		callback (if populated) is called. If die() is not populated
+ *		poweroff for the system is attempted in order to prevent any
  *		further damage.
  * @reread_ms:	The time which is waited before attempting to re-read status
  *		at the worker if IC reading fails. Immediate re-read is done
@@ -516,11 +530,12 @@ struct regulator_irq_data {
  * @data:	Driver private data pointer which will be passed as such to
  *		the renable, map_event and die callbacks in regulator_irq_data.
  * @die:	Protection callback. If IC status reading or recovery actions
- *		fail fatal_cnt times this callback or BUG() is called. This
- *		callback should implement a final protection attempt like
- *		disabling the regulator. If protection succeeded this may
- *		return 0. If anything else is returned the core assumes final
- *		protection failed and calls BUG() as a last resort.
+ *		fail fatal_cnt times this callback is called or system is
+ *		powered off. This callback should implement a final protection
+ *		attempt like disabling the regulator. If protection succeeded
+ *		die() may return 0. If anything else is returned the core
+ *		assumes final protection failed and attempts to perform a
+ *		poweroff as a last resort.
  * @map_event:	Driver callback to map IRQ status into regulator devices with
  *		events / errors. NOTE: callback MUST initialize both the
  *		errors and notifs for all rdevs which it signals having
@@ -552,7 +567,6 @@ struct regulator_irq_data {
  */
 struct regulator_irq_desc {
 	const char *name;
-	int irq_flags;
 	int fatal_cnt;
 	int reread_ms;
 	int irq_off_ms;
@@ -642,10 +656,47 @@ struct regulator_dev {
 	int cached_err;
 	bool use_cached_err;
 	spinlock_t err_lock;
+
+	int pw_requested_mW;
 };
 
+/*
+ * Convert error flags to corresponding notifications.
+ *
+ * Can be used by drivers which use the notification helpers to
+ * find out correct notification flags based on the error flags. Drivers
+ * can avoid storing both supported notification and error flags which
+ * may save few bytes.
+ */
+static inline int regulator_err2notif(int err)
+{
+	switch (err) {
+	case REGULATOR_ERROR_UNDER_VOLTAGE:
+		return REGULATOR_EVENT_UNDER_VOLTAGE;
+	case REGULATOR_ERROR_OVER_CURRENT:
+		return REGULATOR_EVENT_OVER_CURRENT;
+	case REGULATOR_ERROR_REGULATION_OUT:
+		return REGULATOR_EVENT_REGULATION_OUT;
+	case REGULATOR_ERROR_FAIL:
+		return REGULATOR_EVENT_FAIL;
+	case REGULATOR_ERROR_OVER_TEMP:
+		return REGULATOR_EVENT_OVER_TEMP;
+	case REGULATOR_ERROR_UNDER_VOLTAGE_WARN:
+		return REGULATOR_EVENT_UNDER_VOLTAGE_WARN;
+	case REGULATOR_ERROR_OVER_CURRENT_WARN:
+		return REGULATOR_EVENT_OVER_CURRENT_WARN;
+	case REGULATOR_ERROR_OVER_VOLTAGE_WARN:
+		return REGULATOR_EVENT_OVER_VOLTAGE_WARN;
+	case REGULATOR_ERROR_OVER_TEMP_WARN:
+		return REGULATOR_EVENT_OVER_TEMP_WARN;
+	}
+	return 0;
+}
+
+
 struct regulator_dev *
-regulator_register(const struct regulator_desc *regulator_desc,
+regulator_register(struct device *dev,
+		   const struct regulator_desc *regulator_desc,
 		   const struct regulator_config *config);
 struct regulator_dev *
 devm_regulator_register(struct device *dev,
@@ -665,6 +716,8 @@ void *regulator_irq_helper(struct device *dev,
 			   int irq_flags, int common_errs, int *per_rdev_errs,
 			   struct regulator_dev **rdev, int rdev_amount);
 void regulator_irq_helper_cancel(void **handle);
+int regulator_irq_map_event_simple(int irq, struct regulator_irq_data *rid,
+				   unsigned long *dev_mask);
 
 void *rdev_get_drvdata(struct regulator_dev *rdev);
 struct device *rdev_get_dev(struct regulator_dev *rdev);
@@ -713,6 +766,8 @@ int regulator_set_current_limit_regmap(struct regulator_dev *rdev,
 				       int min_uA, int max_uA);
 int regulator_get_current_limit_regmap(struct regulator_dev *rdev);
 void *regulator_get_init_drvdata(struct regulator_init_data *reg_init_data);
+int regulator_find_closest_bigger(unsigned int target, const unsigned int *table,
+				  unsigned int num_sel, unsigned int *sel);
 int regulator_set_ramp_delay_regmap(struct regulator_dev *rdev, int ramp_delay);
 int regulator_sync_voltage_rdev(struct regulator_dev *rdev);
 

@@ -10,7 +10,7 @@
 static struct dentry *efct_debugfs_root;
 static atomic_t efct_debugfs_count;
 
-static struct scsi_host_template efct_template = {
+static const struct scsi_host_template efct_template = {
 	.module			= THIS_MODULE,
 	.name			= EFCT_DRIVER_NAME,
 	.supported_mode		= MODE_TARGET,
@@ -180,7 +180,7 @@ efct_xport_config_stats_timer(struct efct *efct);
 static void
 efct_xport_stats_timer_cb(struct timer_list *t)
 {
-	struct efct_xport *xport = from_timer(xport, t, stats_timer);
+	struct efct_xport *xport = timer_container_of(xport, t, stats_timer);
 	struct efct *efct = xport->efct;
 
 	efct_xport_config_stats_timer(efct);
@@ -508,7 +508,7 @@ efct_xport_detach(struct efct_xport *xport)
 
 	/*Shutdown FC Statistics timer*/
 	if (timer_pending(&xport->stats_timer))
-		del_timer(&xport->stats_timer);
+		timer_delete(&xport->stats_timer);
 
 	efct_hw_teardown(&efct->hw);
 

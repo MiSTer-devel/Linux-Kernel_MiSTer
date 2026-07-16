@@ -7,6 +7,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/jiffies.h>
@@ -56,7 +57,7 @@ struct sch5636_data {
 	struct device *hwmon_dev;
 
 	struct mutex update_lock;
-	char valid;			/* !=0 if following fields are valid */
+	bool valid;			/* true if following fields are valid */
 	unsigned long last_updated;	/* In jiffies */
 	u8 in[SCH5636_NO_INS];
 	u8 temp_val[SCH5636_NO_TEMPS];
@@ -140,7 +141,7 @@ static struct sch5636_data *sch5636_update_device(struct device *dev)
 	}
 
 	data->last_updated = jiffies;
-	data->valid = 1;
+	data->valid = true;
 abort:
 	mutex_unlock(&data->update_lock);
 	return ret;
@@ -366,7 +367,7 @@ static struct sensor_device_attribute sch5636_fan_attr[] = {
 	SENSOR_ATTR_RO(fan8_alarm, fan_alarm, 7),
 };
 
-static int sch5636_remove(struct platform_device *pdev)
+static void sch5636_remove(struct platform_device *pdev)
 {
 	struct sch5636_data *data = platform_get_drvdata(pdev);
 	int i;
@@ -384,8 +385,6 @@ static int sch5636_remove(struct platform_device *pdev)
 	for (i = 0; i < SCH5636_NO_FANS * 3; i++)
 		device_remove_file(&pdev->dev,
 				   &sch5636_fan_attr[i].dev_attr);
-
-	return 0;
 }
 
 static int sch5636_probe(struct platform_device *pdev)
@@ -417,8 +416,7 @@ static int sch5636_probe(struct platform_device *pdev)
 	id[i] = '\0';
 
 	if (strcmp(id, "THS")) {
-		pr_err("Unknown Fujitsu id: %02x%02x%02x\n",
-		       id[0], id[1], id[2]);
+		pr_err("Unknown Fujitsu id: %3pE (%3ph)\n", id, id);
 		err = -ENODEV;
 		goto error;
 	}
@@ -501,12 +499,21 @@ error:
 	return err;
 }
 
+static const struct platform_device_id sch5636_device_id[] = {
+	{
+		.name = "sch5636",
+	},
+	{ }
+};
+MODULE_DEVICE_TABLE(platform, sch5636_device_id);
+
 static struct platform_driver sch5636_driver = {
 	.driver = {
 		.name	= DRVNAME,
 	},
 	.probe		= sch5636_probe,
 	.remove		= sch5636_remove,
+	.id_table	= sch5636_device_id,
 };
 
 module_platform_driver(sch5636_driver);

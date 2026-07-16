@@ -63,12 +63,12 @@ static int qed_ptp_res_lock(struct qed_hwfn *p_hwfn, struct qed_ptt *p_ptt)
 
 		DP_INFO(p_hwfn, "PF doesn't have lock ownership\n");
 		return -EBUSY;
-	} else if (!rc && !params.b_granted) {
+	} else if (!params.b_granted) {
 		DP_INFO(p_hwfn, "Failed to acquire ptp resource lock\n");
 		return -EBUSY;
 	}
 
-	return rc;
+	return 0;
 }
 
 static int qed_ptp_res_unlock(struct qed_hwfn *p_hwfn, struct qed_ptt *p_ptt)
@@ -307,7 +307,7 @@ static int qed_ptp_hw_adjfreq(struct qed_dev *cdev, s32 ppb)
 	} else if (ppb == 1) {
 		/* This is a special case as its the only value which wouldn't
 		 * fit in a s64 variable. In order to prevent castings simple
-		 * handle it seperately.
+		 * handle it separately.
 		 */
 		best_val = 4;
 		best_period = 0xee6b27f;

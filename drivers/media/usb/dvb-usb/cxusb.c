@@ -35,7 +35,7 @@
 #include "mt352.h"
 #include "mt352_priv.h"
 #include "zl10353.h"
-#include "tuner-xc2028.h"
+#include "xc2028.h"
 #include "tuner-simple.h"
 #include "mxl5005s.h"
 #include "max2165.h"
@@ -78,7 +78,7 @@ enum cxusb_table_index {
 	NR__cxusb_table_index
 };
 
-static struct usb_device_id cxusb_table[];
+static const struct usb_device_id cxusb_table[];
 
 int cxusb_ctrl_msg(struct dvb_usb_device *d,
 		   u8 cmd, const u8 *wbuf, int wlen, u8 *rbuf, int rlen)
@@ -119,9 +119,8 @@ static void cxusb_gpio_tuner(struct dvb_usb_device *d, int onoff)
 
 	o[0] = GPIO_TUNER;
 	o[1] = onoff;
-	cxusb_ctrl_msg(d, CMD_GPIO_WRITE, o, 2, &i, 1);
 
-	if (i != 0x01)
+	if (!cxusb_ctrl_msg(d, CMD_GPIO_WRITE, o, 2, &i, 1) && i != 0x01)
 		dev_info(&d->udev->dev, "gpio_write failed.\n");
 
 	st->gpio_write_state[GPIO_TUNER] = onoff;
@@ -287,7 +286,7 @@ static u32 cxusb_i2c_func(struct i2c_adapter *adapter)
 	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL;
 }
 
-static struct i2c_algorithm cxusb_i2c_algo = {
+static const struct i2c_algorithm cxusb_i2c_algo = {
 	.master_xfer   = cxusb_i2c_xfer,
 	.functionality = cxusb_i2c_func,
 };
@@ -1692,72 +1691,30 @@ static void cxusb_disconnect(struct usb_interface *intf)
 	dvb_usb_device_exit(intf);
 }
 
-static struct usb_device_id cxusb_table[NR__cxusb_table_index + 1] = {
-	[MEDION_MD95700] = {
-		USB_DEVICE(USB_VID_MEDION, USB_PID_MEDION_MD95700)
-	},
-	[DVICO_BLUEBIRD_LG064F_COLD] = {
-		USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_LG064F_COLD)
-	},
-	[DVICO_BLUEBIRD_LG064F_WARM] = {
-		USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_LG064F_WARM)
-	},
-	[DVICO_BLUEBIRD_DUAL_1_COLD] = {
-		USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_1_COLD)
-	},
-	[DVICO_BLUEBIRD_DUAL_1_WARM] = {
-		USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_1_WARM)
-	},
-	[DVICO_BLUEBIRD_LGZ201_COLD] = {
-		USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_LGZ201_COLD)
-	},
-	[DVICO_BLUEBIRD_LGZ201_WARM] = {
-		USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_LGZ201_WARM)
-	},
-	[DVICO_BLUEBIRD_TH7579_COLD] = {
-		USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_TH7579_COLD)
-	},
-	[DVICO_BLUEBIRD_TH7579_WARM] = {
-		USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_TH7579_WARM)
-	},
-	[DIGITALNOW_BLUEBIRD_DUAL_1_COLD] = {
-		USB_DEVICE(USB_VID_DVICO,
-			   USB_PID_DIGITALNOW_BLUEBIRD_DUAL_1_COLD)
-	},
-	[DIGITALNOW_BLUEBIRD_DUAL_1_WARM] = {
-		USB_DEVICE(USB_VID_DVICO,
-			   USB_PID_DIGITALNOW_BLUEBIRD_DUAL_1_WARM)
-	},
-	[DVICO_BLUEBIRD_DUAL_2_COLD] = {
-		USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_2_COLD)
-	},
-	[DVICO_BLUEBIRD_DUAL_2_WARM] = {
-		USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_2_WARM)
-	},
-	[DVICO_BLUEBIRD_DUAL_4] = {
-		USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_4)
-	},
-	[DVICO_BLUEBIRD_DVB_T_NANO_2] = {
-		USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DVB_T_NANO_2)
-	},
-	[DVICO_BLUEBIRD_DVB_T_NANO_2_NFW_WARM] = {
-		USB_DEVICE(USB_VID_DVICO,
-			   USB_PID_DVICO_BLUEBIRD_DVB_T_NANO_2_NFW_WARM)
-	},
-	[AVERMEDIA_VOLAR_A868R] = {
-		USB_DEVICE(USB_VID_AVERMEDIA, USB_PID_AVERMEDIA_VOLAR_A868R)
-	},
-	[DVICO_BLUEBIRD_DUAL_4_REV_2] = {
-		USB_DEVICE(USB_VID_DVICO, USB_PID_DVICO_BLUEBIRD_DUAL_4_REV_2)
-	},
-	[CONEXANT_D680_DMB] = {
-		USB_DEVICE(USB_VID_CONEXANT, USB_PID_CONEXANT_D680_DMB)
-	},
-	[MYGICA_D689] = {
-		USB_DEVICE(USB_VID_CONEXANT, USB_PID_MYGICA_D689)
-	},
-	{}		/* Terminating entry */
+static const struct usb_device_id cxusb_table[] = {
+	DVB_USB_DEV(MEDION, MEDION_MD95700),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_LG064F_COLD),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_LG064F_WARM),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DUAL_1_COLD),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DUAL_1_WARM),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_LGZ201_COLD),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_LGZ201_WARM),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_TH7579_COLD),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_TH7579_WARM),
+	DVB_USB_DEV(DVICO, DIGITALNOW_BLUEBIRD_DUAL_1_COLD),
+	DVB_USB_DEV(DVICO, DIGITALNOW_BLUEBIRD_DUAL_1_WARM),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DUAL_2_COLD),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DUAL_2_WARM),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DUAL_4),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DVB_T_NANO_2),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DVB_T_NANO_2_NFW_WARM),
+	DVB_USB_DEV(AVERMEDIA, AVERMEDIA_VOLAR_A868R),
+	DVB_USB_DEV(DVICO, DVICO_BLUEBIRD_DUAL_4_REV_2),
+	DVB_USB_DEV(CONEXANT, CONEXANT_D680_DMB),
+	DVB_USB_DEV(CONEXANT, MYGICA_D689),
+	{ }
 };
+
 MODULE_DEVICE_TABLE(usb, cxusb_table);
 
 static struct dvb_usb_device_properties cxusb_medion_properties = {

@@ -23,6 +23,7 @@ properties:
     enum:
       - nvidia,tegra210-audio-graph-card
       - nvidia,tegra186-audio-graph-card
+      - nvidia,tegra264-audio-graph-card
 
   clocks:
     minItems: 2
@@ -43,6 +44,16 @@ properties:
   assigned-clock-rates:
     minItems: 1
     maxItems: 3
+
+  interconnects:
+    items:
+      - description: APE read memory client
+      - description: APE write memory client
+
+  interconnect-names:
+    items:
+      - const: dma-mem # read
+      - const: write
 
   iommus:
     maxItems: 1

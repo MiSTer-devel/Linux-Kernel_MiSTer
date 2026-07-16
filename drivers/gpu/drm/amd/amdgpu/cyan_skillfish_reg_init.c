@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /*
  * Copyright 2018 Advanced Micro Devices, Inc.
  *
@@ -31,6 +32,8 @@ int cyan_skillfish_reg_base_init(struct amdgpu_device *adev)
 {
 	/* HW has more IP blocks,  only initialized the blocke needed by driver */
 	uint32_t i;
+
+	adev->gfx.xcc_mask = 1;
 	for (i = 0 ; i < MAX_INSTANCE ; ++i) {
 		adev->reg_offset[GC_HWIP][i] = (uint32_t *)(&(GC_BASE.instance[i]));
 		adev->reg_offset[HDP_HWIP][i] = (uint32_t *)(&(HDP_BASE.instance[i]));
@@ -46,6 +49,8 @@ int cyan_skillfish_reg_base_init(struct amdgpu_device *adev)
 		adev->reg_offset[SDMA0_HWIP][i] = (uint32_t *)(&(GC_BASE.instance[i]));
 		adev->reg_offset[SDMA1_HWIP][i] = (uint32_t *)(&(GC_BASE.instance[i]));
 		adev->reg_offset[SMUIO_HWIP][i] = (uint32_t *)(&(SMUIO_BASE.instance[i]));
+		adev->reg_offset[THM_HWIP][i] = (uint32_t *)(&(THM_BASE.instance[i]));
+		adev->reg_offset[CLK_HWIP][i] = (uint32_t *)(&(CLK_BASE.instance[i]));
 	}
 	return 0;
 }

@@ -197,7 +197,7 @@ fail:
 	return err;
 }
 
-static int pcap_ts_remove(struct platform_device *pdev)
+static void pcap_ts_remove(struct platform_device *pdev)
 {
 	struct pcap_ts *pcap_ts = platform_get_drvdata(pdev);
 
@@ -207,8 +207,6 @@ static int pcap_ts_remove(struct platform_device *pdev)
 	input_unregister_device(pcap_ts->input);
 
 	kfree(pcap_ts);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

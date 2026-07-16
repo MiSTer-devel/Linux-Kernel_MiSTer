@@ -5,13 +5,14 @@
  * Copyright 2016 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  */
 
+#include <linux/debugfs.h>
 #include <linux/errno.h>
 #include <linux/init.h>
-#include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/kmod.h>
-#include <linux/slab.h>
 #include <linux/mm.h>
+#include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/types.h>
 
@@ -19,6 +20,18 @@
 
 #define CEC_NUM_DEVICES	256
 #define CEC_NAME	"cec"
+
+/*
+ * 400 ms is the time it takes for one 16 byte message to be
+ * transferred and 5 is the maximum number of retries. Add
+ * another 100 ms as a margin. So if the transmit doesn't
+ * finish before that time something is really wrong and we
+ * have to time out.
+ *
+ * This is a sign that something it really wrong and a warning
+ * will be issued.
+ */
+#define CEC_XFER_TIMEOUT_MS (5 * 400 + 100)
 
 int cec_debug;
 module_param_named(debug, cec_debug, int, 0644);
@@ -39,35 +52,6 @@ static struct dentry *top_cec_dir;
 /* dev to cec_devnode */
 #define to_cec_devnode(cd) container_of(cd, struct cec_devnode, dev)
 
-int cec_get_device(struct cec_devnode *devnode)
-{
-	/*
-	 * Check if the cec device is available. This needs to be done with
-	 * the devnode->lock held to prevent an open/unregister race:
-	 * without the lock, the device could be unregistered and freed between
-	 * the devnode->registered check and get_device() calls, leading to
-	 * a crash.
-	 */
-	mutex_lock(&devnode->lock);
-	/*
-	 * return ENXIO if the cec device has been removed
-	 * already or if it is not registered anymore.
-	 */
-	if (!devnode->registered) {
-		mutex_unlock(&devnode->lock);
-		return -ENXIO;
-	}
-	/* and increase the device refcount */
-	get_device(&devnode->dev);
-	mutex_unlock(&devnode->lock);
-	return 0;
-}
-
-void cec_put_device(struct cec_devnode *devnode)
-{
-	put_device(&devnode->dev);
-}
-
 /* Called when the last user of the cec device exits. */
 static void cec_devnode_release(struct device *cd)
 {
@@ -81,7 +65,7 @@ static void cec_devnode_release(struct device *cd)
 	cec_delete_adapter(to_cec_adapter(devnode));
 }
 
-static struct bus_type cec_bus_type = {
+static const struct bus_type cec_bus_type = {
 	.name = CEC_NAME,
 };
 
@@ -106,7 +90,7 @@ static int __must_check cec_devnode_register(struct cec_devnode *devnode,
 
 	/* Part 1: Find a free minor number */
 	mutex_lock(&cec_devnode_lock);
-	minor = find_next_zero_bit(cec_devnode_nums, CEC_NUM_DEVICES, 0);
+	minor = find_first_zero_bit(cec_devnode_nums, CEC_NUM_DEVICES);
 	if (minor == CEC_NUM_DEVICES) {
 		mutex_unlock(&cec_devnode_lock);
 		pr_err("could not get a free minor\n");
@@ -169,14 +153,18 @@ static void cec_devnode_unregister(struct cec_adapter *adap)
 	devnode->registered = false;
 	devnode->unregistered = true;
 
+	mutex_lock(&devnode->lock_fhs);
 	list_for_each_entry(fh, &devnode->fhs, list)
 		wake_up_interruptible(&fh->wait);
+	mutex_unlock(&devnode->lock_fhs);
 
 	mutex_unlock(&devnode->lock);
 
 	mutex_lock(&adap->lock);
 	__cec_s_phys_addr(adap, CEC_PHYS_ADDR_INVALID, false);
 	__cec_s_log_addrs(adap, NULL, false);
+	// Disable the adapter (since adap->devnode.unregistered is true)
+	cec_adap_enable(adap);
 	mutex_unlock(&adap->lock);
 
 	cdev_device_del(&devnode->cdev, &devnode->dev);
@@ -202,7 +190,7 @@ static ssize_t cec_error_inj_write(struct file *file,
 		line = strsep(&p, "\n");
 		if (!*line || *line == '#')
 			continue;
-		if (!adap->ops->error_inj_parse_line(adap, line)) {
+		if (!call_op(adap, error_inj_parse_line, line)) {
 			kfree(buf);
 			return -EINVAL;
 		}
@@ -215,7 +203,7 @@ static int cec_error_inj_show(struct seq_file *sf, void *unused)
 {
 	struct cec_adapter *adap = sf->private;
 
-	return adap->ops->error_inj_show(adap, sf);
+	return call_op(adap, error_inj_show, sf);
 }
 
 static int cec_error_inj_open(struct inode *inode, struct file *file)
@@ -257,7 +245,7 @@ struct cec_adapter *cec_allocate_adapter(const struct cec_adap_ops *ops,
 	adap->cec_pin_is_high = true;
 	adap->log_addrs.cec_version = CEC_OP_CEC_VERSION_2_0;
 	adap->log_addrs.vendor_id = CEC_VENDOR_ID_NONE;
-	adap->capabilities = caps;
+	adap->capabilities = caps | CEC_CAP_REPLY_VENDOR_ID;
 	if (debug_phys_addr)
 		adap->capabilities |= CEC_CAP_PHYS_ADDR;
 	adap->needs_hpd = caps & CEC_CAP_NEEDS_HPD;
@@ -272,6 +260,7 @@ struct cec_adapter *cec_allocate_adapter(const struct cec_adap_ops *ops,
 
 	/* adap->devnode initialization */
 	INIT_LIST_HEAD(&adap->devnode.fhs);
+	mutex_init(&adap->devnode.lock_fhs);
 	mutex_init(&adap->devnode.lock);
 
 	adap->kthread = kthread_run(cec_thread_func, adap, "cec-%s", name);
@@ -328,6 +317,8 @@ int cec_register_adapter(struct cec_adapter *adap,
 
 	adap->owner = parent->driver->owner;
 	adap->devnode.dev.parent = parent;
+	if (!adap->xfer_timeout_ms)
+		adap->xfer_timeout_ms = CEC_XFER_TIMEOUT_MS;
 
 #ifdef CONFIG_MEDIA_CEC_RC
 	if (adap->capabilities & CEC_CAP_RC) {
@@ -347,8 +338,8 @@ int cec_register_adapter(struct cec_adapter *adap,
 	res = cec_devnode_register(&adap->devnode, adap->owner);
 	if (res) {
 #ifdef CONFIG_MEDIA_CEC_RC
-		/* Note: rc_unregister also calls rc_free */
 		rc_unregister_device(adap->rc);
+		rc_free_device(adap->rc);
 		adap->rc = NULL;
 #endif
 		return res;
@@ -430,6 +421,7 @@ static int __init cec_devnode_init(void)
 
 	ret = bus_register(&cec_bus_type);
 	if (ret < 0) {
+		debugfs_remove_recursive(top_cec_dir);
 		unregister_chrdev_region(cec_dev_t, CEC_NUM_DEVICES);
 		pr_warn("cec: bus_register failed\n");
 		return -EIO;
@@ -448,6 +440,6 @@ static void __exit cec_devnode_exit(void)
 subsys_initcall(cec_devnode_init);
 module_exit(cec_devnode_exit)
 
-MODULE_AUTHOR("Hans Verkuil <hans.verkuil@cisco.com>");
+MODULE_AUTHOR("Hans Verkuil <hverkuil@kernel.org>");
 MODULE_DESCRIPTION("Device node registration for cec drivers");
 MODULE_LICENSE("GPL");

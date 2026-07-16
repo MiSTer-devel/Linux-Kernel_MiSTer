@@ -103,6 +103,9 @@ static const struct snd_soc_component_driver aiu_cpu_component = {
 	.pointer		= aiu_fifo_pointer,
 	.probe			= aiu_cpu_component_probe,
 	.remove			= aiu_cpu_component_remove,
+#ifdef CONFIG_DEBUG_FS
+	.debugfs_prefix		= "cpu",
+#endif
 };
 
 static struct snd_soc_dai_driver aiu_cpu_dai_drv[] = {
@@ -118,9 +121,6 @@ static struct snd_soc_dai_driver aiu_cpu_dai_drv[] = {
 			.formats	= AIU_FORMATS,
 		},
 		.ops		= &aiu_fifo_i2s_dai_ops,
-		.pcm_new	= aiu_fifo_pcm_new,
-		.probe		= aiu_fifo_i2s_dai_probe,
-		.remove		= aiu_fifo_dai_remove,
 	},
 	[CPU_SPDIF_FIFO] = {
 		.name = "SPDIF FIFO",
@@ -134,9 +134,6 @@ static struct snd_soc_dai_driver aiu_cpu_dai_drv[] = {
 			.formats	= AIU_FORMATS,
 		},
 		.ops		= &aiu_fifo_spdif_dai_ops,
-		.pcm_new	= aiu_fifo_pcm_new,
-		.probe		= aiu_fifo_spdif_dai_probe,
-		.remove		= aiu_fifo_dai_remove,
 	},
 	[CPU_I2S_ENCODER] = {
 		.name = "I2S Encoder",
@@ -215,49 +212,27 @@ static const char * const aiu_spdif_ids[] = {
 static int aiu_clk_get(struct device *dev)
 {
 	struct aiu *aiu = dev_get_drvdata(dev);
+	struct clk *pclk;
 	int ret;
 
-	aiu->pclk = devm_clk_get(dev, "pclk");
-	if (IS_ERR(aiu->pclk)) {
-		if (PTR_ERR(aiu->pclk) != -EPROBE_DEFER)
-			dev_err(dev, "Can't get the aiu pclk\n");
-		return PTR_ERR(aiu->pclk);
-	}
+	pclk = devm_clk_get_enabled(dev, "pclk");
+	if (IS_ERR(pclk))
+		return dev_err_probe(dev, PTR_ERR(pclk), "Can't get the aiu pclk\n");
 
 	aiu->spdif_mclk = devm_clk_get(dev, "spdif_mclk");
-	if (IS_ERR(aiu->spdif_mclk)) {
-		if (PTR_ERR(aiu->spdif_mclk) != -EPROBE_DEFER)
-			dev_err(dev, "Can't get the aiu spdif master clock\n");
-		return PTR_ERR(aiu->spdif_mclk);
-	}
+	if (IS_ERR(aiu->spdif_mclk))
+		return dev_err_probe(dev, PTR_ERR(aiu->spdif_mclk),
+				     "Can't get the aiu spdif master clock\n");
 
 	ret = aiu_clk_bulk_get(dev, aiu_i2s_ids, ARRAY_SIZE(aiu_i2s_ids),
 			       &aiu->i2s);
-	if (ret) {
-		if (ret != -EPROBE_DEFER)
-			dev_err(dev, "Can't get the i2s clocks\n");
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret, "Can't get the i2s clocks\n");
 
 	ret = aiu_clk_bulk_get(dev, aiu_spdif_ids, ARRAY_SIZE(aiu_spdif_ids),
 			       &aiu->spdif);
-	if (ret) {
-		if (ret != -EPROBE_DEFER)
-			dev_err(dev, "Can't get the spdif clocks\n");
-		return ret;
-	}
-
-	ret = clk_prepare_enable(aiu->pclk);
-	if (ret) {
-		dev_err(dev, "peripheral clock enable failed\n");
-		return ret;
-	}
-
-	ret = devm_add_action_or_reset(dev,
-				       (void(*)(void *))clk_disable_unprepare,
-				       aiu->pclk);
 	if (ret)
-		dev_err(dev, "failed to add reset action on pclk");
+		return dev_err_probe(dev, ret, "Can't get the spdif clocks\n");
 
 	return ret;
 }
@@ -281,11 +256,8 @@ static int aiu_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, aiu);
 
 	ret = device_reset(dev);
-	if (ret) {
-		if (ret != -EPROBE_DEFER)
-			dev_err(dev, "Failed to reset device\n");
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to reset device\n");
 
 	regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(regs))
@@ -342,11 +314,9 @@ err:
 	return ret;
 }
 
-static int aiu_remove(struct platform_device *pdev)
+static void aiu_remove(struct platform_device *pdev)
 {
 	snd_soc_unregister_component(&pdev->dev);
-
-	return 0;
 }
 
 static const struct aiu_platform_data aiu_gxbb_pdata = {

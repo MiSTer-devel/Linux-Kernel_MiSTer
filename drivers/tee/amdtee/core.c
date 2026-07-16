@@ -3,20 +3,22 @@
  * Copyright 2019 Advanced Micro Devices, Inc.
  */
 
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/errno.h>
+#include <linux/device.h>
+#include <linux/firmware.h>
 #include <linux/io.h>
+#include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/psp-tee.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include <linux/device.h>
-#include <linux/tee_drv.h>
+#include <linux/tee_core.h>
 #include <linux/types.h>
-#include <linux/mm.h>
 #include <linux/uaccess.h>
-#include <linux/firmware.h>
+
 #include "amdtee_private.h"
-#include "../tee_private.h"
-#include <linux/psp-tee.h>
 
 static struct amdtee_driver_data *drv_data;
 static DEFINE_MUTEX(session_list_mutex);
@@ -203,9 +205,8 @@ static int copy_ta_binary(struct tee_context *ctx, void *ptr, void **ta,
 
 	*ta_size = roundup(fw->size, PAGE_SIZE);
 	*ta = (void *)__get_free_pages(GFP_KERNEL, get_order(*ta_size));
-	if (IS_ERR(*ta)) {
-		pr_err("%s: get_free_pages failed 0x%llx\n", __func__,
-		       (u64)*ta);
+	if (!*ta) {
+		pr_err("%s: get_free_pages failed\n", __func__);
 		rc = -ENOMEM;
 		goto rel_fw;
 	}
@@ -218,12 +219,12 @@ unlock:
 	return rc;
 }
 
+/* mutex must be held by caller */
 static void destroy_session(struct kref *ref)
 {
 	struct amdtee_session *sess = container_of(ref, struct amdtee_session,
 						   refcount);
 
-	mutex_lock(&session_list_mutex);
 	list_del(&sess->list_node);
 	mutex_unlock(&session_list_mutex);
 	kfree(sess);
@@ -268,35 +269,36 @@ int amdtee_open_session(struct tee_context *ctx,
 		goto out;
 	}
 
-	/* Find an empty session index for the given TA */
-	spin_lock(&sess->lock);
-	i = find_first_zero_bit(sess->sess_mask, TEE_NUM_SESSIONS);
-	if (i < TEE_NUM_SESSIONS)
-		set_bit(i, sess->sess_mask);
-	spin_unlock(&sess->lock);
-
-	if (i >= TEE_NUM_SESSIONS) {
-		pr_err("reached maximum session count %d\n", TEE_NUM_SESSIONS);
-		handle_unload_ta(ta_handle);
-		kref_put(&sess->refcount, destroy_session);
-		rc = -ENOMEM;
-		goto out;
-	}
-
 	/* Open session with loaded TA */
 	handle_open_session(arg, &session_info, param);
 	if (arg->ret != TEEC_SUCCESS) {
 		pr_err("open_session failed %d\n", arg->ret);
-		spin_lock(&sess->lock);
-		clear_bit(i, sess->sess_mask);
-		spin_unlock(&sess->lock);
 		handle_unload_ta(ta_handle);
-		kref_put(&sess->refcount, destroy_session);
+		kref_put_mutex(&sess->refcount, destroy_session,
+			       &session_list_mutex);
 		goto out;
 	}
 
-	sess->session_info[i] = session_info;
-	set_session_id(ta_handle, i, &arg->session);
+	/* Find an empty session index for the given TA */
+	spin_lock(&sess->lock);
+	i = find_first_zero_bit(sess->sess_mask, TEE_NUM_SESSIONS);
+	if (i < TEE_NUM_SESSIONS) {
+		sess->session_info[i] = session_info;
+		set_session_id(ta_handle, i, &arg->session);
+		set_bit(i, sess->sess_mask);
+	}
+	spin_unlock(&sess->lock);
+
+	if (i >= TEE_NUM_SESSIONS) {
+		pr_err("reached maximum session count %d\n", TEE_NUM_SESSIONS);
+		handle_close_session(ta_handle, session_info);
+		handle_unload_ta(ta_handle);
+		kref_put_mutex(&sess->refcount, destroy_session,
+			       &session_list_mutex);
+		rc = -ENOMEM;
+		goto out;
+	}
+
 out:
 	free_pages((u64)ta, get_order(ta_size));
 	return rc;
@@ -333,7 +335,7 @@ int amdtee_close_session(struct tee_context *ctx, u32 session)
 	handle_close_session(ta_handle, session_info);
 	handle_unload_ta(ta_handle);
 
-	kref_put(&sess->refcount, destroy_session);
+	kref_put_mutex(&sess->refcount, destroy_session, &session_list_mutex);
 
 	return 0;
 }
@@ -459,7 +461,7 @@ static int __init amdtee_driver_init(void)
 
 	rc = psp_check_tee_status();
 	if (rc) {
-		pr_err("amd-tee driver: tee not present\n");
+		pr_err("tee not present\n");
 		return rc;
 	}
 
@@ -495,7 +497,6 @@ static int __init amdtee_driver_init(void)
 
 	drv_data->amdtee = amdtee;
 
-	pr_info("amd-tee driver initialization successful\n");
 	return 0;
 
 err_device_unregister:
@@ -511,7 +512,7 @@ err_kfree_drv_data:
 	kfree(drv_data);
 	drv_data = NULL;
 
-	pr_err("amd-tee driver initialization failed\n");
+	pr_err("initialization failed\n");
 	return rc;
 }
 module_init(amdtee_driver_init);

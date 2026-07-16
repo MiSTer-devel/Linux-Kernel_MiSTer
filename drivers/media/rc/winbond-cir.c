@@ -470,7 +470,7 @@ wbcir_irq_handler(int irqno, void *cookie)
 		/* RX overflow? (read clears bit) */
 		if (inb(data->sbase + WBCIR_REG_SP3_LSR) & WBCIR_RX_OVERRUN) {
 			data->rxstate = WBCIR_RXSTATE_ERROR;
-			ir_raw_event_reset(data->dev);
+			ir_raw_event_overflow(data->dev);
 		}
 
 		/* TX underflow? */
@@ -997,7 +997,6 @@ wbcir_resume(struct pnp_dev *device)
 	struct wbcir_data *data = pnp_get_drvdata(device);
 
 	wbcir_init_hw(data);
-	ir_raw_event_reset(data->dev);
 	enable_irq(data->irq);
 	led_classdev_resume(&data->led);
 
@@ -1133,7 +1132,6 @@ exit_release_wbase:
 	release_region(data->wbase, WAKEUP_IOMEM_LEN);
 exit_unregister_device:
 	rc_unregister_device(data->dev);
-	data->dev = NULL;
 exit_free_rc:
 	rc_free_device(data->dev);
 exit_unregister_led:
@@ -1164,6 +1162,7 @@ wbcir_remove(struct pnp_dev *device)
 	wbcir_set_bits(data->wbase + WBCIR_REG_WCEIR_EV_EN, 0x00, 0x07);
 
 	rc_unregister_device(data->dev);
+	rc_free_device(data->dev);
 
 	led_classdev_unregister(&data->led);
 

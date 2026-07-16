@@ -24,7 +24,7 @@
 #define VSWITCH1_OUTPUT         BIT(4)
 #define VUSBPHY_CHARGE          BIT(1)
 
-static struct pmic_table power_table[] = {
+static const struct pmic_table power_table[] = {
 	{
 		.address = 0x0,
 		.reg = 0x63,
@@ -177,7 +177,7 @@ static struct pmic_table power_table[] = {
 	} /* MOFF -> MODEMCTRL Bit 0 */
 };
 
-static struct pmic_table thermal_table[] = {
+static const struct pmic_table thermal_table[] = {
 	{
 		.address = 0x00,
 		.reg = 0x4F39
@@ -369,13 +369,14 @@ intel_bxtwc_pmic_update_policy(struct regmap *regmap,
 	return regmap_update_bits(regmap, reg, mask, val);
 }
 
-static struct intel_pmic_opregion_data intel_bxtwc_pmic_opregion_data = {
+static const struct intel_pmic_opregion_data intel_bxtwc_pmic_opregion_data = {
 	.get_power      = intel_bxtwc_pmic_get_power,
 	.update_power   = intel_bxtwc_pmic_update_power,
 	.get_raw_temp   = intel_bxtwc_pmic_get_raw_temp,
 	.update_aux     = intel_bxtwc_pmic_update_aux,
 	.get_policy     = intel_bxtwc_pmic_get_policy,
 	.update_policy  = intel_bxtwc_pmic_update_policy,
+	.lpat_raw_to_temp = acpi_lpat_raw_to_temp,
 	.power_table      = power_table,
 	.power_table_count = ARRAY_SIZE(power_table),
 	.thermal_table     = thermal_table,

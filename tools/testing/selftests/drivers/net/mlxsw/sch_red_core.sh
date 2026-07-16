@@ -73,7 +73,19 @@ CHECK_TC="yes"
 lib_dir=$(dirname $0)/../../../net/forwarding
 source $lib_dir/lib.sh
 source $lib_dir/devlink_lib.sh
-source qos_lib.sh
+source mlxsw_lib.sh
+
+stop_traffic_sleep()
+{
+	local pid=$1; shift
+
+	# Issuing a kill still leaves a bunch of packets lingering in the
+	# buffers. This traffic then arrives at the point where a follow-up test
+	# is already running, and can confuse the test. Therefore sleep after
+	# stopping traffic to flush any leftover packets.
+	stop_traffic "$pid"
+	sleep 1
+}
 
 ipaddr()
 {
@@ -88,24 +100,18 @@ host_create()
 	local dev=$1; shift
 	local host=$1; shift
 
-	simple_if_init $dev
+	adf_simple_if_init $dev
+
 	mtu_set $dev 10000
+	defer mtu_restore $dev
 
 	vlan_create $dev 10 v$dev $(ipaddr $host 10)/28
+	defer vlan_destroy $dev 10
 	ip link set dev $dev.10 type vlan egress 0:0
 
 	vlan_create $dev 11 v$dev $(ipaddr $host 11)/28
+	defer vlan_destroy $dev 11
 	ip link set dev $dev.11 type vlan egress 0:1
-}
-
-host_destroy()
-{
-	local dev=$1; shift
-
-	vlan_destroy $dev 11
-	vlan_destroy $dev 10
-	mtu_restore $dev
-	simple_if_fini $dev
 }
 
 h1_create()
@@ -113,15 +119,12 @@ h1_create()
 	host_create $h1 1
 }
 
-h1_destroy()
-{
-	host_destroy $h1
-}
-
 h2_create()
 {
 	host_create $h2 2
+
 	tc qdisc add dev $h2 clsact
+	defer tc qdisc del dev $h2 clsact
 
 	# Some of the tests in this suite use multicast traffic. As this traffic
 	# enters BR2_10 resp. BR2_11, it is flooded to all other ports. Thus
@@ -134,28 +137,17 @@ h2_create()
 	# cause packets to fail to queue up at $swp3 due to shared buffer
 	# quotas, and the test to spuriously fail.
 	#
-	# Prevent this by setting the speed of $h2 to 1Gbps.
+	# Prevent this by adding a shaper which limits the traffic in $h2 to
+	# 1Gbps.
 
-	ethtool -s $h2 speed 1000 autoneg off
-}
-
-h2_destroy()
-{
-	ethtool -s $h2 autoneg on
-	tc qdisc del dev $h2 clsact
-	host_destroy $h2
+	tc qdisc replace dev $h2 root handle 10: tbf rate 200mbit \
+		burst 128K limit 1G
+	defer tc qdisc del dev $h2 root handle 10:
 }
 
 h3_create()
 {
 	host_create $h3 3
-	ethtool -s $h3 speed 1000 autoneg off
-}
-
-h3_destroy()
-{
-	ethtool -s $h3 autoneg on
-	host_destroy $h3
 }
 
 switch_create()
@@ -164,29 +156,48 @@ switch_create()
 	local vlan
 
 	ip link add dev br1_10 type bridge
+	defer ip link del dev br1_10
+
 	ip link add dev br1_11 type bridge
+	defer ip link del dev br1_11
 
 	ip link add dev br2_10 type bridge
+	defer ip link del dev br2_10
+
 	ip link add dev br2_11 type bridge
+	defer ip link del dev br2_11
 
 	for intf in $swp1 $swp2 $swp3 $swp4 $swp5; do
 		ip link set dev $intf up
+		defer ip link set dev $intf down
+
 		mtu_set $intf 10000
+		defer mtu_restore $intf
 	done
 
 	for intf in $swp1 $swp4; do
 		for vlan in 10 11; do
 			vlan_create $intf $vlan
+			defer vlan_destroy $intf $vlan
+
 			ip link set dev $intf.$vlan master br1_$vlan
+			defer ip link set dev $intf.$vlan nomaster
+
 			ip link set dev $intf.$vlan up
+			defer ip link set dev $intf.$vlan up
 		done
 	done
 
 	for intf in $swp2 $swp3 $swp5; do
 		for vlan in 10 11; do
 			vlan_create $intf $vlan
+			defer vlan_destroy $intf $vlan
+
 			ip link set dev $intf.$vlan master br2_$vlan
+			defer ip link set dev $intf.$vlan nomaster
+
 			ip link set dev $intf.$vlan up
+			defer ip link set dev $intf.$vlan up
 		done
 	done
 
@@ -198,53 +209,28 @@ switch_create()
 		done
 	done
 
-	for intf in $swp2 $swp3 $swp4 $swp5; do
-		ethtool -s $intf speed 1000 autoneg off
+	for intf in $swp3 $swp4; do
+		tc qdisc replace dev $intf root handle 1: tbf rate 200mbit \
+			burst 128K limit 1G
+		defer tc qdisc del dev $intf root handle 1:
 	done
 
 	ip link set dev br1_10 up
+	defer ip link set dev br1_10 down
+
 	ip link set dev br1_11 up
+	defer ip link set dev br1_11 down
+
 	ip link set dev br2_10 up
+	defer ip link set dev br2_10 down
+
 	ip link set dev br2_11 up
+	defer ip link set dev br2_11 down
 
 	local size=$(devlink_pool_size_thtype 0 | cut -d' ' -f 1)
 	devlink_port_pool_th_save $swp3 8
 	devlink_port_pool_th_set $swp3 8 $size
-}
-
-switch_destroy()
-{
-	local intf
-	local vlan
-
-	devlink_port_pool_th_restore $swp3 8
-
-	tc qdisc del dev $swp3 root 2>/dev/null
-
-	ip link set dev br2_11 down
-	ip link set dev br2_10 down
-	ip link set dev br1_11 down
-	ip link set dev br1_10 down
-
-	for intf in $swp5 $swp4 $swp3 $swp2; do
-		ethtool -s $intf autoneg on
-	done
-
-	for intf in $swp5 $swp3 $swp2 $swp4 $swp1; do
-		for vlan in 11 10; do
-			ip link set dev $intf.$vlan down
-			ip link set dev $intf.$vlan nomaster
-			vlan_destroy $intf $vlan
-		done
-
-		mtu_restore $intf
-		ip link set dev $intf down
-	done
-
-	ip link del dev br2_11
-	ip link del dev br2_10
-	ip link del dev br1_11
-	ip link del dev br1_10
+	defer devlink_port_pool_th_restore $swp3 8
 }
 
 setup_prepare()
@@ -263,24 +249,12 @@ setup_prepare()
 
 	h3_mac=$(mac_get $h3)
 
-	vrf_prepare
+	adf_vrf_prepare
 
 	h1_create
 	h2_create
 	h3_create
 	switch_create
-}
-
-cleanup()
-{
-	pre_cleanup
-
-	switch_destroy
-	h3_destroy
-	h2_destroy
-	h1_destroy
-
-	vrf_cleanup
 }
 
 ping_ipv4()
@@ -331,6 +305,14 @@ get_nmarked()
 	ethtool_stats_get $swp3 ecn_marked
 }
 
+get_qdisc_nmarked()
+{
+	local vlan=$1; shift
+
+	busywait_for_counter 1100 +1 \
+		qdisc_stats_get $swp3 $(get_qdisc_handle $vlan) .marked
+}
+
 get_qdisc_npackets()
 {
 	local vlan=$1; shift
@@ -365,6 +347,7 @@ build_backlog()
 	local i=0
 
 	while :; do
+		sleep 1
 		local cur=$(busywait 1100 until_counter_is "> $cur" \
 					    get_qdisc_backlog $vlan)
 		local diff=$((size - cur))
@@ -384,14 +367,15 @@ build_backlog()
 
 check_marking()
 {
+	local get_nmarked=$1; shift
 	local vlan=$1; shift
 	local cond=$1; shift
 
 	local npackets_0=$(get_qdisc_npackets $vlan)
-	local nmarked_0=$(get_nmarked $vlan)
+	local nmarked_0=$($get_nmarked $vlan)
 	sleep 5
 	local npackets_1=$(get_qdisc_npackets $vlan)
-	local nmarked_1=$(get_nmarked $vlan)
+	local nmarked_1=$($get_nmarked $vlan)
 
 	local nmarked_d=$((nmarked_1 - nmarked_0))
 	local npackets_d=$((npackets_1 - npackets_0))
@@ -404,6 +388,7 @@ check_marking()
 ecn_test_common()
 {
 	local name=$1; shift
+	local get_nmarked=$1; shift
 	local vlan=$1; shift
 	local limit=$1; shift
 	local backlog
@@ -416,7 +401,7 @@ ecn_test_common()
 	RET=0
 	backlog=$(build_backlog $vlan $((2 * limit / 3)) udp)
 	check_err $? "Could not build the requested backlog"
-	pct=$(check_marking $vlan "== 0")
+	pct=$(check_marking "$get_nmarked" $vlan "== 0")
 	check_err $? "backlog $backlog / $limit Got $pct% marked packets, expected == 0."
 	log_test "TC $((vlan - 10)): $name backlog < limit"
 
@@ -426,22 +411,24 @@ ecn_test_common()
 	RET=0
 	backlog=$(build_backlog $vlan $((3 * limit / 2)) tcp tos=0x01)
 	check_err $? "Could not build the requested backlog"
-	pct=$(check_marking $vlan ">= 95")
+	pct=$(check_marking "$get_nmarked" $vlan ">= 95")
 	check_err $? "backlog $backlog / $limit Got $pct% marked packets, expected >= 95."
 	log_test "TC $((vlan - 10)): $name backlog > limit"
 }
 
-do_ecn_test()
+__do_ecn_test()
 {
+	local get_nmarked=$1; shift
 	local vlan=$1; shift
 	local limit=$1; shift
-	local name=ECN
+	local name=${1-ECN}; shift
 
 	start_tcp_traffic $h1.$vlan $(ipaddr 1 $vlan) $(ipaddr 3 $vlan) \
 			  $h3_mac tos=0x01
+	defer stop_traffic_sleep $!
 	sleep 1
 
-	ecn_test_common "$name" $vlan $limit
+	ecn_test_common "$name" "$get_nmarked" $vlan $limit
 
 	# Up there we saw that UDP gets accepted when backlog is below the
 	# limit. Now that it is above, it should all get dropped, and backlog
@@ -450,12 +437,28 @@ do_ecn_test()
 	build_backlog $vlan $((2 * limit)) udp >/dev/null
 	check_fail $? "UDP traffic went into backlog instead of being early-dropped"
 	log_test "TC $((vlan - 10)): $name backlog > limit: UDP early-dropped"
-
-	stop_traffic
-	sleep 1
 }
 
-do_ecn_nodrop_test()
+do_ecn_test()
+{
+	local vlan=$1; shift
+	local limit=$1; shift
+
+	in_defer_scope \
+		__do_ecn_test get_nmarked "$vlan" "$limit"
+}
+
+do_ecn_test_perband()
+{
+	local vlan=$1; shift
+	local limit=$1; shift
+
+	mlxsw_only_on_spectrum 3+ || return
+	in_defer_scope \
+		__do_ecn_test get_qdisc_nmarked "$vlan" "$limit" "per-band ECN"
+}
+
+__do_ecn_nodrop_test()
 {
 	local vlan=$1; shift
 	local limit=$1; shift
@@ -463,9 +466,10 @@ do_ecn_nodrop_test()
 
 	start_tcp_traffic $h1.$vlan $(ipaddr 1 $vlan) $(ipaddr 3 $vlan) \
 			  $h3_mac tos=0x01
+	defer stop_traffic_sleep $!
 	sleep 1
 
-	ecn_test_common "$name" $vlan $limit
+	ecn_test_common "$name" get_nmarked $vlan $limit
 
 	# Up there we saw that UDP gets accepted when backlog is below the
 	# limit. Now that it is above, in nodrop mode, make sure it goes to
@@ -474,12 +478,15 @@ do_ecn_nodrop_test()
 	build_backlog $vlan $((2 * limit)) udp >/dev/null
 	check_err $? "UDP traffic was early-dropped instead of getting into backlog"
 	log_test "TC $((vlan - 10)): $name backlog > limit: UDP not dropped"
-
-	stop_traffic
-	sleep 1
 }
 
-do_red_test()
+do_ecn_nodrop_test()
+{
+	in_defer_scope \
+		__do_ecn_nodrop_test "$@"
+}
+
+__do_red_test()
 {
 	local vlan=$1; shift
 	local limit=$1; shift
@@ -490,12 +497,13 @@ do_red_test()
 	# is above limit.
 	start_tcp_traffic $h1.$vlan $(ipaddr 1 $vlan) $(ipaddr 3 $vlan) \
 			  $h3_mac tos=0x01
+	defer stop_traffic_sleep $!
 
 	# Pushing below the queue limit should work.
 	RET=0
 	backlog=$(build_backlog $vlan $((2 * limit / 3)) tcp tos=0x01)
 	check_err $? "Could not build the requested backlog"
-	pct=$(check_marking $vlan "== 0")
+	pct=$(check_marking get_nmarked $vlan "== 0")
 	check_err $? "backlog $backlog / $limit Got $pct% marked packets, expected == 0."
 	log_test "TC $((vlan - 10)): RED backlog < limit"
 
@@ -503,19 +511,23 @@ do_red_test()
 	RET=0
 	backlog=$(build_backlog $vlan $((3 * limit / 2)) tcp tos=0x01)
 	check_fail $? "Traffic went into backlog instead of being early-dropped"
-	pct=$(check_marking $vlan "== 0")
+	pct=$(check_marking get_nmarked $vlan "== 0")
 	check_err $? "backlog $backlog / $limit Got $pct% marked packets, expected == 0."
+	backlog=$(get_qdisc_backlog $vlan)
 	local diff=$((limit - backlog))
 	pct=$((100 * diff / limit))
-	((0 <= pct && pct <= 10))
-	check_err $? "backlog $backlog / $limit expected <= 10% distance"
+	((-15 <= pct && pct <= 15))
+	check_err $? "backlog $backlog / $limit expected <= 15% distance"
 	log_test "TC $((vlan - 10)): RED backlog > limit"
-
-	stop_traffic
-	sleep 1
 }
 
-do_mc_backlog_test()
+do_red_test()
+{
+	in_defer_scope \
+		__do_red_test "$@"
+}
+
+__do_mc_backlog_test()
 {
 	local vlan=$1; shift
 	local limit=$1; shift
@@ -525,7 +537,10 @@ do_mc_backlog_test()
 	RET=0
 
 	start_tcp_traffic $h1.$vlan $(ipaddr 1 $vlan) $(ipaddr 3 $vlan) bc
+	defer stop_traffic_sleep $!
+
 	start_tcp_traffic $h2.$vlan $(ipaddr 2 $vlan) $(ipaddr 3 $vlan) bc
+	defer stop_traffic_sleep $!
 
 	qbl=$(busywait 5000 until_counter_is ">= 500000" \
 		       get_qdisc_backlog $vlan)
@@ -538,27 +553,84 @@ do_mc_backlog_test()
 		       get_mc_transmit_queue $vlan)
 	check_err $? "MC backlog reported by qdisc not visible in ethtool"
 
-	stop_traffic
-	stop_traffic
-
 	log_test "TC $((vlan - 10)): Qdisc reports MC backlog"
 }
 
-do_drop_test()
+do_mc_backlog_test()
+{
+	in_defer_scope \
+		__do_mc_backlog_test "$@"
+}
+
+__do_mark_test()
+{
+	local vlan=$1; shift
+	local limit=$1; shift
+	local subtest=$1; shift
+	local fetch_counter=$1; shift
+	local should_fail=$1; shift
+	local base
+
+	mlxsw_only_on_spectrum 2+ || return
+
+	RET=0
+
+	start_tcp_traffic $h1.$vlan $(ipaddr 1 $vlan) $(ipaddr 3 $vlan) \
+			  $h3_mac tos=0x01
+	defer stop_traffic_sleep $!
+
+	# Create a bit of a backlog and observe no mirroring due to marks.
+	qevent_rule_install_$subtest
+
+	build_backlog $vlan $((2 * limit / 3)) tcp tos=0x01 >/dev/null
+
+	base=$($fetch_counter)
+	count=$(busywait 1100 until_counter_is ">= $((base + 1))" \
+		$fetch_counter)
+	check_fail $? "Spurious packets ($base -> $count) observed without buffer pressure"
+
+	# Above limit, everything should be mirrored, we should see lots of
+	# packets.
+	build_backlog $vlan $((3 * limit / 2)) tcp tos=0x01 >/dev/null
+	busywait_for_counter 1100 +2500 \
+		 $fetch_counter > /dev/null
+	check_err_fail "$should_fail" $? "ECN-marked packets $subtest'd"
+
+	# When the rule is uninstalled, there should be no mirroring.
+	qevent_rule_uninstall_$subtest
+	busywait_for_counter 1100 +10 \
+		 $fetch_counter > /dev/null
+	check_fail $? "Spurious packets observed after uninstall"
+
+	if ((should_fail)); then
+		log_test "TC $((vlan - 10)): marked packets not $subtest'd"
+	else
+		log_test "TC $((vlan - 10)): marked packets $subtest'd"
+	fi
+}
+
+do_mark_test()
+{
+	in_defer_scope \
+		__do_mark_test "$@"
+}
+
+__do_drop_test()
 {
 	local vlan=$1; shift
 	local limit=$1; shift
 	local trigger=$1; shift
 	local subtest=$1; shift
 	local fetch_counter=$1; shift
-	local backlog
 	local base
 	local now
-	local pct
+
+	mlxsw_only_on_spectrum 2+ || return
 
 	RET=0
 
 	start_traffic $h1.$vlan $(ipaddr 1 $vlan) $(ipaddr 3 $vlan) $h3_mac
+	defer stop_traffic_sleep $!
 
 	# Create a bit of a backlog and observe no mirroring due to drops.
 	qevent_rule_install_$subtest
@@ -575,25 +647,30 @@ do_drop_test()
 	build_backlog $vlan $((3 * limit / 2)) udp >/dev/null
 
 	base=$($fetch_counter)
-	send_packets $vlan udp 11
+	send_packets $vlan udp 100
 
-	now=$(busywait 1100 until_counter_is ">= $((base + 10))" $fetch_counter)
-	check_err $? "Dropped packets not observed: 11 expected, $((now - base)) seen"
+	now=$(busywait 1100 until_counter_is ">= $((base + 95))" $fetch_counter)
+	check_err $? "${trigger}ped packets not observed: 100 expected, $((now - base)) seen"
 
 	# When no extra traffic is injected, there should be no mirroring.
-	busywait 1100 until_counter_is ">= $((base + 20))" $fetch_counter >/dev/null
+	busywait 1100 until_counter_is ">= $((base + 110))" \
+		 $fetch_counter >/dev/null
 	check_fail $? "Spurious packets observed"
 
 	# When the rule is uninstalled, there should be no mirroring.
 	qevent_rule_uninstall_$subtest
-	send_packets $vlan udp 11
-	busywait 1100 until_counter_is ">= $((base + 20))" $fetch_counter >/dev/null
-	check_fail $? "Spurious packets observed after uninstall"
+	send_packets $vlan udp 100
+	now=$(busywait 1100 until_counter_is ">= $((base + 110))" \
+		       $fetch_counter)
+	check_fail $? "$((now - base)) spurious packets observed after uninstall"
 
 	log_test "TC $((vlan - 10)): ${trigger}ped packets $subtest'd"
+}
 
-	stop_traffic
-	sleep 1
+do_drop_test()
+{
+	in_defer_scope \
+		__do_drop_test "$@"
 }
 
 qevent_rule_install_mirror()
@@ -628,6 +705,22 @@ do_drop_mirror_test()
 	tc filter del dev $h2 ingress pref 1 handle 101 flower
 }
 
+do_mark_mirror_test()
+{
+	local vlan=$1; shift
+	local limit=$1; shift
+
+	tc filter add dev $h2 ingress pref 1 handle 101 prot ip \
+	   flower skip_sw ip_proto tcp \
+	   action drop
+
+	do_mark_test "$vlan" "$limit" mirror \
+		     qevent_counter_fetch_mirror \
+		     $(: should_fail=)0
+
+	tc filter del dev $h2 ingress pref 1 handle 101 flower
+}
+
 qevent_rule_install_trap()
 {
 	tc filter add block 10 pref 1234 handle 102 matchall skip_sw \
@@ -654,4 +747,15 @@ do_drop_trap_test()
 
 	do_drop_test "$vlan" "$limit" "$trap_name" trap \
 		     "qevent_counter_fetch_trap $trap_name"
+}
+
+qevent_rule_install_trap_fwd()
+{
+	tc filter add block 10 pref 1234 handle 102 matchall skip_sw \
+	   action trap_fwd hw_stats disabled
+}
+
+qevent_rule_uninstall_trap_fwd()
+{
+	tc filter del block 10 pref 1234 handle 102 matchall
 }

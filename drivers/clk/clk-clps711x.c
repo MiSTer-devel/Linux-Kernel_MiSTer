@@ -28,11 +28,13 @@ static const struct clk_div_table spi_div_table[] = {
 	{ .val = 1, .div = 8, },
 	{ .val = 2, .div = 2, },
 	{ .val = 3, .div = 1, },
+	{ /* sentinel */ }
 };
 
 static const struct clk_div_table timer_div_table[] = {
 	{ .val = 0, .div = 256, },
 	{ .val = 1, .div = 1, },
+	{ /* sentinel */ }
 };
 
 struct clps711x_clk {
@@ -97,7 +99,7 @@ static void __init clps711x_clk_init_dt(struct device_node *np)
 	 */
 	tmp &= ~(SYSCON1_TC1M | SYSCON1_TC1S);
 	/* Timer2 in prescale mode.
-	 * Value writen is automatically re-loaded when
+	 * Value written is automatically re-loaded when
 	 * the counter underflows.
 	 */
 	tmp |= SYSCON1_TC2M | SYSCON1_TC2S;

@@ -287,7 +287,7 @@ static void fintek_process_rx_ir_data(struct fintek_dev *fintek)
 			if (fintek->rem)
 				fintek->parser_state = PARSE_IRDATA;
 			else
-				ir_raw_event_reset(fintek->rdev);
+				ir_raw_event_overflow(fintek->rdev);
 			break;
 		case SUBCMD:
 			fintek->rem = fintek_cmdsize(fintek->cmd, sample);
@@ -568,6 +568,7 @@ static void fintek_remove(struct pnp_dev *pdev)
 	struct fintek_dev *fintek = pnp_get_drvdata(pdev);
 	unsigned long flags;
 
+	rc_unregister_device(fintek->rdev);
 	spin_lock_irqsave(&fintek->fintek_lock, flags);
 	/* disable CIR */
 	fintek_disable_cir(fintek);
@@ -580,7 +581,7 @@ static void fintek_remove(struct pnp_dev *pdev)
 	free_irq(fintek->cir_irq, fintek);
 	release_region(fintek->cir_addr, fintek->cir_port_len);
 
-	rc_unregister_device(fintek->rdev);
+	rc_free_device(fintek->rdev);
 
 	kfree(fintek);
 }

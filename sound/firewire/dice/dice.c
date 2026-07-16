@@ -9,7 +9,7 @@
 
 MODULE_DESCRIPTION("DICE driver");
 MODULE_AUTHOR("Clemens Ladisch <clemens@ladisch.de>");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");
 
 #define OUI_WEISS		0x001c6a
 #define OUI_LOUD		0x000ff2
@@ -102,9 +102,9 @@ static void dice_card_strings(struct snd_dice *dice)
 	unsigned int i;
 	int err;
 
-	strcpy(card->driver, "DICE");
+	strscpy(card->driver, "DICE");
 
-	strcpy(card->shortname, "DICE");
+	strscpy(card->shortname, "DICE");
 	BUILD_BUG_ON(NICK_NAME_SIZE < sizeof(card->shortname));
 	err = snd_dice_transaction_read_global(dice, GLOBAL_NICK_NAME,
 					       card->shortname,
@@ -117,16 +117,16 @@ static void dice_card_strings(struct snd_dice *dice)
 		card->shortname[sizeof(card->shortname) - 1] = '\0';
 	}
 
-	strcpy(vendor, "?");
+	strscpy(vendor, "?");
 	fw_csr_string(dev->config_rom + 5, CSR_VENDOR, vendor, sizeof(vendor));
-	strcpy(model, "?");
+	strscpy(model, "?");
 	fw_csr_string(dice->unit->directory, CSR_MODEL, model, sizeof(model));
 	snprintf(card->longname, sizeof(card->longname),
 		 "%s %s (serial %u) at %s, S%d",
 		 vendor, model, dev->config_rom[4] & 0x3fffff,
 		 dev_name(&dice->unit->device), 100 << dev->max_speed);
 
-	strcpy(card->mixername, "DICE");
+	strscpy(card->mixername, "DICE");
 }
 
 static void dice_card_free(struct snd_card *card)
@@ -238,9 +238,8 @@ static void dice_bus_reset(struct fw_unit *unit)
 	/* The handler address register becomes initialized. */
 	snd_dice_transaction_reinit(dice);
 
-	mutex_lock(&dice->mutex);
+	guard(mutex)(&dice->mutex);
 	snd_dice_stream_update_duplex(dice);
-	mutex_unlock(&dice->mutex);
 }
 
 #define DICE_INTERFACE	0x000001
@@ -381,6 +380,79 @@ static const struct ieee1394_device_id dice_id_table[] = {
 		.vendor_id	= OUI_HARMAN,
 		.model_id	= 0x000001,
 		.driver_data	= (kernel_ulong_t)snd_dice_detect_harman_formats,
+	},
+	// Focusrite Saffire Pro 40 with TCD3070-CH.
+	// The model has quirk in its GUID, in which model field is 0x000013 and different from
+	// model ID (0x0000de) in its root/unit directory.
+	{
+		.match_flags	= IEEE1394_MATCH_VENDOR_ID |
+				  IEEE1394_MATCH_MODEL_ID,
+		.vendor_id	= OUI_FOCUSRITE,
+		.model_id	= 0x0000de,
+		.driver_data	= (kernel_ulong_t)snd_dice_detect_focusrite_pro40_tcd3070_formats,
+	},
+	// Weiss DAC202: 192kHz 2-channel DAC
+	{
+		.match_flags	= IEEE1394_MATCH_VENDOR_ID | IEEE1394_MATCH_MODEL_ID,
+		.vendor_id	= OUI_WEISS,
+		.model_id	= 0x000007,
+		.driver_data	= (kernel_ulong_t)snd_dice_detect_weiss_formats,
+	},
+	// Weiss DAC202: 192kHz 2-channel DAC (Maya edition)
+	{
+		.match_flags	= IEEE1394_MATCH_VENDOR_ID | IEEE1394_MATCH_MODEL_ID,
+		.vendor_id	= OUI_WEISS,
+		.model_id	= 0x000008,
+		.driver_data	= (kernel_ulong_t)snd_dice_detect_weiss_formats,
+	},
+	// Weiss MAN301: 192kHz 2-channel music archive network player
+	{
+		.match_flags	= IEEE1394_MATCH_VENDOR_ID | IEEE1394_MATCH_MODEL_ID,
+		.vendor_id	= OUI_WEISS,
+		.model_id	= 0x00000b,
+		.driver_data	= (kernel_ulong_t)snd_dice_detect_weiss_formats,
+	},
+	// Weiss INT202: 192kHz unidirectional 2-channel digital Firewire face
+	{
+		.match_flags	= IEEE1394_MATCH_VENDOR_ID | IEEE1394_MATCH_MODEL_ID,
+		.vendor_id	= OUI_WEISS,
+		.model_id	= 0x000006,
+		.driver_data	= (kernel_ulong_t)snd_dice_detect_weiss_formats,
+	},
+	// Weiss INT203: 192kHz bidirectional 2-channel digital Firewire face
+	{
+		.match_flags	= IEEE1394_MATCH_VENDOR_ID | IEEE1394_MATCH_MODEL_ID,
+		.vendor_id	= OUI_WEISS,
+		.model_id	= 0x00000a,
+		.driver_data	= (kernel_ulong_t)snd_dice_detect_weiss_formats,
+	},
+	// Weiss ADC2: 192kHz A/D converter with microphone preamps and inputs
+	{
+		.match_flags	= IEEE1394_MATCH_VENDOR_ID | IEEE1394_MATCH_MODEL_ID,
+		.vendor_id	= OUI_WEISS,
+		.model_id	= 0x000001,
+		.driver_data	= (kernel_ulong_t)snd_dice_detect_weiss_formats,
+	},
+	// Weiss DAC2/Minerva: 192kHz 2-channel DAC
+	{
+		.match_flags	= IEEE1394_MATCH_VENDOR_ID | IEEE1394_MATCH_MODEL_ID,
+		.vendor_id	= OUI_WEISS,
+		.model_id	= 0x000003,
+		.driver_data	= (kernel_ulong_t)snd_dice_detect_weiss_formats,
+	},
+	// Weiss Vesta: 192kHz 2-channel Firewire to AES/EBU interface
+	{
+		.match_flags	= IEEE1394_MATCH_VENDOR_ID | IEEE1394_MATCH_MODEL_ID,
+		.vendor_id	= OUI_WEISS,
+		.model_id	= 0x000002,
+		.driver_data	= (kernel_ulong_t)snd_dice_detect_weiss_formats,
+	},
+	// Weiss AFI1: 192kHz 24-channel Firewire to ADAT or AES/EBU face
+	{
+		.match_flags	= IEEE1394_MATCH_VENDOR_ID | IEEE1394_MATCH_MODEL_ID,
+		.vendor_id	= OUI_WEISS,
+		.model_id	= 0x000004,
+		.driver_data	= (kernel_ulong_t)snd_dice_detect_weiss_formats,
 	},
 	{
 		.match_flags = IEEE1394_MATCH_VERSION,

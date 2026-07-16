@@ -11,10 +11,12 @@
 #include <linux/workqueue.h>
 #include <linux/spinlock.h>
 #include <linux/device.h>
+#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/timer.h>
 #include <linux/slab.h>
 #include <linux/list.h>
+#include <linux/io.h>
 
 #include <asm/css_chars.h>
 #include <asm/debug.h>
@@ -62,8 +64,8 @@ static int eadm_subchannel_start(struct subchannel *sch, struct aob *aob)
 	int cc;
 
 	orb_init(orb);
-	orb->eadm.aob = (u32)__pa(aob);
-	orb->eadm.intparm = (u32)(addr_t)sch;
+	orb->eadm.aob = virt_to_dma32(aob);
+	orb->eadm.intparm = (u32)virt_to_phys(sch);
 	orb->eadm.key = PAGE_DEFAULT_KEY >> 4;
 
 	EADM_LOG(6, "start");
@@ -97,31 +99,25 @@ static int eadm_subchannel_clear(struct subchannel *sch)
 
 static void eadm_subchannel_timeout(struct timer_list *t)
 {
-	struct eadm_private *private = from_timer(private, t, timer);
+	struct eadm_private *private = timer_container_of(private, t, timer);
 	struct subchannel *sch = private->sch;
 
-	spin_lock_irq(sch->lock);
+	spin_lock_irq(&sch->lock);
 	EADM_LOG(1, "timeout");
 	EADM_LOG_HEX(1, &sch->schid, sizeof(sch->schid));
 	if (eadm_subchannel_clear(sch))
 		EADM_LOG(0, "clear failed");
-	spin_unlock_irq(sch->lock);
+	spin_unlock_irq(&sch->lock);
 }
 
 static void eadm_subchannel_set_timeout(struct subchannel *sch, int expires)
 {
 	struct eadm_private *private = get_eadm_private(sch);
 
-	if (expires == 0) {
-		del_timer(&private->timer);
-		return;
-	}
-	if (timer_pending(&private->timer)) {
-		if (mod_timer(&private->timer, jiffies + expires))
-			return;
-	}
-	private->timer.expires = jiffies + expires;
-	add_timer(&private->timer);
+	if (expires == 0)
+		timer_delete(&private->timer);
+	else
+		mod_timer(&private->timer, jiffies + expires);
 }
 
 static void eadm_subchannel_irq(struct subchannel *sch)
@@ -152,7 +148,7 @@ static void eadm_subchannel_irq(struct subchannel *sch)
 		css_sched_sch_todo(sch, SCH_TODO_EVAL);
 		return;
 	}
-	scm_irq_handler((struct aob *)(unsigned long)scsw->aob, error);
+	scm_irq_handler(dma32_to_virt(scsw->aob), error);
 	private->state = EADM_IDLE;
 
 	if (private->completion)
@@ -168,16 +164,16 @@ static struct subchannel *eadm_get_idle_sch(void)
 	spin_lock_irqsave(&list_lock, flags);
 	list_for_each_entry(private, &eadm_list, head) {
 		sch = private->sch;
-		spin_lock(sch->lock);
+		spin_lock(&sch->lock);
 		if (private->state == EADM_IDLE) {
 			private->state = EADM_BUSY;
 			list_move_tail(&private->head, &eadm_list);
-			spin_unlock(sch->lock);
+			spin_unlock(&sch->lock);
 			spin_unlock_irqrestore(&list_lock, flags);
 
 			return sch;
 		}
-		spin_unlock(sch->lock);
+		spin_unlock(&sch->lock);
 	}
 	spin_unlock_irqrestore(&list_lock, flags);
 
@@ -195,7 +191,7 @@ int eadm_start_aob(struct aob *aob)
 	if (!sch)
 		return -EBUSY;
 
-	spin_lock_irqsave(sch->lock, flags);
+	spin_lock_irqsave(&sch->lock, flags);
 	eadm_subchannel_set_timeout(sch, EADM_TIMEOUT);
 	ret = eadm_subchannel_start(sch, aob);
 	if (!ret)
@@ -208,7 +204,7 @@ int eadm_start_aob(struct aob *aob)
 	css_sched_sch_todo(sch, SCH_TODO_EVAL);
 
 out_unlock:
-	spin_unlock_irqrestore(sch->lock, flags);
+	spin_unlock_irqrestore(&sch->lock, flags);
 
 	return ret;
 }
@@ -226,28 +222,23 @@ static int eadm_subchannel_probe(struct subchannel *sch)
 	INIT_LIST_HEAD(&private->head);
 	timer_setup(&private->timer, eadm_subchannel_timeout, 0);
 
-	spin_lock_irq(sch->lock);
+	spin_lock_irq(&sch->lock);
 	set_eadm_private(sch, private);
 	private->state = EADM_IDLE;
 	private->sch = sch;
 	sch->isc = EADM_SCH_ISC;
-	ret = cio_enable_subchannel(sch, (u32)(unsigned long)sch);
+	ret = cio_enable_subchannel(sch, (u32)virt_to_phys(sch));
 	if (ret) {
 		set_eadm_private(sch, NULL);
-		spin_unlock_irq(sch->lock);
+		spin_unlock_irq(&sch->lock);
 		kfree(private);
 		goto out;
 	}
-	spin_unlock_irq(sch->lock);
+	spin_unlock_irq(&sch->lock);
 
 	spin_lock_irq(&list_lock);
 	list_add(&private->head, &eadm_list);
 	spin_unlock_irq(&list_lock);
-
-	if (dev_get_uevent_suppress(&sch->dev)) {
-		dev_set_uevent_suppress(&sch->dev, 0);
-		kobject_uevent(&sch->dev.kobj, KOBJ_ADD);
-	}
 out:
 	return ret;
 }
@@ -258,7 +249,7 @@ static void eadm_quiesce(struct subchannel *sch)
 	DECLARE_COMPLETION_ONSTACK(completion);
 	int ret;
 
-	spin_lock_irq(sch->lock);
+	spin_lock_irq(&sch->lock);
 	if (private->state != EADM_BUSY)
 		goto disable;
 
@@ -266,11 +257,11 @@ static void eadm_quiesce(struct subchannel *sch)
 		goto disable;
 
 	private->completion = &completion;
-	spin_unlock_irq(sch->lock);
+	spin_unlock_irq(&sch->lock);
 
 	wait_for_completion_io(&completion);
 
-	spin_lock_irq(sch->lock);
+	spin_lock_irq(&sch->lock);
 	private->completion = NULL;
 
 disable:
@@ -279,7 +270,7 @@ disable:
 		ret = cio_disable_subchannel(sch);
 	} while (ret == -EBUSY);
 
-	spin_unlock_irq(sch->lock);
+	spin_unlock_irq(&sch->lock);
 }
 
 static void eadm_subchannel_remove(struct subchannel *sch)
@@ -292,9 +283,9 @@ static void eadm_subchannel_remove(struct subchannel *sch)
 
 	eadm_quiesce(sch);
 
-	spin_lock_irq(sch->lock);
+	spin_lock_irq(&sch->lock);
 	set_eadm_private(sch, NULL);
-	spin_unlock_irq(sch->lock);
+	spin_unlock_irq(&sch->lock);
 
 	kfree(private);
 }
@@ -319,7 +310,7 @@ static int eadm_subchannel_sch_event(struct subchannel *sch, int process)
 	struct eadm_private *private;
 	unsigned long flags;
 
-	spin_lock_irqsave(sch->lock, flags);
+	spin_lock_irqsave(&sch->lock, flags);
 	if (!device_is_registered(&sch->dev))
 		goto out_unlock;
 
@@ -335,7 +326,7 @@ static int eadm_subchannel_sch_event(struct subchannel *sch, int process)
 		private->state = EADM_IDLE;
 
 out_unlock:
-	spin_unlock_irqrestore(sch->lock, flags);
+	spin_unlock_irqrestore(&sch->lock, flags);
 
 	return 0;
 }

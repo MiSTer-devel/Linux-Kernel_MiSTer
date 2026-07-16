@@ -53,16 +53,15 @@ xfs_qm_scall_quotaoff(
 STATIC int
 xfs_qm_scall_trunc_qfile(
 	struct xfs_mount	*mp,
-	xfs_ino_t		ino)
+	xfs_dqtype_t		type)
 {
 	struct xfs_inode	*ip;
 	struct xfs_trans	*tp;
 	int			error;
 
-	if (ino == NULLFSINO)
+	error = xfs_qm_qino_load(mp, type, &ip);
+	if (error == -ENOENT)
 		return 0;
-
-	error = xfs_iget(mp, NULL, ino, 0, 0, &ip);
 	if (error)
 		return error;
 
@@ -113,17 +112,17 @@ xfs_qm_scall_trunc_qfiles(
 	}
 
 	if (flags & XFS_QMOPT_UQUOTA) {
-		error = xfs_qm_scall_trunc_qfile(mp, mp->m_sb.sb_uquotino);
+		error = xfs_qm_scall_trunc_qfile(mp, XFS_DQTYPE_USER);
 		if (error)
 			return error;
 	}
 	if (flags & XFS_QMOPT_GQUOTA) {
-		error = xfs_qm_scall_trunc_qfile(mp, mp->m_sb.sb_gquotino);
+		error = xfs_qm_scall_trunc_qfile(mp, XFS_DQTYPE_GROUP);
 		if (error)
 			return error;
 	}
 	if (flags & XFS_QMOPT_PQUOTA)
-		error = xfs_qm_scall_trunc_qfile(mp, mp->m_sb.sb_pquotino);
+		error = xfs_qm_scall_trunc_qfile(mp, XFS_DQTYPE_PROJ);
 
 	return error;
 }
@@ -217,8 +216,7 @@ xfs_qm_scall_quotaon(
 	return 0;
 }
 
-#define XFS_QC_MASK \
-	(QC_LIMIT_MASK | QC_TIMER_MASK | QC_WARNS_MASK)
+#define XFS_QC_MASK (QC_LIMIT_MASK | QC_TIMER_MASK)
 
 /*
  * Adjust limits of this quota, and the defaults if passed in.  Returns true
@@ -248,17 +246,6 @@ xfs_setqlim_limits(
 	}
 
 	return true;
-}
-
-static inline void
-xfs_setqlim_warns(
-	struct xfs_dquot_res	*res,
-	struct xfs_quota_limits	*qlim,
-	int			warns)
-{
-	res->warnings = warns;
-	if (qlim)
-		qlim->warn = warns;
 }
 
 static inline void
@@ -303,13 +290,6 @@ xfs_qm_scall_setqlim(
 		return 0;
 
 	/*
-	 * We don't want to race with a quotaoff so take the quotaoff lock.
-	 * We don't hold an inode lock, so there's nothing else to stop
-	 * a quotaoff from happening.
-	 */
-	mutex_lock(&q->qi_quotaofflock);
-
-	/*
 	 * Get the dquot (locked) before we start, as we need to do a
 	 * transaction to allocate it if it doesn't exist. Once we have the
 	 * dquot, unlock it so we can start the next transaction safely. We hold
@@ -319,7 +299,7 @@ xfs_qm_scall_setqlim(
 	error = xfs_qm_dqget(mp, id, type, true, &dqp);
 	if (error) {
 		ASSERT(error != -ENOENT);
-		goto out_unlock;
+		return error;
 	}
 
 	defq = xfs_get_defquota(q, xfs_dquot_type(dqp));
@@ -361,8 +341,6 @@ xfs_qm_scall_setqlim(
 
 	if (xfs_setqlim_limits(mp, res, qlim, hard, soft, "blk"))
 		xfs_dquot_set_prealloc_limits(dqp);
-	if (newlim->d_fieldmask & QC_SPC_WARNS)
-		xfs_setqlim_warns(res, qlim, newlim->d_spc_warns);
 	if (newlim->d_fieldmask & QC_SPC_TIMER)
 		xfs_setqlim_timer(mp, res, qlim, newlim->d_spc_timer);
 
@@ -377,8 +355,6 @@ xfs_qm_scall_setqlim(
 	qlim = id == 0 ? &defq->rtb : NULL;
 
 	xfs_setqlim_limits(mp, res, qlim, hard, soft, "rtb");
-	if (newlim->d_fieldmask & QC_RT_SPC_WARNS)
-		xfs_setqlim_warns(res, qlim, newlim->d_rt_spc_warns);
 	if (newlim->d_fieldmask & QC_RT_SPC_TIMER)
 		xfs_setqlim_timer(mp, res, qlim, newlim->d_rt_spc_timer);
 
@@ -393,8 +369,6 @@ xfs_qm_scall_setqlim(
 	qlim = id == 0 ? &defq->ino : NULL;
 
 	xfs_setqlim_limits(mp, res, qlim, hard, soft, "ino");
-	if (newlim->d_fieldmask & QC_INO_WARNS)
-		xfs_setqlim_warns(res, qlim, newlim->d_ino_warns);
 	if (newlim->d_fieldmask & QC_INO_TIMER)
 		xfs_setqlim_timer(mp, res, qlim, newlim->d_ino_timer);
 
@@ -415,8 +389,6 @@ xfs_qm_scall_setqlim(
 
 out_rele:
 	xfs_qm_dqrele(dqp);
-out_unlock:
-	mutex_unlock(&q->qi_quotaofflock);
 	return error;
 }
 
@@ -437,13 +409,13 @@ xfs_qm_scall_getquota_fill_qc(
 	dst->d_ino_count = dqp->q_ino.reserved;
 	dst->d_spc_timer = dqp->q_blk.timer;
 	dst->d_ino_timer = dqp->q_ino.timer;
-	dst->d_ino_warns = dqp->q_ino.warnings;
-	dst->d_spc_warns = dqp->q_blk.warnings;
+	dst->d_ino_warns = 0;
+	dst->d_spc_warns = 0;
 	dst->d_rt_spc_hardlimit = XFS_FSB_TO_B(mp, dqp->q_rtb.hardlimit);
 	dst->d_rt_spc_softlimit = XFS_FSB_TO_B(mp, dqp->q_rtb.softlimit);
 	dst->d_rt_space = XFS_FSB_TO_B(mp, dqp->q_rtb.reserved);
 	dst->d_rt_spc_timer = dqp->q_rtb.timer;
-	dst->d_rt_spc_warns = dqp->q_rtb.warnings;
+	dst->d_rt_spc_warns = 0;
 
 	/*
 	 * Internally, we don't reset all the timers when quota enforcement
@@ -455,19 +427,6 @@ xfs_qm_scall_getquota_fill_qc(
 		dst->d_ino_timer = 0;
 		dst->d_rt_spc_timer = 0;
 	}
-
-#ifdef DEBUG
-	if (xfs_dquot_is_enforced(dqp) && dqp->q_id != 0) {
-		if ((dst->d_space > dst->d_spc_softlimit) &&
-		    (dst->d_spc_softlimit > 0)) {
-			ASSERT(dst->d_spc_timer != 0);
-		}
-		if ((dst->d_ino_count > dqp->q_ino.softlimit) &&
-		    (dqp->q_ino.softlimit > 0)) {
-			ASSERT(dst->d_ino_timer != 0);
-		}
-	}
-#endif
 }
 
 /* Return the quota information for the dquot matching id. */
@@ -481,9 +440,12 @@ xfs_qm_scall_getquota(
 	struct xfs_dquot	*dqp;
 	int			error;
 
-	/* Flush inodegc work at the start of a quota reporting scan. */
+	/*
+	 * Expedite pending inodegc work at the start of a quota reporting
+	 * scan but don't block waiting for it to complete.
+	 */
 	if (id == 0)
-		xfs_inodegc_flush(mp);
+		xfs_inodegc_push(mp);
 
 	/*
 	 * Try to get the dquot. We don't want it allocated on disk, so don't
@@ -525,7 +487,7 @@ xfs_qm_scall_getquota_next(
 
 	/* Flush inodegc work at the start of a quota reporting scan. */
 	if (*id == 0)
-		xfs_inodegc_flush(mp);
+		xfs_inodegc_push(mp);
 
 	error = xfs_qm_dqget_next(mp, *id, type, &dqp);
 	if (error)

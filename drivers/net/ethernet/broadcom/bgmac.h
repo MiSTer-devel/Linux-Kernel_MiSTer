@@ -328,8 +328,7 @@
 #define BGMAC_RX_FRAME_OFFSET			30		/* There are 2 unused bytes between header and real data */
 #define BGMAC_RX_BUF_OFFSET			(NET_SKB_PAD + NET_IP_ALIGN - \
 						 BGMAC_RX_FRAME_OFFSET)
-/* Jumbo frame size with FCS */
-#define BGMAC_RX_MAX_FRAME_SIZE			9724
+#define BGMAC_RX_MAX_FRAME_SIZE			1536
 #define BGMAC_RX_BUF_SIZE			(BGMAC_RX_FRAME_OFFSET + BGMAC_RX_MAX_FRAME_SIZE)
 #define BGMAC_RX_ALLOC_SIZE			(SKB_DATA_ALIGN(BGMAC_RX_BUF_SIZE + BGMAC_RX_BUF_OFFSET) + \
 						 SKB_DATA_ALIGN(sizeof(struct skb_shared_info)))
@@ -363,8 +362,6 @@
 #define BGMAC_CHIPCTL_7_IF_TYPE_RMII		0x00000000
 #define BGMAC_CHIPCTL_7_IF_TYPE_MII		0x00000040
 #define BGMAC_CHIPCTL_7_IF_TYPE_RGMII		0x00000080
-
-#define BGMAC_WEIGHT	64
 
 #define ETHER_MAX_LEN	(ETH_FRAME_LEN + ETH_FCS_LEN)
 
@@ -473,6 +470,8 @@ struct bgmac {
 	/* Int */
 	int irq;
 	u32 int_mask;
+
+	bool in_init;
 
 	/* Current MAC state */
 	int mac_speed;

@@ -18,10 +18,10 @@
 
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
-#include <linux/ath9k_platform.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_net.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/relay.h>
 #include <linux/dmi.h>
 #include <net/ieee80211_radiotap.h>
@@ -150,12 +150,12 @@ static void ath9k_deinit_softc(struct ath_softc *sc);
 
 static void ath9k_op_ps_wakeup(struct ath_common *common)
 {
-	ath9k_ps_wakeup((struct ath_softc *) common->priv);
+	ath9k_ps_wakeup(common->priv);
 }
 
 static void ath9k_op_ps_restore(struct ath_common *common)
 {
-	ath9k_ps_restore((struct ath_softc *) common->priv);
+	ath9k_ps_restore(common->priv);
 }
 
 static const struct ath_ps_ops ath9k_ps_ops = {
@@ -173,7 +173,7 @@ static void ath9k_iowrite32(void *hw_priv, u32 val, u32 reg_offset)
 {
 	struct ath_hw *ah = hw_priv;
 	struct ath_common *common = ath9k_hw_common(ah);
-	struct ath_softc *sc = (struct ath_softc *) common->priv;
+	struct ath_softc *sc = common->priv;
 
 	if (NR_CPUS > 1 && ah->config.serialize_regmode == SER_REG_MODE_ON) {
 		unsigned long flags;
@@ -188,7 +188,7 @@ static unsigned int ath9k_ioread32(void *hw_priv, u32 reg_offset)
 {
 	struct ath_hw *ah = hw_priv;
 	struct ath_common *common = ath9k_hw_common(ah);
-	struct ath_softc *sc = (struct ath_softc *) common->priv;
+	struct ath_softc *sc = common->priv;
 	u32 val;
 
 	if (NR_CPUS > 1 && ah->config.serialize_regmode == SER_REG_MODE_ON) {
@@ -228,7 +228,7 @@ static unsigned int ath9k_reg_rmw(void *hw_priv, u32 reg_offset, u32 set, u32 cl
 {
 	struct ath_hw *ah = hw_priv;
 	struct ath_common *common = ath9k_hw_common(ah);
-	struct ath_softc *sc = (struct ath_softc *) common->priv;
+	struct ath_softc *sc = common->priv;
 	unsigned long flags;
 	u32 val;
 
@@ -568,45 +568,53 @@ static void ath9k_eeprom_release(struct ath_softc *sc)
 	release_firmware(sc->sc_ah->eeprom_blob);
 }
 
-static int ath9k_init_platform(struct ath_softc *sc)
+static int ath9k_nvmem_request_eeprom(struct ath_softc *sc)
 {
-	struct ath9k_platform_data *pdata = sc->dev->platform_data;
 	struct ath_hw *ah = sc->sc_ah;
-	struct ath_common *common = ath9k_hw_common(ah);
-	int ret;
+	struct nvmem_cell *cell;
+	void *buf;
+	size_t len;
+	int err;
 
-	if (!pdata)
-		return 0;
+	cell = devm_nvmem_cell_get(sc->dev, "calibration");
+	if (IS_ERR(cell)) {
+		err = PTR_ERR(cell);
 
-	if (!pdata->use_eeprom) {
-		ah->ah_flags &= ~AH_USE_EEPROM;
-		ah->gpio_mask = pdata->gpio_mask;
-		ah->gpio_val = pdata->gpio_val;
-		ah->led_pin = pdata->led_pin;
-		ah->is_clk_25mhz = pdata->is_clk_25mhz;
-		ah->get_mac_revision = pdata->get_mac_revision;
-		ah->external_reset = pdata->external_reset;
-		ah->disable_2ghz = pdata->disable_2ghz;
-		ah->disable_5ghz = pdata->disable_5ghz;
+		/* nvmem cell might not be defined, or the nvmem
+		 * subsystem isn't included. In this case, follow
+		 * the established "just return 0;" convention
+		 * to say:
+		 * "All good. Nothing to see here. Please go on."
+		 */
+		if (err == -ENOENT || err == -EOPNOTSUPP)
+			return 0;
 
-		if (!pdata->endian_check)
-			ah->ah_flags |= AH_NO_EEP_SWAP;
+		return err;
 	}
 
-	if (pdata->eeprom_name) {
-		ret = ath9k_eeprom_request(sc, pdata->eeprom_name);
-		if (ret)
-			return ret;
+	buf = nvmem_cell_read(cell, &len);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
+
+	/* run basic sanity checks on the returned nvram cell length.
+	 * That length has to be a multiple of a "u16" (i.e.: & 1).
+	 * Furthermore, it has to be more than "let's say" 512 bytes
+	 * but less than the maximum of AR9300_EEPROM_SIZE (16kb).
+	 */
+	if ((len & 1) == 1 || len < 512 || len >= AR9300_EEPROM_SIZE) {
+		kfree(buf);
+		return -EINVAL;
 	}
 
-	if (pdata->led_active_high)
-		ah->config.led_active_high = true;
+	/* devres manages the calibration values release on shutdown */
+	ah->nvmem_blob = devm_kmemdup(sc->dev, buf, len, GFP_KERNEL);
+	kfree(buf);
+	if (!ah->nvmem_blob)
+		return -ENOMEM;
 
-	if (pdata->tx_gain_buffalo)
-		ah->config.tx_gain_buffalo = true;
-
-	if (pdata->macaddr)
-		ether_addr_copy(common->macaddr, pdata->macaddr);
+	ah->nvmem_blob_len = len;
+	ah->ah_flags &= ~AH_USE_EEPROM;
+	ah->ah_flags |= AH_NO_EEP_SWAP;
 
 	return 0;
 }
@@ -639,7 +647,9 @@ static int ath9k_of_init(struct ath_softc *sc)
 		ah->ah_flags |= AH_NO_EEP_SWAP;
 	}
 
-	of_get_mac_address(np, common->macaddr);
+	ret = of_get_mac_address(np, common->macaddr);
+	if (ret == -EPROBE_DEFER)
+		return ret;
 
 	return 0;
 }
@@ -696,11 +706,11 @@ static int ath9k_init_softc(u16 devid, struct ath_softc *sc,
 	 */
 	ath9k_init_pcoem_platform(sc);
 
-	ret = ath9k_init_platform(sc);
+	ret = ath9k_of_init(sc);
 	if (ret)
 		return ret;
 
-	ret = ath9k_of_init(sc);
+	ret = ath9k_nvmem_request_eeprom(sc);
 	if (ret)
 		return ret;
 
@@ -1038,6 +1048,8 @@ int ath9k_init_device(u16 devid, struct ath_softc *sc,
 		ARRAY_SIZE(ath9k_tpt_blink));
 #endif
 
+	wiphy_read_of_freq_limits(hw->wiphy);
+
 	/* Register with mac80211 */
 	error = ieee80211_register_hw(hw);
 	if (error)
@@ -1087,7 +1099,7 @@ static void ath9k_deinit_softc(struct ath_softc *sc)
 		if (ATH_TXQ_SETUP(sc, i))
 			ath_tx_cleanupq(sc, &sc->tx.txq[i]);
 
-	del_timer_sync(&sc->sleep_timer);
+	timer_delete_sync(&sc->sleep_timer);
 	ath9k_hw_deinit(sc->sc_ah);
 	if (sc->dfs_detector != NULL)
 		sc->dfs_detector->exit(sc->dfs_detector);

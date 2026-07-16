@@ -574,7 +574,7 @@ static int viafb_ioctl(struct fb_info *info, u_int cmd, u_long arg)
 		break;
 
 	case VIAFB_SET_GAMMA_LUT:
-		viafb_gamma_table = memdup_user(argp, 256 * sizeof(u32));
+		viafb_gamma_table = memdup_array_user(argp, 256, sizeof(u32));
 		if (IS_ERR(viafb_gamma_table))
 			return PTR_ERR(viafb_gamma_table);
 		viafb_set_gamma_table(viafb_bpp, viafb_gamma_table);
@@ -1770,7 +1770,7 @@ int via_fb_pci_probe(struct viafb_dev *vdev)
 	viafbinfo->fix.mmio_len = vdev->engine_len;
 	viafbinfo->node = 0;
 	viafbinfo->fbops = &viafb_ops;
-	viafbinfo->flags = FBINFO_DEFAULT | FBINFO_HWACCEL_YPAN;
+	viafbinfo->flags = FBINFO_HWACCEL_YPAN;
 
 	viafbinfo->pseudo_palette = pseudo_pal;
 	if (viafb_accel && !viafb_setup_engine(viafbinfo)) {
@@ -1939,8 +1939,12 @@ static int __init viafb_setup(void)
 
 		if (!strncmp(this_opt, "viafb_mode1=", 12)) {
 			viafb_mode1 = kstrdup(this_opt + 12, GFP_KERNEL);
+			if (!viafb_mode1)
+				return -ENOMEM;
 		} else if (!strncmp(this_opt, "viafb_mode=", 11)) {
 			viafb_mode = kstrdup(this_opt + 11, GFP_KERNEL);
+			if (!viafb_mode)
+				return -ENOMEM;
 		} else if (!strncmp(this_opt, "viafb_bpp1=", 11)) {
 			if (kstrtouint(this_opt + 11, 0, &viafb_bpp1) < 0)
 				return -EINVAL;
@@ -1969,6 +1973,8 @@ static int __init viafb_setup(void)
 				return -EINVAL;
 		} else if (!strncmp(this_opt, "viafb_active_dev=", 17)) {
 			viafb_active_dev = kstrdup(this_opt + 17, GFP_KERNEL);
+			if (!viafb_active_dev)
+				return -ENOMEM;
 		} else if (!strncmp(this_opt,
 			"viafb_display_hardware_layout=", 30)) {
 			if (kstrtoint(this_opt + 30, 0,
@@ -1995,8 +2001,12 @@ static int __init viafb_setup(void)
 				return -EINVAL;
 		} else if (!strncmp(this_opt, "viafb_lcd_port=", 15)) {
 			viafb_lcd_port = kstrdup(this_opt + 15, GFP_KERNEL);
+			if (!viafb_lcd_port)
+				return -ENOMEM;
 		} else if (!strncmp(this_opt, "viafb_dvi_port=", 15)) {
 			viafb_dvi_port = kstrdup(this_opt + 15, GFP_KERNEL);
+			if (!viafb_dvi_port)
+				return -ENOMEM;
 		}
 	}
 	return 0;
@@ -2044,6 +2054,7 @@ static struct fb_ops viafb_ops = {
 	.owner = THIS_MODULE,
 	.fb_open = viafb_open,
 	.fb_release = viafb_release,
+	__FB_DEFAULT_IOMEM_OPS_RDWR,
 	.fb_check_var = viafb_check_var,
 	.fb_set_par = viafb_set_par,
 	.fb_setcolreg = viafb_setcolreg,
@@ -2055,6 +2066,7 @@ static struct fb_ops viafb_ops = {
 	.fb_cursor = viafb_cursor,
 	.fb_ioctl = viafb_ioctl,
 	.fb_sync = viafb_sync,
+	__FB_DEFAULT_IOMEM_OPS_MMAP,
 };
 
 
@@ -2132,5 +2144,6 @@ MODULE_PARM_DESC(viafb_lcd_port, "Specify LCD output port.");
 module_param(viafb_dvi_port, charp, S_IRUSR);
 MODULE_PARM_DESC(viafb_dvi_port, "Specify DVI output port.");
 
+MODULE_DESCRIPTION("VIA UniChrome (Pro) and Chrome9 display driver");
 MODULE_LICENSE("GPL");
 #endif

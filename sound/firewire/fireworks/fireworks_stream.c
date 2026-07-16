@@ -50,8 +50,9 @@ static int init_stream(struct snd_efw *efw, struct amdtp_stream *stream)
 		     efw->firmware_version == 0x5070300 ||
 		     efw->firmware_version == 0x5080000))
 			efw->tx_stream.flags |= CIP_UNALIGHED_DBC;
-		// AudioFire9 always reports wrong dbs.
-		if (efw->is_af9)
+		// AudioFire9 always reports wrong dbs. Onyx 1200F with the latest firmware (v4.6.0)
+		// also report wrong dbs at 88.2 kHz or greater.
+		if (efw->is_af9 || efw->firmware_version == 0x4060000)
 			efw->tx_stream.flags |= CIP_WRONG_DBS;
 		// Firmware version 5.5 reports fixed interval for dbc.
 		if (efw->firmware_version == 0x5050000)
@@ -344,33 +345,24 @@ void snd_efw_stream_lock_changed(struct snd_efw *efw)
 
 int snd_efw_stream_lock_try(struct snd_efw *efw)
 {
-	int err;
-
-	spin_lock_irq(&efw->lock);
+	guard(spinlock_irq)(&efw->lock);
 
 	/* user land lock this */
-	if (efw->dev_lock_count < 0) {
-		err = -EBUSY;
-		goto end;
-	}
+	if (efw->dev_lock_count < 0)
+		return -EBUSY;
 
 	/* this is the first time */
 	if (efw->dev_lock_count++ == 0)
 		snd_efw_stream_lock_changed(efw);
-	err = 0;
-end:
-	spin_unlock_irq(&efw->lock);
-	return err;
+	return 0;
 }
 
 void snd_efw_stream_lock_release(struct snd_efw *efw)
 {
-	spin_lock_irq(&efw->lock);
+	guard(spinlock_irq)(&efw->lock);
 
 	if (WARN_ON(efw->dev_lock_count <= 0))
-		goto end;
+		return;
 	if (--efw->dev_lock_count == 0)
 		snd_efw_stream_lock_changed(efw);
-end:
-	spin_unlock_irq(&efw->lock);
 }

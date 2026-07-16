@@ -4,8 +4,8 @@
 
 #include <linux/delay.h>
 #include <linux/leds.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/spi/spi.h>
 #include <linux/workqueue.h>
 
@@ -56,7 +56,7 @@ struct cr0014114 {
 	struct spi_device	*spi;
 	u8			*buf;
 	unsigned long		delay;
-	struct cr0014114_led	leds[];
+	struct cr0014114_led	leds[] __counted_by(count);
 };
 
 static void cr0014114_calc_crc(u8 *buf, const size_t len)
@@ -181,11 +181,10 @@ static int cr0014114_probe_dt(struct cr0014114 *priv)
 {
 	size_t			i = 0;
 	struct cr0014114_led	*led;
-	struct fwnode_handle	*child;
 	struct led_init_data	init_data = {};
 	int			ret;
 
-	device_for_each_child_node(priv->dev, child) {
+	device_for_each_child_node_scoped(priv->dev, child) {
 		led = &priv->leds[i];
 
 		led->priv			  = priv;
@@ -201,7 +200,6 @@ static int cr0014114_probe_dt(struct cr0014114 *priv)
 		if (ret) {
 			dev_err(priv->dev,
 				"failed to register LED device, err %d", ret);
-			fwnode_handle_put(child);
 			return ret;
 		}
 
@@ -266,14 +264,12 @@ static int cr0014114_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int cr0014114_remove(struct spi_device *spi)
+static void cr0014114_remove(struct spi_device *spi)
 {
 	struct cr0014114 *priv = spi_get_drvdata(spi);
 
 	cancel_delayed_work_sync(&priv->work);
 	mutex_destroy(&priv->lock);
-
-	return 0;
 }
 
 static const struct of_device_id cr0014114_dt_ids[] = {

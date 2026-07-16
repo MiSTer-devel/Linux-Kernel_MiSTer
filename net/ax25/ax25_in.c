@@ -181,7 +181,7 @@ static int ax25_process_rx_frame(ax25_cb *ax25, struct sk_buff *skb, int type, i
 }
 
 static int ax25_rcv(struct sk_buff *skb, struct net_device *dev,
-	ax25_address *dev_addr, struct packet_type *ptype)
+		    const ax25_address *dev_addr, struct packet_type *ptype)
 {
 	ax25_address src, dest, *next_digi = NULL;
 	int type = 0, mine = 0, dama;
@@ -433,6 +433,10 @@ free:
 int ax25_kiss_rcv(struct sk_buff *skb, struct net_device *dev,
 		  struct packet_type *ptype, struct net_device *orig_dev)
 {
+	skb = skb_share_check(skb, GFP_ATOMIC);
+	if (!skb)
+		return NET_RX_DROP;
+
 	skb_orphan(skb);
 
 	if (!net_eq(dev_net(dev), &init_net)) {
@@ -447,5 +451,5 @@ int ax25_kiss_rcv(struct sk_buff *skb, struct net_device *dev,
 
 	skb_pull(skb, AX25_KISS_HEADER_LEN);	/* Remove the KISS byte */
 
-	return ax25_rcv(skb, dev, (ax25_address *)dev->dev_addr, ptype);
+	return ax25_rcv(skb, dev, (const ax25_address *)dev->dev_addr, ptype);
 }

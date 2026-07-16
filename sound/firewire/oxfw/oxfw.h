@@ -47,6 +47,16 @@ enum snd_oxfw_quirk {
 	// the device to process audio data even if the value is invalid in a point of
 	// IEC 61883-1/6.
 	SND_OXFW_QUIRK_IGNORE_NO_INFO_PACKET = 0x10,
+	// Loud Technologies Mackie Onyx 1640i seems to configure OXFW971 ASIC so that it decides
+	// event frequency according to events in received isochronous packets. The device looks to
+	// performs media clock recovery voluntarily. In the recovery, the packets with NO_INFO
+	// are ignored, thus driver should transfer packets with timestamp.
+	SND_OXFW_QUIRK_VOLUNTARY_RECOVERY = 0x20,
+	// Miglia Harmony Audio does not support AV/C Stream Format Information command.
+	SND_OXFW_QUIRK_STREAM_FORMAT_INFO_UNSUPPORTED = 0x40,
+	// Miglia Harmony Audio transmits CIP in which the value of dbc field expresses the number
+	// of accumulated payload quadlets including the packet.
+	SND_OXFW_QUIRK_DBC_IS_TOTAL_PAYLOAD_QUADLETS = 0x80,
 };
 
 /* This is an arbitrary number for convinience. */
@@ -131,7 +141,7 @@ struct snd_oxfw_stream_formation {
 	unsigned int pcm;
 	unsigned int midi;
 };
-int snd_oxfw_stream_parse_format(u8 *format,
+int snd_oxfw_stream_parse_format(const u8 *format,
 				 struct snd_oxfw_stream_formation *formation);
 int snd_oxfw_stream_get_current_formation(struct snd_oxfw *oxfw,
 				enum avc_general_plug_dir dir,

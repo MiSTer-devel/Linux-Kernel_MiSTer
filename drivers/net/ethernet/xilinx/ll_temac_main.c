@@ -35,12 +35,10 @@
 #include <linux/netdevice.h>
 #include <linux/if_ether.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
-#include <linux/of_platform.h>
-#include <linux/of_address.h>
+#include <linux/platform_device.h>
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
 #include <linux/tcp.h>      /* needed for sizeof(tcphdr) */
@@ -117,8 +115,8 @@ int temac_indirect_busywait(struct temac_local *lp)
 	spin_until_cond(hard_acs_rdy_or_timeout(lp, timeout));
 	if (WARN_ON(!hard_acs_rdy(lp)))
 		return -ETIMEDOUT;
-	else
-		return 0;
+
+	return 0;
 }
 
 /*
@@ -261,7 +259,7 @@ static void temac_dma_dcr_out(struct temac_local *lp, int reg, u32 value)
  * I/O  functions
  */
 static int temac_dcr_setup(struct temac_local *lp, struct platform_device *op,
-				struct device_node *np)
+			   struct device_node *np)
 {
 	unsigned int dcrs;
 
@@ -286,7 +284,7 @@ static int temac_dcr_setup(struct temac_local *lp, struct platform_device *op,
  * such as with MicroBlaze and x86
  */
 static int temac_dcr_setup(struct temac_local *lp, struct platform_device *op,
-				struct device_node *np)
+			   struct device_node *np)
 {
 	return -1;
 }
@@ -307,11 +305,9 @@ static void temac_dma_bd_release(struct net_device *ndev)
 	for (i = 0; i < lp->rx_bd_num; i++) {
 		if (!lp->rx_skb[i])
 			break;
-		else {
-			dma_unmap_single(ndev->dev.parent, lp->rx_bd_v[i].phys,
-					XTE_MAX_JUMBO_FRAME_SIZE, DMA_FROM_DEVICE);
-			dev_kfree_skb(lp->rx_skb[i]);
-		}
+		dma_unmap_single(ndev->dev.parent, lp->rx_bd_v[i].phys,
+				 XTE_MAX_JUMBO_FRAME_SIZE, DMA_FROM_DEVICE);
+		dev_kfree_skb(lp->rx_skb[i]);
 	}
 	if (lp->rx_bd_v)
 		dma_free_coherent(ndev->dev.parent,
@@ -361,8 +357,9 @@ static int temac_dma_bd_init(struct net_device *ndev)
 		lp->rx_bd_v[i].next = cpu_to_be32(lp->rx_bd_p
 			+ sizeof(*lp->rx_bd_v) * ((i + 1) % lp->rx_bd_num));
 
-		skb = netdev_alloc_skb_ip_align(ndev,
-						XTE_MAX_JUMBO_FRAME_SIZE);
+		skb = __netdev_alloc_skb_ip_align(ndev,
+						  XTE_MAX_JUMBO_FRAME_SIZE,
+						  GFP_KERNEL);
 		if (!skb)
 			goto out;
 
@@ -429,7 +426,8 @@ static void temac_do_set_mac_address(struct net_device *ndev)
 				    (ndev->dev_addr[2] << 16) |
 				    (ndev->dev_addr[3] << 24));
 	/* There are reserved bits in EUAW1
-	 * so don't affect them Set MAC bits [47:32] in EUAW1 */
+	 * so don't affect them Set MAC bits [47:32] in EUAW1
+	 */
 	temac_indirect_out32_locked(lp, XTE_UAW1_OFFSET,
 				    (ndev->dev_addr[4] & 0x000000ff) |
 				    (ndev->dev_addr[5] << 8));
@@ -438,7 +436,7 @@ static void temac_do_set_mac_address(struct net_device *ndev)
 
 static int temac_init_mac_address(struct net_device *ndev, const void *address)
 {
-	memcpy(ndev->dev_addr, address, ETH_ALEN);
+	eth_hw_addr_set(ndev, address);
 	if (!is_valid_ether_addr(ndev->dev_addr))
 		eth_hw_addr_random(ndev);
 	temac_do_set_mac_address(ndev);
@@ -451,7 +449,7 @@ static int temac_set_mac_address(struct net_device *ndev, void *p)
 
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
-	memcpy(ndev->dev_addr, addr->sa_data, ETH_ALEN);
+	eth_hw_addr_set(ndev, addr->sa_data);
 	temac_do_set_mac_address(ndev);
 	return 0;
 }
@@ -529,66 +527,66 @@ static struct temac_option {
 	{
 		.opt = XTE_OPTION_JUMBO,
 		.reg = XTE_RXC1_OFFSET,
-		.m_or =XTE_RXC1_RXJMBO_MASK,
+		.m_or = XTE_RXC1_RXJMBO_MASK,
 	},
 	/* Turn on VLAN packet support for both Rx and Tx */
 	{
 		.opt = XTE_OPTION_VLAN,
 		.reg = XTE_TXC_OFFSET,
-		.m_or =XTE_TXC_TXVLAN_MASK,
+		.m_or = XTE_TXC_TXVLAN_MASK,
 	},
 	{
 		.opt = XTE_OPTION_VLAN,
 		.reg = XTE_RXC1_OFFSET,
-		.m_or =XTE_RXC1_RXVLAN_MASK,
+		.m_or = XTE_RXC1_RXVLAN_MASK,
 	},
 	/* Turn on FCS stripping on receive packets */
 	{
 		.opt = XTE_OPTION_FCS_STRIP,
 		.reg = XTE_RXC1_OFFSET,
-		.m_or =XTE_RXC1_RXFCS_MASK,
+		.m_or = XTE_RXC1_RXFCS_MASK,
 	},
 	/* Turn on FCS insertion on transmit packets */
 	{
 		.opt = XTE_OPTION_FCS_INSERT,
 		.reg = XTE_TXC_OFFSET,
-		.m_or =XTE_TXC_TXFCS_MASK,
+		.m_or = XTE_TXC_TXFCS_MASK,
 	},
 	/* Turn on length/type field checking on receive packets */
 	{
 		.opt = XTE_OPTION_LENTYPE_ERR,
 		.reg = XTE_RXC1_OFFSET,
-		.m_or =XTE_RXC1_RXLT_MASK,
+		.m_or = XTE_RXC1_RXLT_MASK,
 	},
 	/* Turn on flow control */
 	{
 		.opt = XTE_OPTION_FLOW_CONTROL,
 		.reg = XTE_FCC_OFFSET,
-		.m_or =XTE_FCC_RXFLO_MASK,
+		.m_or = XTE_FCC_RXFLO_MASK,
 	},
 	/* Turn on flow control */
 	{
 		.opt = XTE_OPTION_FLOW_CONTROL,
 		.reg = XTE_FCC_OFFSET,
-		.m_or =XTE_FCC_TXFLO_MASK,
+		.m_or = XTE_FCC_TXFLO_MASK,
 	},
 	/* Turn on promiscuous frame filtering (all frames are received ) */
 	{
 		.opt = XTE_OPTION_PROMISC,
 		.reg = XTE_AFM_OFFSET,
-		.m_or =XTE_AFM_EPPRM_MASK,
+		.m_or = XTE_AFM_EPPRM_MASK,
 	},
 	/* Enable transmitter if not already enabled */
 	{
 		.opt = XTE_OPTION_TXEN,
 		.reg = XTE_TXC_OFFSET,
-		.m_or =XTE_TXC_TXEN_MASK,
+		.m_or = XTE_TXC_TXEN_MASK,
 	},
 	/* Enable receiver? */
 	{
 		.opt = XTE_OPTION_RXEN,
 		.reg = XTE_RXC1_OFFSET,
-		.m_or =XTE_RXC1_RXEN_MASK,
+		.m_or = XTE_RXC1_RXEN_MASK,
 	},
 	{}
 };
@@ -640,7 +638,7 @@ static void temac_device_reset(struct net_device *ndev)
 		udelay(1);
 		if (--timeout == 0) {
 			dev_err(&ndev->dev,
-				"temac_device_reset RX reset timeout!!\n");
+				"%s RX reset timeout!!\n", __func__);
 			break;
 		}
 	}
@@ -652,7 +650,7 @@ static void temac_device_reset(struct net_device *ndev)
 		udelay(1);
 		if (--timeout == 0) {
 			dev_err(&ndev->dev,
-				"temac_device_reset TX reset timeout!!\n");
+				"%s TX reset timeout!!\n", __func__);
 			break;
 		}
 	}
@@ -671,7 +669,7 @@ static void temac_device_reset(struct net_device *ndev)
 		udelay(1);
 		if (--timeout == 0) {
 			dev_err(&ndev->dev,
-				"temac_device_reset DMA reset timeout!!\n");
+				"%s DMA reset timeout!!\n", __func__);
 			break;
 		}
 	}
@@ -679,7 +677,7 @@ static void temac_device_reset(struct net_device *ndev)
 
 	if (temac_dma_bd_init(ndev)) {
 		dev_err(&ndev->dev,
-				"temac_device_reset descriptor allocation failed\n");
+			"%s descriptor allocation failed\n", __func__);
 	}
 
 	spin_lock_irqsave(lp->indirect_lock, flags);
@@ -690,7 +688,8 @@ static void temac_device_reset(struct net_device *ndev)
 	spin_unlock_irqrestore(lp->indirect_lock, flags);
 
 	/* Sync default options with HW
-	 * but leave receiver and transmitter disabled.  */
+	 * but leave receiver and transmitter disabled.
+	 */
 	temac_setoptions(ndev,
 			 lp->options & ~(XTE_OPTION_TXEN | XTE_OPTION_RXEN));
 
@@ -722,9 +721,15 @@ static void temac_adjust_link(struct net_device *ndev)
 		mii_speed &= ~XTE_EMCFG_LINKSPD_MASK;
 
 		switch (phy->speed) {
-		case SPEED_1000: mii_speed |= XTE_EMCFG_LINKSPD_1000; break;
-		case SPEED_100: mii_speed |= XTE_EMCFG_LINKSPD_100; break;
-		case SPEED_10: mii_speed |= XTE_EMCFG_LINKSPD_10; break;
+		case SPEED_1000:
+			mii_speed |= XTE_EMCFG_LINKSPD_1000;
+			break;
+		case SPEED_100:
+			mii_speed |= XTE_EMCFG_LINKSPD_100;
+			break;
+		case SPEED_10:
+			mii_speed |= XTE_EMCFG_LINKSPD_10;
+			break;
 		}
 
 		/* Write new speed setting out to TEMAC */
@@ -1006,9 +1011,8 @@ static void ll_temac_recv(struct net_device *ndev)
 		if (((lp->temac_features & TEMAC_FEATURE_RX_CSUM) != 0) &&
 		    (skb->protocol == htons(ETH_P_IP)) &&
 		    (skb->len > 64)) {
-
 			/* Convert from device endianness (be32) to cpu
-			 * endiannes, and if necessary swap the bytes
+			 * endianness, and if necessary swap the bytes
 			 * (back) for proper IP checksum byte order
 			 * (be16).
 			 */
@@ -1276,8 +1280,11 @@ static const struct attribute_group temac_attr_group = {
  * ethtool support
  */
 
-static void ll_temac_ethtools_get_ringparam(struct net_device *ndev,
-					    struct ethtool_ringparam *ering)
+static void
+ll_temac_ethtools_get_ringparam(struct net_device *ndev,
+				struct ethtool_ringparam *ering,
+				struct kernel_ethtool_ringparam *kernel_ering,
+				struct netlink_ext_ack *extack)
 {
 	struct temac_local *lp = netdev_priv(ndev);
 
@@ -1291,15 +1298,18 @@ static void ll_temac_ethtools_get_ringparam(struct net_device *ndev,
 	ering->tx_pending = lp->tx_bd_num;
 }
 
-static int ll_temac_ethtools_set_ringparam(struct net_device *ndev,
-					   struct ethtool_ringparam *ering)
+static int
+ll_temac_ethtools_set_ringparam(struct net_device *ndev,
+				struct ethtool_ringparam *ering,
+				struct kernel_ethtool_ringparam *kernel_ering,
+				struct netlink_ext_ack *extack)
 {
 	struct temac_local *lp = netdev_priv(ndev);
 
 	if (ering->rx_pending > RX_BD_NUM_MAX ||
 	    ering->rx_mini_pending ||
 	    ering->rx_jumbo_pending ||
-	    ering->rx_pending > TX_BD_NUM_MAX)
+	    ering->tx_pending > TX_BD_NUM_MAX)
 		return -EINVAL;
 
 	if (netif_running(ndev))
@@ -1427,11 +1437,13 @@ static int temac_probe(struct platform_device *pdev)
 		lp->indirect_lock = devm_kmalloc(&pdev->dev,
 						 sizeof(*lp->indirect_lock),
 						 GFP_KERNEL);
+		if (!lp->indirect_lock)
+			return -ENOMEM;
 		spin_lock_init(lp->indirect_lock);
 	}
 
 	/* map device registers */
-	lp->regs = devm_platform_ioremap_resource_byname(pdev, 0);
+	lp->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(lp->regs)) {
 		dev_err(&pdev->dev, "could not map TEMAC registers\n");
 		return -ENOMEM;
@@ -1441,12 +1453,11 @@ static int temac_probe(struct platform_device *pdev)
 	 * endianness mode.  Default for OF devices is big-endian.
 	 */
 	little_endian = false;
-	if (temac_np) {
-		if (of_get_property(temac_np, "little-endian", NULL))
-			little_endian = true;
-	} else if (pdata) {
+	if (temac_np)
+		little_endian = of_property_read_bool(temac_np, "little-endian");
+	else if (pdata)
 		little_endian = pdata->reg_little_endian;
-	}
+
 	if (little_endian) {
 		lp->temac_ior = _temac_ior_le;
 		lp->temac_iow = _temac_iow_le;
@@ -1506,7 +1517,7 @@ static int temac_probe(struct platform_device *pdev)
 				of_node_put(dma_np);
 				return PTR_ERR(lp->sdma_regs);
 			}
-			if (of_get_property(dma_np, "little-endian", NULL)) {
+			if (of_property_read_bool(dma_np, "little-endian")) {
 				lp->dma_in = temac_dma_in32_le;
 				lp->dma_out = temac_dma_out32_le;
 			} else {
@@ -1554,15 +1565,15 @@ static int temac_probe(struct platform_device *pdev)
 	}
 
 	/* Error handle returned DMA RX and TX interrupts */
-	if (lp->rx_irq < 0) {
-		if (lp->rx_irq != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "could not get DMA RX irq\n");
-		return lp->rx_irq;
+	if (lp->rx_irq <= 0) {
+		rc = lp->rx_irq ?: -EINVAL;
+		return dev_err_probe(&pdev->dev, rc,
+				     "could not get DMA RX irq\n");
 	}
-	if (lp->tx_irq < 0) {
-		if (lp->tx_irq != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "could not get DMA TX irq\n");
-		return lp->tx_irq;
+	if (lp->tx_irq <= 0) {
+		rc = lp->tx_irq ?: -EINVAL;
+		return dev_err_probe(&pdev->dev, rc,
+				     "could not get DMA TX irq\n");
 	}
 
 	if (temac_np) {
@@ -1584,7 +1595,7 @@ static int temac_probe(struct platform_device *pdev)
 	if (temac_np) {
 		lp->phy_node = of_parse_phandle(temac_np, "phy-handle", 0);
 		if (lp->phy_node)
-			dev_dbg(lp->dev, "using PHY node %pOF\n", temac_np);
+			dev_dbg(lp->dev, "using PHY node %pOF\n", lp->phy_node);
 	} else if (pdata) {
 		snprintf(lp->phy_name, sizeof(lp->phy_name),
 			 PHY_ID_FMT, lp->mii_bus->id, pdata->phy_addr);
@@ -1615,7 +1626,7 @@ err_sysfs_create:
 	return rc;
 }
 
-static int temac_remove(struct platform_device *pdev)
+static void temac_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct temac_local *lp = netdev_priv(ndev);
@@ -1625,7 +1636,6 @@ static int temac_remove(struct platform_device *pdev)
 	if (lp->phy_node)
 		of_node_put(lp->phy_node);
 	temac_mdio_teardown(lp);
-	return 0;
 }
 
 static const struct of_device_id temac_of_match[] = {

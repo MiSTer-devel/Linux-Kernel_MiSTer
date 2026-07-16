@@ -11,12 +11,11 @@
 #include <uapi/drm/drm_fourcc.h>
 
 #include <drm/drm_modes.h>
-#include <drm/drm_simple_kms_helper.h>
 
 struct gud_device {
 	struct drm_device drm;
-	struct drm_simple_display_pipe pipe;
-	struct device *dmadev;
+	struct drm_plane plane;
+	struct drm_crtc crtc;
 	struct work_struct work;
 	u32 flags;
 	const struct drm_format_info *xrgb8888_emulation_format;
@@ -43,6 +42,7 @@ struct gud_device {
 	struct drm_framebuffer *fb;
 	struct drm_rect damage;
 	bool prev_flush_failed;
+	void *shadow_buf;
 };
 
 static inline struct gud_device *to_gud_device(struct drm_device *drm)
@@ -62,11 +62,14 @@ int gud_usb_set_u8(struct gud_device *gdrm, u8 request, u8 val);
 
 void gud_clear_damage(struct gud_device *gdrm);
 void gud_flush_work(struct work_struct *work);
-int gud_pipe_check(struct drm_simple_display_pipe *pipe,
-		   struct drm_plane_state *new_plane_state,
-		   struct drm_crtc_state *new_crtc_state);
-void gud_pipe_update(struct drm_simple_display_pipe *pipe,
-		     struct drm_plane_state *old_state);
+void gud_crtc_atomic_enable(struct drm_crtc *crtc,
+			    struct drm_atomic_state *state);
+void gud_crtc_atomic_disable(struct drm_crtc *crtc,
+			     struct drm_atomic_state *state);
+int gud_plane_atomic_check(struct drm_plane *plane,
+			   struct drm_atomic_state *state);
+void gud_plane_atomic_update(struct drm_plane *plane,
+			     struct drm_atomic_state *atomic_state);
 int gud_connector_fill_properties(struct drm_connector_state *connector_state,
 				  struct gud_property_req *properties);
 int gud_get_connectors(struct gud_device *gdrm);
@@ -80,10 +83,16 @@ static inline u8 gud_from_fourcc(u32 fourcc)
 	switch (fourcc) {
 	case GUD_DRM_FORMAT_R1:
 		return GUD_PIXEL_FORMAT_R1;
+	case DRM_FORMAT_R8:
+		return GUD_PIXEL_FORMAT_R8;
 	case GUD_DRM_FORMAT_XRGB1111:
 		return GUD_PIXEL_FORMAT_XRGB1111;
+	case DRM_FORMAT_RGB332:
+		return GUD_PIXEL_FORMAT_RGB332;
 	case DRM_FORMAT_RGB565:
 		return GUD_PIXEL_FORMAT_RGB565;
+	case DRM_FORMAT_RGB888:
+		return GUD_PIXEL_FORMAT_RGB888;
 	case DRM_FORMAT_XRGB8888:
 		return GUD_PIXEL_FORMAT_XRGB8888;
 	case DRM_FORMAT_ARGB8888:
@@ -98,10 +107,16 @@ static inline u32 gud_to_fourcc(u8 format)
 	switch (format) {
 	case GUD_PIXEL_FORMAT_R1:
 		return GUD_DRM_FORMAT_R1;
+	case GUD_PIXEL_FORMAT_R8:
+		return DRM_FORMAT_R8;
 	case GUD_PIXEL_FORMAT_XRGB1111:
 		return GUD_DRM_FORMAT_XRGB1111;
+	case GUD_PIXEL_FORMAT_RGB332:
+		return DRM_FORMAT_RGB332;
 	case GUD_PIXEL_FORMAT_RGB565:
 		return DRM_FORMAT_RGB565;
+	case GUD_PIXEL_FORMAT_RGB888:
+		return DRM_FORMAT_RGB888;
 	case GUD_PIXEL_FORMAT_XRGB8888:
 		return DRM_FORMAT_XRGB8888;
 	case GUD_PIXEL_FORMAT_ARGB8888:

@@ -14,7 +14,6 @@
 #include <linux/delay.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
-#include <linux/of_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <sound/core.h>
@@ -244,10 +243,10 @@ static int wm8804_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	snd_soc_component_update_bits(component, WM8804_AIFRX, 0x3, format);
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		master = 1;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		master = 0;
 		break;
 	default:
@@ -546,7 +545,6 @@ static const struct snd_soc_component_driver soc_component_dev_wm8804 = {
 	.num_dapm_routes	= ARRAY_SIZE(wm8804_dapm_routes),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 const struct regmap_config wm8804_regmap_config = {
@@ -556,7 +554,7 @@ const struct regmap_config wm8804_regmap_config = {
 	.max_register = WM8804_MAX_REGISTER,
 	.volatile_reg = wm8804_volatile,
 
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.reg_defaults = wm8804_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8804_reg_defaults),
 };
@@ -682,7 +680,6 @@ void wm8804_remove(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(wm8804_remove);
 
-#if IS_ENABLED(CONFIG_PM)
 static int wm8804_runtime_resume(struct device *dev)
 {
 	struct wm8804_priv *wm8804 = dev_get_drvdata(dev);
@@ -715,12 +712,10 @@ static int wm8804_runtime_suspend(struct device *dev)
 
 	return 0;
 }
-#endif
 
-const struct dev_pm_ops wm8804_pm = {
-	SET_RUNTIME_PM_OPS(wm8804_runtime_suspend, wm8804_runtime_resume, NULL)
+EXPORT_GPL_DEV_PM_OPS(wm8804_pm) = {
+	RUNTIME_PM_OPS(wm8804_runtime_suspend, wm8804_runtime_resume, NULL)
 };
-EXPORT_SYMBOL_GPL(wm8804_pm);
 
 MODULE_DESCRIPTION("ASoC WM8804 driver");
 MODULE_AUTHOR("Dimitris Papastamos <dp@opensource.wolfsonmicro.com>");

@@ -10,7 +10,6 @@
 #include <linux/dax.h>
 #include <linux/uio.h>
 #include <linux/pagemap.h>
-#include <linux/pfn_t.h>
 #include <linux/iomap.h>
 #include <linux/interval_tree.h>
 
@@ -138,9 +137,9 @@ static struct fuse_dax_mapping *alloc_dax_mapping(struct fuse_conn_dax *fcd)
 		WARN_ON(fcd->nr_free_ranges <= 0);
 		fcd->nr_free_ranges--;
 	}
+	__kick_dmap_free_worker(fcd, 0);
 	spin_unlock(&fcd->lock);
 
-	kick_dmap_free_worker(fcd, 0);
 	return dmap;
 }
 
@@ -240,11 +239,12 @@ static int fuse_send_removemapping(struct inode *inode,
 
 	args.opcode = FUSE_REMOVEMAPPING;
 	args.nodeid = fi->nodeid;
-	args.in_numargs = 2;
-	args.in_args[0].size = sizeof(*inargp);
-	args.in_args[0].value = inargp;
-	args.in_args[1].size = inargp->count * sizeof(*remove_one);
-	args.in_args[1].value = remove_one;
+	args.in_numargs = 3;
+	fuse_set_zero_arg0(&args);
+	args.in_args[1].size = sizeof(*inargp);
+	args.in_args[1].value = inargp;
+	args.in_args[2].size = inargp->count * sizeof(*remove_one);
+	args.in_args[2].value = remove_one;
 	return fuse_simple_request(fm, &args);
 }
 
@@ -665,36 +665,12 @@ static void fuse_wait_dax_page(struct inode *inode)
 	filemap_invalidate_lock(inode->i_mapping);
 }
 
-/* Should be called with mapping->invalidate_lock held exclusively */
-static int __fuse_dax_break_layouts(struct inode *inode, bool *retry,
-				    loff_t start, loff_t end)
-{
-	struct page *page;
-
-	page = dax_layout_busy_page_range(inode->i_mapping, start, end);
-	if (!page)
-		return 0;
-
-	*retry = true;
-	return ___wait_var_event(&page->_refcount,
-			atomic_read(&page->_refcount) == 1, TASK_INTERRUPTIBLE,
-			0, 0, fuse_wait_dax_page(inode));
-}
-
-/* dmap_end == 0 leads to unmapping of whole file */
+/* Should be called with mapping->invalidate_lock held exclusively. */
 int fuse_dax_break_layouts(struct inode *inode, u64 dmap_start,
 				  u64 dmap_end)
 {
-	bool	retry;
-	int	ret;
-
-	do {
-		retry = false;
-		ret = __fuse_dax_break_layouts(inode, &retry, dmap_start,
-					       dmap_end);
-	} while (ret == 0 && retry);
-
-	return ret;
+	return dax_break_layout(inode, dmap_start, dmap_end,
+				fuse_wait_dax_page);
 }
 
 ssize_t fuse_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
@@ -732,11 +708,8 @@ static ssize_t fuse_dax_direct_write(struct kiocb *iocb, struct iov_iter *from)
 	ssize_t ret;
 
 	ret = fuse_direct_io(&io, from, &iocb->ki_pos, FUSE_DIO_WRITE);
-	if (ret < 0)
-		return ret;
 
-	fuse_invalidate_attr(inode);
-	fuse_write_update_size(inode, iocb->ki_pos);
+	fuse_write_update_attr(inode, iocb->ki_pos, ret);
 	return ret;
 }
 
@@ -777,23 +750,13 @@ out:
 	return ret;
 }
 
-static int fuse_dax_writepages(struct address_space *mapping,
-			       struct writeback_control *wbc)
-{
-
-	struct inode *inode = mapping->host;
-	struct fuse_conn *fc = get_fuse_conn(inode);
-
-	return dax_writeback_mapping_range(mapping, fc->dax->dev, wbc);
-}
-
-static vm_fault_t __fuse_dax_fault(struct vm_fault *vmf,
-				   enum page_entry_size pe_size, bool write)
+static vm_fault_t __fuse_dax_fault(struct vm_fault *vmf, unsigned int order,
+		bool write)
 {
 	vm_fault_t ret;
 	struct inode *inode = file_inode(vmf->vma->vm_file);
 	struct super_block *sb = inode->i_sb;
-	pfn_t pfn;
+	unsigned long pfn;
 	int error = 0;
 	struct fuse_conn *fc = get_fuse_conn(inode);
 	struct fuse_conn_dax *fcd = fc->dax;
@@ -812,7 +775,7 @@ retry:
 	 * to populate page cache or access memory we are trying to free.
 	 */
 	filemap_invalidate_lock_shared(inode->i_mapping);
-	ret = dax_iomap_fault(vmf, pe_size, &pfn, &error, &fuse_iomap_ops);
+	ret = dax_iomap_fault(vmf, order, &pfn, &error, &fuse_iomap_ops);
 	if ((ret & VM_FAULT_ERROR) && error == -EAGAIN) {
 		error = 0;
 		retry = true;
@@ -821,7 +784,7 @@ retry:
 	}
 
 	if (ret & VM_FAULT_NEEDDSYNC)
-		ret = dax_finish_sync_fault(vmf, pe_size, pfn);
+		ret = dax_finish_sync_fault(vmf, order, pfn);
 	filemap_invalidate_unlock_shared(inode->i_mapping);
 
 	if (write)
@@ -832,24 +795,22 @@ retry:
 
 static vm_fault_t fuse_dax_fault(struct vm_fault *vmf)
 {
-	return __fuse_dax_fault(vmf, PE_SIZE_PTE,
-				vmf->flags & FAULT_FLAG_WRITE);
+	return __fuse_dax_fault(vmf, 0, vmf->flags & FAULT_FLAG_WRITE);
 }
 
-static vm_fault_t fuse_dax_huge_fault(struct vm_fault *vmf,
-			       enum page_entry_size pe_size)
+static vm_fault_t fuse_dax_huge_fault(struct vm_fault *vmf, unsigned int order)
 {
-	return __fuse_dax_fault(vmf, pe_size, vmf->flags & FAULT_FLAG_WRITE);
+	return __fuse_dax_fault(vmf, order, vmf->flags & FAULT_FLAG_WRITE);
 }
 
 static vm_fault_t fuse_dax_page_mkwrite(struct vm_fault *vmf)
 {
-	return __fuse_dax_fault(vmf, PE_SIZE_PTE, true);
+	return __fuse_dax_fault(vmf, 0, true);
 }
 
 static vm_fault_t fuse_dax_pfn_mkwrite(struct vm_fault *vmf)
 {
-	return __fuse_dax_fault(vmf, PE_SIZE_PTE, true);
+	return __fuse_dax_fault(vmf, 0, true);
 }
 
 static const struct vm_operations_struct fuse_dax_vm_ops = {
@@ -863,7 +824,7 @@ int fuse_dax_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	file_accessed(file);
 	vma->vm_ops = &fuse_dax_vm_ops;
-	vma->vm_flags |= VM_MIXEDMAP | VM_HUGEPAGE;
+	vm_flags_set(vma, VM_MIXEDMAP | VM_HUGEPAGE);
 	return 0;
 }
 
@@ -1227,6 +1188,7 @@ void fuse_dax_conn_free(struct fuse_conn *fc)
 	if (fc->dax) {
 		fuse_free_dax_mem_ranges(&fc->dax->free_ranges);
 		kfree(fc->dax);
+		fc->dax = NULL;
 	}
 }
 
@@ -1244,8 +1206,8 @@ static int fuse_dax_mem_range_init(struct fuse_conn_dax *fcd)
 	INIT_DELAYED_WORK(&fcd->free_work, fuse_dax_free_mem_worker);
 
 	id = dax_read_lock();
-	nr_pages = dax_direct_access(fcd->dev, 0, PHYS_PFN(dax_size), NULL,
-				     NULL);
+	nr_pages = dax_direct_access(fcd->dev, 0, PHYS_PFN(dax_size),
+			DAX_ACCESS, NULL, NULL);
 	dax_read_unlock(id);
 	if (nr_pages < 0) {
 		pr_debug("dax_direct_access() returned %ld\n", nr_pages);
@@ -1282,10 +1244,13 @@ out_err:
 	return ret;
 }
 
-int fuse_dax_conn_alloc(struct fuse_conn *fc, struct dax_device *dax_dev)
+int fuse_dax_conn_alloc(struct fuse_conn *fc, enum fuse_dax_mode dax_mode,
+			struct dax_device *dax_dev)
 {
 	struct fuse_conn_dax *fcd;
 	int err;
+
+	fc->dax_mode = dax_mode;
 
 	if (!dax_dev)
 		return 0;
@@ -1324,21 +1289,48 @@ bool fuse_dax_inode_alloc(struct super_block *sb, struct fuse_inode *fi)
 }
 
 static const struct address_space_operations fuse_dax_file_aops  = {
-	.writepages	= fuse_dax_writepages,
 	.direct_IO	= noop_direct_IO,
-	.set_page_dirty	= __set_page_dirty_no_writeback,
-	.invalidatepage	= noop_invalidatepage,
+	.dirty_folio	= noop_dirty_folio,
 };
 
-void fuse_dax_inode_init(struct inode *inode)
+static bool fuse_should_enable_dax(struct inode *inode, unsigned int flags)
 {
 	struct fuse_conn *fc = get_fuse_conn(inode);
+	enum fuse_dax_mode dax_mode = fc->dax_mode;
 
+	if (dax_mode == FUSE_DAX_NEVER)
+		return false;
+
+	/*
+	 * fc->dax may be NULL in 'inode' mode when filesystem device doesn't
+	 * support DAX, in which case it will silently fallback to 'never' mode.
+	 */
 	if (!fc->dax)
+		return false;
+
+	if (dax_mode == FUSE_DAX_ALWAYS)
+		return true;
+
+	/* dax_mode is FUSE_DAX_INODE* */
+	return fc->inode_dax && (flags & FUSE_ATTR_DAX);
+}
+
+void fuse_dax_inode_init(struct inode *inode, unsigned int flags)
+{
+	if (!fuse_should_enable_dax(inode, flags))
 		return;
 
 	inode->i_flags |= S_DAX;
 	inode->i_data.a_ops = &fuse_dax_file_aops;
+}
+
+void fuse_dax_dontcache(struct inode *inode, unsigned int flags)
+{
+	struct fuse_conn *fc = get_fuse_conn(inode);
+
+	if (fuse_is_inode_dax_mode(fc->dax_mode) &&
+	    ((bool) IS_DAX(inode) != (bool) (flags & FUSE_ATTR_DAX)))
+		d_mark_dontcache(inode);
 }
 
 bool fuse_dax_check_alignment(struct fuse_conn *fc, unsigned int map_alignment)

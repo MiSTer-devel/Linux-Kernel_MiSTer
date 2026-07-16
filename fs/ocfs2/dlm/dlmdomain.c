@@ -980,6 +980,14 @@ static int dlm_match_regions(struct dlm_ctxt *dlm,
 		goto bail;
 	}
 
+	if (qr->qr_numregions > O2NM_MAX_REGIONS) {
+		mlog(ML_ERROR, "Domain %s: Joining node %d has invalid "
+		     "number of heartbeat regions %u\n",
+		     qr->qr_domain, qr->qr_node, qr->qr_numregions);
+		status = -EINVAL;
+		goto bail;
+	}
+
 	r = remote;
 	for (i = 0; i < qr->qr_numregions; ++i) {
 		mlog(0, "Region %.*s\n", O2HB_MAX_REGION_NAME_LEN, r);
@@ -994,7 +1002,7 @@ static int dlm_match_regions(struct dlm_ctxt *dlm,
 	for (i = 0; i < localnr; ++i) {
 		foundit = 0;
 		r = remote;
-		for (j = 0; j <= qr->qr_numregions; ++j) {
+		for (j = 0; j < qr->qr_numregions; ++j) {
 			if (!memcmp(l, r, O2HB_MAX_REGION_NAME_LEN)) {
 				foundit = 1;
 				break;
@@ -1045,7 +1053,7 @@ static int dlm_send_regions(struct dlm_ctxt *dlm, unsigned long *node_map)
 	int status, ret = 0, i;
 	char *p;
 
-	if (find_next_bit(node_map, O2NM_MAX_NODES, 0) >= O2NM_MAX_NODES)
+	if (find_first_bit(node_map, O2NM_MAX_NODES) >= O2NM_MAX_NODES)
 		goto bail;
 
 	qr = kzalloc(sizeof(struct dlm_query_region), GFP_KERNEL);
@@ -1217,7 +1225,7 @@ static int dlm_send_nodeinfo(struct dlm_ctxt *dlm, unsigned long *node_map)
 	struct o2nm_node *node;
 	int ret = 0, status, count, i;
 
-	if (find_next_bit(node_map, O2NM_MAX_NODES, 0) >= O2NM_MAX_NODES)
+	if (find_first_bit(node_map, O2NM_MAX_NODES) >= O2NM_MAX_NODES)
 		goto bail;
 
 	qn = kzalloc(sizeof(struct dlm_query_nodeinfo), GFP_KERNEL);
@@ -1274,7 +1282,7 @@ static int dlm_query_nodeinfo_handler(struct o2net_msg *msg, u32 len,
 {
 	struct dlm_query_nodeinfo *qn;
 	struct dlm_ctxt *dlm = NULL;
-	int locked = 0, status = -EINVAL;
+	int status = -EINVAL;
 
 	qn = (struct dlm_query_nodeinfo *) msg->buf;
 
@@ -1290,12 +1298,11 @@ static int dlm_query_nodeinfo_handler(struct o2net_msg *msg, u32 len,
 	}
 
 	spin_lock(&dlm->spinlock);
-	locked = 1;
 	if (dlm->joining_node != qn->qn_nodenum) {
 		mlog(ML_ERROR, "Node %d queried nodes on domain %s but "
 		     "joining node is %d\n", qn->qn_nodenum, qn->qn_domain,
 		     dlm->joining_node);
-		goto bail;
+		goto unlock;
 	}
 
 	/* Support for node query was added in 1.1 */
@@ -1305,14 +1312,14 @@ static int dlm_query_nodeinfo_handler(struct o2net_msg *msg, u32 len,
 		     "but active dlm protocol is %d.%d\n", qn->qn_nodenum,
 		     qn->qn_domain, dlm->dlm_locking_proto.pv_major,
 		     dlm->dlm_locking_proto.pv_minor);
-		goto bail;
+		goto unlock;
 	}
 
 	status = dlm_match_nodes(dlm, qn);
 
+unlock:
+	spin_unlock(&dlm->spinlock);
 bail:
-	if (locked)
-		spin_unlock(&dlm->spinlock);
 	spin_unlock(&dlm_domain_lock);
 
 	return status;
@@ -1528,7 +1535,6 @@ static void dlm_send_join_asserts(struct dlm_ctxt *dlm,
 {
 	int status, node, live;
 
-	status = 0;
 	node = -1;
 	while ((node = find_next_bit(node_map, O2NM_MAX_NODES,
 				     node + 1)) < O2NM_MAX_NODES) {
@@ -1576,8 +1582,8 @@ static int dlm_should_restart_join(struct dlm_ctxt *dlm,
 	spin_lock(&dlm->spinlock);
 	/* For now, we restart the process if the node maps have
 	 * changed at all */
-	ret = memcmp(ctxt->live_map, dlm->live_nodes_map,
-		     sizeof(dlm->live_nodes_map));
+	ret = !bitmap_equal(ctxt->live_map, dlm->live_nodes_map,
+			    O2NM_MAX_NODES);
 	spin_unlock(&dlm->spinlock);
 
 	if (ret)
@@ -1604,13 +1610,11 @@ static int dlm_try_to_join_domain(struct dlm_ctxt *dlm)
 	/* group sem locking should work for us here -- we're already
 	 * registered for heartbeat events so filling this should be
 	 * atomic wrt getting those handlers called. */
-	o2hb_fill_node_map(dlm->live_nodes_map, sizeof(dlm->live_nodes_map));
+	o2hb_fill_node_map(dlm->live_nodes_map, O2NM_MAX_NODES);
 
 	spin_lock(&dlm->spinlock);
-	memcpy(ctxt->live_map, dlm->live_nodes_map, sizeof(ctxt->live_map));
-
+	bitmap_copy(ctxt->live_map, dlm->live_nodes_map, O2NM_MAX_NODES);
 	__dlm_set_joining_node(dlm, dlm->node_num);
-
 	spin_unlock(&dlm->spinlock);
 
 	node = -1;
@@ -1643,8 +1647,7 @@ static int dlm_try_to_join_domain(struct dlm_ctxt *dlm)
 	 * yes_resp_map. Copy that into our domain map and send a join
 	 * assert message to clean up everyone elses state. */
 	spin_lock(&dlm->spinlock);
-	memcpy(dlm->domain_map, ctxt->yes_resp_map,
-	       sizeof(ctxt->yes_resp_map));
+	bitmap_copy(dlm->domain_map, ctxt->yes_resp_map, O2NM_MAX_NODES);
 	set_bit(dlm->node_num, dlm->domain_map);
 	spin_unlock(&dlm->spinlock);
 
@@ -1881,7 +1884,8 @@ static int dlm_join_domain(struct dlm_ctxt *dlm)
 	dlm_debug_init(dlm);
 
 	snprintf(wq_name, O2NM_MAX_NAME_LEN, "dlm_wq-%s", dlm->name);
-	dlm->dlm_worker = alloc_workqueue(wq_name, WQ_MEM_RECLAIM, 0);
+	dlm->dlm_worker = alloc_workqueue(wq_name, WQ_MEM_RECLAIM | WQ_PERCPU,
+					  0);
 	if (!dlm->dlm_worker) {
 		status = -ENOMEM;
 		mlog_errno(status);
@@ -2009,9 +2013,9 @@ static struct dlm_ctxt *dlm_alloc_ctxt(const char *domain,
 	mlog(0, "dlm->recovery_map=%p, &(dlm->recovery_map[0])=%p\n",
 		  dlm->recovery_map, &(dlm->recovery_map[0]));
 
-	memset(dlm->recovery_map, 0, sizeof(dlm->recovery_map));
-	memset(dlm->live_nodes_map, 0, sizeof(dlm->live_nodes_map));
-	memset(dlm->domain_map, 0, sizeof(dlm->domain_map));
+	bitmap_zero(dlm->recovery_map, O2NM_MAX_NODES);
+	bitmap_zero(dlm->live_nodes_map, O2NM_MAX_NODES);
+	bitmap_zero(dlm->domain_map, O2NM_MAX_NODES);
 
 	dlm->dlm_thread_task = NULL;
 	dlm->dlm_reco_thread_task = NULL;

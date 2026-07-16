@@ -31,7 +31,6 @@ struct hynix_read_retry {
 
 /**
  * struct hynix_nand - private Hynix NAND struct
- * @nand_technology: manufacturing process expressed in picometer
  * @read_retry: read-retry information
  */
 struct hynix_nand {
@@ -378,9 +377,9 @@ static int hynix_nand_rr_init(struct nand_chip *chip)
 
 	/*
 	 * We only support read-retry for 1xnm NANDs, and those NANDs all
-	 * expose a valid JEDEC ID.
+	 * expose a valid JEDEC ID. SLC NANDs don't require read-retry.
 	 */
-	if (valid_jedecid) {
+	if (valid_jedecid && nanddev_bits_per_cell(&chip->base) > 1) {
 		u8 nand_tech = chip->id.data[5] >> 4;
 
 		/* 1xnm technology */
@@ -402,7 +401,7 @@ static int hynix_nand_rr_init(struct nand_chip *chip)
 	if (ret)
 		pr_warn("failed to initialize read-retry infrastructure");
 
-	return 0;
+	return ret;
 }
 
 static void hynix_nand_extract_oobsize(struct nand_chip *chip,
@@ -686,6 +685,16 @@ h27ucg8t2atrbc_choose_interface_config(struct nand_chip *chip,
 	return nand_choose_best_sdr_timings(chip, iface, NULL);
 }
 
+static int h27ucg8t2etrbc_init(struct nand_chip *chip)
+{
+	struct mtd_info *mtd = nand_to_mtd(chip);
+
+	chip->options |= NAND_NEED_SCRAMBLING;
+	mtd_set_pairing_scheme(mtd, &dist3_pairing_scheme);
+
+	return 0;
+}
+
 static int hynix_nand_init(struct nand_chip *chip)
 {
 	struct hynix_nand *hynix;
@@ -707,6 +716,10 @@ static int hynix_nand_init(struct nand_chip *chip)
 		chip->ops.choose_interface_config =
 			h27ucg8t2atrbc_choose_interface_config;
 
+	if (!strncmp("H27UCG8T2ETR-BC", chip->parameters.model,
+		     sizeof("H27UCG8T2ETR-BC") - 1))
+		h27ucg8t2etrbc_init(chip);
+
 	ret = hynix_nand_rr_init(chip);
 	if (ret)
 		hynix_nand_cleanup(chip);
@@ -714,8 +727,21 @@ static int hynix_nand_init(struct nand_chip *chip)
 	return ret;
 }
 
+static void hynix_fixup_onfi_param_page(struct nand_chip *chip,
+					struct nand_onfi_params *p)
+{
+	/*
+	 * Certain chips might report a 0 on sdr_timing_mode field
+	 * (bytes 129-130). This has been seen on H27U4G8F2GDA-BI.
+	 * According to ONFI specification, bit 0 of this field "shall be 1".
+	 * Forcibly set this bit.
+	 */
+	p->sdr_timing_modes |= cpu_to_le16(BIT(0));
+}
+
 const struct nand_manufacturer_ops hynix_nand_manuf_ops = {
 	.detect = hynix_nand_decode_id,
 	.init = hynix_nand_init,
 	.cleanup = hynix_nand_cleanup,
+	.fixup_onfi_param_page = hynix_fixup_onfi_param_page,
 };

@@ -5,50 +5,41 @@
 #include <linux/fault-inject-usercopy.h>
 #include <linux/instrumented.h>
 #include <linux/minmax.h>
+#include <linux/nospec.h>
 #include <linux/sched.h>
-#include <linux/thread_info.h>
+#include <linux/ucopysize.h>
 
 #include <asm/uaccess.h>
 
-#ifdef CONFIG_SET_FS
 /*
- * Force the uaccess routines to be wired up for actual userspace access,
- * overriding any possible set_fs(KERNEL_DS) still lingering around.  Undone
- * using force_uaccess_end below.
+ * Architectures that support memory tagging (assigning tags to memory regions,
+ * embedding these tags into addresses that point to these memory regions, and
+ * checking that the memory and the pointer tags match on memory accesses)
+ * redefine this macro to strip tags from pointers.
+ *
+ * Passing down mm_struct allows to define untagging rules on per-process
+ * basis.
+ *
+ * It's defined as noop for architectures that don't support memory tagging.
  */
-static inline mm_segment_t force_uaccess_begin(void)
-{
-	mm_segment_t fs = get_fs();
-
-	set_fs(USER_DS);
-	return fs;
-}
-
-static inline void force_uaccess_end(mm_segment_t oldfs)
-{
-	set_fs(oldfs);
-}
-#else /* CONFIG_SET_FS */
-typedef struct {
-	/* empty dummy */
-} mm_segment_t;
-
-#ifndef TASK_SIZE_MAX
-#define TASK_SIZE_MAX			TASK_SIZE
+#ifndef untagged_addr
+#define untagged_addr(addr) (addr)
 #endif
 
-#define uaccess_kernel()		(false)
-#define user_addr_max()			(TASK_SIZE_MAX)
+#ifndef untagged_addr_remote
+#define untagged_addr_remote(mm, addr)	({		\
+	mmap_assert_locked(mm);				\
+	untagged_addr(addr);				\
+})
+#endif
 
-static inline mm_segment_t force_uaccess_begin(void)
-{
-	return (mm_segment_t) { };
-}
-
-static inline void force_uaccess_end(mm_segment_t oldfs)
-{
-}
-#endif /* CONFIG_SET_FS */
+#ifdef masked_user_access_begin
+ #define can_do_masked_user_access() 1
+#else
+ #define can_do_masked_user_access() 0
+ #define masked_user_access_begin(src) NULL
+ #define mask_user_address(src) (src)
+#endif
 
 /*
  * Architectures should provide two primitives (raw_copy_{to,from}_user())
@@ -98,20 +89,28 @@ static inline void force_uaccess_end(mm_segment_t oldfs)
 static __always_inline __must_check unsigned long
 __copy_from_user_inatomic(void *to, const void __user *from, unsigned long n)
 {
-	instrument_copy_from_user(to, from, n);
+	unsigned long res;
+
+	instrument_copy_from_user_before(to, from, n);
 	check_object_size(to, n, false);
-	return raw_copy_from_user(to, from, n);
+	res = raw_copy_from_user(to, from, n);
+	instrument_copy_from_user_after(to, from, n, res);
+	return res;
 }
 
 static __always_inline __must_check unsigned long
 __copy_from_user(void *to, const void __user *from, unsigned long n)
 {
+	unsigned long res;
+
 	might_fault();
+	instrument_copy_from_user_before(to, from, n);
 	if (should_fail_usercopy())
 		return n;
-	instrument_copy_from_user(to, from, n);
 	check_object_size(to, n, false);
-	return raw_copy_from_user(to, from, n);
+	res = raw_copy_from_user(to, from, n);
+	instrument_copy_from_user_after(to, from, n, res);
+	return res;
 }
 
 /**
@@ -148,28 +147,47 @@ __copy_to_user(void __user *to, const void *from, unsigned long n)
 	return raw_copy_to_user(to, from, n);
 }
 
-#ifdef INLINE_COPY_FROM_USER
+/*
+ * Architectures that #define INLINE_COPY_TO_USER use this function
+ * directly in the normal copy_to/from_user(), the other ones go
+ * through an extern _copy_to/from_user(), which expands the same code
+ * here.
+ *
+ * Rust code always uses the extern definition.
+ */
 static inline __must_check unsigned long
-_copy_from_user(void *to, const void __user *from, unsigned long n)
+_inline_copy_from_user(void *to, const void __user *from, unsigned long n)
 {
 	unsigned long res = n;
 	might_fault();
-	if (!should_fail_usercopy() && likely(access_ok(from, n))) {
-		instrument_copy_from_user(to, from, n);
-		res = raw_copy_from_user(to, from, n);
+	if (should_fail_usercopy())
+		goto fail;
+	if (can_do_masked_user_access())
+		from = mask_user_address(from);
+	else {
+		if (!access_ok(from, n))
+			goto fail;
+		/*
+		 * Ensure that bad access_ok() speculation will not
+		 * lead to nasty side effects *after* the copy is
+		 * finished:
+		 */
+		barrier_nospec();
 	}
-	if (unlikely(res))
-		memset(to + (n - res), 0, res);
+	instrument_copy_from_user_before(to, from, n);
+	res = raw_copy_from_user(to, from, n);
+	instrument_copy_from_user_after(to, from, n, res);
+	if (likely(!res))
+		return 0;
+fail:
+	memset(to + (n - res), 0, res);
 	return res;
 }
-#else
 extern __must_check unsigned long
 _copy_from_user(void *, const void __user *, unsigned long);
-#endif
 
-#ifdef INLINE_COPY_TO_USER
 static inline __must_check unsigned long
-_copy_to_user(void __user *to, const void *from, unsigned long n)
+_inline_copy_to_user(void __user *to, const void *from, unsigned long n)
 {
 	might_fault();
 	if (should_fail_usercopy())
@@ -180,25 +198,32 @@ _copy_to_user(void __user *to, const void *from, unsigned long n)
 	}
 	return n;
 }
-#else
 extern __must_check unsigned long
 _copy_to_user(void __user *, const void *, unsigned long);
-#endif
 
 static __always_inline unsigned long __must_check
 copy_from_user(void *to, const void __user *from, unsigned long n)
 {
-	if (likely(check_copy_size(to, n, false)))
-		n = _copy_from_user(to, from, n);
-	return n;
+	if (!check_copy_size(to, n, false))
+		return n;
+#ifdef INLINE_COPY_FROM_USER
+	return _inline_copy_from_user(to, from, n);
+#else
+	return _copy_from_user(to, from, n);
+#endif
 }
 
 static __always_inline unsigned long __must_check
 copy_to_user(void __user *to, const void *from, unsigned long n)
 {
-	if (likely(check_copy_size(from, n, true)))
-		n = _copy_to_user(to, from, n);
-	return n;
+	if (!check_copy_size(from, n, true))
+		return n;
+
+#ifdef INLINE_COPY_TO_USER
+	return _inline_copy_to_user(to, from, n);
+#else
+	return _copy_to_user(to, from, n);
+#endif
 }
 
 #ifndef copy_mc_to_kernel
@@ -271,16 +296,45 @@ static inline bool pagefault_disabled(void)
  */
 #define faulthandler_disabled() (pagefault_disabled() || in_atomic())
 
-#ifndef ARCH_HAS_NOCACHE_UACCESS
+DEFINE_LOCK_GUARD_0(pagefault, pagefault_disable(), pagefault_enable())
+
+#ifndef CONFIG_ARCH_HAS_SUBPAGE_FAULTS
+
+/**
+ * probe_subpage_writeable: probe the user range for write faults at sub-page
+ *			    granularity (e.g. arm64 MTE)
+ * @uaddr: start of address range
+ * @size: size of address range
+ *
+ * Returns 0 on success, the number of bytes not probed on fault.
+ *
+ * It is expected that the caller checked for the write permission of each
+ * page in the range either by put_user() or GUP. The architecture port can
+ * implement a more efficient get_user() probing if the same sub-page faults
+ * are triggered by either a read or a write.
+ */
+static inline size_t probe_subpage_writeable(char __user *uaddr, size_t size)
+{
+	return 0;
+}
+
+#endif /* CONFIG_ARCH_HAS_SUBPAGE_FAULTS */
+
+#ifndef ARCH_HAS_NONTEMPORAL_UACCESS
 
 static inline __must_check unsigned long
-__copy_from_user_inatomic_nocache(void *to, const void __user *from,
+copy_from_user_inatomic_nontemporal(void *to, const void __user *from,
 				  unsigned long n)
 {
+	if (can_do_masked_user_access())
+		from = mask_user_address(from);
+	else
+		if (!access_ok(from, n))
+			return n;
 	return __copy_from_user_inatomic(to, from, n);
 }
 
-#endif		/* ARCH_HAS_NOCACHE_UACCESS */
+#endif		/* ARCH_HAS_NONTEMPORAL_UACCESS */
 
 extern __must_check int check_zeroed_user(const void __user *from, size_t size);
 
@@ -338,6 +392,10 @@ copy_struct_from_user(void *dst, size_t ksize, const void __user *src,
 	size_t size = min(ksize, usize);
 	size_t rest = max(ksize, usize) - size;
 
+	/* Double check if ksize is larger than a known object size. */
+	if (WARN_ON_ONCE(ksize > __builtin_object_size(dst, 1)))
+		return -E2BIG;
+
 	/* Deal with trailing bytes. */
 	if (usize < ksize) {
 		memset(dst + size, 0, rest);
@@ -348,6 +406,103 @@ copy_struct_from_user(void *dst, size_t ksize, const void __user *src,
 	}
 	/* Copy the interoperable parts of the struct. */
 	if (copy_from_user(dst, src, size))
+		return -EFAULT;
+	return 0;
+}
+
+/**
+ * copy_struct_to_user: copy a struct to userspace
+ * @dst:   Destination address, in userspace. This buffer must be @ksize
+ *         bytes long.
+ * @usize: (Alleged) size of @dst struct.
+ * @src:   Source address, in kernel space.
+ * @ksize: Size of @src struct.
+ * @ignored_trailing: Set to %true if there was a non-zero byte in @src that
+ * userspace cannot see because they are using an smaller struct.
+ *
+ * Copies a struct from kernel space to userspace, in a way that guarantees
+ * backwards-compatibility for struct syscall arguments (as long as future
+ * struct extensions are made such that all new fields are *appended* to the
+ * old struct, and zeroed-out new fields have the same meaning as the old
+ * struct).
+ *
+ * Some syscalls may wish to make sure that userspace knows about everything in
+ * the struct, and if there is a non-zero value that userspce doesn't know
+ * about, they want to return an error (such as -EMSGSIZE) or have some other
+ * fallback (such as adding a "you're missing some information" flag). If
+ * @ignored_trailing is non-%NULL, it will be set to %true if there was a
+ * non-zero byte that could not be copied to userspace (ie. was past @usize).
+ *
+ * While unconditionally returning an error in this case is the simplest
+ * solution, for maximum backward compatibility you should try to only return
+ * -EMSGSIZE if the user explicitly requested the data that couldn't be copied.
+ * Note that structure sizes can change due to header changes and simple
+ * recompilations without code changes(!), so if you care about
+ * @ignored_trailing you probably want to make sure that any new field data is
+ * associated with a flag. Otherwise you might assume that a program knows
+ * about data it does not.
+ *
+ * @ksize is just sizeof(*src), and @usize should've been passed by userspace.
+ * The recommended usage is something like the following:
+ *
+ *   SYSCALL_DEFINE2(foobar, struct foo __user *, uarg, size_t, usize)
+ *   {
+ *      int err;
+ *      bool ignored_trailing;
+ *      struct foo karg = {};
+ *
+ *      if (usize > PAGE_SIZE)
+ *		return -E2BIG;
+ *      if (usize < FOO_SIZE_VER0)
+ *		return -EINVAL;
+ *
+ *      // ... modify karg somehow ...
+ *
+ *      err = copy_struct_to_user(uarg, usize, &karg, sizeof(karg),
+ *				  &ignored_trailing);
+ *      if (err)
+ *		return err;
+ *      if (ignored_trailing)
+ *		return -EMSGSIZE:
+ *
+ *      // ...
+ *   }
+ *
+ * There are three cases to consider:
+ *  * If @usize == @ksize, then it's copied verbatim.
+ *  * If @usize < @ksize, then the kernel is trying to pass userspace a newer
+ *    struct than it supports. Thus we only copy the interoperable portions
+ *    (@usize) and ignore the rest (but @ignored_trailing is set to %true if
+ *    any of the trailing (@ksize - @usize) bytes are non-zero).
+ *  * If @usize > @ksize, then the kernel is trying to pass userspace an older
+ *    struct than userspace supports. In order to make sure the
+ *    unknown-to-the-kernel fields don't contain garbage values, we zero the
+ *    trailing (@usize - @ksize) bytes.
+ *
+ * Returns (in all cases, some data may have been copied):
+ *  * -EFAULT: access to userspace failed.
+ */
+static __always_inline __must_check int
+copy_struct_to_user(void __user *dst, size_t usize, const void *src,
+		    size_t ksize, bool *ignored_trailing)
+{
+	size_t size = min(ksize, usize);
+	size_t rest = max(ksize, usize) - size;
+
+	/* Double check if ksize is larger than a known object size. */
+	if (WARN_ON_ONCE(ksize > __builtin_object_size(src, 1)))
+		return -E2BIG;
+
+	/* Deal with trailing bytes. */
+	if (usize > ksize) {
+		if (clear_user(dst + size, rest))
+			return -EFAULT;
+	}
+	if (ignored_trailing)
+		*ignored_trailing = ksize < usize &&
+			memchr_inv(src + size, 0, rest) != NULL;
+	/* Copy the interoperable parts of the struct. */
+	if (copy_to_user(dst, src, size))
 		return -EFAULT;
 	return 0;
 }
@@ -367,6 +522,25 @@ long strncpy_from_kernel_nofault(char *dst, const void *unsafe_addr,
 long strncpy_from_user_nofault(char *dst, const void __user *unsafe_addr,
 		long count);
 long strnlen_user_nofault(const void __user *unsafe_addr, long count);
+
+#ifndef __get_kernel_nofault
+#define __get_kernel_nofault(dst, src, type, label)	\
+do {							\
+	type __user *p = (type __force __user *)(src);	\
+	type data;					\
+	if (__get_user(data, p))			\
+		goto label;				\
+	*(type *)dst = data;				\
+} while (0)
+
+#define __put_kernel_nofault(dst, src, type, label)	\
+do {							\
+	type __user *p = (type __force __user *)(dst);	\
+	type data = *(type *)src;			\
+	if (__put_user(data, p))			\
+		goto label;				\
+} while (0)
+#endif
 
 /**
  * get_kernel_nofault(): safely attempt to read from a location
@@ -401,8 +575,6 @@ static inline void user_access_restore(unsigned long flags) { }
 #endif
 
 #ifdef CONFIG_HARDENED_USERCOPY
-void usercopy_warn(const char *name, const char *detail, bool to_user,
-		   unsigned long offset, unsigned long len);
 void __noreturn usercopy_abort(const char *name, const char *detail,
 			       bool to_user, unsigned long offset,
 			       unsigned long len);

@@ -4,6 +4,8 @@
 
 #include <linux/iopoll.h>
 
+#include <drm/drm_managed.h>
+
 #include "dpu_hw_mdss.h"
 #include "dpu_hwio.h"
 #include "dpu_hw_catalog.h"
@@ -28,6 +30,9 @@
 #define PP_FBC_MODE                     0x034
 #define PP_FBC_BUDGET_CTL               0x038
 #define PP_FBC_LOSSY_MODE               0x03C
+#define PP_DSC_MODE                     0x0a0
+#define PP_DCE_DATA_IN_SWAP             0x0ac
+#define PP_DCE_DATA_OUT_SWAP            0x0c8
 
 #define PP_DITHER_EN			0x000
 #define PP_DITHER_BITDEPTH		0x004
@@ -38,27 +43,6 @@
 static u32 dither_depth_map[DITHER_DEPTH_MAP_INDEX] = {
 	0, 0, 0, 0, 0, 0, 0, 1, 2
 };
-
-static const struct dpu_pingpong_cfg *_pingpong_offset(enum dpu_pingpong pp,
-		const struct dpu_mdss_cfg *m,
-		void __iomem *addr,
-		struct dpu_hw_blk_reg_map *b)
-{
-	int i;
-
-	for (i = 0; i < m->pingpong_count; i++) {
-		if (pp == m->pingpong[i].id) {
-			b->base_off = addr;
-			b->blk_off = m->pingpong[i].base;
-			b->length = m->pingpong[i].len;
-			b->hwversion = m->hwversion;
-			b->log_mask = DPU_DBG_MASK_PINGPONG;
-			return &m->pingpong[i];
-		}
-	}
-
-	return ERR_PTR(-EINVAL);
-}
 
 static void dpu_hw_pp_setup_dither(struct dpu_hw_pingpong *pp,
 				    struct dpu_hw_dither_cfg *cfg)
@@ -91,7 +75,7 @@ static void dpu_hw_pp_setup_dither(struct dpu_hw_pingpong *pp,
 	DPU_REG_WRITE(c, base + PP_DITHER_EN, 1);
 }
 
-static int dpu_hw_pp_setup_te_config(struct dpu_hw_pingpong *pp,
+static int dpu_hw_pp_enable_te(struct dpu_hw_pingpong *pp,
 		struct dpu_hw_tear_check *te)
 {
 	struct dpu_hw_blk_reg_map *c;
@@ -117,6 +101,8 @@ static int dpu_hw_pp_setup_te_config(struct dpu_hw_pingpong *pp,
 			 te->sync_threshold_start));
 	DPU_REG_WRITE(c, PP_SYNC_WRCOUNT,
 			(te->start_pos + te->sync_threshold_start + 1));
+
+	DPU_REG_WRITE(c, PP_TEAR_CHECK_EN, 1);
 
 	return 0;
 }
@@ -144,24 +130,7 @@ static bool dpu_hw_pp_get_autorefresh_config(struct dpu_hw_pingpong *pp,
 	return !!((val & BIT(31)) >> 31);
 }
 
-static int dpu_hw_pp_poll_timeout_wr_ptr(struct dpu_hw_pingpong *pp,
-		u32 timeout_us)
-{
-	struct dpu_hw_blk_reg_map *c;
-	u32 val;
-	int rc;
-
-	if (!pp)
-		return -EINVAL;
-
-	c = &pp->hw;
-	rc = readl_poll_timeout(c->base_off + c->blk_off + PP_LINE_COUNT,
-			val, (val & 0xffff) >= 1, 10, timeout_us);
-
-	return rc;
-}
-
-static int dpu_hw_pp_enable_te(struct dpu_hw_pingpong *pp, bool enable)
+static int dpu_hw_pp_disable_te(struct dpu_hw_pingpong *pp)
 {
 	struct dpu_hw_blk_reg_map *c;
 
@@ -169,7 +138,7 @@ static int dpu_hw_pp_enable_te(struct dpu_hw_pingpong *pp, bool enable)
 		return -EINVAL;
 	c = &pp->hw;
 
-	DPU_REG_WRITE(c, PP_TEAR_CHECK_EN, enable);
+	DPU_REG_WRITE(c, PP_TEAR_CHECK_EN, 0);
 	return 0;
 }
 
@@ -245,47 +214,119 @@ static u32 dpu_hw_pp_get_line_count(struct dpu_hw_pingpong *pp)
 	return line;
 }
 
-static void _setup_pingpong_ops(struct dpu_hw_pingpong *c,
-				unsigned long features)
+static void dpu_hw_pp_disable_autorefresh(struct dpu_hw_pingpong *pp,
+					  uint32_t encoder_id, u16 vdisplay)
 {
-	c->ops.setup_tearcheck = dpu_hw_pp_setup_te_config;
-	c->ops.enable_tearcheck = dpu_hw_pp_enable_te;
-	c->ops.connect_external_te = dpu_hw_pp_connect_external_te;
-	c->ops.get_vsync_info = dpu_hw_pp_get_vsync_info;
-	c->ops.setup_autorefresh = dpu_hw_pp_setup_autorefresh_config;
-	c->ops.get_autorefresh = dpu_hw_pp_get_autorefresh_config;
-	c->ops.poll_timeout_wr_ptr = dpu_hw_pp_poll_timeout_wr_ptr;
-	c->ops.get_line_count = dpu_hw_pp_get_line_count;
+	struct dpu_hw_pp_vsync_info info;
+	int trial = 0;
 
-	if (test_bit(DPU_PINGPONG_DITHER, &features))
-		c->ops.setup_dither = dpu_hw_pp_setup_dither;
-};
+	/* If autorefresh is already disabled, we have nothing to do */
+	if (!dpu_hw_pp_get_autorefresh_config(pp, NULL))
+		return;
 
-struct dpu_hw_pingpong *dpu_hw_pingpong_init(enum dpu_pingpong idx,
-		void __iomem *addr,
-		const struct dpu_mdss_cfg *m)
+	/*
+	 * If autorefresh is enabled, disable it and make sure it is safe to
+	 * proceed with current frame commit/push. Sequence followed is,
+	 * 1. Disable TE
+	 * 2. Disable autorefresh config
+	 * 4. Poll for frame transfer ongoing to be false
+	 * 5. Enable TE back
+	 */
+
+	dpu_hw_pp_connect_external_te(pp, false);
+	dpu_hw_pp_setup_autorefresh_config(pp, 0, false);
+
+	do {
+		udelay(DPU_ENC_MAX_POLL_TIMEOUT_US);
+		if ((trial * DPU_ENC_MAX_POLL_TIMEOUT_US)
+				> (KICKOFF_TIMEOUT_MS * USEC_PER_MSEC)) {
+			DPU_ERROR("enc%d pp%d disable autorefresh failed\n",
+				  encoder_id, pp->idx - PINGPONG_0);
+			break;
+		}
+
+		trial++;
+
+		dpu_hw_pp_get_vsync_info(pp, &info);
+	} while (info.wr_ptr_line_count > 0 &&
+		 info.wr_ptr_line_count < vdisplay);
+
+	dpu_hw_pp_connect_external_te(pp, true);
+
+	DPU_DEBUG("enc%d pp%d disabled autorefresh\n",
+		  encoder_id, pp->idx - PINGPONG_0);
+}
+
+static int dpu_hw_pp_dsc_enable(struct dpu_hw_pingpong *pp)
+{
+	struct dpu_hw_blk_reg_map *c = &pp->hw;
+
+	DPU_REG_WRITE(c, PP_DSC_MODE, 1);
+	return 0;
+}
+
+static void dpu_hw_pp_dsc_disable(struct dpu_hw_pingpong *pp)
+{
+	struct dpu_hw_blk_reg_map *c = &pp->hw;
+
+	DPU_REG_WRITE(c, PP_DSC_MODE, 0);
+}
+
+static int dpu_hw_pp_setup_dsc(struct dpu_hw_pingpong *pp)
+{
+	struct dpu_hw_blk_reg_map *pp_c = &pp->hw;
+	int data;
+
+	data = DPU_REG_READ(pp_c, PP_DCE_DATA_OUT_SWAP);
+	data |= BIT(18); /* endian flip */
+	DPU_REG_WRITE(pp_c, PP_DCE_DATA_OUT_SWAP, data);
+	return 0;
+}
+
+/**
+ * dpu_hw_pingpong_init() - initializes the pingpong driver for the passed
+ * pingpong catalog entry.
+ * @dev:  Corresponding device for devres management
+ * @cfg:  Pingpong catalog entry for which driver object is required
+ * @addr: Mapped register io address of MDP
+ * @mdss_rev: dpu core's major and minor versions
+ * Return: Error code or allocated dpu_hw_pingpong context
+ */
+struct dpu_hw_pingpong *dpu_hw_pingpong_init(struct drm_device *dev,
+					     const struct dpu_pingpong_cfg *cfg,
+					     void __iomem *addr,
+					     const struct dpu_mdss_version *mdss_rev)
 {
 	struct dpu_hw_pingpong *c;
-	const struct dpu_pingpong_cfg *cfg;
 
-	c = kzalloc(sizeof(*c), GFP_KERNEL);
+	c = drmm_kzalloc(dev, sizeof(*c), GFP_KERNEL);
 	if (!c)
 		return ERR_PTR(-ENOMEM);
 
-	cfg = _pingpong_offset(idx, m, addr, &c->hw);
-	if (IS_ERR_OR_NULL(cfg)) {
-		kfree(c);
-		return ERR_PTR(-EINVAL);
+	c->hw.blk_addr = addr + cfg->base;
+	c->hw.log_mask = DPU_DBG_MASK_PINGPONG;
+
+	c->idx = cfg->id;
+	c->caps = cfg;
+
+	if (mdss_rev->core_major_ver < 5) {
+		WARN_ON(!cfg->intr_rdptr);
+
+		c->ops.enable_tearcheck = dpu_hw_pp_enable_te;
+		c->ops.disable_tearcheck = dpu_hw_pp_disable_te;
+		c->ops.connect_external_te = dpu_hw_pp_connect_external_te;
+		c->ops.get_line_count = dpu_hw_pp_get_line_count;
+		c->ops.disable_autorefresh = dpu_hw_pp_disable_autorefresh;
 	}
 
-	c->idx = idx;
-	c->caps = cfg;
-	_setup_pingpong_ops(c, c->caps->features);
+	if (mdss_rev->core_major_ver < 7) {
+		c->ops.setup_dsc = dpu_hw_pp_setup_dsc;
+		c->ops.enable_dsc = dpu_hw_pp_dsc_enable;
+		c->ops.disable_dsc = dpu_hw_pp_dsc_disable;
+	}
+
+	if (mdss_rev->core_major_ver >= 3)
+		c->ops.setup_dither = dpu_hw_pp_setup_dither;
 
 	return c;
-}
-
-void dpu_hw_pingpong_destroy(struct dpu_hw_pingpong *pp)
-{
-	kfree(pp);
 }

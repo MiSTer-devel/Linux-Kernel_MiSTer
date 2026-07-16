@@ -3,10 +3,16 @@
  * Copyright © 2008-2015 Intel Corporation
  */
 
+#include <linux/highmem.h>
+
+#include "display/intel_display.h"
 #include "i915_drv.h"
+#include "i915_reg.h"
 #include "i915_scatterlist.h"
 #include "i915_pvinfo.h"
 #include "i915_vgpu.h"
+#include "intel_gt_regs.h"
+#include "intel_mchbar_regs.h"
 
 /**
  * DOC: fence register handling
@@ -215,7 +221,8 @@ static int fence_update(struct i915_fence_reg *fence,
 				return ret;
 		}
 
-		fence->start = vma->node.start;
+		GEM_BUG_ON(vma->fence_size > i915_vma_size(vma));
+		fence->start = i915_ggtt_offset(vma);
 		fence->size = vma->fence_size;
 		fence->stride = i915_gem_object_get_stride(vma->obj);
 		fence->tiling = i915_gem_object_get_tiling(vma->obj);
@@ -291,6 +298,7 @@ void i915_vma_revoke_fence(struct i915_vma *vma)
 		return;
 
 	GEM_BUG_ON(fence->vma != vma);
+	i915_active_wait(&fence->active);
 	GEM_BUG_ON(!i915_active_is_idle(&fence->active));
 	GEM_BUG_ON(atomic_read(&fence->pin_count));
 
@@ -320,6 +328,7 @@ static bool fence_is_active(const struct i915_fence_reg *fence)
 
 static struct i915_fence_reg *fence_find(struct i915_ggtt *ggtt)
 {
+	struct intel_display *display = ggtt->vm.i915->display;
 	struct i915_fence_reg *active = NULL;
 	struct i915_fence_reg *fence, *fn;
 
@@ -345,7 +354,7 @@ static struct i915_fence_reg *fence_find(struct i915_ggtt *ggtt)
 	}
 
 	/* Wait for completion of pending flips which consume fences */
-	if (intel_has_pending_fb_unpin(ggtt->vm.i915))
+	if (intel_has_pending_fb_unpin(display))
 		return ERR_PTR(-EAGAIN);
 
 	return ERR_PTR(-ENOBUFS);
@@ -410,7 +419,6 @@ out_unpin:
  * For an untiled surface, this removes any existing fence.
  *
  * Returns:
- *
  * 0 on success, negative error code on failure.
  */
 int i915_vma_pin_fence(struct i915_vma *vma)
@@ -425,7 +433,6 @@ int i915_vma_pin_fence(struct i915_vma *vma)
 	 * must keep the device awake whilst using the fence.
 	 */
 	assert_rpm_wakelock_held(vma->vm->gt->uncore->rpm);
-	GEM_BUG_ON(!i915_vma_is_pinned(vma));
 	GEM_BUG_ON(!i915_vma_is_ggtt(vma));
 
 	err = mutex_lock_interruptible(&vma->vm->mutex);
@@ -723,13 +730,13 @@ static void detect_bit_6_swizzle(struct i915_ggtt *ggtt)
 		 * bit17 dependent, and so we need to also prevent the pages
 		 * from being moved.
 		 */
-		i915->quirks |= QUIRK_PIN_SWIZZLED_PAGES;
+		i915->gem_quirks |= GEM_QUIRK_PIN_SWIZZLED_PAGES;
 		swizzle_x = I915_BIT_6_SWIZZLE_NONE;
 		swizzle_y = I915_BIT_6_SWIZZLE_NONE;
 	}
 
-	i915->ggtt.bit_6_swizzle_x = swizzle_x;
-	i915->ggtt.bit_6_swizzle_y = swizzle_y;
+	to_gt(i915)->ggtt->bit_6_swizzle_x = swizzle_x;
+	to_gt(i915)->ggtt->bit_6_swizzle_y = swizzle_y;
 }
 
 /*
@@ -743,7 +750,7 @@ static void swizzle_page(struct page *page)
 	char *vaddr;
 	int i;
 
-	vaddr = kmap(page);
+	vaddr = kmap_local_page(page);
 
 	for (i = 0; i < PAGE_SIZE; i += 128) {
 		memcpy(temp, &vaddr[i], 64);
@@ -751,7 +758,7 @@ static void swizzle_page(struct page *page)
 		memcpy(&vaddr[i + 64], temp, 64);
 	}
 
-	kunmap(page);
+	kunmap_local(vaddr);
 }
 
 /**
@@ -812,8 +819,8 @@ i915_gem_object_save_bit_17_swizzle(struct drm_i915_gem_object *obj,
 	if (obj->bit_17 == NULL) {
 		obj->bit_17 = bitmap_zalloc(page_count, GFP_KERNEL);
 		if (obj->bit_17 == NULL) {
-			DRM_ERROR("Failed to allocate memory for bit 17 "
-				  "record\n");
+			drm_err(obj->base.dev,
+				"Failed to allocate memory for bit 17 record\n");
 			return;
 		}
 	}
@@ -838,7 +845,6 @@ void intel_ggtt_init_fences(struct i915_ggtt *ggtt)
 
 	INIT_LIST_HEAD(&ggtt->fence_list);
 	INIT_LIST_HEAD(&ggtt->userfault_list);
-	intel_wakeref_auto_init(&ggtt->userfault_wakeref, uncore->rpm);
 
 	detect_bit_6_swizzle(ggtt);
 
@@ -896,7 +902,7 @@ void intel_gt_init_swizzling(struct intel_gt *gt)
 	struct intel_uncore *uncore = gt->uncore;
 
 	if (GRAPHICS_VER(i915) < 5 ||
-	    i915->ggtt.bit_6_swizzle_x == I915_BIT_6_SWIZZLE_NONE)
+	    to_gt(i915)->ggtt->bit_6_swizzle_x == I915_BIT_6_SWIZZLE_NONE)
 		return;
 
 	intel_uncore_rmw(uncore, DISP_ARB_CTL, 0, DISP_TILE_SURFACE_SWIZZLING);

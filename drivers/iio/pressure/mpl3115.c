@@ -69,57 +69,66 @@ static int mpl3115_request(struct mpl3115_data *data)
 	return 0;
 }
 
+static int mpl3115_read_info_raw(struct mpl3115_data *data,
+				 struct iio_chan_spec const *chan, int *val)
+{
+	int ret;
+
+	switch (chan->type) {
+	case IIO_PRESSURE: { /* in 0.25 pascal / LSB */
+		__be32 tmp = 0;
+
+		guard(mutex)(&data->lock);
+		ret = mpl3115_request(data);
+		if (ret < 0)
+			return ret;
+
+		ret = i2c_smbus_read_i2c_block_data(data->client,
+						    MPL3115_OUT_PRESS,
+						    3, (u8 *) &tmp);
+		if (ret < 0)
+			return ret;
+
+		*val = be32_to_cpu(tmp) >> chan->scan_type.shift;
+		return IIO_VAL_INT;
+	}
+	case IIO_TEMP: { /* in 0.0625 celsius / LSB */
+		__be16 tmp;
+
+		guard(mutex)(&data->lock);
+		ret = mpl3115_request(data);
+		if (ret < 0)
+			return ret;
+
+		ret = i2c_smbus_read_i2c_block_data(data->client,
+						    MPL3115_OUT_TEMP,
+						    2, (u8 *) &tmp);
+		if (ret < 0)
+			return ret;
+
+		*val = sign_extend32(be16_to_cpu(tmp) >> chan->scan_type.shift,
+				     chan->scan_type.realbits - 1);
+		return IIO_VAL_INT;
+	}
+	default:
+		return -EINVAL;
+	}
+}
+
 static int mpl3115_read_raw(struct iio_dev *indio_dev,
 			    struct iio_chan_spec const *chan,
 			    int *val, int *val2, long mask)
 {
 	struct mpl3115_data *data = iio_priv(indio_dev);
-	__be32 tmp = 0;
 	int ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		ret = iio_device_claim_direct_mode(indio_dev);
-		if (ret)
-			return ret;
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
 
-		switch (chan->type) {
-		case IIO_PRESSURE: /* in 0.25 pascal / LSB */
-			mutex_lock(&data->lock);
-			ret = mpl3115_request(data);
-			if (ret < 0) {
-				mutex_unlock(&data->lock);
-				break;
-			}
-			ret = i2c_smbus_read_i2c_block_data(data->client,
-				MPL3115_OUT_PRESS, 3, (u8 *) &tmp);
-			mutex_unlock(&data->lock);
-			if (ret < 0)
-				break;
-			*val = be32_to_cpu(tmp) >> 12;
-			ret = IIO_VAL_INT;
-			break;
-		case IIO_TEMP: /* in 0.0625 celsius / LSB */
-			mutex_lock(&data->lock);
-			ret = mpl3115_request(data);
-			if (ret < 0) {
-				mutex_unlock(&data->lock);
-				break;
-			}
-			ret = i2c_smbus_read_i2c_block_data(data->client,
-				MPL3115_OUT_TEMP, 2, (u8 *) &tmp);
-			mutex_unlock(&data->lock);
-			if (ret < 0)
-				break;
-			*val = sign_extend32(be32_to_cpu(tmp) >> 20, 11);
-			ret = IIO_VAL_INT;
-			break;
-		default:
-			ret = -EINVAL;
-			break;
-		}
-
-		iio_device_release_direct_mode(indio_dev);
+		ret = mpl3115_read_info_raw(data, chan, val);
+		iio_device_release_direct(indio_dev);
 		return ret;
 
 	case IIO_CHAN_INFO_SCALE:
@@ -151,7 +160,7 @@ static irqreturn_t mpl3115_trigger_handler(int irq, void *p)
 	 * of the buffer may be either 16 or 32-bits.  As such we cannot
 	 * use a simple structure definition to express this data layout.
 	 */
-	u8 buffer[16] __aligned(8);
+	u8 buffer[16] __aligned(8) = { };
 	int ret, pos = 0;
 
 	mutex_lock(&data->lock);
@@ -161,7 +170,6 @@ static irqreturn_t mpl3115_trigger_handler(int irq, void *p)
 		goto done;
 	}
 
-	memset(buffer, 0, sizeof(buffer));
 	if (test_bit(0, indio_dev->active_scan_mask)) {
 		ret = i2c_smbus_read_i2c_block_data(data->client,
 			MPL3115_OUT_PRESS, 3, &buffer[pos]);
@@ -182,8 +190,8 @@ static irqreturn_t mpl3115_trigger_handler(int irq, void *p)
 	}
 	mutex_unlock(&data->lock);
 
-	iio_push_to_buffers_with_timestamp(indio_dev, buffer,
-		iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_ts(indio_dev, buffer, sizeof(buffer),
+				    iio_get_time_ns(indio_dev));
 
 done:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -224,9 +232,9 @@ static const struct iio_info mpl3115_info = {
 	.read_raw = &mpl3115_read_raw,
 };
 
-static int mpl3115_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int mpl3115_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct mpl3115_data *data;
 	struct iio_dev *indio_dev;
 	int ret;
@@ -284,18 +292,15 @@ static int mpl3115_standby(struct mpl3115_data *data)
 		data->ctrl_reg1 & ~MPL3115_CTRL_ACTIVE);
 }
 
-static int mpl3115_remove(struct i2c_client *client)
+static void mpl3115_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 
 	iio_device_unregister(indio_dev);
 	iio_triggered_buffer_cleanup(indio_dev);
 	mpl3115_standby(iio_priv(indio_dev));
-
-	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int mpl3115_suspend(struct device *dev)
 {
 	return mpl3115_standby(iio_priv(i2c_get_clientdata(
@@ -311,14 +316,11 @@ static int mpl3115_resume(struct device *dev)
 		data->ctrl_reg1);
 }
 
-static SIMPLE_DEV_PM_OPS(mpl3115_pm_ops, mpl3115_suspend, mpl3115_resume);
-#define MPL3115_PM_OPS (&mpl3115_pm_ops)
-#else
-#define MPL3115_PM_OPS NULL
-#endif
+static DEFINE_SIMPLE_DEV_PM_OPS(mpl3115_pm_ops, mpl3115_suspend,
+				mpl3115_resume);
 
 static const struct i2c_device_id mpl3115_id[] = {
-	{ "mpl3115", 0 },
+	{ "mpl3115" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, mpl3115_id);
@@ -333,7 +335,7 @@ static struct i2c_driver mpl3115_driver = {
 	.driver = {
 		.name	= "mpl3115",
 		.of_match_table = mpl3115_of_match,
-		.pm	= MPL3115_PM_OPS,
+		.pm	= pm_sleep_ptr(&mpl3115_pm_ops),
 	},
 	.probe = mpl3115_probe,
 	.remove = mpl3115_remove,

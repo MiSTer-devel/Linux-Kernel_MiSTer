@@ -79,6 +79,9 @@ OPTIONS
 --dump-raw-trace=::
         Display verbose dump of the trace data.
 
+--dump-unsorted-raw-trace=::
+        Same as --dump-raw-trace but not sorted in time order.
+
 -L::
 --Latency=::
         Show latency attributes (irqs/preemption disabled, etc).
@@ -127,10 +130,12 @@ OPTIONS
 -F::
 --fields::
         Comma separated list of fields to print. Options are:
-        comm, tid, pid, time, cpu, event, trace, ip, sym, dso, addr, symoff,
+        comm, tid, pid, time, cpu, event, trace, ip, sym, dso, dsoff, addr, symoff,
         srcline, period, iregs, uregs, brstack, brstacksym, flags, bpf-output,
-        brstackinsn, brstackoff, callindent, insn, insnlen, synth, phys_addr,
-        metric, misc, srccode, ipc, data_page_size, code_page_size.
+        brstackinsn, brstackinsnlen, brstackdisasm, brstackoff, callindent, insn, disasm,
+        insnlen, synth, phys_addr, metric, misc, srccode, ipc, data_page_size,
+        code_page_size, ins_lat, machine_pid, vcpu, cgroup, retire_lat, brcntr,
+
         Field list can be prepended with the type, trace, sw or hw,
         to indicate to which event type the field list applies.
         e.g., -F sw:comm,tid,time,ip,sym  and -F trace:time,cpu,trace
@@ -195,24 +200,27 @@ OPTIONS
 	At this point usage is displayed, and perf-script exits.
 
 	The flags field is synthesized and may have a value when Instruction
-	Trace decoding. The flags are "bcrosyiABExgh" which stand for branch,
+	Trace decoding. The flags are "bcrosyiABExghDt" which stand for branch,
 	call, return, conditional, system, asynchronous, interrupt,
-	transaction abort, trace begin, trace end, in transaction, VM-Entry, and VM-Exit
-	respectively. Known combinations of flags are printed more nicely e.g.
+	transaction abort, trace begin, trace end, in transaction, VM-Entry,
+	VM-Exit, interrupt disabled and interrupt disable toggle respectively.
+	Known combinations of flags are printed more nicely e.g.
 	"call" for "bc", "return" for "br", "jcc" for "bo", "jmp" for "b",
 	"int" for "bci", "iret" for "bri", "syscall" for "bcs", "sysret" for "brs",
 	"async" for "by", "hw int" for "bcyi", "tx abrt" for "bA", "tr strt" for "bB",
 	"tr end" for "bE", "vmentry" for "bcg", "vmexit" for "bch".
-	However the "x" flag will be displayed separately in those
-	cases e.g. "jcc     (x)" for a condition branch within a transaction.
+	However the "x", "D" and "t" flags will be displayed separately in those
+	cases e.g. "jcc     (xD)" for a condition branch within a transaction
+	with interrupts disabled. Note, interrupts becoming disabled is "t",
+	whereas interrupts becoming enabled is "Dt".
 
 	The callindent field is synthesized and may have a value when
 	Instruction Trace decoding. For calls and returns, it will display the
 	name of the symbol indented with spaces to reflect the stack depth.
 
-	When doing instruction trace decoding insn and insnlen give the
-	instruction bytes and the instruction length of the current
-	instruction.
+	When doing instruction trace decoding, insn, disasm and insnlen give the
+	instruction bytes, disassembled instructions (requires libcapstone support)
+	and the instruction length of the current instruction respectively.
 
 	The synth field is used by synthesized events which may be created when
 	Instruction Trace decoding.
@@ -220,23 +228,46 @@ OPTIONS
 	The ipc (instructions per cycle) field is synthesized and may have a value when
 	Instruction Trace decoding.
 
+	The machine_pid and vcpu fields are derived from data resulting from using
+	perf inject to insert a perf.data file recorded inside a virtual machine into
+	a perf.data file recorded on the host at the same time.
+
+	The cgroup fields requires sample having the cgroup id which is saved
+	when "--all-cgroups" option is passed to 'perf record'.
+
 	Finally, a user may not set fields to none for all event types.
 	i.e., -F "" is not allowed.
 
 	The brstack output includes branch related information with raw addresses using the
-	/v/v/v/v/cycles syntax in the following order:
-	FROM: branch source instruction
-	TO  : branch target instruction
-        M/P/-: M=branch target mispredicted or branch direction was mispredicted, P=target predicted or direction predicted, -=not supported
-	X/- : X=branch inside a transactional region, -=not in transaction region or not supported
-	A/- : A=TSX abort entry, -=not aborted region or not supported
-	cycles
+	FROM/TO/EVENT/INTX/ABORT/CYCLES/TYPE/SPEC syntax in the following order:
+	FROM  : branch source instruction
+	TO    : branch target instruction
+	EVENT : M=branch target or direction was mispredicted
+	        P=branch target or direction was predicted
+	        N=branch not-taken
+	        -=no event or not supported
+	INTX  : X=branch inside a transactional region
+	        -=branch not in transaction region or not supported
+	ABORT : A=TSX abort entry
+	        -=not aborted region or not supported
+	CYCLES: the number of cycles that have elapsed since the last branch was recorded
+	TYPE  : branch type: COND/UNCOND/IND/CALL/IND_CALL/RET etc.
+	        -=not supported
+	SPEC  : branch speculation info: SPEC_WRONG_PATH/NON_SPEC_CORRECT_PATH/SPEC_CORRECT_PATH
+	        -=not supported
 
 	The brstacksym is identical to brstack, except that the FROM and TO addresses are printed in a symbolic form if possible.
 
 	When brstackinsn is specified the full assembler sequences of branch sequences for each sample
 	is printed. This is the full execution path leading to the sample. This is only supported when the
 	sample was recorded with perf record -b or -j any.
+
+	Use brstackinsnlen to print the brstackinsn lenght. For example, you
+	can’t know the next sequential instruction after an unconditional branch unless
+	you calculate that based on its length.
+
+	brstackdisasm acts like brstackinsn, but will print disassembled instructions if
+	perf is built with the capstone library.
 
 	The brstackoff field will print an offset into a specific dso/binary.
 
@@ -347,6 +378,9 @@ OPTIONS
 --demangle-kernel::
 	Demangle kernel symbol names to human readable form (for C++ kernels).
 
+--addr2line=<path>::
+	Path to addr2line binary.
+
 --header
 	Show perf.data header.
 
@@ -423,9 +457,10 @@ include::itrace.txt[]
 	will be printed. Each entry has function name and file/line. Enabled by
 	default, disable with --no-inline.
 
---insn-trace::
-	Show instruction stream for intel_pt traces. Combine with --xed to
-	show disassembly.
+--insn-trace[=<raw|disasm>]::
+	Show instruction stream in bytes (raw) or disassembled (disasm)
+	for intel_pt traces. The default is 'raw'. To use xed, combine
+	'raw' with --xed to show disassembly done by xed.
 
 --xed::
 	Run xed disassembler on output. Requires installing the xed disassembler.
@@ -487,10 +522,14 @@ include::itrace.txt[]
 	perf record --call-graph lbr.
 	Disabled by default. In common cases with call stack overflows,
 	it can recreate better call stacks than the default lbr call stack
-	output. But this approach is not full proof. There can be cases
+	output. But this approach is not foolproof. There can be cases
 	where it creates incorrect call stacks from incorrect matches.
 	The known limitations include exception handing such as
 	setjmp/longjmp will have calls/returns not match.
+
+:GMEXAMPLECMD: script
+:GMEXAMPLESUBCMD:
+include::guest-files.txt[]
 
 SEE ALSO
 --------

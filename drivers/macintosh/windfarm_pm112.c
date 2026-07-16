@@ -12,7 +12,9 @@
 #include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/reboot.h>
-#include <asm/prom.h>
+#include <linux/of.h>
+#include <linux/slab.h>
+
 #include <asm/smu.h>
 
 #include "windfarm.h"
@@ -660,11 +662,9 @@ static int wf_pm112_probe(struct platform_device *dev)
 	return 0;
 }
 
-static int wf_pm112_remove(struct platform_device *dev)
+static void wf_pm112_remove(struct platform_device *dev)
 {
 	wf_unregister_client(&pm112_events);
-	/* should release all sensors and controls */
-	return 0;
 }
 
 static struct platform_driver wf_pm112_driver = {

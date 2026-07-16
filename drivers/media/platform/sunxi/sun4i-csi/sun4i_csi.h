@@ -89,6 +89,7 @@ enum csi_subdev_pads {
 };
 
 extern const struct v4l2_subdev_ops sun4i_csi_subdev_ops;
+extern const struct v4l2_subdev_internal_ops sun4i_csi_subdev_internal_ops;
 
 struct sun4i_csi_format {
 	u32			mbus;
@@ -124,7 +125,7 @@ struct sun4i_csi {
 		dma_addr_t		paddr;
 	} scratch;
 
-	struct v4l2_fwnode_bus_parallel	bus;
+	struct v4l2_mbus_config_parallel	bus;
 
 	/* Main Device */
 	struct v4l2_device		v4l;

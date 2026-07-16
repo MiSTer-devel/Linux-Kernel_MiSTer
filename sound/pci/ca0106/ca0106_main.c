@@ -332,16 +332,13 @@ unsigned int snd_ca0106_ptr_read(struct snd_ca0106 * emu,
 					  unsigned int reg, 
 					  unsigned int chn)
 {
-	unsigned long flags;
-	unsigned int regptr, val;
+	unsigned int regptr;
   
 	regptr = (reg << 16) | chn;
 
-	spin_lock_irqsave(&emu->emu_lock, flags);
-	outl(regptr, emu->port + PTR);
-	val = inl(emu->port + DATA);
-	spin_unlock_irqrestore(&emu->emu_lock, flags);
-	return val;
+	guard(spinlock_irqsave)(&emu->emu_lock);
+	outl(regptr, emu->port + CA0106_PTR);
+	return inl(emu->port + CA0106_DATA);
 }
 
 void snd_ca0106_ptr_write(struct snd_ca0106 *emu, 
@@ -350,14 +347,12 @@ void snd_ca0106_ptr_write(struct snd_ca0106 *emu,
 				   unsigned int data)
 {
 	unsigned int regptr;
-	unsigned long flags;
 
 	regptr = (reg << 16) | chn;
 
-	spin_lock_irqsave(&emu->emu_lock, flags);
-	outl(regptr, emu->port + PTR);
-	outl(data, emu->port + DATA);
-	spin_unlock_irqrestore(&emu->emu_lock, flags);
+	guard(spinlock_irqsave)(&emu->emu_lock);
+	outl(regptr, emu->port + CA0106_PTR);
+	outl(data, emu->port + CA0106_DATA);
 }
 
 int snd_ca0106_spi_write(struct snd_ca0106 * emu,
@@ -451,24 +446,20 @@ int snd_ca0106_i2c_write(struct snd_ca0106 *emu,
 
 static void snd_ca0106_intr_enable(struct snd_ca0106 *emu, unsigned int intrenb)
 {
-	unsigned long flags;
 	unsigned int intr_enable;
 
-	spin_lock_irqsave(&emu->emu_lock, flags);
-	intr_enable = inl(emu->port + INTE) | intrenb;
-	outl(intr_enable, emu->port + INTE);
-	spin_unlock_irqrestore(&emu->emu_lock, flags);
+	guard(spinlock_irqsave)(&emu->emu_lock);
+	intr_enable = inl(emu->port + CA0106_INTE) | intrenb;
+	outl(intr_enable, emu->port + CA0106_INTE);
 }
 
 static void snd_ca0106_intr_disable(struct snd_ca0106 *emu, unsigned int intrenb)
 {
-	unsigned long flags;
 	unsigned int intr_enable;
 
-	spin_lock_irqsave(&emu->emu_lock, flags);
-	intr_enable = inl(emu->port + INTE) & ~intrenb;
-	outl(intr_enable, emu->port + INTE);
-	spin_unlock_irqrestore(&emu->emu_lock, flags);
+	guard(spinlock_irqsave)(&emu->emu_lock);
+	intr_enable = inl(emu->port + CA0106_INTE) & ~intrenb;
+	outl(intr_enable, emu->port + CA0106_INTE);
 }
 
 
@@ -786,9 +777,9 @@ static int snd_ca0106_pcm_prepare_playback(struct snd_pcm_substream *substream)
 		hcfg_set = 0;
 		break;
 	}
-	hcfg = inl(emu->port + HCFG) ;
+	hcfg = inl(emu->port + CA0106_HCFG) ;
 	hcfg = (hcfg & ~hcfg_mask) | hcfg_set;
-	outl(hcfg, emu->port + HCFG);
+	outl(hcfg, emu->port + CA0106_HCFG);
 	reg40 = snd_ca0106_ptr_read(emu, 0x40, 0);
 	reg40 = (reg40 & ~reg40_mask) | reg40_set;
 	snd_ca0106_ptr_write(emu, 0x40, 0, reg40);
@@ -888,9 +879,9 @@ static int snd_ca0106_pcm_prepare_capture(struct snd_pcm_substream *substream)
 		hcfg_set = 0;
 		break;
 	}
-	hcfg = inl(emu->port + HCFG) ;
+	hcfg = inl(emu->port + CA0106_HCFG) ;
 	hcfg = (hcfg & ~hcfg_mask) | hcfg_set;
-	outl(hcfg, emu->port + HCFG);
+	outl(hcfg, emu->port + CA0106_HCFG);
 	reg71 = snd_ca0106_ptr_read(emu, 0x71, 0);
 	reg71 = (reg71 & ~reg71_mask) | reg71_set;
 	snd_ca0106_ptr_write(emu, 0x71, 0, reg71);
@@ -1138,26 +1129,20 @@ static unsigned short snd_ca0106_ac97_read(struct snd_ac97 *ac97,
 					     unsigned short reg)
 {
 	struct snd_ca0106 *emu = ac97->private_data;
-	unsigned long flags;
-	unsigned short val;
 
-	spin_lock_irqsave(&emu->emu_lock, flags);
-	outb(reg, emu->port + AC97ADDRESS);
-	val = inw(emu->port + AC97DATA);
-	spin_unlock_irqrestore(&emu->emu_lock, flags);
-	return val;
+	guard(spinlock_irqsave)(&emu->emu_lock);
+	outb(reg, emu->port + CA0106_AC97ADDRESS);
+	return inw(emu->port + CA0106_AC97DATA);
 }
 
 static void snd_ca0106_ac97_write(struct snd_ac97 *ac97,
 				    unsigned short reg, unsigned short val)
 {
 	struct snd_ca0106 *emu = ac97->private_data;
-	unsigned long flags;
   
-	spin_lock_irqsave(&emu->emu_lock, flags);
-	outb(reg, emu->port + AC97ADDRESS);
-	outw(val, emu->port + AC97DATA);
-	spin_unlock_irqrestore(&emu->emu_lock, flags);
+	guard(spinlock_irqsave)(&emu->emu_lock);
+	outb(reg, emu->port + CA0106_AC97ADDRESS);
+	outw(val, emu->port + CA0106_AC97DATA);
 }
 
 static int snd_ca0106_ac97(struct snd_ca0106 *chip)
@@ -1200,7 +1185,7 @@ static irqreturn_t snd_ca0106_interrupt(int irq, void *dev_id)
         unsigned int stat76;
 	struct snd_ca0106_channel *pchannel;
 
-	status = inl(chip->port + IPR);
+	status = inl(chip->port + CA0106_IPR);
 	if (! status)
 		return IRQ_NONE;
 
@@ -1255,7 +1240,7 @@ static irqreturn_t snd_ca0106_interrupt(int irq, void *dev_id)
 	}
 
 	// acknowledge the interrupt if necessary
-	outl(status, chip->port+IPR);
+	outl(status, chip->port + CA0106_IPR);
 
 	return IRQ_HANDLED;
 }
@@ -1315,7 +1300,7 @@ static int snd_ca0106_pcm(struct snd_ca0106 *emu, int device)
         }
 
 	pcm->info_flags = 0;
-	strcpy(pcm->name, "CA0106");
+	strscpy(pcm->name, "CA0106");
 
 	for(substream = pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream; 
 	    substream; 
@@ -1383,7 +1368,7 @@ static void ca0106_init_chip(struct snd_ca0106 *chip, int resume)
 	int ch;
 	unsigned int def_bits;
 
-	outl(0, chip->port + INTE);
+	outl(0, chip->port + CA0106_INTE);
 
 	/*
 	 *  Init to 0x02109204 :
@@ -1420,8 +1405,8 @@ static void ca0106_init_chip(struct snd_ca0106 *chip, int resume)
         snd_ca0106_ptr_write(chip, CAPTURE_MUTE, 0, 0x00fc0000);
 
         /* Write 0x8000 to AC97_REC_GAIN to mute it. */
-        outb(AC97_REC_GAIN, chip->port + AC97ADDRESS);
-        outw(0x8000, chip->port + AC97DATA);
+        outb(AC97_REC_GAIN, chip->port + CA0106_AC97ADDRESS);
+        outw(0x8000, chip->port + CA0106_AC97DATA);
 #if 0 /* FIXME: what are these? */
 	snd_ca0106_ptr_write(chip, SPCS0, 0, 0x2108006);
 	snd_ca0106_ptr_write(chip, 0x42, 0, 0x2108006);
@@ -1495,30 +1480,30 @@ static void ca0106_init_chip(struct snd_ca0106 *chip, int resume)
 		/* FIXME: Still need to find out what the other GPIO bits do.
 		 * E.g. For digital spdif out.
 		 */
-		outl(0x0, chip->port+GPIO);
-		/* outl(0x00f0e000, chip->port+GPIO); */ /* Analog */
-		outl(0x005f5301, chip->port+GPIO); /* Analog */
+		outl(0x0, chip->port + CA0106_GPIO);
+		/* outl(0x00f0e000, chip->port + CA0106_GPIO); */ /* Analog */
+		outl(0x005f5301, chip->port + CA0106_GPIO); /* Analog */
 	} else if (chip->details->gpio_type == 1) {
 		/* The SB0410 and SB0413 use GPIO differently. */
 		/* FIXME: Still need to find out what the other GPIO bits do.
 		 * E.g. For digital spdif out.
 		 */
-		outl(0x0, chip->port+GPIO);
-		/* outl(0x00f0e000, chip->port+GPIO); */ /* Analog */
-		outl(0x005f5301, chip->port+GPIO); /* Analog */
+		outl(0x0, chip->port + CA0106_GPIO);
+		/* outl(0x00f0e000, chip->port + CA0106_GPIO); */ /* Analog */
+		outl(0x005f5301, chip->port + CA0106_GPIO); /* Analog */
 	} else {
-		outl(0x0, chip->port+GPIO);
-		outl(0x005f03a3, chip->port+GPIO); /* Analog */
-		/* outl(0x005f02a2, chip->port+GPIO); */ /* SPDIF */
+		outl(0x0, chip->port + CA0106_GPIO);
+		outl(0x005f03a3, chip->port + CA0106_GPIO); /* Analog */
+		/* outl(0x005f02a2, chip->port + CA0106_GPIO); */ /* SPDIF */
 	}
 	snd_ca0106_intr_enable(chip, 0x105); /* Win2000 uses 0x1e0 */
 
 	/* outl(HCFG_LOCKSOUNDCACHE|HCFG_AUDIOENABLE, chip->port+HCFG); */
 	/* 0x1000 causes AC3 to fails. Maybe it effects 24 bit output. */
-	/* outl(0x00001409, chip->port+HCFG); */
-	/* outl(0x00000009, chip->port+HCFG); */
+	/* outl(0x00001409, chip->port + CA0106_HCFG); */
+	/* outl(0x00000009, chip->port + CA0106_HCFG); */
 	/* AC97 2.0, Enable outputs. */
-	outl(HCFG_AC97 | HCFG_AUDIOENABLE, chip->port+HCFG);
+	outl(HCFG_AC97 | HCFG_AUDIOENABLE, chip->port + CA0106_HCFG);
 
 	if (chip->details->i2c_adc == 1) {
 		/* The SB0410 and SB0413 use I2C to control ADC. */
@@ -1560,12 +1545,12 @@ static void ca0106_stop_chip(struct snd_ca0106 *chip)
 {
 	/* disable interrupts */
 	snd_ca0106_ptr_write(chip, BASIC_INTERRUPT, 0, 0);
-	outl(0, chip->port + INTE);
+	outl(0, chip->port + CA0106_INTE);
 	snd_ca0106_ptr_write(chip, EXTENDED_INT_MASK, 0, 0);
 	udelay(1000);
 	/* disable audio */
 	/* outl(HCFG_LOCKSOUNDCACHE, chip->port + HCFG); */
-	outl(0, chip->port + HCFG);
+	outl(0, chip->port + CA0106_HCFG);
 	/* FIXME: We need to stop and DMA transfers here.
 	 *        But as I am not sure how yet, we cannot from the dma pages.
 	 * So we can fix: snd-malloc: Memory leak?  pages not freed = 8
@@ -1593,7 +1578,7 @@ static int snd_ca0106_create(int dev, struct snd_card *card,
 
 	spin_lock_init(&chip->emu_lock);
 
-	err = pci_request_regions(pci, "snd_ca0106");
+	err = pcim_request_all_regions(pci, "snd_ca0106");
 	if (err < 0)
 		return err;
 	chip->port = pci_resource_start(pci, 0);
@@ -1617,8 +1602,8 @@ static int snd_ca0106_create(int dev, struct snd_card *card,
 	pci_read_config_word(pci, PCI_SUBSYSTEM_ID, &chip->model);
 	dev_info(card->dev, "Model %04x Rev %08x Serial %08x\n",
 	       chip->model, pci->revision, chip->serial);
-	strcpy(card->driver, "CA0106");
-	strcpy(card->shortname, "CA0106");
+	strscpy(card->driver, "CA0106");
+	strscpy(card->shortname, "CA0106");
 
 	for (c = ca0106_chip_details; c->serial; c++) {
 		if (subsystem[dev]) {
@@ -1725,8 +1710,8 @@ static int snd_ca0106_midi(struct snd_ca0106 *chip, unsigned int channel)
 }
 
 
-static int snd_ca0106_probe(struct pci_dev *pci,
-					const struct pci_device_id *pci_id)
+static int __snd_ca0106_probe(struct pci_dev *pci,
+			      const struct pci_device_id *pci_id)
 {
 	static int dev;
 	struct snd_card *card;
@@ -1784,6 +1769,12 @@ static int snd_ca0106_probe(struct pci_dev *pci,
 	pci_set_drvdata(pci, card);
 	dev++;
 	return 0;
+}
+
+static int snd_ca0106_probe(struct pci_dev *pci,
+			    const struct pci_device_id *pci_id)
+{
+	return snd_card_free_on_error(&pci->dev, __snd_ca0106_probe(pci, pci_id));
 }
 
 #ifdef CONFIG_PM_SLEEP

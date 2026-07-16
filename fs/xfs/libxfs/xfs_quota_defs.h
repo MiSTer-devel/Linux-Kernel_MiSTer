@@ -16,7 +16,6 @@
  * and quota-limits. This is a waste in the common case, but hey ...
  */
 typedef uint64_t	xfs_qcnt_t;
-typedef uint16_t	xfs_qwarncnt_t;
 
 typedef uint8_t		xfs_dqtype_t;
 
@@ -29,8 +28,8 @@ typedef uint8_t		xfs_dqtype_t;
 /*
  * flags for q_flags field in the dquot.
  */
-#define XFS_DQFLAG_DIRTY	(1 << 0)	/* dquot is dirty */
-#define XFS_DQFLAG_FREEING	(1 << 1)	/* dquot is being torn down */
+#define XFS_DQFLAG_DIRTY	(1u << 0)	/* dquot is dirty */
+#define XFS_DQFLAG_FREEING	(1u << 1)	/* dquot is being torn down */
 
 #define XFS_DQFLAG_STRINGS \
 	{ XFS_DQFLAG_DIRTY,	"DIRTY" }, \
@@ -57,7 +56,7 @@ typedef uint8_t		xfs_dqtype_t;
  * And, of course, we also need to take into account the dquot log format item
  * used to describe each dquot.
  */
-#define XFS_DQUOT_LOGRES(mp)	\
+#define XFS_DQUOT_LOGRES	\
 	((sizeof(struct xfs_dq_logformat) + sizeof(struct xfs_disk_dquot)) * 6)
 
 #define XFS_IS_QUOTA_ON(mp)		((mp)->m_qflags & XFS_ALL_QUOTA_ACCT)
@@ -73,29 +72,45 @@ typedef uint8_t		xfs_dqtype_t;
  * to a single function. None of these XFS_QMOPT_* flags are meant to have
  * persistent values (ie. their values can and will change between versions)
  */
-#define XFS_QMOPT_UQUOTA	0x0000004 /* user dquot requested */
-#define XFS_QMOPT_PQUOTA	0x0000008 /* project dquot requested */
-#define XFS_QMOPT_FORCE_RES	0x0000010 /* ignore quota limits */
-#define XFS_QMOPT_SBVERSION	0x0000040 /* change superblock version num */
-#define XFS_QMOPT_GQUOTA	0x0002000 /* group dquot requested */
+#define XFS_QMOPT_UQUOTA	(1u << 0) /* user dquot requested */
+#define XFS_QMOPT_GQUOTA	(1u << 1) /* group dquot requested */
+#define XFS_QMOPT_PQUOTA	(1u << 2) /* project dquot requested */
+#define XFS_QMOPT_FORCE_RES	(1u << 3) /* ignore quota limits */
+#define XFS_QMOPT_SBVERSION	(1u << 4) /* change superblock version num */
 
 /*
  * flags to xfs_trans_mod_dquot to indicate which field needs to be
  * modified.
  */
-#define XFS_QMOPT_RES_REGBLKS	0x0010000
-#define XFS_QMOPT_RES_RTBLKS	0x0020000
-#define XFS_QMOPT_BCOUNT	0x0040000
-#define XFS_QMOPT_ICOUNT	0x0080000
-#define XFS_QMOPT_RTBCOUNT	0x0100000
-#define XFS_QMOPT_DELBCOUNT	0x0200000
-#define XFS_QMOPT_DELRTBCOUNT	0x0400000
-#define XFS_QMOPT_RES_INOS	0x0800000
+#define XFS_QMOPT_RES_REGBLKS	(1u << 7)
+#define XFS_QMOPT_RES_RTBLKS	(1u << 8)
+#define XFS_QMOPT_BCOUNT	(1u << 9)
+#define XFS_QMOPT_ICOUNT	(1u << 10)
+#define XFS_QMOPT_RTBCOUNT	(1u << 11)
+#define XFS_QMOPT_DELBCOUNT	(1u << 12)
+#define XFS_QMOPT_DELRTBCOUNT	(1u << 13)
+#define XFS_QMOPT_RES_INOS	(1u << 14)
 
 /*
  * flags for dqalloc.
  */
-#define XFS_QMOPT_INHERIT	0x1000000
+#define XFS_QMOPT_INHERIT	(1u << 31)
+
+#define XFS_QMOPT_FLAGS \
+	{ XFS_QMOPT_UQUOTA,		"UQUOTA" }, \
+	{ XFS_QMOPT_PQUOTA,		"PQUOTA" }, \
+	{ XFS_QMOPT_FORCE_RES,		"FORCE_RES" }, \
+	{ XFS_QMOPT_SBVERSION,		"SBVERSION" }, \
+	{ XFS_QMOPT_GQUOTA,		"GQUOTA" }, \
+	{ XFS_QMOPT_INHERIT,		"INHERIT" }, \
+	{ XFS_QMOPT_RES_REGBLKS,	"RES_REGBLKS" }, \
+	{ XFS_QMOPT_RES_RTBLKS,		"RES_RTBLKS" }, \
+	{ XFS_QMOPT_BCOUNT,		"BCOUNT" }, \
+	{ XFS_QMOPT_ICOUNT,		"ICOUNT" }, \
+	{ XFS_QMOPT_RTBCOUNT,		"RTBCOUNT" }, \
+	{ XFS_QMOPT_DELBCOUNT,		"DELBCOUNT" }, \
+	{ XFS_QMOPT_DELRTBCOUNT,	"DELRTBCOUNT" }, \
+	{ XFS_QMOPT_RES_INOS,		"RES_INOS" }
 
 /*
  * flags to xfs_trans_mod_dquot.
@@ -114,6 +129,7 @@ typedef uint8_t		xfs_dqtype_t;
 		(XFS_QMOPT_UQUOTA | XFS_QMOPT_PQUOTA | XFS_QMOPT_GQUOTA)
 #define XFS_QMOPT_RESBLK_MASK	(XFS_QMOPT_RES_REGBLKS | XFS_QMOPT_RES_RTBLKS)
 
+
 extern xfs_failaddr_t xfs_dquot_verify(struct xfs_mount *mp,
 		struct xfs_disk_dquot *ddq, xfs_dqid_t id);
 extern xfs_failaddr_t xfs_dqblk_verify(struct xfs_mount *mp,
@@ -126,5 +142,48 @@ struct xfs_dquot;
 time64_t xfs_dquot_from_disk_ts(struct xfs_disk_dquot *ddq,
 		__be32 dtimer);
 __be32 xfs_dquot_to_disk_ts(struct xfs_dquot *ddq, time64_t timer);
+
+static inline const char *
+xfs_dqinode_path(xfs_dqtype_t type)
+{
+	switch (type) {
+	case XFS_DQTYPE_USER:
+		return "user";
+	case XFS_DQTYPE_GROUP:
+		return "group";
+	case XFS_DQTYPE_PROJ:
+		return "project";
+	}
+
+	ASSERT(0);
+	return NULL;
+}
+
+static inline enum xfs_metafile_type
+xfs_dqinode_metafile_type(xfs_dqtype_t type)
+{
+	switch (type) {
+	case XFS_DQTYPE_USER:
+		return XFS_METAFILE_USRQUOTA;
+	case XFS_DQTYPE_GROUP:
+		return XFS_METAFILE_GRPQUOTA;
+	case XFS_DQTYPE_PROJ:
+		return XFS_METAFILE_PRJQUOTA;
+	}
+
+	ASSERT(0);
+	return XFS_METAFILE_UNKNOWN;
+}
+
+unsigned int xfs_dqinode_sick_mask(xfs_dqtype_t type);
+
+int xfs_dqinode_load(struct xfs_trans *tp, struct xfs_inode *dp,
+		xfs_dqtype_t type, struct xfs_inode **ipp);
+int xfs_dqinode_metadir_create(struct xfs_inode *dp, xfs_dqtype_t type,
+		struct xfs_inode **ipp);
+int xfs_dqinode_metadir_link(struct xfs_inode *dp, xfs_dqtype_t type,
+		struct xfs_inode *ip);
+int xfs_dqinode_mkdir_parent(struct xfs_mount *mp, struct xfs_inode **dpp);
+int xfs_dqinode_load_parent(struct xfs_trans *tp, struct xfs_inode **dpp);
 
 #endif	/* __XFS_QUOTA_H__ */

@@ -34,13 +34,13 @@
  * @subdev: V4L2 subdev
  */
 struct xvip_graph_entity {
-	struct v4l2_async_subdev asd; /* must be first */
+	struct v4l2_async_connection asd; /* must be first */
 	struct media_entity *entity;
 	struct v4l2_subdev *subdev;
 };
 
 static inline struct xvip_graph_entity *
-to_xvip_entity(struct v4l2_async_subdev *asd)
+to_xvip_entity(struct v4l2_async_connection *asd)
 {
 	return container_of(asd, struct xvip_graph_entity, asd);
 }
@@ -54,12 +54,19 @@ xvip_graph_find_entity(struct xvip_composite_device *xdev,
 		       const struct fwnode_handle *fwnode)
 {
 	struct xvip_graph_entity *entity;
-	struct v4l2_async_subdev *asd;
+	struct v4l2_async_connection *asd;
+	struct list_head *lists[] = {
+		&xdev->notifier.done_list,
+		&xdev->notifier.waiting_list
+	};
+	unsigned int i;
 
-	list_for_each_entry(asd, &xdev->notifier.asd_list, asd_list) {
-		entity = to_xvip_entity(asd);
-		if (entity->asd.match.fwnode == fwnode)
-			return entity;
+	for (i = 0; i < ARRAY_SIZE(lists); i++) {
+		list_for_each_entry(asd, lists[i], asc_entry) {
+			entity = to_xvip_entity(asd);
+			if (entity->asd.match.fwnode == fwnode)
+				return entity;
+		}
 	}
 
 	return NULL;
@@ -192,18 +199,13 @@ static int xvip_graph_build_dma(struct xvip_composite_device *xdev)
 	struct media_pad *sink_pad;
 	struct xvip_graph_entity *ent;
 	struct v4l2_fwnode_link link;
-	struct device_node *ep = NULL;
+	struct device_node *ep;
 	struct xvip_dma *dma;
 	int ret = 0;
 
 	dev_dbg(xdev->dev, "creating links for DMA engines\n");
 
-	while (1) {
-		/* Get the next endpoint and parse its link. */
-		ep = of_graph_get_next_endpoint(node, ep);
-		if (ep == NULL)
-			break;
-
+	for_each_endpoint_of_node(node, ep) {
 		dev_dbg(xdev->dev, "processing endpoint %pOF\n", ep);
 
 		ret = v4l2_fwnode_parse_link(of_fwnode_handle(ep), &link);
@@ -285,13 +287,13 @@ static int xvip_graph_notify_complete(struct v4l2_async_notifier *notifier)
 	struct xvip_composite_device *xdev =
 		container_of(notifier, struct xvip_composite_device, notifier);
 	struct xvip_graph_entity *entity;
-	struct v4l2_async_subdev *asd;
+	struct v4l2_async_connection *asd;
 	int ret;
 
 	dev_dbg(xdev->dev, "notify complete, all subdevs registered\n");
 
 	/* Create links for every entity. */
-	list_for_each_entry(asd, &xdev->notifier.asd_list, asd_list) {
+	list_for_each_entry(asd, &xdev->notifier.done_list, asc_entry) {
 		entity = to_xvip_entity(asd);
 		ret = xvip_graph_build_one(xdev, entity);
 		if (ret < 0)
@@ -312,36 +314,14 @@ static int xvip_graph_notify_complete(struct v4l2_async_notifier *notifier)
 
 static int xvip_graph_notify_bound(struct v4l2_async_notifier *notifier,
 				   struct v4l2_subdev *subdev,
-				   struct v4l2_async_subdev *unused)
+				   struct v4l2_async_connection *asc)
 {
-	struct xvip_composite_device *xdev =
-		container_of(notifier, struct xvip_composite_device, notifier);
-	struct xvip_graph_entity *entity;
-	struct v4l2_async_subdev *asd;
+	struct xvip_graph_entity *entity = to_xvip_entity(asc);
 
-	/* Locate the entity corresponding to the bound subdev and store the
-	 * subdev pointer.
-	 */
-	list_for_each_entry(asd, &xdev->notifier.asd_list, asd_list) {
-		entity = to_xvip_entity(asd);
+	entity->entity = &subdev->entity;
+	entity->subdev = subdev;
 
-		if (entity->asd.match.fwnode != subdev->fwnode)
-			continue;
-
-		if (entity->subdev) {
-			dev_err(xdev->dev, "duplicate subdev for node %p\n",
-				entity->asd.match.fwnode);
-			return -EINVAL;
-		}
-
-		dev_dbg(xdev->dev, "subdev %s bound\n", subdev->name);
-		entity->entity = &subdev->entity;
-		entity->subdev = subdev;
-		return 0;
-	}
-
-	dev_err(xdev->dev, "no entity for subdev %s\n", subdev->name);
-	return -EINVAL;
+	return 0;
 }
 
 static const struct v4l2_async_notifier_operations xvip_graph_notify_ops = {
@@ -382,9 +362,8 @@ static int xvip_graph_parse_one(struct xvip_composite_device *xdev,
 			continue;
 		}
 
-		xge = v4l2_async_notifier_add_fwnode_subdev(
-			&xdev->notifier, remote,
-			struct xvip_graph_entity);
+		xge = v4l2_async_nf_add_fwnode(&xdev->notifier, remote,
+					       struct xvip_graph_entity);
 		fwnode_handle_put(remote);
 		if (IS_ERR(xge)) {
 			ret = PTR_ERR(xge);
@@ -395,7 +374,7 @@ static int xvip_graph_parse_one(struct xvip_composite_device *xdev,
 	return 0;
 
 err_notifier_cleanup:
-	v4l2_async_notifier_cleanup(&xdev->notifier);
+	v4l2_async_nf_cleanup(&xdev->notifier);
 	fwnode_handle_put(ep);
 	return ret;
 }
@@ -403,7 +382,7 @@ err_notifier_cleanup:
 static int xvip_graph_parse(struct xvip_composite_device *xdev)
 {
 	struct xvip_graph_entity *entity;
-	struct v4l2_async_subdev *asd;
+	struct v4l2_async_connection *asd;
 	int ret;
 
 	/*
@@ -416,11 +395,11 @@ static int xvip_graph_parse(struct xvip_composite_device *xdev)
 	if (ret < 0)
 		return 0;
 
-	list_for_each_entry(asd, &xdev->notifier.asd_list, asd_list) {
+	list_for_each_entry(asd, &xdev->notifier.waiting_list, asc_entry) {
 		entity = to_xvip_entity(asd);
 		ret = xvip_graph_parse_one(xdev, entity->asd.match.fwnode);
 		if (ret < 0) {
-			v4l2_async_notifier_cleanup(&xdev->notifier);
+			v4l2_async_nf_cleanup(&xdev->notifier);
 			break;
 		}
 	}
@@ -471,8 +450,7 @@ static int xvip_graph_dma_init_one(struct xvip_composite_device *xdev,
 static int xvip_graph_dma_init(struct xvip_composite_device *xdev)
 {
 	struct device_node *ports;
-	struct device_node *port;
-	int ret;
+	int ret = 0;
 
 	ports = of_get_child_by_name(xdev->dev->of_node, "ports");
 	if (ports == NULL) {
@@ -480,15 +458,14 @@ static int xvip_graph_dma_init(struct xvip_composite_device *xdev)
 		return -EINVAL;
 	}
 
-	for_each_child_of_node(ports, port) {
+	for_each_child_of_node_scoped(ports, port) {
 		ret = xvip_graph_dma_init_one(xdev, port);
-		if (ret < 0) {
-			of_node_put(port);
-			return ret;
-		}
+		if (ret)
+			break;
 	}
 
-	return 0;
+	of_node_put(ports);
+	return ret;
 }
 
 static void xvip_graph_cleanup(struct xvip_composite_device *xdev)
@@ -496,8 +473,8 @@ static void xvip_graph_cleanup(struct xvip_composite_device *xdev)
 	struct xvip_dma *dmap;
 	struct xvip_dma *dma;
 
-	v4l2_async_notifier_unregister(&xdev->notifier);
-	v4l2_async_notifier_cleanup(&xdev->notifier);
+	v4l2_async_nf_unregister(&xdev->notifier);
+	v4l2_async_nf_cleanup(&xdev->notifier);
 
 	list_for_each_entry_safe(dma, dmap, &xdev->dmas, list) {
 		xvip_dma_cleanup(dma);
@@ -516,6 +493,8 @@ static int xvip_graph_init(struct xvip_composite_device *xdev)
 		goto done;
 	}
 
+	v4l2_async_nf_init(&xdev->notifier, &xdev->v4l2_dev);
+
 	/* Parse the graph to extract a list of subdevice DT nodes. */
 	ret = xvip_graph_parse(xdev);
 	if (ret < 0) {
@@ -523,7 +502,7 @@ static int xvip_graph_init(struct xvip_composite_device *xdev)
 		goto done;
 	}
 
-	if (list_empty(&xdev->notifier.asd_list)) {
+	if (list_empty(&xdev->notifier.waiting_list)) {
 		dev_err(xdev->dev, "no subdev found in graph\n");
 		ret = -ENOENT;
 		goto done;
@@ -532,7 +511,7 @@ static int xvip_graph_init(struct xvip_composite_device *xdev)
 	/* Register the subdevices notifier. */
 	xdev->notifier.ops = &xvip_graph_notify_ops;
 
-	ret = v4l2_async_notifier_register(&xdev->v4l2_dev, &xdev->notifier);
+	ret = v4l2_async_nf_register(&xdev->notifier);
 	if (ret < 0) {
 		dev_err(xdev->dev, "notifier registration failed\n");
 		goto done;
@@ -596,7 +575,6 @@ static int xvip_composite_probe(struct platform_device *pdev)
 
 	xdev->dev = &pdev->dev;
 	INIT_LIST_HEAD(&xdev->dmas);
-	v4l2_async_notifier_init(&xdev->notifier);
 
 	ret = xvip_composite_v4l2_init(xdev);
 	if (ret < 0)
@@ -617,14 +595,12 @@ error:
 	return ret;
 }
 
-static int xvip_composite_remove(struct platform_device *pdev)
+static void xvip_composite_remove(struct platform_device *pdev)
 {
 	struct xvip_composite_device *xdev = platform_get_drvdata(pdev);
 
 	xvip_graph_cleanup(xdev);
 	xvip_composite_v4l2_cleanup(xdev);
-
-	return 0;
 }
 
 static const struct of_device_id xvip_composite_of_id_table[] = {

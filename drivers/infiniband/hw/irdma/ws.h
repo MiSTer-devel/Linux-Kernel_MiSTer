@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB */
+/* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
 /* Copyright (c) 2015 - 2020 Intel Corporation */
 #ifndef IRDMA_WS_H
 #define IRDMA_WS_H
@@ -34,7 +34,7 @@ struct irdma_ws_node {
 };
 
 struct irdma_sc_vsi;
-enum irdma_status_code irdma_ws_add(struct irdma_sc_vsi *vsi, u8 user_pri);
+int irdma_ws_add(struct irdma_sc_vsi *vsi, u8 user_pri);
 void irdma_ws_remove(struct irdma_sc_vsi *vsi, u8 user_pri);
 void irdma_ws_reset(struct irdma_sc_vsi *vsi);
 

@@ -342,8 +342,10 @@ void wl1251_tx_work(struct work_struct *work)
 	while ((skb = skb_dequeue(&wl->tx_queue))) {
 		if (!woken_up) {
 			ret = wl1251_ps_elp_wakeup(wl);
-			if (ret < 0)
+			if (ret < 0) {
+				skb_queue_head(&wl->tx_queue, skb);
 				goto out;
+			}
 			woken_up = true;
 		}
 
@@ -400,11 +402,13 @@ static void wl1251_tx_packet_cb(struct wl1251 *wl,
 	int hdrlen;
 	u8 *frame;
 
-	skb = wl->tx_frames[result->id];
-	if (skb == NULL) {
-		wl1251_error("SKB for packet %d is NULL", result->id);
+	if (unlikely(result->id >= ARRAY_SIZE(wl->tx_frames) ||
+		     wl->tx_frames[result->id] == NULL)) {
+		wl1251_error("invalid packet id %u", result->id);
 		return;
 	}
+
+	skb = wl->tx_frames[result->id];
 
 	info = IEEE80211_SKB_CB(skb);
 
@@ -434,7 +438,7 @@ static void wl1251_tx_packet_cb(struct wl1251 *wl,
 		     result->status, wl1251_tx_parse_status(result->status));
 
 
-	ieee80211_tx_status(wl->hw, skb);
+	ieee80211_tx_status_skb(wl->hw, skb);
 
 	wl->tx_frames[result->id] = NULL;
 }
@@ -443,19 +447,25 @@ static void wl1251_tx_packet_cb(struct wl1251 *wl,
 void wl1251_tx_complete(struct wl1251 *wl)
 {
 	int i, result_index, num_complete = 0, queue_len;
-	struct tx_result result[FW_TX_CMPLT_BLOCK_SIZE], *result_ptr;
+	struct tx_result *result, *result_ptr;
 	unsigned long flags;
 
 	if (unlikely(wl->state != WL1251_STATE_ON))
 		return;
 
+	result = kmalloc_array(FW_TX_CMPLT_BLOCK_SIZE, sizeof(*result), GFP_KERNEL);
+	if (!result) {
+		wl1251_error("can not allocate result buffer");
+		return;
+	}
+
 	/* First we read the result */
-	wl1251_mem_read(wl, wl->data_path->tx_complete_addr,
-			    result, sizeof(result));
+	wl1251_mem_read(wl, wl->data_path->tx_complete_addr, result,
+			FW_TX_CMPLT_BLOCK_SIZE * sizeof(*result));
 
 	result_index = wl->next_tx_complete;
 
-	for (i = 0; i < ARRAY_SIZE(result); i++) {
+	for (i = 0; i < FW_TX_CMPLT_BLOCK_SIZE; i++) {
 		result_ptr = &result[result_index];
 
 		if (result_ptr->done_1 == 1 &&
@@ -538,6 +548,7 @@ void wl1251_tx_complete(struct wl1251 *wl)
 
 	}
 
+	kfree(result);
 	wl->next_tx_complete = result_index;
 }
 
@@ -559,7 +570,7 @@ void wl1251_tx_flush(struct wl1251 *wl)
 		if (!(info->flags & IEEE80211_TX_CTL_REQ_TX_STATUS))
 				continue;
 
-		ieee80211_tx_status(wl->hw, skb);
+		ieee80211_tx_status_skb(wl->hw, skb);
 	}
 
 	for (i = 0; i < FW_TX_CMPLT_BLOCK_SIZE; i++)
@@ -570,7 +581,7 @@ void wl1251_tx_flush(struct wl1251 *wl)
 			if (!(info->flags & IEEE80211_TX_CTL_REQ_TX_STATUS))
 				continue;
 
-			ieee80211_tx_status(wl->hw, skb);
+			ieee80211_tx_status_skb(wl->hw, skb);
 			wl->tx_frames[i] = NULL;
 		}
 }

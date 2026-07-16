@@ -6,14 +6,15 @@
 #include <linux/audit.h>
 #include <linux/ptrace.h>
 #include <linux/sched.h>
-#include <linux/tracehook.h>
 #include <linux/uaccess.h>
 #include <asm/ptrace-abi.h>
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/syscalls.h>
+
 void user_enable_single_step(struct task_struct *child)
 {
-	child->ptrace |= PT_DTRACE;
-	child->thread.singlestep_syscall = 0;
+	set_tsk_thread_flag(child, TIF_SINGLESTEP);
 
 #ifdef SUBARCH_SET_SINGLESTEPPING
 	SUBARCH_SET_SINGLESTEPPING(child, 1);
@@ -22,8 +23,7 @@ void user_enable_single_step(struct task_struct *child)
 
 void user_disable_single_step(struct task_struct *child)
 {
-	child->ptrace &= ~PT_DTRACE;
-	child->thread.singlestep_syscall = 0;
+	clear_tsk_thread_flag(child, TIF_SINGLESTEP);
 
 #ifdef SUBARCH_SET_SINGLESTEPPING
 	SUBARCH_SET_SINGLESTEPPING(child, 0);
@@ -37,9 +37,6 @@ void ptrace_disable(struct task_struct *child)
 {
 	user_disable_single_step(child);
 }
-
-extern int peek_user(struct task_struct * child, long addr, long data);
-extern int poke_user(struct task_struct * child, long addr, long data);
 
 long arch_ptrace(struct task_struct *child, long request,
 		 unsigned long addr, unsigned long data)
@@ -121,7 +118,7 @@ static void send_sigtrap(struct uml_pt_regs *regs, int error_code)
 }
 
 /*
- * XXX Check PT_DTRACE vs TIF_SINGLESTEP for singlestepping check and
+ * XXX Check TIF_SINGLESTEP for singlestepping check and
  * PT_PTRACED vs TIF_SYSCALL_TRACE for syscall tracing check
  */
 int syscall_trace_enter(struct pt_regs *regs)
@@ -132,10 +129,13 @@ int syscall_trace_enter(struct pt_regs *regs)
 			    UPT_SYSCALL_ARG3(&regs->regs),
 			    UPT_SYSCALL_ARG4(&regs->regs));
 
+	if (test_thread_flag(TIF_SYSCALL_TRACEPOINT))
+		trace_sys_enter(regs, UPT_SYSCALL_NR(&regs->regs));
+
 	if (!test_thread_flag(TIF_SYSCALL_TRACE))
 		return 0;
 
-	return tracehook_report_syscall_entry(regs);
+	return ptrace_report_syscall_entry(regs);
 }
 
 void syscall_trace_leave(struct pt_regs *regs)
@@ -145,13 +145,16 @@ void syscall_trace_leave(struct pt_regs *regs)
 	audit_syscall_exit(regs);
 
 	/* Fake a debug trap */
-	if (ptraced & PT_DTRACE)
+	if (test_thread_flag(TIF_SINGLESTEP))
 		send_sigtrap(&regs->regs, 0);
+
+	if (test_thread_flag(TIF_SYSCALL_TRACEPOINT))
+		trace_sys_exit(regs, PT_REGS_SYSCALL_RET(regs));
 
 	if (!test_thread_flag(TIF_SYSCALL_TRACE))
 		return;
 
-	tracehook_report_syscall_exit(regs, 0);
+	ptrace_report_syscall_exit(regs, 0);
 	/* force do_signal() --> is_syscall() */
 	if (ptraced & PT_PTRACED)
 		set_thread_flag(TIF_SIGPENDING);

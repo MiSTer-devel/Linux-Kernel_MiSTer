@@ -80,7 +80,7 @@ static int regmap_sccb_write(void *context, unsigned int reg, unsigned int val)
 	return i2c_smbus_write_byte_data(i2c, reg, val);
 }
 
-static struct regmap_bus regmap_sccb_bus = {
+static const struct regmap_bus regmap_sccb_bus = {
 	.reg_write = regmap_sccb_write,
 	.reg_read = regmap_sccb_read,
 };
@@ -125,4 +125,5 @@ struct regmap *__devm_regmap_init_sccb(struct i2c_client *i2c,
 }
 EXPORT_SYMBOL_GPL(__devm_regmap_init_sccb);
 
+MODULE_DESCRIPTION("Register map access API - SCCB support");
 MODULE_LICENSE("GPL v2");

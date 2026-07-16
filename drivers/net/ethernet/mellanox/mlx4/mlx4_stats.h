@@ -42,9 +42,11 @@ struct mlx4_en_port_stats {
 
 struct mlx4_en_xdp_stats {
 	unsigned long rx_xdp_drop;
+	unsigned long rx_xdp_redirect;
+	unsigned long rx_xdp_redirect_fail;
 	unsigned long rx_xdp_tx;
 	unsigned long rx_xdp_tx_full;
-#define NUM_XDP_STATS		3
+#define NUM_XDP_STATS		5
 };
 
 struct mlx4_en_phy_stats {
@@ -110,7 +112,7 @@ struct mlx4_en_stat_out_flow_control_mbox {
 	__be64 tx_pause_duration;
 	/* Number of transmitter transitions from XOFF state to XON state */
 	__be64 tx_pause_transition;
-	/* Reserverd */
+	/* Reserved */
 	__be64 reserved[2];
 };
 

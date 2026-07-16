@@ -1,20 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * NXP Wireless LAN device driver: AP event handling
  *
  * Copyright 2011-2020 NXP
- *
- * This software file (the "File") is distributed by NXP
- * under the terms of the GNU General Public License Version 2, June 1991
- * (the "License").  You may use, redistribute and/or modify this File in
- * accordance with the terms and conditions of the License, a copy of which
- * is available by writing to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or on the
- * worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
- *
- * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
- * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
- * this warranty disclaimer.
  */
 
 #include "decl.h"
@@ -197,8 +185,7 @@ int mwifiex_process_uap_event(struct mwifiex_private *priv)
 		mwifiex_dbg(adapter, EVENT,
 			    "AP EVENT: event id: %#x\n", eventcause);
 		priv->port_open = false;
-		memcpy(priv->netdev->dev_addr, adapter->event_body + 2,
-		       ETH_ALEN);
+		eth_hw_addr_set(priv->netdev, adapter->event_body + 2);
 		if (priv->hist_data)
 			mwifiex_hist_data_reset(priv);
 		mwifiex_check_uap_capabilities(priv, adapter->event_skb);
@@ -337,20 +324,4 @@ int mwifiex_process_uap_event(struct mwifiex_private *priv)
 	}
 
 	return 0;
-}
-
-/* This function deletes station entry from associated station list.
- * Also if both AP and STA are 11n enabled, RxReorder tables and TxBA stream
- * tables created for this station are deleted.
- */
-void mwifiex_uap_del_sta_data(struct mwifiex_private *priv,
-			      struct mwifiex_sta_node *node)
-{
-	if (priv->ap_11n_enabled && node->is_11n_enabled) {
-		mwifiex_11n_del_rx_reorder_tbl_by_ta(priv, node->mac_addr);
-		mwifiex_del_tx_ba_stream_tbl_by_ra(priv, node->mac_addr);
-	}
-	mwifiex_del_sta_entry(priv, node->mac_addr);
-
-	return;
 }

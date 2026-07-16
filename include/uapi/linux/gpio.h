@@ -66,6 +66,8 @@ struct gpiochip_info {
  * @GPIO_V2_LINE_FLAG_BIAS_PULL_DOWN: line has pull-down bias enabled
  * @GPIO_V2_LINE_FLAG_BIAS_DISABLED: line has bias disabled
  * @GPIO_V2_LINE_FLAG_EVENT_CLOCK_REALTIME: line events contain REALTIME timestamps
+ * @GPIO_V2_LINE_FLAG_EVENT_CLOCK_HTE: line events contain timestamps from
+ * the hardware timestamping engine (HTE) subsystem
  */
 enum gpio_v2_line_flag {
 	GPIO_V2_LINE_FLAG_USED			= _BITULL(0),
@@ -80,15 +82,16 @@ enum gpio_v2_line_flag {
 	GPIO_V2_LINE_FLAG_BIAS_PULL_DOWN	= _BITULL(9),
 	GPIO_V2_LINE_FLAG_BIAS_DISABLED		= _BITULL(10),
 	GPIO_V2_LINE_FLAG_EVENT_CLOCK_REALTIME	= _BITULL(11),
+	GPIO_V2_LINE_FLAG_EVENT_CLOCK_HTE	= _BITULL(12),
 };
 
 /**
  * struct gpio_v2_line_values - Values of GPIO lines
  * @bits: a bitmap containing the value of the lines, set to 1 for active
- * and 0 for inactive.
+ * and 0 for inactive
  * @mask: a bitmap identifying the lines to get or set, with each bit
  * number corresponding to the index into &struct
- * gpio_v2_line_request.offsets.
+ * gpio_v2_line_request.offsets
  */
 struct gpio_v2_line_values {
 	__aligned_u64 bits;
@@ -120,7 +123,7 @@ enum gpio_v2_line_attr_id {
  * @values: if id is %GPIO_V2_LINE_ATTR_ID_OUTPUT_VALUES, a bitmap
  * containing the values to which the lines will be set, with each bit
  * number corresponding to the index into &struct
- * gpio_v2_line_request.offsets.
+ * gpio_v2_line_request.offsets
  * @debounce_period_us: if id is %GPIO_V2_LINE_ATTR_ID_DEBOUNCE, the
  * desired debounce period, in microseconds
  */
@@ -140,7 +143,7 @@ struct gpio_v2_line_attribute {
  * @attr: the configurable attribute
  * @mask: a bitmap identifying the lines to which the attribute applies,
  * with each bit number corresponding to the index into &struct
- * gpio_v2_line_request.offsets.
+ * gpio_v2_line_request.offsets
  */
 struct gpio_v2_line_config_attribute {
 	struct gpio_v2_line_attribute attr;
@@ -175,7 +178,7 @@ struct gpio_v2_line_config {
  * associated GPIO chip
  * @consumer: a desired consumer label for the selected GPIO lines such as
  * "my-bitbanged-relay"
- * @config: requested configuration for the lines.
+ * @config: requested configuration for the lines
  * @num_lines: number of lines requested in this request, i.e. the number
  * of valid fields in the %GPIO_V2_LINES_MAX sized arrays, set to 1 to
  * request a single line
@@ -186,9 +189,8 @@ struct gpio_v2_line_config {
  * buffer. If this field is zero then the buffer size defaults to a minimum
  * of @num_lines * 16.
  * @padding: reserved for future use and must be zero filled
- * @fd: if successful this field will contain a valid anonymous file handle
- * after a %GPIO_GET_LINE_IOCTL operation, zero or negative value means
- * error
+ * @fd: after a successful %GPIO_V2_GET_LINE_IOCTL operation, contains
+ * a valid anonymous file descriptor representing the request
  */
 struct gpio_v2_line_request {
 	__u32 offsets[GPIO_V2_LINES_MAX];
@@ -214,7 +216,7 @@ struct gpio_v2_line_request {
  * @num_attrs: the number of attributes in @attrs
  * @flags: flags for this GPIO line, with values from &enum
  * gpio_v2_line_flag, such as %GPIO_V2_LINE_FLAG_ACTIVE_LOW,
- * %GPIO_V2_LINE_FLAG_OUTPUT etc, added together.
+ * %GPIO_V2_LINE_FLAG_OUTPUT etc, added together
  * @attrs: the configuration attributes associated with the line
  * @padding: reserved for future use
  */
@@ -271,7 +273,7 @@ enum gpio_v2_line_event_id {
 
 /**
  * struct gpio_v2_line_event - The actual event being pushed to userspace
- * @timestamp_ns: best estimate of time of event occurrence, in nanoseconds.
+ * @timestamp_ns: best estimate of time of event occurrence, in nanoseconds
  * @id: event identifier with value from &enum gpio_v2_line_event_id
  * @offset: the offset of the line that triggered the event
  * @seqno: the sequence number for this event in the sequence of events for
@@ -286,6 +288,10 @@ enum gpio_v2_line_event_id {
  *
  * If the %GPIO_V2_LINE_FLAG_EVENT_CLOCK_REALTIME flag is set then the
  * @timestamp_ns is read from %CLOCK_REALTIME.
+ *
+ * If the %GPIO_V2_LINE_FLAG_EVENT_CLOCK_HTE flag is set then the
+ * @timestamp_ns is provided by the hardware timestamping engine (HTE)
+ * subsystem.
  */
 struct gpio_v2_line_event {
 	__aligned_u64 timestamp_ns;
@@ -327,7 +333,7 @@ struct gpio_v2_line_event {
  * also be empty if the consumer doesn't set this up
  *
  * Note: This struct is part of ABI v1 and is deprecated.
- * Use &struct gpio_v2_line_info instead.
+ * Use ABI v2 and &struct gpio_v2_line_info instead.
  */
 struct gpioline_info {
 	__u32 line_offset;
@@ -362,7 +368,7 @@ enum {
  * at the end of the structure on 64-bit architectures.
  *
  * Note: This struct is part of ABI v1 and is deprecated.
- * Use &struct gpio_v2_line_info_changed instead.
+ * Use ABI v2 and &struct gpio_v2_line_info_changed instead.
  */
 struct gpioline_info_changed {
 	struct gpioline_info info;
@@ -393,18 +399,17 @@ struct gpioline_info_changed {
  * a batch of input or output lines, but they must all have the same
  * characteristics, i.e. all inputs or all outputs, all active low etc
  * @default_values: if the %GPIOHANDLE_REQUEST_OUTPUT is set for a requested
- * line, this specifies the default output value, should be 0 (low) or
- * 1 (high), anything else than 0 or 1 will be interpreted as 1 (high)
+ * line, this specifies the default output value, should be 0 (inactive) or
+ * 1 (active).  Anything other than 0 or 1 will be interpreted as active.
  * @consumer_label: a desired consumer label for the selected GPIO line(s)
  * such as "my-bitbanged-relay"
  * @lines: number of lines requested in this request, i.e. the number of
  * valid fields in the above arrays, set to 1 to request a single line
- * @fd: if successful this field will contain a valid anonymous file handle
- * after a %GPIO_GET_LINEHANDLE_IOCTL operation, zero or negative value
- * means error
+ * @fd: after a successful %GPIO_GET_LINEHANDLE_IOCTL operation, contains
+ * a valid anonymous file descriptor representing the request
  *
  * Note: This struct is part of ABI v1 and is deprecated.
- * Use &struct gpio_v2_line_request instead.
+ * Use ABI v2 and &struct gpio_v2_line_request instead.
  */
 struct gpiohandle_request {
 	__u32 lineoffsets[GPIOHANDLES_MAX];
@@ -421,12 +426,12 @@ struct gpiohandle_request {
  * %GPIOHANDLE_REQUEST_OUTPUT, %GPIOHANDLE_REQUEST_ACTIVE_LOW etc, added
  * together
  * @default_values: if the %GPIOHANDLE_REQUEST_OUTPUT is set in flags,
- * this specifies the default output value, should be 0 (low) or
- * 1 (high), anything else than 0 or 1 will be interpreted as 1 (high)
+ * this specifies the default output value, should be 0 (inactive) or
+ * 1 (active).  Anything other than 0 or 1 will be interpreted as active.
  * @padding: reserved for future use and should be zero filled
  *
  * Note: This struct is part of ABI v1 and is deprecated.
- * Use &struct gpio_v2_line_config instead.
+ * Use ABI v2 and &struct gpio_v2_line_config instead.
  */
 struct gpiohandle_config {
 	__u32 flags;
@@ -438,10 +443,11 @@ struct gpiohandle_config {
  * struct gpiohandle_data - Information of values on a GPIO handle
  * @values: when getting the state of lines this contains the current
  * state of a line, when setting the state of lines these should contain
- * the desired target state
+ * the desired target state.  States are 0 (inactive) or 1 (active).
+ * When setting, anything other than 0 or 1 will be interpreted as active.
  *
  * Note: This struct is part of ABI v1 and is deprecated.
- * Use &struct gpio_v2_line_values instead.
+ * Use ABI v2 and &struct gpio_v2_line_values instead.
  */
 struct gpiohandle_data {
 	__u8 values[GPIOHANDLES_MAX];
@@ -462,12 +468,11 @@ struct gpiohandle_data {
  * %GPIOEVENT_REQUEST_RISING_EDGE or %GPIOEVENT_REQUEST_FALLING_EDGE
  * @consumer_label: a desired consumer label for the selected GPIO line(s)
  * such as "my-listener"
- * @fd: if successful this field will contain a valid anonymous file handle
- * after a %GPIO_GET_LINEEVENT_IOCTL operation, zero or negative value
- * means error
+ * @fd: after a successful %GPIO_GET_LINEEVENT_IOCTL operation, contains a
+ * valid anonymous file descriptor representing the request
  *
  * Note: This struct is part of ABI v1 and is deprecated.
- * Use &struct gpio_v2_line_request instead.
+ * Use ABI v2 and &struct gpio_v2_line_request instead.
  */
 struct gpioevent_request {
 	__u32 lineoffset;
@@ -486,10 +491,11 @@ struct gpioevent_request {
 /**
  * struct gpioevent_data - The actual event being pushed to userspace
  * @timestamp: best estimate of time of event occurrence, in nanoseconds
- * @id: event identifier
+ * @id: event identifier, one of %GPIOEVENT_EVENT_RISING_EDGE or
+ *  %GPIOEVENT_EVENT_FALLING_EDGE
  *
  * Note: This struct is part of ABI v1 and is deprecated.
- * Use &struct gpio_v2_line_event instead.
+ * Use ABI v2 and &struct gpio_v2_line_event instead.
  */
 struct gpioevent_data {
 	__u64 timestamp;

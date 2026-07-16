@@ -38,11 +38,13 @@
 #include "gem/i915_gem_pm.h"
 #include "gt/intel_context.h"
 #include "gt/intel_execlists_submission.h"
+#include "gt/intel_gt_regs.h"
 #include "gt/intel_lrc.h"
 #include "gt/intel_ring.h"
 
 #include "i915_drv.h"
 #include "i915_gem_gtt.h"
+#include "i915_perf_oa_regs.h"
 #include "gvt.h"
 
 #define RING_CTX_OFF(x) \
@@ -75,7 +77,7 @@ static void update_shadow_pdps(struct intel_vgpu_workload *workload)
 }
 
 /*
- * when populating shadow ctx from guest, we should not overrride oa related
+ * When populating shadow ctx from guest, we should not override oa related
  * registers, so that they will not be overlapped by guest oa configs. Thus
  * made it possible to capture oa data from host for both host and guests.
  */
@@ -148,10 +150,10 @@ static int populate_shadow_context(struct intel_vgpu_workload *workload)
 
 	sr_oa_regs(workload, (u32 *)shadow_ring_context, true);
 #define COPY_REG(name) \
-	intel_gvt_hypervisor_read_gpa(vgpu, workload->ring_context_gpa \
+	intel_gvt_read_gpa(vgpu, workload->ring_context_gpa \
 		+ RING_CTX_OFF(name.val), &shadow_ring_context->name.val, 4)
 #define COPY_REG_MASKED(name) {\
-		intel_gvt_hypervisor_read_gpa(vgpu, workload->ring_context_gpa \
+		intel_gvt_read_gpa(vgpu, workload->ring_context_gpa \
 					      + RING_CTX_OFF(name.val),\
 					      &shadow_ring_context->name.val, 4);\
 		shadow_ring_context->name.val |= 0xffff << 16;\
@@ -165,7 +167,7 @@ static int populate_shadow_context(struct intel_vgpu_workload *workload)
 		COPY_REG(rcs_indirect_ctx);
 		COPY_REG(rcs_indirect_ctx_offset);
 	} else if (workload->engine->id == BCS0)
-		intel_gvt_hypervisor_read_gpa(vgpu,
+		intel_gvt_read_gpa(vgpu,
 				workload->ring_context_gpa +
 				BCS_TILE_REGISTER_VAL_OFFSET,
 				(void *)shadow_ring_context +
@@ -176,7 +178,7 @@ static int populate_shadow_context(struct intel_vgpu_workload *workload)
 	/* don't copy Ring Context (the first 0x50 dwords),
 	 * only copy the Engine Context part from guest
 	 */
-	intel_gvt_hypervisor_read_gpa(vgpu,
+	intel_gvt_read_gpa(vgpu,
 			workload->ring_context_gpa +
 			RING_CTX_SIZE,
 			(void *)shadow_ring_context +
@@ -243,7 +245,7 @@ static int populate_shadow_context(struct intel_vgpu_workload *workload)
 		continue;
 
 read:
-		intel_gvt_hypervisor_read_gpa(vgpu, gpa_base, dst, gpa_size);
+		intel_gvt_read_gpa(vgpu, gpa_base, dst, gpa_size);
 		gpa_base = context_gpa;
 		gpa_size = I915_GTT_PAGE_SIZE;
 		dst = context_base + (i << I915_GTT_PAGE_SHIFT);
@@ -526,9 +528,10 @@ static int prepare_shadow_batch_buffer(struct intel_vgpu_workload *workload)
 	int ret;
 
 	list_for_each_entry(bb, &workload->shadow_bb, list) {
-		/* For privilge batch buffer and not wa_ctx, the bb_start_cmd_va
+		/*
+		 * For privilege batch buffer and not wa_ctx, the bb_start_cmd_va
 		 * is only updated into ring_scan_buffer, not real ring address
-		 * allocated in later copy_workload_to_ring_buffer. pls be noted
+		 * allocated in later copy_workload_to_ring_buffer. Please be noted
 		 * shadow_ring_buffer_va is now pointed to real ring buffer va
 		 * in copy_workload_to_ring_buffer.
 		 */
@@ -544,7 +547,7 @@ static int prepare_shadow_batch_buffer(struct intel_vgpu_workload *workload)
 		 * here, rather than switch to shadow bb's gma
 		 * address, we directly use original batch buffer's
 		 * gma address, and send original bb to hardware
-		 * directly
+		 * directly.
 		 */
 		if (!bb->ppgtt) {
 			i915_gem_ww_ctx_init(&ww, false);
@@ -568,9 +571,8 @@ retry:
 			if (gmadr_bytes == 8)
 				bb->bb_start_cmd_va[2] = 0;
 
-			ret = i915_vma_move_to_active(bb->vma,
-						      workload->req,
-						      0);
+			ret = i915_vma_move_to_active(bb->vma, workload->req,
+						      __EXEC_OBJECT_NO_REQUEST_AWAIT);
 			if (ret)
 				goto err;
 
@@ -694,6 +696,7 @@ intel_vgpu_shadow_mm_pin(struct intel_vgpu_workload *workload)
 
 	if (workload->shadow_mm->type != INTEL_GVT_MM_PPGTT ||
 	    !workload->shadow_mm->ppgtt_mm.shadowed) {
+		intel_vgpu_unpin_mm(workload->shadow_mm);
 		gvt_vgpu_err("workload shadow ppgtt isn't ready\n");
 		return -EINVAL;
 	}
@@ -864,7 +867,8 @@ pick_next_workload(struct intel_gvt *gvt, struct intel_engine_cs *engine)
 		goto out;
 	}
 
-	if (!scheduler->current_vgpu->active ||
+	if (!test_bit(INTEL_VGPU_STATUS_ACTIVE,
+		      scheduler->current_vgpu->status) ||
 	    list_empty(workload_q_head(scheduler->current_vgpu, engine)))
 		goto out;
 
@@ -909,8 +913,7 @@ static void update_guest_pdps(struct intel_vgpu *vgpu,
 	gpa = ring_context_gpa + RING_CTX_OFF(pdps[0].val);
 
 	for (i = 0; i < 8; i++)
-		intel_gvt_hypervisor_write_gpa(vgpu,
-				gpa + i * 8, &pdp[7 - i], 4);
+		intel_gvt_write_gpa(vgpu, gpa + i * 8, &pdp[7 - i], 4);
 }
 
 static __maybe_unused bool
@@ -972,7 +975,7 @@ static void update_guest_context(struct intel_vgpu_workload *workload)
 	context_page_num = rq->engine->context_size;
 	context_page_num = context_page_num >> PAGE_SHIFT;
 
-	if (IS_BROADWELL(rq->engine->i915) && rq->engine->id == RCS0)
+	if (IS_BROADWELL(rq->i915) && rq->engine->id == RCS0)
 		context_page_num = 19;
 
 	context_base = (void *) ctx->lrc_reg_state -
@@ -1005,13 +1008,13 @@ static void update_guest_context(struct intel_vgpu_workload *workload)
 		continue;
 
 write:
-		intel_gvt_hypervisor_write_gpa(vgpu, gpa_base, src, gpa_size);
+		intel_gvt_write_gpa(vgpu, gpa_base, src, gpa_size);
 		gpa_base = context_gpa;
 		gpa_size = I915_GTT_PAGE_SIZE;
 		src = context_base + (i << I915_GTT_PAGE_SHIFT);
 	}
 
-	intel_gvt_hypervisor_write_gpa(vgpu, workload->ring_context_gpa +
+	intel_gvt_write_gpa(vgpu, workload->ring_context_gpa +
 		RING_CTX_OFF(ring_header.val), &workload->rb_tail, 4);
 
 	shadow_ring_context = (void *) ctx->lrc_reg_state;
@@ -1026,7 +1029,7 @@ write:
 	}
 
 #define COPY_REG(name) \
-	intel_gvt_hypervisor_write_gpa(vgpu, workload->ring_context_gpa + \
+	intel_gvt_write_gpa(vgpu, workload->ring_context_gpa + \
 		RING_CTX_OFF(name.val), &shadow_ring_context->name.val, 4)
 
 	COPY_REG(ctx_ctrl);
@@ -1034,7 +1037,7 @@ write:
 
 #undef COPY_REG
 
-	intel_gvt_hypervisor_write_gpa(vgpu,
+	intel_gvt_write_gpa(vgpu,
 			workload->ring_context_gpa +
 			sizeof(*shadow_ring_context),
 			(void *)shadow_ring_context +
@@ -1050,7 +1053,7 @@ void intel_vgpu_clean_workloads(struct intel_vgpu *vgpu,
 	struct intel_vgpu_workload *pos, *n;
 	intel_engine_mask_t tmp;
 
-	/* free the unsubmited workloads in the queues. */
+	/* free the unsubmitted workloads in the queues. */
 	for_each_engine_masked(engine, vgpu->gvt->gt, engine_mask, tmp) {
 		list_for_each_entry_safe(pos, n,
 			&s->workload_q_head[engine->id], list) {
@@ -1386,7 +1389,7 @@ int intel_vgpu_setup_submission(struct intel_vgpu *vgpu)
 	enum intel_engine_id i;
 	int ret;
 
-	ppgtt = i915_ppgtt_create(&i915->gt);
+	ppgtt = i915_ppgtt_create(to_gt(i915), I915_BO_ALLOC_PM_EARLY);
 	if (IS_ERR(ppgtt))
 		return PTR_ERR(ppgtt);
 
@@ -1571,7 +1574,7 @@ static void read_guest_pdps(struct intel_vgpu *vgpu,
 	gpa = ring_context_gpa + RING_CTX_OFF(pdps[0].val);
 
 	for (i = 0; i < 8; i++)
-		intel_gvt_hypervisor_read_gpa(vgpu,
+		intel_gvt_read_gpa(vgpu,
 				gpa + i * 8, &pdp[7 - i], 4);
 }
 
@@ -1642,10 +1645,10 @@ intel_vgpu_create_workload(struct intel_vgpu *vgpu,
 		return ERR_PTR(-EINVAL);
 	}
 
-	intel_gvt_hypervisor_read_gpa(vgpu, ring_context_gpa +
+	intel_gvt_read_gpa(vgpu, ring_context_gpa +
 			RING_CTX_OFF(ring_header.val), &head, 4);
 
-	intel_gvt_hypervisor_read_gpa(vgpu, ring_context_gpa +
+	intel_gvt_read_gpa(vgpu, ring_context_gpa +
 			RING_CTX_OFF(ring_tail.val), &tail, 4);
 
 	guest_head = head;
@@ -1672,11 +1675,11 @@ intel_vgpu_create_workload(struct intel_vgpu *vgpu,
 	gvt_dbg_el("ring %s begin a new workload\n", engine->name);
 
 	/* record some ring buffer register values for scan and shadow */
-	intel_gvt_hypervisor_read_gpa(vgpu, ring_context_gpa +
+	intel_gvt_read_gpa(vgpu, ring_context_gpa +
 			RING_CTX_OFF(rb_start.val), &start, 4);
-	intel_gvt_hypervisor_read_gpa(vgpu, ring_context_gpa +
+	intel_gvt_read_gpa(vgpu, ring_context_gpa +
 			RING_CTX_OFF(rb_ctrl.val), &ctl, 4);
-	intel_gvt_hypervisor_read_gpa(vgpu, ring_context_gpa +
+	intel_gvt_read_gpa(vgpu, ring_context_gpa +
 			RING_CTX_OFF(ctx_ctrl.val), &ctx_ctl, 4);
 
 	if (!intel_gvt_ggtt_validate_range(vgpu, start,
@@ -1699,9 +1702,9 @@ intel_vgpu_create_workload(struct intel_vgpu *vgpu,
 	workload->rb_ctl = ctl;
 
 	if (engine->id == RCS0) {
-		intel_gvt_hypervisor_read_gpa(vgpu, ring_context_gpa +
+		intel_gvt_read_gpa(vgpu, ring_context_gpa +
 			RING_CTX_OFF(bb_per_ctx_ptr.val), &per_ctx, 4);
-		intel_gvt_hypervisor_read_gpa(vgpu, ring_context_gpa +
+		intel_gvt_read_gpa(vgpu, ring_context_gpa +
 			RING_CTX_OFF(rcs_indirect_ctx.val), &indirect_ctx, 4);
 
 		workload->wa_ctx.indirect_ctx.guest_gma =
@@ -1772,7 +1775,7 @@ intel_vgpu_create_workload(struct intel_vgpu *vgpu,
 }
 
 /**
- * intel_vgpu_queue_workload - Qeue a vGPU workload
+ * intel_vgpu_queue_workload - Queue a vGPU workload
  * @workload: the workload to queue in
  */
 void intel_vgpu_queue_workload(struct intel_vgpu_workload *workload)

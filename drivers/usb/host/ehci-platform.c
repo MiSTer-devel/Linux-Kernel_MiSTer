@@ -43,7 +43,6 @@
 #define hcd_to_ehci_priv(h) ((struct ehci_platform_priv *)hcd_to_ehci(h)->priv)
 
 #define BCM_USB_FIFO_THRESHOLD	0x00800040
-#define bcm_iproc_insnreg01	hostpc[0]
 
 struct ehci_platform_priv {
 	struct clk *clks[EHCI_MAX_CLKS];
@@ -53,8 +52,6 @@ struct ehci_platform_priv {
 	struct timer_list poll_timer;
 	struct delayed_work poll_work;
 };
-
-static const char hcd_name[] = "ehci-platform";
 
 static int ehci_platform_reset(struct usb_hcd *hcd)
 {
@@ -81,7 +78,7 @@ static int ehci_platform_reset(struct usb_hcd *hcd)
 
 	if (of_device_is_compatible(pdev->dev.of_node, "brcm,xgs-iproc-ehci"))
 		ehci_writel(ehci, BCM_USB_FIFO_THRESHOLD,
-			    &ehci->regs->bcm_iproc_insnreg01);
+			    &ehci->regs->brcm_insnreg[1]);
 
 	return 0;
 }
@@ -201,7 +198,8 @@ static void quirk_poll_work(struct work_struct *work)
 
 static void quirk_poll_timer(struct timer_list *t)
 {
-	struct ehci_platform_priv *priv = from_timer(priv, t, poll_timer);
+	struct ehci_platform_priv *priv = timer_container_of(priv, t,
+							     poll_timer);
 	struct ehci_hcd *ehci = container_of((void *)priv, struct ehci_hcd,
 					     priv);
 
@@ -227,7 +225,7 @@ static void quirk_poll_init(struct ehci_platform_priv *priv)
 
 static void quirk_poll_end(struct ehci_platform_priv *priv)
 {
-	del_timer_sync(&priv->poll_timer);
+	timer_delete_sync(&priv->poll_timer);
 	cancel_delayed_work(&priv->poll_work);
 }
 
@@ -297,6 +295,12 @@ static int ehci_platform_probe(struct platform_device *dev)
 					  "has-transaction-translator"))
 			hcd->has_tt = 1;
 
+		if (of_device_is_compatible(dev->dev.of_node,
+					    "aspeed,ast2500-ehci") ||
+		    of_device_is_compatible(dev->dev.of_node,
+					    "aspeed,ast2600-ehci"))
+			ehci->is_aspeed = 1;
+
 		if (soc_device_match(quirk_poll_match))
 			priv->quirk_poll = true;
 
@@ -356,14 +360,15 @@ static int ehci_platform_probe(struct platform_device *dev)
 			goto err_reset;
 	}
 
-	res_mem = platform_get_resource(dev, IORESOURCE_MEM, 0);
-	hcd->regs = devm_ioremap_resource(&dev->dev, res_mem);
+	hcd->regs = devm_platform_get_and_ioremap_resource(dev, 0, &res_mem);
 	if (IS_ERR(hcd->regs)) {
 		err = PTR_ERR(hcd->regs);
 		goto err_power;
 	}
 	hcd->rsrc_start = res_mem->start;
 	hcd->rsrc_len = resource_size(res_mem);
+
+	hcd->tpl_support = of_usb_host_tpl_support(dev->dev.of_node);
 
 	err = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (err)
@@ -395,7 +400,7 @@ err_put_clks:
 	return err;
 }
 
-static int ehci_platform_remove(struct platform_device *dev)
+static void ehci_platform_remove(struct platform_device *dev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(dev);
 	struct usb_ehci_pdata *pdata = dev_get_platdata(&dev->dev);
@@ -419,8 +424,6 @@ static int ehci_platform_remove(struct platform_device *dev)
 
 	if (pdata == &ehci_platform_defaults)
 		dev->dev.platform_data = NULL;
-
-	return 0;
 }
 
 static int __maybe_unused ehci_platform_suspend(struct device *dev)
@@ -513,6 +516,7 @@ static struct platform_driver ehci_platform_driver = {
 		.pm	= pm_ptr(&ehci_platform_pm_ops),
 		.of_match_table = vt8500_ehci_ids,
 		.acpi_match_table = ACPI_PTR(ehci_acpi_match),
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	}
 };
 
@@ -520,8 +524,6 @@ static int __init ehci_platform_init(void)
 {
 	if (usb_disabled())
 		return -ENODEV;
-
-	pr_info("%s: " DRIVER_DESC "\n", hcd_name);
 
 	ehci_init_driver(&ehci_platform_hc_driver, &platform_overrides);
 	return platform_driver_register(&ehci_platform_driver);

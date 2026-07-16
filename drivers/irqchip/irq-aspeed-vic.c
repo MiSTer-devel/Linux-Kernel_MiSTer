@@ -100,7 +100,7 @@ static void __exception_irq_entry avic_handle_irq(struct pt_regs *regs)
 		if (stat == 0)
 			break;
 		irq += ffs(stat) - 1;
-		handle_domain_irq(vic->dom, irq, regs);
+		generic_handle_domain_irq(vic->dom, irq);
 	}
 }
 
@@ -211,8 +211,8 @@ static int __init avic_of_init(struct device_node *node,
 	set_handle_irq(avic_handle_irq);
 
 	/* Register our domain */
-	vic->dom = irq_domain_add_simple(node, NUM_IRQS, 0,
-					 &avic_dom_ops, vic);
+	vic->dom = irq_domain_create_simple(of_fwnode_handle(node), NUM_IRQS, 0,
+					    &avic_dom_ops, vic);
 
 	return 0;
 }

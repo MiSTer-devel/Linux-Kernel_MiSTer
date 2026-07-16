@@ -540,14 +540,18 @@
 #define QLA82XX_CRB_DRV_IDC_VERSION  (QLA82XX_CAM_RAM(0x174))
 
 /* Every driver should use these Device State */
-#define QLA8XXX_DEV_COLD		1
-#define QLA8XXX_DEV_INITIALIZING	2
-#define QLA8XXX_DEV_READY		3
-#define QLA8XXX_DEV_NEED_RESET		4
-#define QLA8XXX_DEV_NEED_QUIESCENT	5
-#define QLA8XXX_DEV_FAILED		6
-#define QLA8XXX_DEV_QUIESCENT		7
-#define	MAX_STATES			8 /* Increment if new state added */
+enum {
+	QLA8XXX_DEV_UNKNOWN,
+	QLA8XXX_DEV_COLD,
+	QLA8XXX_DEV_INITIALIZING,
+	QLA8XXX_DEV_READY,
+	QLA8XXX_DEV_NEED_RESET,
+	QLA8XXX_DEV_NEED_QUIESCENT,
+	QLA8XXX_DEV_FAILED,
+	QLA8XXX_DEV_QUIESCENT,
+	MAX_STATES, /* Increment if new state added */
+};
+
 #define QLA8XXX_BAD_VALUE		0xbad0bad0
 
 #define QLA82XX_IDC_VERSION			1
@@ -853,7 +857,9 @@ struct fcp_cmnd {
 	uint8_t task_attribute;
 	uint8_t task_management;
 	uint8_t additional_cdb_len;
-	uint8_t cdb[260]; /* 256 for CDB len and 4 for FCP_DL */
+#define QLA_CDB_BUF_SIZE  256
+#define QLA_FCP_DL_SIZE   4
+	uint8_t cdb[QLA_CDB_BUF_SIZE + QLA_FCP_DL_SIZE]; /* 256 for CDB len and 4 for FCP_DL */
 };
 
 struct dsd_dma {

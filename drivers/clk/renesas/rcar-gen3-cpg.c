@@ -264,11 +264,13 @@ static const struct clk_ops cpg_z_clk_ops = {
 	.set_rate = cpg_z_clk_set_rate,
 };
 
-static struct clk * __init cpg_z_clk_register(const char *name,
+static struct clk * __init __cpg_z_clk_register(const char *name,
 					      const char *parent_name,
 					      void __iomem *reg,
 					      unsigned int div,
-					      unsigned int offset)
+					      unsigned int offset,
+					      unsigned int fcr,
+					      unsigned int flags)
 {
 	struct clk_init_data init = {};
 	struct cpg_z_clk *zclk;
@@ -280,11 +282,11 @@ static struct clk * __init cpg_z_clk_register(const char *name,
 
 	init.name = name;
 	init.ops = &cpg_z_clk_ops;
-	init.flags = CLK_SET_RATE_PARENT;
+	init.flags = flags;
 	init.parent_names = &parent_name;
 	init.num_parents = 1;
 
-	zclk->reg = reg + CPG_FRQCRC;
+	zclk->reg = reg + fcr;
 	zclk->kick_reg = reg + CPG_FRQCRB;
 	zclk->hw.init = &init;
 	zclk->mask = GENMASK(offset + 4, offset);
@@ -301,134 +303,53 @@ static struct clk * __init cpg_z_clk_register(const char *name,
 	return clk;
 }
 
-struct rpc_clock {
-	struct clk_divider div;
-	struct clk_gate gate;
-	/*
-	 * One notifier covers both RPC and RPCD2 clocks as they are both
-	 * controlled by the same RPCCKCR register...
-	 */
-	struct cpg_simple_notifier csn;
-};
+static struct clk * __init cpg_z_clk_register(const char *name,
+					      const char *parent_name,
+					      void __iomem *reg,
+					      unsigned int div,
+					      unsigned int offset)
+{
+	return __cpg_z_clk_register(name, parent_name, reg, div, offset,
+				    CPG_FRQCRC, CLK_SET_RATE_PARENT);
+}
+
+static struct clk * __init cpg_zg_clk_register(const char *name,
+					       const char *parent_name,
+					       void __iomem *reg,
+					       unsigned int div,
+					       unsigned int offset)
+{
+	return __cpg_z_clk_register(name, parent_name, reg, div, offset,
+				    CPG_FRQCRB, 0);
+
+}
 
 static const struct clk_div_table cpg_rpcsrc_div_table[] = {
 	{ 2, 5 }, { 3, 6 }, { 0, 0 },
 };
-
-static const struct clk_div_table cpg_rpc_div_table[] = {
-	{ 1, 2 }, { 3, 4 }, { 5, 6 }, { 7, 8 }, { 0, 0 },
-};
-
-static struct clk * __init cpg_rpc_clk_register(const char *name,
-	void __iomem *base, const char *parent_name,
-	struct raw_notifier_head *notifiers)
-{
-	struct rpc_clock *rpc;
-	struct clk *clk;
-
-	rpc = kzalloc(sizeof(*rpc), GFP_KERNEL);
-	if (!rpc)
-		return ERR_PTR(-ENOMEM);
-
-	rpc->div.reg = base + CPG_RPCCKCR;
-	rpc->div.width = 3;
-	rpc->div.table = cpg_rpc_div_table;
-	rpc->div.lock = &cpg_lock;
-
-	rpc->gate.reg = base + CPG_RPCCKCR;
-	rpc->gate.bit_idx = 8;
-	rpc->gate.flags = CLK_GATE_SET_TO_DISABLE;
-	rpc->gate.lock = &cpg_lock;
-
-	rpc->csn.reg = base + CPG_RPCCKCR;
-
-	clk = clk_register_composite(NULL, name, &parent_name, 1, NULL, NULL,
-				     &rpc->div.hw,  &clk_divider_ops,
-				     &rpc->gate.hw, &clk_gate_ops,
-				     CLK_SET_RATE_PARENT);
-	if (IS_ERR(clk)) {
-		kfree(rpc);
-		return clk;
-	}
-
-	cpg_simple_notifier_register(notifiers, &rpc->csn);
-	return clk;
-}
-
-struct rpcd2_clock {
-	struct clk_fixed_factor fixed;
-	struct clk_gate gate;
-};
-
-static struct clk * __init cpg_rpcd2_clk_register(const char *name,
-						  void __iomem *base,
-						  const char *parent_name)
-{
-	struct rpcd2_clock *rpcd2;
-	struct clk *clk;
-
-	rpcd2 = kzalloc(sizeof(*rpcd2), GFP_KERNEL);
-	if (!rpcd2)
-		return ERR_PTR(-ENOMEM);
-
-	rpcd2->fixed.mult = 1;
-	rpcd2->fixed.div = 2;
-
-	rpcd2->gate.reg = base + CPG_RPCCKCR;
-	rpcd2->gate.bit_idx = 9;
-	rpcd2->gate.flags = CLK_GATE_SET_TO_DISABLE;
-	rpcd2->gate.lock = &cpg_lock;
-
-	clk = clk_register_composite(NULL, name, &parent_name, 1, NULL, NULL,
-				     &rpcd2->fixed.hw, &clk_fixed_factor_ops,
-				     &rpcd2->gate.hw, &clk_gate_ops,
-				     CLK_SET_RATE_PARENT);
-	if (IS_ERR(clk))
-		kfree(rpcd2);
-
-	return clk;
-}
-
 
 static const struct rcar_gen3_cpg_pll_config *cpg_pll_config __initdata;
 static unsigned int cpg_clk_extalr __initdata;
 static u32 cpg_mode __initdata;
 static u32 cpg_quirks __initdata;
 
-#define PLL_ERRATA	BIT(0)		/* Missing PLL0/2/4 post-divider */
 #define RCKCR_CKSEL	BIT(1)		/* Manual RCLK parent selection */
-#define SD_SKIP_FIRST	BIT(2)		/* Skip first clock in SD table */
-
 
 static const struct soc_device_attribute cpg_quirks_match[] __initconst = {
 	{
-		.soc_id = "r8a7795", .revision = "ES1.0",
-		.data = (void *)(PLL_ERRATA | RCKCR_CKSEL | SD_SKIP_FIRST),
-	},
-	{
-		.soc_id = "r8a7795", .revision = "ES1.*",
-		.data = (void *)(RCKCR_CKSEL | SD_SKIP_FIRST),
-	},
-	{
-		.soc_id = "r8a7795", .revision = "ES2.0",
-		.data = (void *)SD_SKIP_FIRST,
-	},
-	{
 		.soc_id = "r8a7796", .revision = "ES1.0",
-		.data = (void *)(RCKCR_CKSEL | SD_SKIP_FIRST),
-	},
-	{
-		.soc_id = "r8a7796", .revision = "ES1.1",
-		.data = (void *)SD_SKIP_FIRST,
+		.data = (void *)(RCKCR_CKSEL),
 	},
 	{ /* sentinel */ }
 };
 
 struct clk * __init rcar_gen3_cpg_clk_register(struct device *dev,
 	const struct cpg_core_clk *core, const struct cpg_mssr_info *info,
-	struct clk **clks, void __iomem *base,
-	struct raw_notifier_head *notifiers)
+	struct cpg_mssr_pub *pub)
 {
+	struct raw_notifier_head *notifiers = &pub->notifiers;
+	void __iomem *base = pub->base0;
+	struct clk **clks = pub->clks;
 	const struct clk *parent;
 	unsigned int mult = 1;
 	unsigned int div = 1;
@@ -449,9 +370,8 @@ struct clk * __init rcar_gen3_cpg_clk_register(struct device *dev,
 		 * multiplier when cpufreq changes between normal and boost
 		 * modes.
 		 */
-		mult = (cpg_quirks & PLL_ERRATA) ? 4 : 2;
 		return cpg_pll_clk_register(core->name, __clk_get_name(parent),
-					    base, mult, CPG_PLL0CR, 0);
+					    base, 2, CPG_PLL0CR, 0);
 
 	case CLK_TYPE_GEN3_PLL1:
 		mult = cpg_pll_config->pll1_mult;
@@ -464,9 +384,8 @@ struct clk * __init rcar_gen3_cpg_clk_register(struct device *dev,
 		 * multiplier when cpufreq changes between normal and boost
 		 * modes.
 		 */
-		mult = (cpg_quirks & PLL_ERRATA) ? 4 : 2;
 		return cpg_pll_clk_register(core->name, __clk_get_name(parent),
-					    base, mult, CPG_PLL2CR, 2);
+					    base, 2, CPG_PLL2CR, 2);
 
 	case CLK_TYPE_GEN3_PLL3:
 		mult = cpg_pll_config->pll3_mult;
@@ -482,14 +401,15 @@ struct clk * __init rcar_gen3_cpg_clk_register(struct device *dev,
 		 */
 		value = readl(base + CPG_PLL4CR);
 		mult = (((value >> 24) & 0x7f) + 1) * 2;
-		if (cpg_quirks & PLL_ERRATA)
-			mult *= 2;
 		break;
 
+	case CLK_TYPE_GEN3_SDH:
+		return cpg_sdh_clk_register(core->name, base + core->offset,
+					   __clk_get_name(parent), notifiers);
+
 	case CLK_TYPE_GEN3_SD:
-		return cpg_sd_clk_register(core->name, base, core->offset,
-					   __clk_get_name(parent), notifiers,
-					   cpg_quirks & SD_SKIP_FIRST);
+		return cpg_sd_clk_register(core->name, base + core->offset,
+					   __clk_get_name(parent));
 
 	case CLK_TYPE_GEN3_R:
 		if (cpg_quirks & RCKCR_CKSEL) {
@@ -541,6 +461,10 @@ struct clk * __init rcar_gen3_cpg_clk_register(struct device *dev,
 	case CLK_TYPE_GEN3_Z:
 		return cpg_z_clk_register(core->name, __clk_get_name(parent),
 					  base, core->div, core->offset);
+
+	case CLK_TYPE_GEN3_ZG:
+		return cpg_zg_clk_register(core->name, __clk_get_name(parent),
+					   base, core->div, core->offset);
 
 	case CLK_TYPE_GEN3_OSC:
 		/*
@@ -600,11 +524,11 @@ struct clk * __init rcar_gen3_cpg_clk_register(struct device *dev,
 		break;
 
 	case CLK_TYPE_GEN3_RPC:
-		return cpg_rpc_clk_register(core->name, base,
+		return cpg_rpc_clk_register(core->name, base + CPG_RPCCKCR,
 					    __clk_get_name(parent), notifiers);
 
 	case CLK_TYPE_GEN3_RPCD2:
-		return cpg_rpcd2_clk_register(core->name, base,
+		return cpg_rpcd2_clk_register(core->name, base + CPG_RPCCKCR,
 					      __clk_get_name(parent));
 
 	default:
@@ -627,8 +551,6 @@ int __init rcar_gen3_cpg_init(const struct rcar_gen3_cpg_pll_config *config,
 	if (attr)
 		cpg_quirks = (uintptr_t)attr->data;
 	pr_debug("%s: mode = 0x%x quirks = 0x%x\n", __func__, mode, cpg_quirks);
-
-	spin_lock_init(&cpg_lock);
 
 	return 0;
 }

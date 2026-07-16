@@ -15,6 +15,7 @@
 #include <linux/atomic.h>
 #include <linux/dma-fence.h>
 #include <linux/sched/signal.h>
+#include <linux/seq_file.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/dma_fence.h>
@@ -101,7 +102,7 @@ static atomic64_t dma_fence_context_counter = ATOMIC64_INIT(1);
  *
  * * Drivers are allowed to call dma_fence_wait() from their &mmu_notifier
  *   respectively &mmu_interval_notifier callbacks. This means any code required
- *   for fence completeion cannot allocate memory with GFP_NOFS or GFP_NOIO.
+ *   for fence completion cannot allocate memory with GFP_NOFS or GFP_NOIO.
  *   Only GFP_ATOMIC is permissible, which might fail.
  *
  * Note that only GPU drivers have a reasonable excuse for both requiring
@@ -135,6 +136,10 @@ struct dma_fence *dma_fence_get_stub(void)
 			       &dma_fence_stub_ops,
 			       &dma_fence_stub_lock,
 			       0, 0);
+
+		set_bit(DMA_FENCE_FLAG_ENABLE_SIGNAL_BIT,
+			&dma_fence_stub.flags);
+
 		dma_fence_signal_locked(&dma_fence_stub);
 	}
 	spin_unlock(&dma_fence_stub_lock);
@@ -145,22 +150,27 @@ EXPORT_SYMBOL(dma_fence_get_stub);
 
 /**
  * dma_fence_allocate_private_stub - return a private, signaled fence
+ * @timestamp: timestamp when the fence was signaled
  *
  * Return a newly allocated and signaled stub fence.
  */
-struct dma_fence *dma_fence_allocate_private_stub(void)
+struct dma_fence *dma_fence_allocate_private_stub(ktime_t timestamp)
 {
 	struct dma_fence *fence;
 
 	fence = kzalloc(sizeof(*fence), GFP_KERNEL);
 	if (fence == NULL)
-		return ERR_PTR(-ENOMEM);
+		return NULL;
 
 	dma_fence_init(fence,
 		       &dma_fence_stub_ops,
 		       &dma_fence_stub_lock,
 		       0, 0);
-	dma_fence_signal(fence);
+
+	set_bit(DMA_FENCE_FLAG_ENABLE_SIGNAL_BIT,
+		&fence->flags);
+
+	dma_fence_signal_timestamp(fence, timestamp);
 
 	return fence;
 }
@@ -299,8 +309,8 @@ bool dma_fence_begin_signalling(void)
 	if (in_atomic())
 		return true;
 
-	/* ... and non-recursive readlock */
-	lock_acquire(&dma_fence_lockdep_map, 0, 0, 1, 1, NULL, _RET_IP_);
+	/* ... and non-recursive successful read_trylock */
+	lock_acquire(&dma_fence_lockdep_map, 0, 1, 1, 1, NULL, _RET_IP_);
 
 	return false;
 }
@@ -331,7 +341,7 @@ void __dma_fence_might_wait(void)
 	lock_map_acquire(&dma_fence_lockdep_map);
 	lock_map_release(&dma_fence_lockdep_map);
 	if (tmp)
-		lock_acquire(&dma_fence_lockdep_map, 0, 0, 1, 1, NULL, _THIS_IP_);
+		lock_acquire(&dma_fence_lockdep_map, 0, 1, 1, 1, NULL, _THIS_IP_);
 }
 #endif
 
@@ -402,7 +412,7 @@ int dma_fence_signal_timestamp(struct dma_fence *fence, ktime_t timestamp)
 	unsigned long flags;
 	int ret;
 
-	if (!fence)
+	if (WARN_ON(!fence))
 		return -EINVAL;
 
 	spin_lock_irqsave(fence->lock, flags);
@@ -454,7 +464,7 @@ int dma_fence_signal(struct dma_fence *fence)
 	int ret;
 	bool tmp;
 
-	if (!fence)
+	if (WARN_ON(!fence))
 		return -EINVAL;
 
 	tmp = dma_fence_begin_signalling();
@@ -499,18 +509,28 @@ dma_fence_wait_timeout(struct dma_fence *fence, bool intr, signed long timeout)
 
 	__dma_fence_might_wait();
 
-	trace_dma_fence_wait_start(fence);
+	dma_fence_enable_sw_signaling(fence);
+
+	if (trace_dma_fence_wait_start_enabled()) {
+		rcu_read_lock();
+		trace_dma_fence_wait_start(fence);
+		rcu_read_unlock();
+	}
 	if (fence->ops->wait)
 		ret = fence->ops->wait(fence, intr, timeout);
 	else
 		ret = dma_fence_default_wait(fence, intr, timeout);
-	trace_dma_fence_wait_end(fence);
+	if (trace_dma_fence_wait_end_enabled()) {
+		rcu_read_lock();
+		trace_dma_fence_wait_end(fence);
+		rcu_read_unlock();
+	}
 	return ret;
 }
 EXPORT_SYMBOL(dma_fence_wait_timeout);
 
 /**
- * dma_fence_release - default relese function for fences
+ * dma_fence_release - default release function for fences
  * @kref: &dma_fence.recfount
  *
  * This is the default release functions for &dma_fence. Drivers shouldn't call
@@ -521,15 +541,22 @@ void dma_fence_release(struct kref *kref)
 	struct dma_fence *fence =
 		container_of(kref, struct dma_fence, refcount);
 
+	rcu_read_lock();
 	trace_dma_fence_destroy(fence);
 
-	if (WARN(!list_empty(&fence->cb_list) &&
-		 !test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->flags),
-		 "Fence %s:%s:%llx:%llx released with pending signals!\n",
-		 fence->ops->get_driver_name(fence),
-		 fence->ops->get_timeline_name(fence),
-		 fence->context, fence->seqno)) {
+	if (!list_empty(&fence->cb_list) &&
+	    !test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->flags)) {
+		const char __rcu *timeline;
+		const char __rcu *driver;
 		unsigned long flags;
+
+		driver = dma_fence_driver_name(fence);
+		timeline = dma_fence_timeline_name(fence);
+
+		WARN(1,
+		     "Fence %s:%s:%llx:%llx released with pending signals!\n",
+		     rcu_dereference(driver), rcu_dereference(timeline),
+		     fence->context, fence->seqno);
 
 		/*
 		 * Failed to signal before release, likely a refcounting issue.
@@ -543,6 +570,8 @@ void dma_fence_release(struct kref *kref)
 		dma_fence_signal_locked(fence);
 		spin_unlock_irqrestore(fence->lock, flags);
 	}
+
+	rcu_read_unlock();
 
 	if (fence->ops->release)
 		fence->ops->release(fence);
@@ -600,9 +629,6 @@ void dma_fence_enable_sw_signaling(struct dma_fence *fence)
 {
 	unsigned long flags;
 
-	if (test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->flags))
-		return;
-
 	spin_lock_irqsave(fence->lock, flags);
 	__dma_fence_enable_signaling(fence);
 	spin_unlock_irqrestore(fence->lock, flags);
@@ -616,20 +642,17 @@ EXPORT_SYMBOL(dma_fence_enable_sw_signaling);
  * @cb: the callback to register
  * @func: the function to call
  *
+ * Add a software callback to the fence. The caller should keep a reference to
+ * the fence.
+ *
  * @cb will be initialized by dma_fence_add_callback(), no initialization
  * by the caller is required. Any number of callbacks can be registered
  * to a fence, but a callback can only be registered to one fence at a time.
  *
- * Note that the callback can be called from an atomic context.  If
- * fence is already signaled, this function will return -ENOENT (and
+ * If fence is already signaled, this function will return -ENOENT (and
  * *not* call the callback).
  *
- * Add a software callback to the fence. Same restrictions apply to
- * refcount as it does to dma_fence_wait(), however the caller doesn't need to
- * keep a refcount to fence afterward dma_fence_add_callback() has returned:
- * when software access is enabled, the creator of the fence is required to keep
- * the fence alive until after it signals with dma_fence_signal(). The callback
- * itself can be called from irq context.
+ * Note that the callback can be called from an atomic context or irq context.
  *
  * Returns 0 in case of success, -ENOENT if the fence is already signaled
  * and -EINVAL in case of error.
@@ -758,18 +781,15 @@ dma_fence_default_wait(struct dma_fence *fence, bool intr, signed long timeout)
 	unsigned long flags;
 	signed long ret = timeout ? timeout : 1;
 
-	if (test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->flags))
-		return ret;
-
 	spin_lock_irqsave(fence->lock, flags);
+
+	if (test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->flags))
+		goto out;
 
 	if (intr && signal_pending(current)) {
 		ret = -ERESTARTSYS;
 		goto out;
 	}
-
-	if (!__dma_fence_enable_signaling(fence))
-		goto out;
 
 	if (!timeout) {
 		ret = 0;
@@ -911,6 +931,112 @@ err_free_cb:
 EXPORT_SYMBOL(dma_fence_wait_any_timeout);
 
 /**
+ * DOC: deadline hints
+ *
+ * In an ideal world, it would be possible to pipeline a workload sufficiently
+ * that a utilization based device frequency governor could arrive at a minimum
+ * frequency that meets the requirements of the use-case, in order to minimize
+ * power consumption.  But in the real world there are many workloads which
+ * defy this ideal.  For example, but not limited to:
+ *
+ * * Workloads that ping-pong between device and CPU, with alternating periods
+ *   of CPU waiting for device, and device waiting on CPU.  This can result in
+ *   devfreq and cpufreq seeing idle time in their respective domains and in
+ *   result reduce frequency.
+ *
+ * * Workloads that interact with a periodic time based deadline, such as double
+ *   buffered GPU rendering vs vblank sync'd page flipping.  In this scenario,
+ *   missing a vblank deadline results in an *increase* in idle time on the GPU
+ *   (since it has to wait an additional vblank period), sending a signal to
+ *   the GPU's devfreq to reduce frequency, when in fact the opposite is what is
+ *   needed.
+ *
+ * To this end, deadline hint(s) can be set on a &dma_fence via &dma_fence_set_deadline
+ * (or indirectly via userspace facing ioctls like &sync_set_deadline).
+ * The deadline hint provides a way for the waiting driver, or userspace, to
+ * convey an appropriate sense of urgency to the signaling driver.
+ *
+ * A deadline hint is given in absolute ktime (CLOCK_MONOTONIC for userspace
+ * facing APIs).  The time could either be some point in the future (such as
+ * the vblank based deadline for page-flipping, or the start of a compositor's
+ * composition cycle), or the current time to indicate an immediate deadline
+ * hint (Ie. forward progress cannot be made until this fence is signaled).
+ *
+ * Multiple deadlines may be set on a given fence, even in parallel.  See the
+ * documentation for &dma_fence_ops.set_deadline.
+ *
+ * The deadline hint is just that, a hint.  The driver that created the fence
+ * may react by increasing frequency, making different scheduling choices, etc.
+ * Or doing nothing at all.
+ */
+
+/**
+ * dma_fence_set_deadline - set desired fence-wait deadline hint
+ * @fence:    the fence that is to be waited on
+ * @deadline: the time by which the waiter hopes for the fence to be
+ *            signaled
+ *
+ * Give the fence signaler a hint about an upcoming deadline, such as
+ * vblank, by which point the waiter would prefer the fence to be
+ * signaled by.  This is intended to give feedback to the fence signaler
+ * to aid in power management decisions, such as boosting GPU frequency
+ * if a periodic vblank deadline is approaching but the fence is not
+ * yet signaled..
+ */
+void dma_fence_set_deadline(struct dma_fence *fence, ktime_t deadline)
+{
+	if (fence->ops->set_deadline && !dma_fence_is_signaled(fence))
+		fence->ops->set_deadline(fence, deadline);
+}
+EXPORT_SYMBOL(dma_fence_set_deadline);
+
+/**
+ * dma_fence_describe - Dump fence description into seq_file
+ * @fence: the fence to describe
+ * @seq: the seq_file to put the textual description into
+ *
+ * Dump a textual description of the fence and it's state into the seq_file.
+ */
+void dma_fence_describe(struct dma_fence *fence, struct seq_file *seq)
+{
+	const char __rcu *timeline;
+	const char __rcu *driver;
+
+	rcu_read_lock();
+
+	timeline = dma_fence_timeline_name(fence);
+	driver = dma_fence_driver_name(fence);
+
+	seq_printf(seq, "%s %s seq %llu %ssignalled\n",
+		   rcu_dereference(driver),
+		   rcu_dereference(timeline),
+		   fence->seqno,
+		   dma_fence_is_signaled(fence) ? "" : "un");
+
+	rcu_read_unlock();
+}
+EXPORT_SYMBOL(dma_fence_describe);
+
+static void
+__dma_fence_init(struct dma_fence *fence, const struct dma_fence_ops *ops,
+	         spinlock_t *lock, u64 context, u64 seqno, unsigned long flags)
+{
+	BUG_ON(!lock);
+	BUG_ON(!ops || !ops->get_driver_name || !ops->get_timeline_name);
+
+	kref_init(&fence->refcount);
+	fence->ops = ops;
+	INIT_LIST_HEAD(&fence->cb_list);
+	fence->lock = lock;
+	fence->context = context;
+	fence->seqno = seqno;
+	fence->flags = flags;
+	fence->error = 0;
+
+	trace_dma_fence_init(fence);
+}
+
+/**
  * dma_fence_init - Initialize a custom fence.
  * @fence: the fence to initialize
  * @ops: the dma_fence_ops for operations on this fence
@@ -929,18 +1055,94 @@ void
 dma_fence_init(struct dma_fence *fence, const struct dma_fence_ops *ops,
 	       spinlock_t *lock, u64 context, u64 seqno)
 {
-	BUG_ON(!lock);
-	BUG_ON(!ops || !ops->get_driver_name || !ops->get_timeline_name);
-
-	kref_init(&fence->refcount);
-	fence->ops = ops;
-	INIT_LIST_HEAD(&fence->cb_list);
-	fence->lock = lock;
-	fence->context = context;
-	fence->seqno = seqno;
-	fence->flags = 0UL;
-	fence->error = 0;
-
-	trace_dma_fence_init(fence);
+	__dma_fence_init(fence, ops, lock, context, seqno, 0UL);
 }
 EXPORT_SYMBOL(dma_fence_init);
+
+/**
+ * dma_fence_init64 - Initialize a custom fence with 64-bit seqno support.
+ * @fence: the fence to initialize
+ * @ops: the dma_fence_ops for operations on this fence
+ * @lock: the irqsafe spinlock to use for locking this fence
+ * @context: the execution context this fence is run on
+ * @seqno: a linear increasing sequence number for this context
+ *
+ * Initializes an allocated fence, the caller doesn't have to keep its
+ * refcount after committing with this fence, but it will need to hold a
+ * refcount again if &dma_fence_ops.enable_signaling gets called.
+ *
+ * Context and seqno are used for easy comparison between fences, allowing
+ * to check which fence is later by simply using dma_fence_later().
+ */
+void
+dma_fence_init64(struct dma_fence *fence, const struct dma_fence_ops *ops,
+		 spinlock_t *lock, u64 context, u64 seqno)
+{
+	__dma_fence_init(fence, ops, lock, context, seqno,
+			 BIT(DMA_FENCE_FLAG_SEQNO64_BIT));
+}
+EXPORT_SYMBOL(dma_fence_init64);
+
+/**
+ * dma_fence_driver_name - Access the driver name
+ * @fence: the fence to query
+ *
+ * Returns a driver name backing the dma-fence implementation.
+ *
+ * IMPORTANT CONSIDERATION:
+ * Dma-fence contract stipulates that access to driver provided data (data not
+ * directly embedded into the object itself), such as the &dma_fence.lock and
+ * memory potentially accessed by the &dma_fence.ops functions, is forbidden
+ * after the fence has been signalled. Drivers are allowed to free that data,
+ * and some do.
+ *
+ * To allow safe access drivers are mandated to guarantee a RCU grace period
+ * between signalling the fence and freeing said data.
+ *
+ * As such access to the driver name is only valid inside a RCU locked section.
+ * The pointer MUST be both queried and USED ONLY WITHIN a SINGLE block guarded
+ * by the &rcu_read_lock and &rcu_read_unlock pair.
+ */
+const char __rcu *dma_fence_driver_name(struct dma_fence *fence)
+{
+	RCU_LOCKDEP_WARN(!rcu_read_lock_held(),
+			 "RCU protection is required for safe access to returned string");
+
+	if (!test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->flags))
+		return fence->ops->get_driver_name(fence);
+	else
+		return "detached-driver";
+}
+EXPORT_SYMBOL(dma_fence_driver_name);
+
+/**
+ * dma_fence_timeline_name - Access the timeline name
+ * @fence: the fence to query
+ *
+ * Returns a timeline name provided by the dma-fence implementation.
+ *
+ * IMPORTANT CONSIDERATION:
+ * Dma-fence contract stipulates that access to driver provided data (data not
+ * directly embedded into the object itself), such as the &dma_fence.lock and
+ * memory potentially accessed by the &dma_fence.ops functions, is forbidden
+ * after the fence has been signalled. Drivers are allowed to free that data,
+ * and some do.
+ *
+ * To allow safe access drivers are mandated to guarantee a RCU grace period
+ * between signalling the fence and freeing said data.
+ *
+ * As such access to the driver name is only valid inside a RCU locked section.
+ * The pointer MUST be both queried and USED ONLY WITHIN a SINGLE block guarded
+ * by the &rcu_read_lock and &rcu_read_unlock pair.
+ */
+const char __rcu *dma_fence_timeline_name(struct dma_fence *fence)
+{
+	RCU_LOCKDEP_WARN(!rcu_read_lock_held(),
+			 "RCU protection is required for safe access to returned string");
+
+	if (!test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->flags))
+		return fence->ops->get_timeline_name(fence);
+	else
+		return "signaled-timeline";
+}
+EXPORT_SYMBOL(dma_fence_timeline_name);

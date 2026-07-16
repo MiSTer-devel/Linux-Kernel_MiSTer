@@ -10,14 +10,17 @@
 #include <linux/io.h>
 #include <linux/mfd/syscon.h>
 #include <linux/of.h>
+#include <linux/platform_device.h>
+#include <linux/regmap.h>
+#include <linux/seq_file.h>
+#include <linux/slab.h>
+#include <linux/string_choices.h>
+
 #include <linux/pinctrl/machine.h>
+#include <linux/pinctrl/pinconf-generic.h>
+#include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
-#include <linux/pinctrl/pinconf.h>
-#include <linux/pinctrl/pinconf-generic.h>
-#include <linux/platform_device.h>
-#include <linux/slab.h>
-#include <linux/regmap.h>
 
 #include "pinctrl-utils.h"
 
@@ -412,7 +415,7 @@ static const struct pinctrl_pin_desc gemini_3512_pins[] = {
 	PINCTRL_PIN(249, "P16 GPIO0 17"),
 	PINCTRL_PIN(250, "P17 GPIO0 18"),
 	PINCTRL_PIN(251, "P18 GPIO0 19"),
-	/* Row R (for some reason Q us skipped) */
+	/* Row R (for some reason Q is skipped) */
 	PINCTRL_PIN(252, "R1 IDE DD6"),
 	PINCTRL_PIN(253, "R2 IDE DD8"),
 	PINCTRL_PIN(254, "R3 IDE DD7"),
@@ -1306,7 +1309,7 @@ static const struct pinctrl_pin_desc gemini_3516_pins[] = {
 	PINCTRL_PIN(277, "P18 PCI AD1"),
 	PINCTRL_PIN(278, "P19 PCI AD3"),
 	PINCTRL_PIN(279, "P20 PCI AD5"),
-	/* Row R (for some reason Q us skipped) */
+	/* Row R (for some reason Q is skipped) */
 	PINCTRL_PIN(280, "R1 IDE DD13"),
 	PINCTRL_PIN(281, "R2 IDE DD12"),
 	PINCTRL_PIN(282, "R3 IDE DD10"),
@@ -2235,7 +2238,7 @@ static int gemini_pmx_set_mux(struct pinctrl_dev *pctldev,
 				"pin group %s could not be %s: "
 				"probably a hardware limitation\n",
 				gemini_padgroups[i],
-				enabled ? "enabled" : "disabled");
+				str_enabled_disabled(enabled));
 			dev_err(pmx->dev,
 				"GLOBAL MISC CTRL before: %08x, after %08x, expected %08x\n",
 				before, after, expected);
@@ -2243,7 +2246,7 @@ static int gemini_pmx_set_mux(struct pinctrl_dev *pctldev,
 			dev_dbg(pmx->dev,
 				"padgroup %s %s\n",
 				gemini_padgroups[i],
-				enabled ? "enabled" : "disabled");
+				str_enabled_disabled(enabled));
 		}
 	}
 
@@ -2257,7 +2260,7 @@ static int gemini_pmx_set_mux(struct pinctrl_dev *pctldev,
 				"pin group %s could not be %s: "
 				"probably a hardware limitation\n",
 				gemini_padgroups[i],
-				enabled ? "enabled" : "disabled");
+				str_enabled_disabled(enabled));
 			dev_err(pmx->dev,
 				"GLOBAL MISC CTRL before: %08x, after %08x, expected %08x\n",
 				before, after, expected);
@@ -2265,7 +2268,7 @@ static int gemini_pmx_set_mux(struct pinctrl_dev *pctldev,
 			dev_dbg(pmx->dev,
 				"padgroup %s %s\n",
 				gemini_padgroups[i],
-				enabled ? "enabled" : "disabled");
+				str_enabled_disabled(enabled));
 		}
 	}
 
@@ -2586,7 +2589,7 @@ static int gemini_pmx_probe(struct platform_device *pdev)
 	tmp = val;
 	for_each_set_bit(i, &tmp, PADS_MAXBIT) {
 		dev_dbg(dev, "pad group %s %s\n", gemini_padgroups[i],
-			(val & BIT(i)) ? "enabled" : "disabled");
+			str_enabled_disabled(val & BIT(i)));
 	}
 
 	/* Check if flash pin is set */

@@ -130,13 +130,13 @@ static struct irq_chip asm9260_icoll_chip = {
 		 IRQCHIP_SKIP_SET_WAKE,
 };
 
-asmlinkage void __exception_irq_entry icoll_handle_irq(struct pt_regs *regs)
+static void __exception_irq_entry icoll_handle_irq(struct pt_regs *regs)
 {
 	u32 irqnr;
 
 	irqnr = __raw_readl(icoll_priv.stat);
 	__raw_writel(irqnr, icoll_priv.vector);
-	handle_domain_irq(icoll_domain, irqnr, regs);
+	generic_handle_domain_irq(icoll_domain, irqnr);
 }
 
 static int icoll_irq_domain_map(struct irq_domain *d, unsigned int virq,
@@ -162,8 +162,8 @@ static const struct irq_domain_ops icoll_irq_domain_ops = {
 static void __init icoll_add_domain(struct device_node *np,
 			  int num)
 {
-	icoll_domain = irq_domain_add_linear(np, num,
-					     &icoll_irq_domain_ops, NULL);
+	icoll_domain = irq_domain_create_linear(of_fwnode_handle(np), num,
+						&icoll_irq_domain_ops, NULL);
 
 	if (!icoll_domain)
 		panic("%pOF: unable to create irq domain", np);
@@ -201,6 +201,7 @@ static int __init icoll_of_init(struct device_node *np,
 	stmp_reset_block(icoll_priv.ctrl);
 
 	icoll_add_domain(np, ICOLL_NUM_IRQS);
+	set_handle_irq(icoll_handle_irq);
 
 	return 0;
 }

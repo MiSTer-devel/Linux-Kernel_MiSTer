@@ -6,6 +6,7 @@ Description:
 
 		Since Kernel 5.11, multiple buffers are supported.
 		so, it is better to use, instead:
+
 			/sys/bus/iio/devices/iio:deviceX/bufferY/length
 
 What:		/sys/bus/iio/devices/iio:deviceX/buffer/enable
@@ -17,6 +18,7 @@ Description:
 
 		Since Kernel 5.11, multiple buffers are supported.
 		so, it is better to use, instead:
+
 			/sys/bus/iio/devices/iio:deviceX/bufferY/enable
 
 What:		/sys/bus/iio/devices/iio:deviceX/scan_elements
@@ -46,10 +48,6 @@ What:		/sys/.../iio:deviceX/scan_elements/in_timestamp_en
 What:		/sys/.../iio:deviceX/scan_elements/in_voltageY_supply_en
 What:		/sys/.../iio:deviceX/scan_elements/in_voltageY_en
 What:		/sys/.../iio:deviceX/scan_elements/in_voltageY-voltageZ_en
-What:		/sys/.../iio:deviceX/scan_elements/in_voltageY_i_en
-What:		/sys/.../iio:deviceX/scan_elements/in_voltageY_q_en
-What:		/sys/.../iio:deviceX/scan_elements/in_voltage_i_en
-What:		/sys/.../iio:deviceX/scan_elements/in_voltage_q_en
 What:		/sys/.../iio:deviceX/scan_elements/in_incli_x_en
 What:		/sys/.../iio:deviceX/scan_elements/in_incli_y_en
 What:		/sys/.../iio:deviceX/scan_elements/in_pressureY_en
@@ -71,10 +69,6 @@ What:		/sys/.../iio:deviceX/scan_elements/in_incli_type
 What:		/sys/.../iio:deviceX/scan_elements/in_voltageY_type
 What:		/sys/.../iio:deviceX/scan_elements/in_voltage_type
 What:		/sys/.../iio:deviceX/scan_elements/in_voltageY_supply_type
-What:		/sys/.../iio:deviceX/scan_elements/in_voltageY_i_type
-What:		/sys/.../iio:deviceX/scan_elements/in_voltageY_q_type
-What:		/sys/.../iio:deviceX/scan_elements/in_voltage_i_type
-What:		/sys/.../iio:deviceX/scan_elements/in_voltage_q_type
 What:		/sys/.../iio:deviceX/scan_elements/in_timestamp_type
 What:		/sys/.../iio:deviceX/scan_elements/in_pressureY_type
 What:		/sys/.../iio:deviceX/scan_elements/in_pressure_type
@@ -108,10 +102,6 @@ Description:
 
 What:		/sys/.../iio:deviceX/scan_elements/in_voltageY_index
 What:		/sys/.../iio:deviceX/scan_elements/in_voltageY_supply_index
-What:		/sys/.../iio:deviceX/scan_elements/in_voltageY_i_index
-What:		/sys/.../iio:deviceX/scan_elements/in_voltageY_q_index
-What:		/sys/.../iio:deviceX/scan_elements/in_voltage_i_index
-What:		/sys/.../iio:deviceX/scan_elements/in_voltage_q_index
 What:		/sys/.../iio:deviceX/scan_elements/in_accel_x_index
 What:		/sys/.../iio:deviceX/scan_elements/in_accel_y_index
 What:		/sys/.../iio:deviceX/scan_elements/in_accel_z_index
@@ -165,6 +155,7 @@ Description:
 
 		Since Kernel 5.11, multiple buffers are supported.
 		so, it is better to use, instead:
+
 			/sys/bus/iio/devices/iio:deviceX/bufferY/watermark
 
 What:		/sys/bus/iio/devices/iio:deviceX/buffer/data_available
@@ -179,4 +170,5 @@ Description:
 
 		Since Kernel 5.11, multiple buffers are supported.
 		so, it is better to use, instead:
+
 			/sys/bus/iio/devices/iio:deviceX/bufferY/data_available

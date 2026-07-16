@@ -2,6 +2,8 @@
 #ifndef _ASM_ARM_FTRACE
 #define _ASM_ARM_FTRACE
 
+#define HAVE_FUNCTION_GRAPH_FP_TEST
+
 #ifdef CONFIG_DYNAMIC_FTRACE_WITH_REGS
 #define ARCH_SUPPORTS_FTRACE_OPS 1
 #endif
@@ -48,7 +50,7 @@ void *return_address(unsigned int);
 
 static inline void *return_address(unsigned int level)
 {
-	return NULL;
+       return NULL;
 }
 
 #endif
@@ -72,6 +74,10 @@ static inline bool arch_syscall_match_sym_name(const char *sym,
 	/* Ignore case since sym may start with "SyS" instead of "sys" */
 	return !strcasecmp(sym, name);
 }
+
+void prepare_ftrace_return(unsigned long *parent, unsigned long self,
+			   unsigned long frame_pointer,
+			   unsigned long stack_pointer);
 
 #endif /* ifndef __ASSEMBLY__ */
 

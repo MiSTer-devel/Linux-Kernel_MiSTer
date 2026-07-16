@@ -15,9 +15,7 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
-#if defined(CONFIG_OF)
-#include <linux/of_platform.h>
-#endif
+
 #include "mb862xxfb.h"
 #include "mb862xx_reg.h"
 #include "mb862xxfb_accel.h"
@@ -132,7 +130,7 @@ static void mb86290fb_imageblit8(u32 *cmd, u16 step, u16 dx, u16 dy,
 	cmd[2] = (height << 16) | width;
 
 	i = 0;
-	line = ptr = image->data;
+	line = image->data;
 	bytes = image->width;
 
 	while (i < height) {

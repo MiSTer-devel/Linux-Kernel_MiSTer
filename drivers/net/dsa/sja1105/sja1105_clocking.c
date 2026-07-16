@@ -153,14 +153,14 @@ static int sja1105_cgu_mii_tx_clk_config(struct sja1105_private *priv,
 {
 	const struct sja1105_regs *regs = priv->info->regs;
 	struct sja1105_cgu_mii_ctrl mii_tx_clk;
-	const int mac_clk_sources[] = {
+	static const int mac_clk_sources[] = {
 		CLKSRC_MII0_TX_CLK,
 		CLKSRC_MII1_TX_CLK,
 		CLKSRC_MII2_TX_CLK,
 		CLKSRC_MII3_TX_CLK,
 		CLKSRC_MII4_TX_CLK,
 	};
-	const int phy_clk_sources[] = {
+	static const int phy_clk_sources[] = {
 		CLKSRC_IDIV0,
 		CLKSRC_IDIV1,
 		CLKSRC_IDIV2,
@@ -194,7 +194,7 @@ sja1105_cgu_mii_rx_clk_config(struct sja1105_private *priv, int port)
 	const struct sja1105_regs *regs = priv->info->regs;
 	struct sja1105_cgu_mii_ctrl mii_rx_clk;
 	u8 packed_buf[SJA1105_SIZE_CGU_CMD] = {0};
-	const int clk_sources[] = {
+	static const int clk_sources[] = {
 		CLKSRC_MII0_RX_CLK,
 		CLKSRC_MII1_RX_CLK,
 		CLKSRC_MII2_RX_CLK,
@@ -221,7 +221,7 @@ sja1105_cgu_mii_ext_tx_clk_config(struct sja1105_private *priv, int port)
 	const struct sja1105_regs *regs = priv->info->regs;
 	struct sja1105_cgu_mii_ctrl mii_ext_tx_clk;
 	u8 packed_buf[SJA1105_SIZE_CGU_CMD] = {0};
-	const int clk_sources[] = {
+	static const int clk_sources[] = {
 		CLKSRC_IDIV0,
 		CLKSRC_IDIV1,
 		CLKSRC_IDIV2,
@@ -248,7 +248,7 @@ sja1105_cgu_mii_ext_rx_clk_config(struct sja1105_private *priv, int port)
 	const struct sja1105_regs *regs = priv->info->regs;
 	struct sja1105_cgu_mii_ctrl mii_ext_rx_clk;
 	u8 packed_buf[SJA1105_SIZE_CGU_CMD] = {0};
-	const int clk_sources[] = {
+	static const int clk_sources[] = {
 		CLKSRC_IDIV0,
 		CLKSRC_IDIV1,
 		CLKSRC_IDIV2,
@@ -349,8 +349,13 @@ static int sja1105_cgu_rgmii_tx_clk_config(struct sja1105_private *priv,
 	if (speed == priv->info->port_speed[SJA1105_SPEED_1000MBPS]) {
 		clksrc = CLKSRC_PLL0;
 	} else {
-		int clk_sources[] = {CLKSRC_IDIV0, CLKSRC_IDIV1, CLKSRC_IDIV2,
-				     CLKSRC_IDIV3, CLKSRC_IDIV4};
+		static const int clk_sources[] = {
+			CLKSRC_IDIV0,
+			CLKSRC_IDIV1,
+			CLKSRC_IDIV2,
+			CLKSRC_IDIV3,
+			CLKSRC_IDIV4,
+		};
 		clksrc = clk_sources[port];
 	}
 
@@ -498,17 +503,6 @@ sja1110_cfg_pad_mii_id_packing(void *buf, struct sja1105_cfg_pad_mii_id *cmd,
 	sja1105_packing(buf, &cmd->txc_pd,          0,  0, size, op);
 }
 
-/* Valid range in degrees is an integer between 73.8 and 101.7 */
-static u64 sja1105_rgmii_delay(u64 phase)
-{
-	/* UM11040.pdf: The delay in degree phase is 73.8 + delay_tune * 0.9.
-	 * To avoid floating point operations we'll multiply by 10
-	 * and get 1 decimal point precision.
-	 */
-	phase *= 10;
-	return (phase - 738) / 9;
-}
-
 /* The RGMII delay setup procedure is 2-step and gets called upon each
  * .phylink_mac_config. Both are strategic.
  * The reason is that the RX Tunable Delay Line of the SJA1105 MAC has issues
@@ -521,13 +515,15 @@ int sja1105pqrs_setup_rgmii_delay(const void *ctx, int port)
 	const struct sja1105_private *priv = ctx;
 	const struct sja1105_regs *regs = priv->info->regs;
 	struct sja1105_cfg_pad_mii_id pad_mii_id = {0};
+	int rx_delay = priv->rgmii_rx_delay_ps[port];
+	int tx_delay = priv->rgmii_tx_delay_ps[port];
 	u8 packed_buf[SJA1105_SIZE_CGU_CMD] = {0};
 	int rc;
 
-	if (priv->rgmii_rx_delay[port])
-		pad_mii_id.rxc_delay = sja1105_rgmii_delay(90);
-	if (priv->rgmii_tx_delay[port])
-		pad_mii_id.txc_delay = sja1105_rgmii_delay(90);
+	if (rx_delay)
+		pad_mii_id.rxc_delay = SJA1105_RGMII_DELAY_PS_TO_HW(rx_delay);
+	if (tx_delay)
+		pad_mii_id.txc_delay = SJA1105_RGMII_DELAY_PS_TO_HW(tx_delay);
 
 	/* Stage 1: Turn the RGMII delay lines off. */
 	pad_mii_id.rxc_bypass = 1;
@@ -542,11 +538,11 @@ int sja1105pqrs_setup_rgmii_delay(const void *ctx, int port)
 		return rc;
 
 	/* Stage 2: Turn the RGMII delay lines on. */
-	if (priv->rgmii_rx_delay[port]) {
+	if (rx_delay) {
 		pad_mii_id.rxc_bypass = 0;
 		pad_mii_id.rxc_pd = 0;
 	}
-	if (priv->rgmii_tx_delay[port]) {
+	if (tx_delay) {
 		pad_mii_id.txc_bypass = 0;
 		pad_mii_id.txc_pd = 0;
 	}
@@ -561,20 +557,22 @@ int sja1110_setup_rgmii_delay(const void *ctx, int port)
 	const struct sja1105_private *priv = ctx;
 	const struct sja1105_regs *regs = priv->info->regs;
 	struct sja1105_cfg_pad_mii_id pad_mii_id = {0};
+	int rx_delay = priv->rgmii_rx_delay_ps[port];
+	int tx_delay = priv->rgmii_tx_delay_ps[port];
 	u8 packed_buf[SJA1105_SIZE_CGU_CMD] = {0};
 
 	pad_mii_id.rxc_pd = 1;
 	pad_mii_id.txc_pd = 1;
 
-	if (priv->rgmii_rx_delay[port]) {
-		pad_mii_id.rxc_delay = sja1105_rgmii_delay(90);
+	if (rx_delay) {
+		pad_mii_id.rxc_delay = SJA1105_RGMII_DELAY_PS_TO_HW(rx_delay);
 		/* The "BYPASS" bit in SJA1110 is actually a "don't bypass" */
 		pad_mii_id.rxc_bypass = 1;
 		pad_mii_id.rxc_pd = 0;
 	}
 
-	if (priv->rgmii_tx_delay[port]) {
-		pad_mii_id.txc_delay = sja1105_rgmii_delay(90);
+	if (tx_delay) {
+		pad_mii_id.txc_delay = SJA1105_RGMII_DELAY_PS_TO_HW(tx_delay);
 		pad_mii_id.txc_bypass = 1;
 		pad_mii_id.txc_pd = 0;
 	}
@@ -645,7 +643,7 @@ static int sja1105_cgu_rmii_ref_clk_config(struct sja1105_private *priv,
 	const struct sja1105_regs *regs = priv->info->regs;
 	struct sja1105_cgu_mii_ctrl ref_clk;
 	u8 packed_buf[SJA1105_SIZE_CGU_CMD] = {0};
-	const int clk_sources[] = {
+	static const int clk_sources[] = {
 		CLKSRC_MII0_TX_CLK,
 		CLKSRC_MII1_TX_CLK,
 		CLKSRC_MII2_TX_CLK,

@@ -4,6 +4,7 @@
  *
  * Copyright © 2017-2020 Mickaël Salaün <mic@digikod.net>
  * Copyright © 2019-2020 ANSSI
+ * Copyright © 2024-2025 Microsoft Corporation
  */
 
 #define _GNU_SOURCE
@@ -17,7 +18,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "audit.h"
 #include "common.h"
+
+/* Copied from security/yama/yama_lsm.c */
+#define YAMA_SCOPE_DISABLED 0
+#define YAMA_SCOPE_RELATIONAL 1
 
 static void create_domain(struct __test_metadata *const _metadata)
 {
@@ -26,9 +32,10 @@ static void create_domain(struct __test_metadata *const _metadata)
 		.handled_access_fs = LANDLOCK_ACCESS_FS_MAKE_BLOCK,
 	};
 
-	ruleset_fd = landlock_create_ruleset(&ruleset_attr,
-			sizeof(ruleset_attr), 0);
-	EXPECT_LE(0, ruleset_fd) {
+	ruleset_fd =
+		landlock_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
+	EXPECT_LE(0, ruleset_fd)
+	{
 		TH_LOG("Failed to create a ruleset: %s", strerror(errno));
 	}
 	EXPECT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
@@ -43,7 +50,7 @@ static int test_ptrace_read(const pid_t pid)
 	int procenv_path_size, fd;
 
 	procenv_path_size = snprintf(procenv_path, sizeof(procenv_path),
-			path_template, pid);
+				     path_template, pid);
 	if (procenv_path_size >= sizeof(procenv_path))
 		return E2BIG;
 
@@ -59,9 +66,31 @@ static int test_ptrace_read(const pid_t pid)
 	return 0;
 }
 
-FIXTURE(hierarchy) { };
+static int get_yama_ptrace_scope(void)
+{
+	int ret;
+	char buf[2] = {};
+	const int fd = open("/proc/sys/kernel/yama/ptrace_scope", O_RDONLY);
 
-FIXTURE_VARIANT(hierarchy) {
+	if (fd < 0)
+		return 0;
+
+	if (read(fd, buf, 1) < 0) {
+		close(fd);
+		return -1;
+	}
+
+	ret = atoi(buf);
+	close(fd);
+	return ret;
+}
+
+/* clang-format off */
+FIXTURE(hierarchy) {};
+/* clang-format on */
+
+FIXTURE_VARIANT(hierarchy)
+{
 	const bool domain_both;
 	const bool domain_parent;
 	const bool domain_child;
@@ -83,7 +112,9 @@ FIXTURE_VARIANT(hierarchy) {
  *       \              P2 -> P1 : allow
  *        'P2
  */
+/* clang-format off */
 FIXTURE_VARIANT_ADD(hierarchy, allow_without_domain) {
+	/* clang-format on */
 	.domain_both = false,
 	.domain_parent = false,
 	.domain_child = false,
@@ -98,7 +129,9 @@ FIXTURE_VARIANT_ADD(hierarchy, allow_without_domain) {
  *        |  P2  |
  *        '------'
  */
+/* clang-format off */
 FIXTURE_VARIANT_ADD(hierarchy, allow_with_one_domain) {
+	/* clang-format on */
 	.domain_both = false,
 	.domain_parent = false,
 	.domain_child = true,
@@ -112,7 +145,9 @@ FIXTURE_VARIANT_ADD(hierarchy, allow_with_one_domain) {
  *            '
  *            P2
  */
+/* clang-format off */
 FIXTURE_VARIANT_ADD(hierarchy, deny_with_parent_domain) {
+	/* clang-format on */
 	.domain_both = false,
 	.domain_parent = true,
 	.domain_child = false,
@@ -127,7 +162,9 @@ FIXTURE_VARIANT_ADD(hierarchy, deny_with_parent_domain) {
  *         |  P2  |
  *         '------'
  */
+/* clang-format off */
 FIXTURE_VARIANT_ADD(hierarchy, deny_with_sibling_domain) {
+	/* clang-format on */
 	.domain_both = false,
 	.domain_parent = true,
 	.domain_child = true,
@@ -142,7 +179,9 @@ FIXTURE_VARIANT_ADD(hierarchy, deny_with_sibling_domain) {
  * |         P2  |
  * '-------------'
  */
+/* clang-format off */
 FIXTURE_VARIANT_ADD(hierarchy, allow_sibling_domain) {
+	/* clang-format on */
 	.domain_both = true,
 	.domain_parent = false,
 	.domain_child = false,
@@ -158,7 +197,9 @@ FIXTURE_VARIANT_ADD(hierarchy, allow_sibling_domain) {
  * |        '------' |
  * '-----------------'
  */
+/* clang-format off */
 FIXTURE_VARIANT_ADD(hierarchy, allow_with_nested_domain) {
+	/* clang-format on */
 	.domain_both = true,
 	.domain_parent = false,
 	.domain_child = true,
@@ -174,7 +215,9 @@ FIXTURE_VARIANT_ADD(hierarchy, allow_with_nested_domain) {
  * |             P2  |
  * '-----------------'
  */
+/* clang-format off */
 FIXTURE_VARIANT_ADD(hierarchy, deny_with_nested_and_parent_domain) {
+	/* clang-format on */
 	.domain_both = true,
 	.domain_parent = true,
 	.domain_child = false,
@@ -192,17 +235,21 @@ FIXTURE_VARIANT_ADD(hierarchy, deny_with_nested_and_parent_domain) {
  * |        '------' |
  * '-----------------'
  */
+/* clang-format off */
 FIXTURE_VARIANT_ADD(hierarchy, deny_with_forked_domain) {
+	/* clang-format on */
 	.domain_both = true,
 	.domain_parent = true,
 	.domain_child = true,
 };
 
 FIXTURE_SETUP(hierarchy)
-{ }
+{
+}
 
 FIXTURE_TEARDOWN(hierarchy)
-{ }
+{
+}
 
 /* Test PTRACE_TRACEME and PTRACE_ATTACH for parent and child. */
 TEST_F(hierarchy, trace)
@@ -210,8 +257,51 @@ TEST_F(hierarchy, trace)
 	pid_t child, parent;
 	int status, err_proc_read;
 	int pipe_child[2], pipe_parent[2];
+	int yama_ptrace_scope;
 	char buf_parent;
 	long ret;
+	bool can_read_child, can_trace_child, can_read_parent, can_trace_parent;
+
+	yama_ptrace_scope = get_yama_ptrace_scope();
+	ASSERT_LE(0, yama_ptrace_scope);
+
+	if (yama_ptrace_scope > YAMA_SCOPE_DISABLED)
+		TH_LOG("Incomplete tests due to Yama restrictions (scope %d)",
+		       yama_ptrace_scope);
+
+	/*
+	 * can_read_child is true if a parent process can read its child
+	 * process, which is only the case when the parent process is not
+	 * isolated from the child with a dedicated Landlock domain.
+	 */
+	can_read_child = !variant->domain_parent;
+
+	/*
+	 * can_trace_child is true if a parent process can trace its child
+	 * process.  This depends on two conditions:
+	 * - The parent process is not isolated from the child with a dedicated
+	 *   Landlock domain.
+	 * - Yama allows tracing children (up to YAMA_SCOPE_RELATIONAL).
+	 */
+	can_trace_child = can_read_child &&
+			  yama_ptrace_scope <= YAMA_SCOPE_RELATIONAL;
+
+	/*
+	 * can_read_parent is true if a child process can read its parent
+	 * process, which is only the case when the child process is not
+	 * isolated from the parent with a dedicated Landlock domain.
+	 */
+	can_read_parent = !variant->domain_child;
+
+	/*
+	 * can_trace_parent is true if a child process can trace its parent
+	 * process.  This depends on two conditions:
+	 * - The child process is not isolated from the parent with a dedicated
+	 *   Landlock domain.
+	 * - Yama is disabled (YAMA_SCOPE_DISABLED).
+	 */
+	can_trace_parent = can_read_parent &&
+			   yama_ptrace_scope <= YAMA_SCOPE_DISABLED;
 
 	/*
 	 * Removes all effective and permitted capabilities to not interfere
@@ -224,7 +314,7 @@ TEST_F(hierarchy, trace)
 	ASSERT_EQ(0, pipe2(pipe_parent, O_CLOEXEC));
 	if (variant->domain_both) {
 		create_domain(_metadata);
-		if (!_metadata->passed)
+		if (!__test_passed(_metadata))
 			/* Aborts before forking. */
 			return;
 	}
@@ -242,16 +332,21 @@ TEST_F(hierarchy, trace)
 		/* Waits for the parent to be in a domain, if any. */
 		ASSERT_EQ(1, read(pipe_parent[0], &buf_child, 1));
 
-		/* Tests PTRACE_ATTACH and PTRACE_MODE_READ on the parent. */
+		/* Tests PTRACE_MODE_READ on the parent. */
 		err_proc_read = test_ptrace_read(parent);
+		if (can_read_parent) {
+			EXPECT_EQ(0, err_proc_read);
+		} else {
+			EXPECT_EQ(EACCES, err_proc_read);
+		}
+
+		/* Tests PTRACE_ATTACH on the parent. */
 		ret = ptrace(PTRACE_ATTACH, parent, NULL, 0);
-		if (variant->domain_child) {
+		if (can_trace_parent) {
+			EXPECT_EQ(0, ret);
+		} else {
 			EXPECT_EQ(-1, ret);
 			EXPECT_EQ(EPERM, errno);
-			EXPECT_EQ(EACCES, err_proc_read);
-		} else {
-			EXPECT_EQ(0, ret);
-			EXPECT_EQ(0, err_proc_read);
 		}
 		if (ret == 0) {
 			ASSERT_EQ(parent, waitpid(parent, &status, 0));
@@ -261,11 +356,11 @@ TEST_F(hierarchy, trace)
 
 		/* Tests child PTRACE_TRACEME. */
 		ret = ptrace(PTRACE_TRACEME);
-		if (variant->domain_parent) {
+		if (can_trace_child) {
+			EXPECT_EQ(0, ret);
+		} else {
 			EXPECT_EQ(-1, ret);
 			EXPECT_EQ(EPERM, errno);
-		} else {
-			EXPECT_EQ(0, ret);
 		}
 
 		/*
@@ -274,13 +369,13 @@ TEST_F(hierarchy, trace)
 		 */
 		ASSERT_EQ(1, write(pipe_child[1], ".", 1));
 
-		if (!variant->domain_parent) {
+		if (can_trace_child) {
 			ASSERT_EQ(0, raise(SIGSTOP));
 		}
 
 		/* Waits for the parent PTRACE_ATTACH test. */
 		ASSERT_EQ(1, read(pipe_parent[0], &buf_child, 1));
-		_exit(_metadata->passed ? EXIT_SUCCESS : EXIT_FAILURE);
+		_exit(_metadata->exit_code);
 		return;
 	}
 
@@ -299,7 +394,7 @@ TEST_F(hierarchy, trace)
 	ASSERT_EQ(1, read(pipe_child[0], &buf_parent, 1));
 
 	/* Tests child PTRACE_TRACEME. */
-	if (!variant->domain_parent) {
+	if (can_trace_child) {
 		ASSERT_EQ(child, waitpid(child, &status, 0));
 		ASSERT_EQ(1, WIFSTOPPED(status));
 		ASSERT_EQ(0, ptrace(PTRACE_DETACH, child, NULL, 0));
@@ -309,17 +404,23 @@ TEST_F(hierarchy, trace)
 		EXPECT_EQ(ESRCH, errno);
 	}
 
-	/* Tests PTRACE_ATTACH and PTRACE_MODE_READ on the child. */
+	/* Tests PTRACE_MODE_READ on the child. */
 	err_proc_read = test_ptrace_read(child);
+	if (can_read_child) {
+		EXPECT_EQ(0, err_proc_read);
+	} else {
+		EXPECT_EQ(EACCES, err_proc_read);
+	}
+
+	/* Tests PTRACE_ATTACH on the child. */
 	ret = ptrace(PTRACE_ATTACH, child, NULL, 0);
-	if (variant->domain_parent) {
+	if (can_trace_child) {
+		EXPECT_EQ(0, ret);
+	} else {
 		EXPECT_EQ(-1, ret);
 		EXPECT_EQ(EPERM, errno);
-		EXPECT_EQ(EACCES, err_proc_read);
-	} else {
-		EXPECT_EQ(0, ret);
-		EXPECT_EQ(0, err_proc_read);
 	}
+
 	if (ret == 0) {
 		ASSERT_EQ(child, waitpid(child, &status, 0));
 		ASSERT_EQ(1, WIFSTOPPED(status));
@@ -329,9 +430,147 @@ TEST_F(hierarchy, trace)
 	/* Signals that the parent PTRACE_ATTACH test is done. */
 	ASSERT_EQ(1, write(pipe_parent[1], ".", 1));
 	ASSERT_EQ(child, waitpid(child, &status, 0));
+
 	if (WIFSIGNALED(status) || !WIFEXITED(status) ||
-			WEXITSTATUS(status) != EXIT_SUCCESS)
-		_metadata->passed = 0;
+	    WEXITSTATUS(status) != EXIT_SUCCESS)
+		_metadata->exit_code = KSFT_FAIL;
+}
+
+static int matches_log_ptrace(struct __test_metadata *const _metadata,
+			      int audit_fd, const pid_t opid)
+{
+	static const char log_template[] = REGEX_LANDLOCK_PREFIX
+		" blockers=ptrace opid=%d ocomm=\"ptrace_test\"$";
+	char log_match[sizeof(log_template) + 10];
+	int log_match_len;
+
+	log_match_len =
+		snprintf(log_match, sizeof(log_match), log_template, opid);
+	if (log_match_len > sizeof(log_match))
+		return -E2BIG;
+
+	return audit_match_record(audit_fd, AUDIT_LANDLOCK_ACCESS, log_match,
+				  NULL);
+}
+
+FIXTURE(audit)
+{
+	struct audit_filter audit_filter;
+	int audit_fd;
+};
+
+FIXTURE_SETUP(audit)
+{
+	disable_caps(_metadata);
+	set_cap(_metadata, CAP_AUDIT_CONTROL);
+	self->audit_fd = audit_init_with_exe_filter(&self->audit_filter);
+	EXPECT_LE(0, self->audit_fd);
+	clear_cap(_metadata, CAP_AUDIT_CONTROL);
+}
+
+FIXTURE_TEARDOWN_PARENT(audit)
+{
+	EXPECT_EQ(0, audit_cleanup(-1, NULL));
+}
+
+/* Test PTRACE_TRACEME and PTRACE_ATTACH for parent and child. */
+TEST_F(audit, trace)
+{
+	pid_t child;
+	int status;
+	int pipe_child[2], pipe_parent[2];
+	int yama_ptrace_scope;
+	char buf_parent;
+	struct audit_records records;
+
+	/* Makes sure there is no superfluous logged records. */
+	EXPECT_EQ(0, audit_count_records(self->audit_fd, &records));
+	EXPECT_EQ(0, records.access);
+
+	yama_ptrace_scope = get_yama_ptrace_scope();
+	ASSERT_LE(0, yama_ptrace_scope);
+
+	if (yama_ptrace_scope > YAMA_SCOPE_DISABLED)
+		TH_LOG("Incomplete tests due to Yama restrictions (scope %d)",
+		       yama_ptrace_scope);
+
+	/*
+	 * Removes all effective and permitted capabilities to not interfere
+	 * with cap_ptrace_access_check() in case of PTRACE_MODE_FSCREDS.
+	 */
+	drop_caps(_metadata);
+
+	ASSERT_EQ(0, pipe2(pipe_child, O_CLOEXEC));
+	ASSERT_EQ(0, pipe2(pipe_parent, O_CLOEXEC));
+
+	child = fork();
+	ASSERT_LE(0, child);
+	if (child == 0) {
+		char buf_child;
+
+		ASSERT_EQ(0, close(pipe_parent[1]));
+		ASSERT_EQ(0, close(pipe_child[0]));
+
+		/* Waits for the parent to be in a domain, if any. */
+		ASSERT_EQ(1, read(pipe_parent[0], &buf_child, 1));
+
+		/* Tests child PTRACE_TRACEME. */
+		EXPECT_EQ(-1, ptrace(PTRACE_TRACEME));
+		EXPECT_EQ(EPERM, errno);
+		/* We should see the child process. */
+		EXPECT_EQ(0, matches_log_ptrace(_metadata, self->audit_fd,
+						getpid()));
+
+		EXPECT_EQ(0, audit_count_records(self->audit_fd, &records));
+		EXPECT_EQ(0, records.access);
+		/* Checks for a domain creation. */
+		EXPECT_EQ(1, records.domain);
+
+		/*
+		 * Signals that the PTRACE_ATTACH test is done and the
+		 * PTRACE_TRACEME test is ongoing.
+		 */
+		ASSERT_EQ(1, write(pipe_child[1], ".", 1));
+
+		/* Waits for the parent PTRACE_ATTACH test. */
+		ASSERT_EQ(1, read(pipe_parent[0], &buf_child, 1));
+		_exit(_metadata->exit_code);
+		return;
+	}
+
+	ASSERT_EQ(0, close(pipe_child[1]));
+	ASSERT_EQ(0, close(pipe_parent[0]));
+	create_domain(_metadata);
+
+	/* Signals that the parent is in a domain. */
+	ASSERT_EQ(1, write(pipe_parent[1], ".", 1));
+
+	/*
+	 * Waits for the child to test PTRACE_ATTACH on the parent and start
+	 * testing PTRACE_TRACEME.
+	 */
+	ASSERT_EQ(1, read(pipe_child[0], &buf_parent, 1));
+
+	/* The child should not be traced by the parent. */
+	EXPECT_EQ(-1, ptrace(PTRACE_DETACH, child, NULL, 0));
+	EXPECT_EQ(ESRCH, errno);
+
+	/* Tests PTRACE_ATTACH on the child. */
+	EXPECT_EQ(-1, ptrace(PTRACE_ATTACH, child, NULL, 0));
+	EXPECT_EQ(EPERM, errno);
+	EXPECT_EQ(0, matches_log_ptrace(_metadata, self->audit_fd, child));
+
+	/* Signals that the parent PTRACE_ATTACH test is done. */
+	ASSERT_EQ(1, write(pipe_parent[1], ".", 1));
+	ASSERT_EQ(child, waitpid(child, &status, 0));
+	if (WIFSIGNALED(status) || !WIFEXITED(status) ||
+	    WEXITSTATUS(status) != EXIT_SUCCESS)
+		_metadata->exit_code = KSFT_FAIL;
+
+	/* Makes sure there is no superfluous logged records. */
+	EXPECT_EQ(0, audit_count_records(self->audit_fd, &records));
+	EXPECT_EQ(0, records.access);
+	EXPECT_EQ(0, records.domain);
 }
 
 TEST_HARNESS_MAIN

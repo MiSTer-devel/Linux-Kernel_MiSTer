@@ -112,7 +112,11 @@ static int loop_tx_ir(struct rc_dev *dev, unsigned *txbuf, unsigned count)
 		rawir.pulse = i % 2 ? false : true;
 		rawir.duration = txbuf[i];
 
-		ir_raw_event_store_with_filter(dev, &rawir);
+		/* simulate overflow if ridiculously long pulse was sent */
+		if (rawir.pulse && rawir.duration > MS_TO_US(50))
+			ir_raw_event_overflow(dev);
+		else
+			ir_raw_event_store_with_filter(dev, &rawir);
 	}
 
 	if (lodev->carrierreport) {
@@ -226,7 +230,6 @@ static int __init loop_init(void)
 	rc->min_timeout		= 1;
 	rc->max_timeout		= IR_MAX_TIMEOUT;
 	rc->rx_resolution	= 1;
-	rc->tx_resolution	= 1;
 	rc->s_tx_mask		= loop_set_tx_mask;
 	rc->s_tx_carrier	= loop_set_tx_carrier;
 	rc->s_tx_duty_cycle	= loop_set_tx_duty_cycle;
@@ -260,6 +263,7 @@ static int __init loop_init(void)
 static void __exit loop_exit(void)
 {
 	rc_unregister_device(loopdev.dev);
+	rc_free_device(loopdev.dev);
 }
 
 module_init(loop_init);

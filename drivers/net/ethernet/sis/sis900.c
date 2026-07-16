@@ -258,6 +258,7 @@ static int sis900_get_mac_addr(struct pci_dev *pci_dev,
 {
 	struct sis900_private *sis_priv = netdev_priv(net_dev);
 	void __iomem *ioaddr = sis_priv->ioaddr;
+	u16 addr[ETH_ALEN / 2];
 	u16 signature;
 	int i;
 
@@ -271,7 +272,8 @@ static int sis900_get_mac_addr(struct pci_dev *pci_dev,
 
 	/* get MAC address from EEPROM */
 	for (i = 0; i < 3; i++)
-	        ((u16 *)(net_dev->dev_addr))[i] = read_eeprom(ioaddr, i+EEPROMMACAddr);
+	        addr[i] = read_eeprom(ioaddr, i+EEPROMMACAddr);
+	eth_hw_addr_set(net_dev, (u8 *)addr);
 
 	return 1;
 }
@@ -290,6 +292,7 @@ static int sis630e_get_mac_addr(struct pci_dev *pci_dev,
 				struct net_device *net_dev)
 {
 	struct pci_dev *isa_bridge = NULL;
+	u8 addr[ETH_ALEN];
 	u8 reg;
 	int i;
 
@@ -306,8 +309,9 @@ static int sis630e_get_mac_addr(struct pci_dev *pci_dev,
 
 	for (i = 0; i < 6; i++) {
 		outb(0x09 + i, 0x70);
-		((u8 *)(net_dev->dev_addr))[i] = inb(0x71);
+		addr[i] = inb(0x71);
 	}
+	eth_hw_addr_set(net_dev, addr);
 
 	pci_write_config_byte(isa_bridge, 0x48, reg & ~0x40);
 	pci_dev_put(isa_bridge);
@@ -331,6 +335,7 @@ static int sis635_get_mac_addr(struct pci_dev *pci_dev,
 {
 	struct sis900_private *sis_priv = netdev_priv(net_dev);
 	void __iomem *ioaddr = sis_priv->ioaddr;
+	u16 addr[ETH_ALEN / 2];
 	u32 rfcrSave;
 	u32 i;
 
@@ -345,8 +350,9 @@ static int sis635_get_mac_addr(struct pci_dev *pci_dev,
 	/* load MAC addr to filter data register */
 	for (i = 0 ; i < 3 ; i++) {
 		sw32(rfcr, (i << RFADDR_shift));
-		*( ((u16 *)net_dev->dev_addr) + i) = sr16(rfdr);
+		addr[i] = sr16(rfdr);
 	}
+	eth_hw_addr_set(net_dev, (u8 *)addr);
 
 	/* enable packet filtering */
 	sw32(rfcr, rfcrSave | RFEN);
@@ -375,17 +381,18 @@ static int sis96x_get_mac_addr(struct pci_dev *pci_dev,
 {
 	struct sis900_private *sis_priv = netdev_priv(net_dev);
 	void __iomem *ioaddr = sis_priv->ioaddr;
+	u16 addr[ETH_ALEN / 2];
 	int wait, rc = 0;
 
 	sw32(mear, EEREQ);
 	for (wait = 0; wait < 2000; wait++) {
 		if (sr32(mear) & EEGNT) {
-			u16 *mac = (u16 *)net_dev->dev_addr;
 			int i;
 
 			/* get MAC address from EEPROM */
 			for (i = 0; i < 3; i++)
-			        mac[i] = read_eeprom(ioaddr, i + EEPROMMACAddr);
+			        addr[i] = read_eeprom(ioaddr, i + EEPROMMACAddr);
+			eth_hw_addr_set(net_dev, (u8 *)addr);
 
 			rc = 1;
 			break;
@@ -461,7 +468,7 @@ static int sis900_probe(struct pci_dev *pci_dev,
 	SET_NETDEV_DEV(net_dev, &pci_dev->dev);
 
 	/* We do a request_region() to register /proc/ioports info. */
-	ret = pci_request_regions(pci_dev, "sis900");
+	ret = pcim_request_all_regions(pci_dev, "sis900");
 	if (ret)
 		goto err_out;
 
@@ -1098,7 +1105,7 @@ sis900_init_rxfilter (struct net_device * net_dev)
 
 	/* load MAC addr to filter data register */
 	for (i = 0 ; i < 3 ; i++) {
-		u32 w = (u32) *((u16 *)(net_dev->dev_addr)+i);
+		u32 w = (u32) *((const u16 *)(net_dev->dev_addr)+i);
 
 		sw32(rfcr, i << RFADDR_shift);
 		sw32(rfdr, w);
@@ -1307,7 +1314,8 @@ static void sis630_set_eq(struct net_device *net_dev, u8 revision)
 
 static void sis900_timer(struct timer_list *t)
 {
-	struct sis900_private *sis_priv = from_timer(sis_priv, t, timer);
+	struct sis900_private *sis_priv = timer_container_of(sis_priv, t,
+							     timer);
 	struct net_device *net_dev = sis_priv->mii_info.dev;
 	struct mii_phy *mii_phy = sis_priv->mii;
 	static const int next_tick = 5*HZ;
@@ -1976,7 +1984,7 @@ static int sis900_close(struct net_device *net_dev)
 	/* Stop the chip's Tx and Rx Status Machine */
 	sw32(cr, RxDIS | TxDIS | sr32(cr));
 
-	del_timer(&sis_priv->timer);
+	timer_delete(&sis_priv->timer);
 
 	free_irq(pdev->irq, net_dev);
 
@@ -2020,9 +2028,9 @@ static void sis900_get_drvinfo(struct net_device *net_dev,
 {
 	struct sis900_private *sis_priv = netdev_priv(net_dev);
 
-	strlcpy(info->driver, SIS900_MODULE_NAME, sizeof(info->driver));
-	strlcpy(info->version, SIS900_DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, pci_name(sis_priv->pci_dev),
+	strscpy(info->driver, SIS900_MODULE_NAME, sizeof(info->driver));
+	strscpy(info->version, SIS900_DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, pci_name(sis_priv->pci_dev),
 		sizeof(info->bus_info));
 }
 
@@ -2266,7 +2274,7 @@ static int sis900_set_config(struct net_device *dev, struct ifmap *map)
 		 * (which seems to be different from the ifport(pcmcia) definition) */
 		switch(map->port){
 		case IF_PORT_UNKNOWN: /* use auto here */
-			dev->if_port = map->port;
+			WRITE_ONCE(dev->if_port, map->port);
 			/* we are going to change the media type, so the Link
 			 * will be temporary down and we need to reflect that
 			 * here. When the Link comes up again, it will be
@@ -2287,7 +2295,7 @@ static int sis900_set_config(struct net_device *dev, struct ifmap *map)
 			break;
 
 		case IF_PORT_10BASET: /* 10BaseT */
-			dev->if_port = map->port;
+			WRITE_ONCE(dev->if_port, map->port);
 
 			/* we are going to change the media type, so the Link
 			 * will be temporary down and we need to reflect that
@@ -2308,7 +2316,7 @@ static int sis900_set_config(struct net_device *dev, struct ifmap *map)
 
 		case IF_PORT_100BASET: /* 100BaseT */
 		case IF_PORT_100BASETX: /* 100BaseTx */
-			dev->if_port = map->port;
+			WRITE_ONCE(dev->if_port, map->port);
 
 			/* we are going to change the media type, so the Link
 			 * will be temporary down and we need to reflect that

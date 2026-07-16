@@ -14,6 +14,7 @@
  * by syed khasim <x0khasim@ti.com>
  */
 
+#include <linux/device.h>
 #include <linux/export.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
@@ -675,7 +676,6 @@ int twl4030_init_irq(struct device *dev, int irq_num)
 	static struct irq_chip	twl4030_irq_chip;
 	int			status, i;
 	int			irq_base, irq_end, nr_irqs;
-	struct			device_node *node = dev->of_node;
 
 	/*
 	 * TWL core and pwr interrupts must be contiguous because
@@ -690,8 +690,8 @@ int twl4030_init_irq(struct device *dev, int irq_num)
 		return irq_base;
 	}
 
-	irq_domain_add_legacy(node, nr_irqs, irq_base, 0,
-			      &irq_domain_simple_ops, NULL);
+	irq_domain_create_legacy(dev_fwnode(dev), nr_irqs, irq_base, 0,
+				 &irq_domain_simple_ops, NULL);
 
 	irq_end = irq_base + TWL4030_CORE_NR_IRQS;
 
@@ -753,14 +753,11 @@ fail:
 	return status;
 }
 
-int twl4030_exit_irq(void)
+void twl4030_exit_irq(void)
 {
 	/* FIXME undo twl_init_irq() */
-	if (twl4030_irq_base) {
+	if (twl4030_irq_base)
 		pr_err("twl4030: can't yet clean up IRQs?\n");
-		return -ENOSYS;
-	}
-	return 0;
 }
 
 int twl4030_init_chip_irq(const char *chip)

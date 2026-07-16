@@ -26,7 +26,7 @@
 
 /* Small library of different fence types useful for writing tests */
 
-static int __i915_sw_fence_call
+static int
 nop_fence_notify(struct i915_sw_fence *fence, enum i915_sw_fence_notify state)
 {
 	return NOTIFY_DONE;
@@ -41,12 +41,12 @@ void __onstack_fence_init(struct i915_sw_fence *fence,
 	__init_waitqueue_head(&fence->wait, name, key);
 	atomic_set(&fence->pending, 1);
 	fence->error = 0;
-	fence->flags = (unsigned long)nop_fence_notify;
+	fence->fn = nop_fence_notify;
 }
 
 void onstack_fence_fini(struct i915_sw_fence *fence)
 {
-	if (!fence->flags)
+	if (!fence->fn)
 		return;
 
 	i915_sw_fence_commit(fence);
@@ -55,7 +55,7 @@ void onstack_fence_fini(struct i915_sw_fence *fence)
 
 static void timed_fence_wake(struct timer_list *t)
 {
-	struct timed_fence *tf = from_timer(tf, t, timer);
+	struct timed_fence *tf = timer_container_of(tf, t, timer);
 
 	i915_sw_fence_commit(&tf->fence);
 }
@@ -74,10 +74,10 @@ void timed_fence_init(struct timed_fence *tf, unsigned long expires)
 
 void timed_fence_fini(struct timed_fence *tf)
 {
-	if (del_timer_sync(&tf->timer))
+	if (timer_delete_sync(&tf->timer))
 		i915_sw_fence_commit(&tf->fence);
 
-	destroy_timer_on_stack(&tf->timer);
+	timer_destroy_on_stack(&tf->timer);
 	i915_sw_fence_fini(&tf->fence);
 }
 
@@ -89,7 +89,7 @@ struct heap_fence {
 	};
 };
 
-static int __i915_sw_fence_call
+static int
 heap_fence_notify(struct i915_sw_fence *fence, enum i915_sw_fence_notify state)
 {
 	struct heap_fence *h = container_of(fence, typeof(*h), fence);

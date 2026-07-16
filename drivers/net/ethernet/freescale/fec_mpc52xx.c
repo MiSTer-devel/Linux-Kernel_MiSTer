@@ -29,10 +29,12 @@
 #include <linux/crc32.h>
 #include <linux/hardirq.h>
 #include <linux/delay.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -99,20 +101,20 @@ static void mpc52xx_fec_tx_timeout(struct net_device *dev, unsigned int txqueue)
 	netif_wake_queue(dev);
 }
 
-static void mpc52xx_fec_set_paddr(struct net_device *dev, u8 *mac)
+static void mpc52xx_fec_set_paddr(struct net_device *dev, const u8 *mac)
 {
 	struct mpc52xx_fec_priv *priv = netdev_priv(dev);
 	struct mpc52xx_fec __iomem *fec = priv->fec;
 
-	out_be32(&fec->paddr1, *(u32 *)(&mac[0]));
-	out_be32(&fec->paddr2, (*(u16 *)(&mac[4]) << 16) | FEC_PADDR2_TYPE);
+	out_be32(&fec->paddr1, *(const u32 *)(&mac[0]));
+	out_be32(&fec->paddr2, (*(const u16 *)(&mac[4]) << 16) | FEC_PADDR2_TYPE);
 }
 
 static int mpc52xx_fec_set_mac_address(struct net_device *dev, void *addr)
 {
 	struct sockaddr *sock = addr;
 
-	memcpy(dev->dev_addr, sock->sa_data, dev->addr_len);
+	eth_hw_addr_set(dev, sock->sa_data);
 
 	mpc52xx_fec_set_paddr(dev, sock->sa_data);
 	return 0;
@@ -617,7 +619,7 @@ static void mpc52xx_fec_hw_init(struct net_device *dev)
 	out_be32(&fec->rfifo_alarm, 0x0000030c);
 	out_be32(&fec->tfifo_alarm, 0x00000100);
 
-	/* begin transmittion when 256 bytes are in FIFO (or EOF or FIFO full) */
+	/* begin transmission when 256 bytes are in FIFO (or EOF or FIFO full) */
 	out_be32(&fec->x_wmrk, FEC_FIFO_WMRK_256B);
 
 	/* enable crc generation */
@@ -890,16 +892,18 @@ static int mpc52xx_fec_probe(struct platform_device *op)
 	 *
 	 * First try to read MAC address from DT
 	 */
-	rv = of_get_mac_address(np, ndev->dev_addr);
+	rv = of_get_ethdev_address(np, ndev);
 	if (rv) {
 		struct mpc52xx_fec __iomem *fec = priv->fec;
+		u8 addr[ETH_ALEN] __aligned(4);
 
 		/*
 		 * If the MAC addresse is not provided via DT then read
 		 * it back from the controller regs
 		 */
-		*(u32 *)(&ndev->dev_addr[0]) = in_be32(&fec->paddr1);
-		*(u16 *)(&ndev->dev_addr[4]) = in_be32(&fec->paddr2) >> 16;
+		*(u32 *)(&addr[0]) = in_be32(&fec->paddr1);
+		*(u16 *)(&addr[4]) = in_be32(&fec->paddr2) >> 16;
+		eth_hw_addr_set(ndev, addr);
 	}
 
 	/*
@@ -920,7 +924,7 @@ static int mpc52xx_fec_probe(struct platform_device *op)
 	/* Start with safe defaults for link connection */
 	priv->speed = 100;
 	priv->duplex = DUPLEX_HALF;
-	priv->mdio_speed = ((mpc5xxx_get_bus_frequency(np) >> 20) / 5) << 1;
+	priv->mdio_speed = ((mpc5xxx_get_bus_frequency(&op->dev) >> 20) / 5) << 1;
 
 	/* The current speed preconfigures the speed of the MII link */
 	prop = of_get_property(np, "current-speed", &prop_size);
@@ -933,7 +937,7 @@ static int mpc52xx_fec_probe(struct platform_device *op)
 	priv->phy_node = of_parse_phandle(np, "phy-handle", 0);
 
 	/* the 7-wire property means don't use MII mode */
-	if (of_find_property(np, "fsl,7-wire-mode", NULL)) {
+	if (of_property_read_bool(np, "fsl,7-wire-mode")) {
 		priv->seven_wire_mode = 1;
 		dev_info(&ndev->dev, "using 7-wire PHY mode\n");
 	}
@@ -970,7 +974,7 @@ err_netdev:
 	return rv;
 }
 
-static int
+static void
 mpc52xx_fec_remove(struct platform_device *op)
 {
 	struct net_device *ndev;
@@ -994,8 +998,6 @@ mpc52xx_fec_remove(struct platform_device *op)
 	release_mem_region(ndev->base_addr, sizeof(struct mpc52xx_fec));
 
 	free_netdev(ndev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

@@ -571,8 +571,7 @@ static const struct snd_soc_component_driver tda7419_component_driver = {
 	.num_dapm_routes	= ARRAY_SIZE(tda7419_dapm_routes),
 };
 
-static int tda7419_probe(struct i2c_client *i2c,
-			 const struct i2c_device_id *id)
+static int tda7419_probe(struct i2c_client *i2c)
 {
 	struct tda7419_data *tda7419;
 	int i, ret;
@@ -615,7 +614,7 @@ static int tda7419_probe(struct i2c_client *i2c,
 }
 
 static const struct i2c_device_id tda7419_i2c_id[] = {
-	{ "tda7419", 0 },
+	{ "tda7419" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tda7419_i2c_id);
@@ -624,6 +623,7 @@ static const struct of_device_id tda7419_of_match[] = {
 	{ .compatible = "st,tda7419" },
 	{ },
 };
+MODULE_DEVICE_TABLE(of, tda7419_of_match);
 
 static struct i2c_driver tda7419_driver = {
 	.driver = {

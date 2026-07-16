@@ -14,14 +14,14 @@
 
 #include "adau1372.h"
 
-static int adau1372_i2c_probe(struct i2c_client *client, const struct i2c_device_id *id)
+static int adau1372_i2c_probe(struct i2c_client *client)
 {
 	return adau1372_probe(&client->dev,
 		devm_regmap_init_i2c(client, &adau1372_regmap_config), NULL);
 }
 
 static const struct i2c_device_id adau1372_i2c_ids[] = {
-	{ "adau1372", 0 },
+	{ "adau1372" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adau1372_i2c_ids);
@@ -29,6 +29,7 @@ MODULE_DEVICE_TABLE(i2c, adau1372_i2c_ids);
 static struct i2c_driver adau1372_i2c_driver = {
 	.driver = {
 		.name = "adau1372",
+		.of_match_table = adau1372_of_match,
 	},
 	.probe = adau1372_i2c_probe,
 	.id_table = adau1372_i2c_ids,

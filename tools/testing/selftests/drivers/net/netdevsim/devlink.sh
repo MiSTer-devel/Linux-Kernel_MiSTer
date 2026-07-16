@@ -17,38 +17,59 @@ SYSFS_NET_DIR=/sys/bus/netdevsim/devices/$DEV_NAME/net/
 DEBUGFS_DIR=/sys/kernel/debug/netdevsim/$DEV_NAME/
 DL_HANDLE=netdevsim/$DEV_NAME
 
+wait_for_devlink()
+{
+	"$@" | grep -q $DL_HANDLE
+}
+
+devlink_wait()
+{
+	local timeout=$1
+
+	busywait "$timeout" wait_for_devlink devlink dev
+}
+
 fw_flash_test()
 {
+	DUMMYFILE=$(find /lib/firmware -type f -printf '%P\n' | head -1)
 	RET=0
 
-	devlink dev flash $DL_HANDLE file dummy
+	if [ -z "$DUMMYFILE" ]
+	then
+		echo "SKIP: unable to find suitable dummy firmware file"
+		return
+	fi
+
+	echo "10"> $DEBUGFS_DIR/fw_update_flash_chunk_time_ms
+
+	devlink dev flash $DL_HANDLE file $DUMMYFILE
 	check_err $? "Failed to flash with status updates on"
 
-	devlink dev flash $DL_HANDLE file dummy component fw.mgmt
+	devlink dev flash $DL_HANDLE file $DUMMYFILE component fw.mgmt
 	check_err $? "Failed to flash with component attribute"
 
-	devlink dev flash $DL_HANDLE file dummy overwrite settings
+	devlink dev flash $DL_HANDLE file $DUMMYFILE overwrite settings
 	check_fail $? "Flash with overwrite settings should be rejected"
 
 	echo "1"> $DEBUGFS_DIR/fw_update_overwrite_mask
 	check_err $? "Failed to change allowed overwrite mask"
 
-	devlink dev flash $DL_HANDLE file dummy overwrite settings
+	devlink dev flash $DL_HANDLE file $DUMMYFILE overwrite settings
 	check_err $? "Failed to flash with settings overwrite enabled"
 
-	devlink dev flash $DL_HANDLE file dummy overwrite identifiers
+	devlink dev flash $DL_HANDLE file $DUMMYFILE overwrite identifiers
 	check_fail $? "Flash with overwrite settings should be identifiers"
 
 	echo "3"> $DEBUGFS_DIR/fw_update_overwrite_mask
 	check_err $? "Failed to change allowed overwrite mask"
 
-	devlink dev flash $DL_HANDLE file dummy overwrite identifiers overwrite settings
+	devlink dev flash $DL_HANDLE file $DUMMYFILE overwrite identifiers overwrite settings
 	check_err $? "Failed to flash with settings and identifiers overwrite enabled"
 
 	echo "n"> $DEBUGFS_DIR/fw_update_status
 	check_err $? "Failed to disable status updates"
 
-	devlink dev flash $DL_HANDLE file dummy
+	devlink dev flash $DL_HANDLE file $DUMMYFILE
 	check_err $? "Failed to flash with status updates off"
 
 	log_test "fw flash test"
@@ -256,6 +277,9 @@ netns_reload_test()
 	ip netns del testns2
 	ip netns del testns1
 
+	# Wait until netns async cleanup is done.
+	devlink_wait 2000
+
 	log_test "netns reload test"
 }
 
@@ -347,6 +371,9 @@ resource_test()
 
 	ip netns del testns2
 	ip netns del testns1
+
+	# Wait until netns async cleanup is done.
+	devlink_wait 2000
 
 	log_test "resource test"
 }
@@ -496,8 +523,8 @@ dummy_reporter_test()
 
 	check_reporter_info dummy healthy 3 3 10 true
 
-	echo 8192> $DEBUGFS_DIR/health/binary_len
-	check_fail $? "Failed set dummy reporter binary len to 8192"
+	echo 8192 > $DEBUGFS_DIR/health/binary_len
+	check_err $? "Failed set dummy reporter binary len to 8192"
 
 	local dump=$(devlink health dump show $DL_HANDLE reporter dummy -j)
 	check_err $? "Failed show dump of dummy reporter"
@@ -583,6 +610,46 @@ rate_attr_parent_check()
 	check_err $? "Unexpected parent attr value $api_value != $parent"
 }
 
+rate_attr_tc_bw_check()
+{
+	local handle=$1
+	local tc_bw=$2
+	local debug_file=$3
+
+	local tc_bw_str=""
+	for bw in $tc_bw; do
+		local tc=${bw%%:*}
+		local value=${bw##*:}
+		tc_bw_str="$tc_bw_str $tc:$value"
+	done
+	tc_bw_str=${tc_bw_str# }
+
+	rate_attr_set "$handle" tc-bw "$tc_bw_str"
+	check_err $? "Failed to set tc-bw values"
+
+	for bw in $tc_bw; do
+		local tc=${bw%%:*}
+		local value=${bw##*:}
+		local debug_value
+		debug_value=$(cat "$debug_file"/tc"${tc}"_bw)
+		check_err $? "Failed to read tc-bw value from debugfs for tc$tc"
+		[ "$debug_value" == "$value" ]
+		check_err $? "Unexpected tc-bw debug value for tc$tc: $debug_value != $value"
+	done
+
+	for bw in $tc_bw; do
+		local tc=${bw%%:*}
+		local expected_value=${bw##*:}
+		local api_value
+		api_value=$(rate_attr_get "$handle" tc_"$tc")
+		if [ "$api_value" = "null" ]; then
+			api_value=0
+		fi
+		[ "$api_value" == "$expected_value" ]
+		check_err $? "Unexpected tc-bw value for tc$tc: $api_value != $expected_value"
+	done
+}
+
 rate_node_add()
 {
 	local handle=$1
@@ -624,6 +691,13 @@ rate_test()
 		rate=$(($rate+100))
 	done
 
+	local tc_bw="0:0 1:40 2:0 3:0 4:0 5:0 6:60 7:0"
+	for r_obj in $leafs
+	do
+		rate_attr_tc_bw_check "$r_obj" "$tc_bw" \
+			"$DEBUGFS_DIR"/ports/"${r_obj##*/}"
+	done
+
 	local node1_name='group1'
 	local node1="$DL_HANDLE/$node1_name"
 	rate_node_add "$node1"
@@ -640,6 +714,12 @@ rate_test()
 	local node_tx_max=100
 	rate_attr_tx_rate_check $node1 tx_max $node_tx_max \
 		$DEBUGFS_DIR/rate_nodes/${node1##*/}/tx_max
+
+
+	local tc_bw="0:20 1:0 2:0 3:0 4:0 5:20 6:60 7:0"
+	rate_attr_tc_bw_check $node1 "$tc_bw" \
+		"$DEBUGFS_DIR"/rate_nodes/"${node1##*/}"
+
 
 	rate_node_del "$node1"
 	check_err $? "Failed to delete node $node1"

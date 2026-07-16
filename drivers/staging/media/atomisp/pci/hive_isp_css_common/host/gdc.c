@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2010-2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 /* The name "gdc.h is already taken" */
@@ -27,10 +18,6 @@ static inline void gdc_reg_store(
     const gdc_ID_t		ID,
     const unsigned int	reg,
     const hrt_data		value);
-
-static inline hrt_data gdc_reg_load(
-    const gdc_ID_t		ID,
-    const unsigned int	reg);
 
 #ifndef __INLINE_GDC__
 #include "gdc_private.h"
@@ -116,11 +103,4 @@ static inline void gdc_reg_store(
 {
 	ia_css_device_store_uint32(GDC_BASE[ID] + reg * sizeof(hrt_data), value);
 	return;
-}
-
-static inline hrt_data gdc_reg_load(
-    const gdc_ID_t		ID,
-    const unsigned int	reg)
-{
-	return ia_css_device_load_uint32(GDC_BASE[ID] + reg * sizeof(hrt_data));
 }

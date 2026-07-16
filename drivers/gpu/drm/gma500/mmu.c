@@ -5,6 +5,7 @@
  **************************************************************************/
 
 #include <linux/highmem.h>
+#include <linux/vmalloc.h>
 
 #include "mmu.h"
 #include "psb_drv.h"
@@ -66,7 +67,7 @@ static inline void psb_mmu_clflush(struct psb_mmu_driver *driver, void *addr)
 static void psb_mmu_flush_pd_locked(struct psb_mmu_driver *driver, int force)
 {
 	struct drm_device *dev = driver->dev;
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 
 	if (atomic_read(&driver->needs_tlbflush) || force) {
 		uint32_t val = PSB_RSGX32(PSB_CR_BIF_CTRL);
@@ -94,7 +95,7 @@ static void psb_mmu_flush_pd(struct psb_mmu_driver *driver, int force)
 void psb_mmu_flush(struct psb_mmu_driver *driver)
 {
 	struct drm_device *dev = driver->dev;
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	uint32_t val;
 
 	down_write(&driver->sem);
@@ -120,7 +121,7 @@ void psb_mmu_flush(struct psb_mmu_driver *driver)
 void psb_mmu_set_pd_context(struct psb_mmu_pd *pd, int hw_context)
 {
 	struct drm_device *dev = pd->driver->dev;
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	uint32_t offset = (hw_context == 0) ? PSB_CR_BIF_DIR_LIST_BASE0 :
 			  PSB_CR_BIF_DIR_LIST_BASE1 + hw_context * 4;
 
@@ -184,17 +185,17 @@ struct psb_mmu_pd *psb_mmu_alloc_pd(struct psb_mmu_driver *driver,
 		pd->invalid_pte = 0;
 	}
 
-	v = kmap(pd->dummy_pt);
+	v = kmap_local_page(pd->dummy_pt);
 	for (i = 0; i < (PAGE_SIZE / sizeof(uint32_t)); ++i)
 		v[i] = pd->invalid_pte;
 
-	kunmap(pd->dummy_pt);
+	kunmap_local(v);
 
-	v = kmap(pd->p);
+	v = kmap_local_page(pd->p);
 	for (i = 0; i < (PAGE_SIZE / sizeof(uint32_t)); ++i)
 		v[i] = pd->invalid_pde;
 
-	kunmap(pd->p);
+	kunmap_local(v);
 
 	clear_page(kmap(pd->dummy_page));
 	kunmap(pd->dummy_page);
@@ -230,7 +231,7 @@ void psb_mmu_free_pagedir(struct psb_mmu_pd *pd)
 {
 	struct psb_mmu_driver *driver = pd->driver;
 	struct drm_device *dev = driver->dev;
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	struct psb_mmu_pt *pt;
 	int i;
 
@@ -409,7 +410,7 @@ struct psb_mmu_pd *psb_mmu_get_default_pd(struct psb_mmu_driver *driver)
 void psb_mmu_driver_takedown(struct psb_mmu_driver *driver)
 {
 	struct drm_device *dev = driver->dev;
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 
 	PSB_WSGX32(driver->bif_ctrl, PSB_CR_BIF_CTRL);
 	psb_mmu_free_pagedir(driver->default_pd);
@@ -422,7 +423,7 @@ struct psb_mmu_driver *psb_mmu_driver_init(struct drm_device *dev,
 					   atomic_t *msvdx_mmu_invaldc)
 {
 	struct psb_mmu_driver *driver;
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 
 	driver = kmalloc(sizeof(*driver), GFP_KERNEL);
 
@@ -727,46 +728,5 @@ out:
 	if (pd->hw_context != -1)
 		psb_mmu_flush(pd->driver);
 
-	return ret;
-}
-
-int psb_mmu_virtual_to_pfn(struct psb_mmu_pd *pd, uint32_t virtual,
-			   unsigned long *pfn)
-{
-	int ret;
-	struct psb_mmu_pt *pt;
-	uint32_t tmp;
-	spinlock_t *lock = &pd->driver->lock;
-
-	down_read(&pd->driver->sem);
-	pt = psb_mmu_pt_map_lock(pd, virtual);
-	if (!pt) {
-		uint32_t *v;
-
-		spin_lock(lock);
-		v = kmap_atomic(pd->p);
-		tmp = v[psb_mmu_pd_index(virtual)];
-		kunmap_atomic(v);
-		spin_unlock(lock);
-
-		if (tmp != pd->invalid_pde || !(tmp & PSB_PTE_VALID) ||
-		    !(pd->invalid_pte & PSB_PTE_VALID)) {
-			ret = -EINVAL;
-			goto out;
-		}
-		ret = 0;
-		*pfn = pd->invalid_pte >> PAGE_SHIFT;
-		goto out;
-	}
-	tmp = pt->v[psb_mmu_pt_index(virtual)];
-	if (!(tmp & PSB_PTE_VALID)) {
-		ret = -EINVAL;
-	} else {
-		ret = 0;
-		*pfn = tmp >> PAGE_SHIFT;
-	}
-	psb_mmu_pt_unmap_unlock(pt);
-out:
-	up_read(&pd->driver->sem);
 	return ret;
 }

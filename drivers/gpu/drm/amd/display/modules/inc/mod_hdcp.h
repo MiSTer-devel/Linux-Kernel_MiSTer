@@ -104,6 +104,8 @@ struct mod_hdcp_displayport {
 	uint8_t rev;
 	uint8_t assr_enabled;
 	uint8_t mst_enabled;
+	uint8_t dp2_enabled;
+	uint8_t usb4_enabled;
 };
 
 struct mod_hdcp_hdmi {
@@ -131,9 +133,22 @@ enum mod_hdcp_display_disable_option {
 	MOD_HDCP_DISPLAY_DISABLE_ENCRYPTION,
 };
 
+struct mod_hdcp_atomic_op_i2c {
+	uint8_t address;
+	uint8_t offset;
+	uint8_t *data;
+	uint32_t size;
+};
+
+struct mod_hdcp_atomic_op_aux {
+	uint32_t address;
+	uint8_t *data;
+	uint32_t size;
+};
+
 struct mod_hdcp_ddc {
 	void *handle;
-	struct {
+	struct mod_hdcp_ddc_funcs {
 		bool (*read_i2c)(void *handle,
 				uint32_t address,
 				uint8_t offset,
@@ -151,6 +166,22 @@ struct mod_hdcp_ddc {
 				uint32_t address,
 				const uint8_t *data,
 				uint32_t size);
+		bool (*atomic_write_poll_read_i2c)(
+				void *handle,
+				const struct mod_hdcp_atomic_op_i2c *write,
+				const struct mod_hdcp_atomic_op_i2c *poll,
+				struct mod_hdcp_atomic_op_i2c *read,
+				uint32_t poll_timeout_us,
+				uint8_t poll_mask_msb
+		);
+		bool (*atomic_write_poll_read_aux)(
+				void *handle,
+				const struct mod_hdcp_atomic_op_aux *write,
+				const struct mod_hdcp_atomic_op_aux *poll,
+				struct mod_hdcp_atomic_op_aux *read,
+				uint32_t poll_timeout_us,
+				uint8_t poll_mask_msb
+		);
 	} funcs;
 };
 
@@ -183,11 +214,13 @@ struct mod_hdcp_link_adjustment_hdcp2 {
 	uint8_t force_type		: 2;
 	uint8_t force_no_stored_km	: 1;
 	uint8_t increase_h_prime_timeout: 1;
-	uint8_t reserved		: 3;
+	uint8_t force_sw_locality_check : 1;
+	uint8_t reserved		: 2;
 };
 
 struct mod_hdcp_link_adjustment {
 	uint8_t auth_delay;
+	uint8_t retry_limit;
 	struct mod_hdcp_link_adjustment_hdcp1 hdcp1;
 	struct mod_hdcp_link_adjustment_hdcp2 hdcp2;
 };
@@ -249,6 +282,7 @@ struct mod_hdcp_link {
 	uint8_t ddc_line;
 	uint8_t link_enc_idx;
 	uint8_t phy_idx;
+	uint8_t dio_output_id;
 	uint8_t hdcp_supported_informational;
 	union {
 		struct mod_hdcp_displayport dp;
@@ -269,6 +303,10 @@ struct mod_hdcp_display_query {
 struct mod_hdcp_config {
 	struct mod_hdcp_psp psp;
 	struct mod_hdcp_ddc ddc;
+	struct {
+		uint8_t lc_enable_sw_fallback : 1;
+		uint8_t reserved : 7;
+	} debug;
 	uint8_t index;
 };
 
@@ -292,7 +330,7 @@ enum mod_hdcp_status mod_hdcp_remove_display(struct mod_hdcp *hdcp,
 		uint8_t index, struct mod_hdcp_output *output);
 
 /* called per display to apply new authentication adjustment */
-enum mod_hdcp_status mod_hdcp_update_authentication(struct mod_hdcp *hdcp,
+enum mod_hdcp_status mod_hdcp_update_display(struct mod_hdcp *hdcp,
 		uint8_t index,
 		struct mod_hdcp_link_adjustment *link_adjust,
 		struct mod_hdcp_display_adjustment *display_adjust,

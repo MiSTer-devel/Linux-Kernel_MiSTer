@@ -18,7 +18,8 @@ config TTY_PRINTK
 	  The feature is useful to inline user messages with kernel
 	  messages.
 	  In order to use this feature, you should output user messages
-	  to /dev/ttyprintk or redirect console to this TTY.
+	  to /dev/ttyprintk or redirect console to this TTY, or boot
+	  the kernel with console=ttyprintk.
 
 	  If unsure, say N.
 
@@ -33,6 +34,7 @@ config TTY_PRINTK_LEVEL
 config PRINTER
 	tristate "Parallel printer support"
 	depends on PARPORT
+	depends on HAS_IOPORT || PARPORT_NOT_PC
 	help
 	  If you intend to attach a printer to the parallel port of your Linux
 	  box (as opposed to using a serial printer; if the connector at the
@@ -235,7 +237,8 @@ config APPLICOM
 
 config SONYPI
 	tristate "Sony Vaio Programmable I/O Control Device support"
-	depends on X86_32 && PCI && INPUT
+	depends on X86_32 && PCI && INPUT && HAS_IOPORT
+	depends on ACPI_EC || !ACPI
 	help
 	  This driver enables access to the Sony Programmable I/O Control
 	  Device which can be found in many (all ?) Sony Vaio laptops.
@@ -245,13 +248,6 @@ config SONYPI
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called sonypi.
-
-config GPIO_TB0219
-	tristate "TANBAC TB0219 GPIO support"
-	depends on TANBAC_TB022X
-	select GPIO_VR41XX
-
-source "drivers/char/pcmcia/Kconfig"
 
 config MWAVE
 	tristate "ACP Modem (Mwave) support"
@@ -346,14 +342,14 @@ config NVRAM
 
 config DEVPORT
 	bool "/dev/port character device"
-	depends on ISA || PCI
+	depends on HAS_IOPORT
 	default y
 	help
 	  Say Y here if you want to support the /dev/port device. The /dev/port
 	  device is similar to /dev/mem, but for I/O ports.
 
 config HPET
-	bool "HPET - High Precision Event Timer" if (X86 || IA64)
+	bool "HPET - High Precision Event Timer" if X86
 	default n
 	depends on ACPI
 	help
@@ -382,7 +378,7 @@ config HPET_MMAP_DEFAULT
 
 config HANGCHECK_TIMER
 	tristate "Hangcheck timer"
-	depends on X86 || IA64 || PPC64 || S390
+	depends on X86 || PPC64 || S390
 	help
 	  The hangcheck-timer module detects when the system has gone
 	  out to lunch past a certain margin.  It can reboot the system
@@ -408,7 +404,7 @@ config TELCLOCK
 	  configuration of the telecom clock configuration settings.  This
 	  device is used for hardware synchronization across the ATCA backplane
 	  fabric.  Upon loading, the driver exports a sysfs directory,
-	  /sys/devices/platform/telco_clock, with a number of files for
+	  /sys/devices/faux/telco_clock, with a number of files for
 	  controlling the behavior of this hardware.
 
 source "drivers/s390/char/Kconfig"
@@ -426,29 +422,5 @@ config ADI
 	  This feature is also known as MCD (Memory Corruption Detection)
 	  and SSM (Silicon Secured Memory).  Intended consumers of this
 	  driver include crash and makedumpfile.
-
-config RANDOM_TRUST_CPU
-	bool "Trust the CPU manufacturer to initialize Linux's CRNG"
-	depends on ARCH_RANDOM
-	default n
-	help
-	Assume that CPU manufacturer (e.g., Intel or AMD for RDSEED or
-	RDRAND, IBM for the S390 and Power PC architectures) is trustworthy
-	for the purposes of initializing Linux's CRNG.  Since this is not
-	something that can be independently audited, this amounts to trusting
-	that CPU manufacturer (perhaps with the insistence or mandate
-	of a Nation State's intelligence or law enforcement agencies)
-	has not installed a hidden back door to compromise the CPU's
-	random number generation facilities. This can also be configured
-	at boot with "random.trust_cpu=on/off".
-
-config RANDOM_TRUST_BOOTLOADER
-	bool "Trust the bootloader to initialize Linux's CRNG"
-	help
-	Some bootloaders can provide entropy to increase the kernel's initial
-	device randomness. Say Y here to assume the entropy provided by the
-	booloader is trustworthy so it will be added to the kernel's entropy
-	pool. Otherwise, say N here so it will be regarded as device input that
-	only mixes the entropy pool.
 
 endmenu

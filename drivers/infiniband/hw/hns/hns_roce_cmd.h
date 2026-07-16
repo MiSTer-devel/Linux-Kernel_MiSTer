@@ -108,6 +108,9 @@ enum {
 	HNS_ROCE_CMD_QUERY_CEQC		= 0x92,
 	HNS_ROCE_CMD_DESTROY_CEQC	= 0x93,
 
+	/* SCC CTX commands */
+	HNS_ROCE_CMD_QUERY_SCCC		= 0xa2,
+
 	/* SCC CTX BT commands */
 	HNS_ROCE_CMD_READ_SCCC_BT0	= 0xa4,
 	HNS_ROCE_CMD_WRITE_SCCC_BT0	= 0xa5,
@@ -140,12 +143,16 @@ enum {
 };
 
 int hns_roce_cmd_mbox(struct hns_roce_dev *hr_dev, u64 in_param, u64 out_param,
-		      unsigned long in_modifier, u8 op_modifier, u16 op,
-		      unsigned int timeout);
+		      u8 cmd, unsigned long tag);
 
 struct hns_roce_cmd_mailbox *
 hns_roce_alloc_cmd_mailbox(struct hns_roce_dev *hr_dev);
 void hns_roce_free_cmd_mailbox(struct hns_roce_dev *hr_dev,
 			       struct hns_roce_cmd_mailbox *mailbox);
+int hns_roce_create_hw_ctx(struct hns_roce_dev *dev,
+			   struct hns_roce_cmd_mailbox *mailbox,
+			   u8 cmd, unsigned long idx);
+int hns_roce_destroy_hw_ctx(struct hns_roce_dev *dev, u8 cmd,
+			    unsigned long idx);
 
 #endif /* _HNS_ROCE_CMD_H */

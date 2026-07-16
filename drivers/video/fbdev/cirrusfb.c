@@ -34,6 +34,7 @@
  *
  */
 
+#include <linux/aperture.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -469,7 +470,7 @@ static int cirrusfb_check_mclk(struct fb_info *info, long freq)
 	return 0;
 }
 
-static int cirrusfb_check_pixclock(const struct fb_var_screeninfo *var,
+static int cirrusfb_check_pixclock(struct fb_var_screeninfo *var,
 				   struct fb_info *info)
 {
 	long freq;
@@ -478,9 +479,7 @@ static int cirrusfb_check_pixclock(const struct fb_var_screeninfo *var,
 	unsigned maxclockidx = var->bits_per_pixel >> 3;
 
 	/* convert from ps to kHz */
-	freq = PICOS2KHZ(var->pixclock);
-
-	dev_dbg(info->device, "desired pixclock: %ld kHz\n", freq);
+	freq = PICOS2KHZ(var->pixclock ? : 1);
 
 	maxclock = cirrusfb_board_info[cinfo->btype].maxclock[maxclockidx];
 	cinfo->multiplexing = 0;
@@ -488,11 +487,13 @@ static int cirrusfb_check_pixclock(const struct fb_var_screeninfo *var,
 	/* If the frequency is greater than we can support, we might be able
 	 * to use multiplexing for the video mode */
 	if (freq > maxclock) {
-		dev_err(info->device,
-			"Frequency greater than maxclock (%ld kHz)\n",
-			maxclock);
-		return -EINVAL;
+		var->pixclock = KHZ2PICOS(maxclock);
+
+		while ((freq = PICOS2KHZ(var->pixclock)) > maxclock)
+			var->pixclock++;
 	}
+	dev_dbg(info->device, "desired pixclock: %ld kHz\n", freq);
+
 	/*
 	 * Additional constraint: 8bpp uses DAC clock doubling to allow maximum
 	 * pixel clock
@@ -1960,6 +1961,7 @@ static const struct fb_ops cirrusfb_ops = {
 	.owner		= THIS_MODULE,
 	.fb_open	= cirrusfb_open,
 	.fb_release	= cirrusfb_release,
+	__FB_DEFAULT_IOMEM_OPS_RDWR,
 	.fb_setcolreg	= cirrusfb_setcolreg,
 	.fb_check_var	= cirrusfb_check_var,
 	.fb_set_par	= cirrusfb_set_par,
@@ -1969,6 +1971,7 @@ static const struct fb_ops cirrusfb_ops = {
 	.fb_copyarea	= cirrusfb_copyarea,
 	.fb_sync	= cirrusfb_sync,
 	.fb_imageblit	= cirrusfb_imageblit,
+	__FB_DEFAULT_IOMEM_OPS_MMAP,
 };
 
 static int cirrusfb_set_fbinfo(struct fb_info *info)
@@ -1977,8 +1980,7 @@ static int cirrusfb_set_fbinfo(struct fb_info *info)
 	struct fb_var_screeninfo *var = &info->var;
 
 	info->pseudo_palette = cinfo->pseudo_palette;
-	info->flags = FBINFO_DEFAULT
-		    | FBINFO_HWACCEL_XPAN
+	info->flags = FBINFO_HWACCEL_XPAN
 		    | FBINFO_HWACCEL_YPAN
 		    | FBINFO_HWACCEL_FILLRECT
 		    | FBINFO_HWACCEL_IMAGEBLIT
@@ -1999,7 +2001,7 @@ static int cirrusfb_set_fbinfo(struct fb_info *info)
 	}
 
 	/* Fill fix common fields */
-	strlcpy(info->fix.id, cirrusfb_board_info[cinfo->btype].name,
+	strscpy(info->fix.id, cirrusfb_board_info[cinfo->btype].name,
 		sizeof(info->fix.id));
 
 	/* monochrome: only 1 memory plane */
@@ -2084,6 +2086,10 @@ static int cirrusfb_pci_register(struct pci_dev *pdev,
 	struct fb_info *info;
 	unsigned long board_addr, board_size;
 	int ret;
+
+	ret = aperture_remove_conflicting_pci_devices(pdev, "cirrusfb");
+	if (ret)
+		return ret;
 
 	ret = pci_enable_device(pdev);
 	if (ret < 0) {
@@ -2184,12 +2190,6 @@ static struct pci_driver cirrusfb_pci_driver = {
 	.id_table	= cirrusfb_pci_table,
 	.probe		= cirrusfb_pci_register,
 	.remove		= cirrusfb_pci_unregister,
-#ifdef CONFIG_PM
-#if 0
-	.suspend	= cirrusfb_pci_suspend,
-	.resume		= cirrusfb_pci_resume,
-#endif
-#endif
 };
 #endif /* CONFIG_PCI */
 
@@ -2307,7 +2307,7 @@ err_release_fb:
 	return error;
 }
 
-void cirrusfb_zorro_unregister(struct zorro_dev *z)
+static void cirrusfb_zorro_unregister(struct zorro_dev *z)
 {
 	struct fb_info *info = zorro_get_drvdata(z);
 
@@ -2360,7 +2360,12 @@ static int __init cirrusfb_init(void)
 
 #ifndef MODULE
 	char *option = NULL;
+#endif
 
+	if (fb_modesetting_disabled("cirrusfb"))
+		return -ENODEV;
+
+#ifndef MODULE
 	if (fb_get_options("cirrusfb", &option))
 		return -ENODEV;
 	cirrusfb_setup(option);

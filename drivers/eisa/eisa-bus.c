@@ -21,7 +21,7 @@
 
 struct eisa_device_info {
 	struct eisa_device_id id;
-	char name[50];
+	char name[EISA_DEVICE_INFO_NAME_SIZE];
 };
 
 #ifdef CONFIG_EISA_NAMES
@@ -60,7 +60,7 @@ static void __init eisa_name_device(struct eisa_device *edev)
 	int i;
 	for (i = 0; i < EISA_INFOS; i++) {
 		if (!strcmp(edev->id.sig, eisa_table[i].id.sig)) {
-			strlcpy(edev->pretty_name,
+			strscpy(edev->pretty_name,
 				eisa_table[i].name,
 				sizeof(edev->pretty_name));
 			return;
@@ -105,10 +105,10 @@ static char __init *decode_eisa_sig(unsigned long addr)
 	return sig_str;
 }
 
-static int eisa_bus_match(struct device *dev, struct device_driver *drv)
+static int eisa_bus_match(struct device *dev, const struct device_driver *drv)
 {
 	struct eisa_device *edev = to_eisa_device(dev);
-	struct eisa_driver *edrv = to_eisa_driver(drv);
+	const struct eisa_driver *edrv = to_eisa_driver(drv);
 	const struct eisa_device_id *eids = edrv->id_table;
 
 	if (!eids)
@@ -127,9 +127,9 @@ static int eisa_bus_match(struct device *dev, struct device_driver *drv)
 	return 0;
 }
 
-static int eisa_bus_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int eisa_bus_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct eisa_device *edev = to_eisa_device(dev);
+	const struct eisa_device *edev = to_eisa_device(dev);
 
 	add_uevent_var(env, "MODALIAS=" EISA_DEVICE_MODALIAS_FMT, edev->id.sig);
 	return 0;

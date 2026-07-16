@@ -18,7 +18,6 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand-ecc-sw-hamming.h>
 #include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
 #include <linux/iopoll.h>
@@ -27,7 +26,7 @@
 
 #define NR_CS553X_CONTROLLERS	4
 
-#define MSR_DIVIL_GLD_CAP	0x51400000	/* DIVIL capabilitiies */
+#define MSR_DIVIL_GLD_CAP	0x51400000	/* DIVIL capabilities */
 #define CAP_CS5535		0x2df000ULL
 #define CAP_CS5536		0x5df500ULL
 
@@ -105,17 +104,12 @@ static int cs553x_write_ctrl_byte(struct cs553x_nand_controller *cs553x,
 				  u32 ctl, u8 data)
 {
 	u8 status;
-	int ret;
 
 	writeb(ctl, cs553x->mmio + MM_NAND_CTL);
 	writeb(data, cs553x->mmio + MM_NAND_IO);
-	ret = readb_poll_timeout_atomic(cs553x->mmio + MM_NAND_STS, status,
+	return readb_poll_timeout_atomic(cs553x->mmio + MM_NAND_STS, status,
 					!(status & CS_NAND_CTLR_BUSY), 1,
 					100000);
-	if (ret)
-		return ret;
-
-	return 0;
 }
 
 static void cs553x_data_in(struct cs553x_nand_controller *cs553x, void *buf,
@@ -241,15 +235,6 @@ static int cs_calculate_ecc(struct nand_chip *this, const u_char *dat,
 	return 0;
 }
 
-static int cs553x_ecc_correct(struct nand_chip *chip,
-			      unsigned char *buf,
-			      unsigned char *read_ecc,
-			      unsigned char *calc_ecc)
-{
-	return ecc_sw_hamming_correct(buf, read_ecc, calc_ecc,
-				      chip->ecc.size, false);
-}
-
 static struct cs553x_nand_controller *controllers[4];
 
 static int cs553x_attach_chip(struct nand_chip *chip)
@@ -261,7 +246,7 @@ static int cs553x_attach_chip(struct nand_chip *chip)
 	chip->ecc.bytes = 3;
 	chip->ecc.hwctl  = cs_enable_hwecc;
 	chip->ecc.calculate = cs_calculate_ecc;
-	chip->ecc.correct  = cs553x_ecc_correct;
+	chip->ecc.correct  = rawnand_sw_hamming_correct;
 	chip->ecc.strength = 1;
 
 	return 0;
@@ -366,20 +351,20 @@ static int __init cs553x_init(void)
 		return -ENXIO;
 
 	/* If it doesn't have the CS553[56], abort */
-	rdmsrl(MSR_DIVIL_GLD_CAP, val);
+	rdmsrq(MSR_DIVIL_GLD_CAP, val);
 	val &= ~0xFFULL;
 	if (val != CAP_CS5535 && val != CAP_CS5536)
 		return -ENXIO;
 
 	/* If it doesn't have the NAND controller enabled, abort */
-	rdmsrl(MSR_DIVIL_BALL_OPTS, val);
+	rdmsrq(MSR_DIVIL_BALL_OPTS, val);
 	if (val & PIN_OPT_IDE) {
 		pr_info("CS553x NAND controller: Flash I/O not enabled in MSR_DIVIL_BALL_OPTS.\n");
 		return -ENXIO;
 	}
 
 	for (i = 0; i < NR_CS553X_CONTROLLERS; i++) {
-		rdmsrl(MSR_DIVIL_LBAR_FLSH0 + i, val);
+		rdmsrq(MSR_DIVIL_LBAR_FLSH0 + i, val);
 
 		if ((val & (FLSH_LBAR_EN|FLSH_NOR_NAND)) == (FLSH_LBAR_EN|FLSH_NOR_NAND))
 			err = cs553x_init_one(i, !!(val & FLSH_MEM_IO), val & 0xFFFFFFFF);

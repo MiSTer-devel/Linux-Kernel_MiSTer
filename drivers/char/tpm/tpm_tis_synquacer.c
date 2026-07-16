@@ -9,7 +9,6 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/kernel.h>
 #include "tpm.h"
 #include "tpm_tis_core.h"
@@ -35,72 +34,53 @@ static inline struct tpm_tis_synquacer_phy *to_tpm_tis_tcg_phy(struct tpm_tis_da
 }
 
 static int tpm_tis_synquacer_read_bytes(struct tpm_tis_data *data, u32 addr,
-					u16 len, u8 *result)
+					u16 len, u8 *result,
+					enum tpm_tis_io_mode io_mode)
 {
 	struct tpm_tis_synquacer_phy *phy = to_tpm_tis_tcg_phy(data);
-
-	while (len--)
-		*result++ = ioread8(phy->iobase + addr);
+	switch (io_mode) {
+	case TPM_TIS_PHYS_8:
+		while (len--)
+			*result++ = ioread8(phy->iobase + addr);
+		break;
+	case TPM_TIS_PHYS_16:
+		result[1] = ioread8(phy->iobase + addr + 1);
+		result[0] = ioread8(phy->iobase + addr);
+		break;
+	case TPM_TIS_PHYS_32:
+		result[3] = ioread8(phy->iobase + addr + 3);
+		result[2] = ioread8(phy->iobase + addr + 2);
+		result[1] = ioread8(phy->iobase + addr + 1);
+		result[0] = ioread8(phy->iobase + addr);
+		break;
+	}
 
 	return 0;
 }
 
 static int tpm_tis_synquacer_write_bytes(struct tpm_tis_data *data, u32 addr,
-					 u16 len, const u8 *value)
+					 u16 len, const u8 *value,
+					 enum tpm_tis_io_mode io_mode)
 {
 	struct tpm_tis_synquacer_phy *phy = to_tpm_tis_tcg_phy(data);
-
-	while (len--)
-		iowrite8(*value++, phy->iobase + addr);
-
-	return 0;
-}
-
-static int tpm_tis_synquacer_read16_bw(struct tpm_tis_data *data,
-				       u32 addr, u16 *result)
-{
-	struct tpm_tis_synquacer_phy *phy = to_tpm_tis_tcg_phy(data);
-
-	/*
-	 * Due to the limitation of SPI controller on SynQuacer,
-	 * 16/32 bits access must be done in byte-wise and descending order.
-	 */
-	*result = (ioread8(phy->iobase + addr + 1) << 8) |
-		  (ioread8(phy->iobase + addr));
-
-	return 0;
-}
-
-static int tpm_tis_synquacer_read32_bw(struct tpm_tis_data *data,
-				       u32 addr, u32 *result)
-{
-	struct tpm_tis_synquacer_phy *phy = to_tpm_tis_tcg_phy(data);
-
-	/*
-	 * Due to the limitation of SPI controller on SynQuacer,
-	 * 16/32 bits access must be done in byte-wise and descending order.
-	 */
-	*result = (ioread8(phy->iobase + addr + 3) << 24) |
-		  (ioread8(phy->iobase + addr + 2) << 16) |
-		  (ioread8(phy->iobase + addr + 1) << 8) |
-		  (ioread8(phy->iobase + addr));
-
-	return 0;
-}
-
-static int tpm_tis_synquacer_write32_bw(struct tpm_tis_data *data,
-					u32 addr, u32 value)
-{
-	struct tpm_tis_synquacer_phy *phy = to_tpm_tis_tcg_phy(data);
-
-	/*
-	 * Due to the limitation of SPI controller on SynQuacer,
-	 * 16/32 bits access must be done in byte-wise and descending order.
-	 */
-	iowrite8(value >> 24, phy->iobase + addr + 3);
-	iowrite8(value >> 16, phy->iobase + addr + 2);
-	iowrite8(value >> 8, phy->iobase + addr + 1);
-	iowrite8(value, phy->iobase + addr);
+	switch (io_mode) {
+	case TPM_TIS_PHYS_8:
+		while (len--)
+			iowrite8(*value++, phy->iobase + addr);
+		break;
+	case TPM_TIS_PHYS_16:
+		return -EINVAL;
+	case TPM_TIS_PHYS_32:
+		/*
+		 * Due to the limitation of SPI controller on SynQuacer,
+		 * 16/32 bits access must be done in byte-wise and descending order.
+		 */
+		iowrite8(value[3], phy->iobase + addr + 3);
+		iowrite8(value[2], phy->iobase + addr + 2);
+		iowrite8(value[1], phy->iobase + addr + 1);
+		iowrite8(value[0], phy->iobase + addr);
+		break;
+	}
 
 	return 0;
 }
@@ -108,9 +88,6 @@ static int tpm_tis_synquacer_write32_bw(struct tpm_tis_data *data,
 static const struct tpm_tis_phy_ops tpm_tcg_bw = {
 	.read_bytes	= tpm_tis_synquacer_read_bytes,
 	.write_bytes	= tpm_tis_synquacer_write_bytes,
-	.read16		= tpm_tis_synquacer_read16_bw,
-	.read32		= tpm_tis_synquacer_read32_bw,
-	.write32	= tpm_tis_synquacer_write32_bw,
 };
 
 static int tpm_tis_synquacer_init(struct device *dev,
@@ -149,14 +126,12 @@ static int tpm_tis_synquacer_probe(struct platform_device *pdev)
 	return tpm_tis_synquacer_init(&pdev->dev, &tpm_info);
 }
 
-static int tpm_tis_synquacer_remove(struct platform_device *pdev)
+static void tpm_tis_synquacer_remove(struct platform_device *pdev)
 {
 	struct tpm_chip *chip = dev_get_drvdata(&pdev->dev);
 
 	tpm_chip_unregister(chip);
 	tpm_tis_remove(chip);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -186,23 +161,7 @@ static struct platform_driver tis_synquacer_drv = {
 	},
 };
 
-static int __init tpm_tis_synquacer_module_init(void)
-{
-	int rc;
+module_platform_driver(tis_synquacer_drv);
 
-	rc = platform_driver_register(&tis_synquacer_drv);
-	if (rc)
-		return rc;
-
-	return 0;
-}
-
-static void __exit tpm_tis_synquacer_module_exit(void)
-{
-	platform_driver_unregister(&tis_synquacer_drv);
-}
-
-module_init(tpm_tis_synquacer_module_init);
-module_exit(tpm_tis_synquacer_module_exit);
 MODULE_DESCRIPTION("TPM MMIO Driver for Socionext SynQuacer platform");
 MODULE_LICENSE("GPL");

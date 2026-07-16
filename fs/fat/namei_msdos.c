@@ -261,7 +261,7 @@ static int msdos_add_entry(struct inode *dir, const unsigned char *name,
 }
 
 /***** Create a file */
-static int msdos_create(struct user_namespace *mnt_userns, struct inode *dir,
+static int msdos_create(struct mnt_idmap *idmap, struct inode *dir,
 			struct dentry *dentry, umode_t mode, bool excl)
 {
 	struct super_block *sb = dir->i_sb;
@@ -325,7 +325,12 @@ static int msdos_rmdir(struct inode *dir, struct dentry *dentry)
 	err = fat_remove_entries(dir, &sinfo);	/* and releases bh */
 	if (err)
 		goto out;
-	drop_nlink(dir);
+	if (dir->i_nlink >= 3)
+		drop_nlink(dir);
+	else {
+		fat_fs_error(sb, "parent dir link count too low (%u)",
+			dir->i_nlink);
+	}
 
 	clear_nlink(inode);
 	fat_truncate_time(inode, NULL, S_CTIME);
@@ -339,8 +344,8 @@ out:
 }
 
 /***** Make a directory */
-static int msdos_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
-		       struct dentry *dentry, umode_t mode)
+static struct dentry *msdos_mkdir(struct mnt_idmap *idmap, struct inode *dir,
+				  struct dentry *dentry, umode_t mode)
 {
 	struct super_block *sb = dir->i_sb;
 	struct fat_slot_info sinfo;
@@ -389,13 +394,13 @@ static int msdos_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 
 	mutex_unlock(&MSDOS_SB(sb)->s_lock);
 	fat_flush_inodes(sb, dir, inode);
-	return 0;
+	return NULL;
 
 out_free:
 	fat_free_clusters(dir, cluster);
 out:
 	mutex_unlock(&MSDOS_SB(sb)->s_lock);
-	return err;
+	return ERR_PTR(err);
 }
 
 /***** Unlink a file */
@@ -594,7 +599,7 @@ error_inode:
 }
 
 /***** Rename, a wrapper for rename_same_dir & rename_diff_dir */
-static int msdos_rename(struct user_namespace *mnt_userns,
+static int msdos_rename(struct mnt_idmap *idmap,
 			struct inode *old_dir, struct dentry *old_dentry,
 			struct inode *new_dir, struct dentry *new_dentry,
 			unsigned int flags)
@@ -646,28 +651,52 @@ static const struct inode_operations msdos_dir_inode_operations = {
 static void setup(struct super_block *sb)
 {
 	MSDOS_SB(sb)->dir_ops = &msdos_dir_inode_operations;
-	sb->s_d_op = &msdos_dentry_operations;
+	set_default_d_op(sb, &msdos_dentry_operations);
 	sb->s_flags |= SB_NOATIME;
 }
 
-static int msdos_fill_super(struct super_block *sb, void *data, int silent)
+static int msdos_fill_super(struct super_block *sb, struct fs_context *fc)
 {
-	return fat_fill_super(sb, data, silent, 0, setup);
+	return fat_fill_super(sb, fc, setup);
 }
 
-static struct dentry *msdos_mount(struct file_system_type *fs_type,
-			int flags, const char *dev_name,
-			void *data)
+static int msdos_get_tree(struct fs_context *fc)
 {
-	return mount_bdev(fs_type, flags, dev_name, data, msdos_fill_super);
+	return get_tree_bdev(fc, msdos_fill_super);
+}
+
+static int msdos_parse_param(struct fs_context *fc, struct fs_parameter *param)
+{
+	return fat_parse_param(fc, param, false);
+}
+
+static const struct fs_context_operations msdos_context_ops = {
+	.parse_param	= msdos_parse_param,
+	.get_tree	= msdos_get_tree,
+	.reconfigure	= fat_reconfigure,
+	.free		= fat_free_fc,
+};
+
+static int msdos_init_fs_context(struct fs_context *fc)
+{
+	int err;
+
+	/* Initialize with is_vfat == false */
+	err = fat_init_fs_context(fc, false);
+	if (err)
+		return err;
+
+	fc->ops = &msdos_context_ops;
+	return 0;
 }
 
 static struct file_system_type msdos_fs_type = {
 	.owner		= THIS_MODULE,
 	.name		= "msdos",
-	.mount		= msdos_mount,
 	.kill_sb	= kill_block_super,
 	.fs_flags	= FS_REQUIRES_DEV | FS_ALLOW_IDMAP,
+	.init_fs_context = msdos_init_fs_context,
+	.parameters	= fat_param_spec,
 };
 MODULE_ALIAS_FS("msdos");
 

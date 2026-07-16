@@ -75,9 +75,11 @@ static int __must_check ax25_rt_add(struct ax25_routes_struct *route)
 	ax25_dev *ax25_dev;
 	int i;
 
-	if ((ax25_dev = ax25_addr_ax25dev(&route->port_addr)) == NULL)
-		return -EINVAL;
 	if (route->digi_count > AX25_MAX_DIGIS)
+		return -EINVAL;
+
+	ax25_dev = ax25_addr_ax25dev(&route->port_addr);
+	if (!ax25_dev)
 		return -EINVAL;
 
 	write_lock_bh(&ax25_route_lock);
@@ -91,6 +93,7 @@ static int __must_check ax25_rt_add(struct ax25_routes_struct *route)
 			if (route->digi_count != 0) {
 				if ((ax25_rt->digipeat = kmalloc(sizeof(ax25_digi), GFP_ATOMIC)) == NULL) {
 					write_unlock_bh(&ax25_route_lock);
+					ax25_dev_put(ax25_dev);
 					return -ENOMEM;
 				}
 				ax25_rt->digipeat->lastrepeat = -1;
@@ -101,6 +104,7 @@ static int __must_check ax25_rt_add(struct ax25_routes_struct *route)
 				}
 			}
 			write_unlock_bh(&ax25_route_lock);
+			ax25_dev_put(ax25_dev);
 			return 0;
 		}
 		ax25_rt = ax25_rt->next;
@@ -108,10 +112,10 @@ static int __must_check ax25_rt_add(struct ax25_routes_struct *route)
 
 	if ((ax25_rt = kmalloc(sizeof(ax25_route), GFP_ATOMIC)) == NULL) {
 		write_unlock_bh(&ax25_route_lock);
+		ax25_dev_put(ax25_dev);
 		return -ENOMEM;
 	}
 
-	refcount_set(&ax25_rt->refcount, 1);
 	ax25_rt->callsign     = route->dest_addr;
 	ax25_rt->dev          = ax25_dev->dev;
 	ax25_rt->digipeat     = NULL;
@@ -120,6 +124,7 @@ static int __must_check ax25_rt_add(struct ax25_routes_struct *route)
 		if ((ax25_rt->digipeat = kmalloc(sizeof(ax25_digi), GFP_ATOMIC)) == NULL) {
 			write_unlock_bh(&ax25_route_lock);
 			kfree(ax25_rt);
+			ax25_dev_put(ax25_dev);
 			return -ENOMEM;
 		}
 		ax25_rt->digipeat->lastrepeat = -1;
@@ -132,6 +137,7 @@ static int __must_check ax25_rt_add(struct ax25_routes_struct *route)
 	ax25_rt->next   = ax25_route_list;
 	ax25_route_list = ax25_rt;
 	write_unlock_bh(&ax25_route_lock);
+	ax25_dev_put(ax25_dev);
 
 	return 0;
 }
@@ -160,12 +166,12 @@ static int ax25_rt_del(struct ax25_routes_struct *route)
 		    ax25cmp(&route->dest_addr, &s->callsign) == 0) {
 			if (ax25_route_list == s) {
 				ax25_route_list = s->next;
-				ax25_put_route(s);
+				__ax25_put_route(s);
 			} else {
 				for (t = ax25_route_list; t != NULL; t = t->next) {
 					if (t->next == s) {
 						t->next = s->next;
-						ax25_put_route(s);
+						__ax25_put_route(s);
 						break;
 					}
 				}
@@ -173,6 +179,7 @@ static int ax25_rt_del(struct ax25_routes_struct *route)
 		}
 	}
 	write_unlock_bh(&ax25_route_lock);
+	ax25_dev_put(ax25_dev);
 
 	return 0;
 }
@@ -215,6 +222,7 @@ static int ax25_rt_opt(struct ax25_route_opt_struct *rt_option)
 
 out:
 	write_unlock_bh(&ax25_route_lock);
+	ax25_dev_put(ax25_dev);
 	return err;
 }
 
@@ -365,78 +373,6 @@ ax25_route *ax25_get_route(ax25_address *addr, struct net_device *dev)
 	return ax25_rt;
 }
 
-/*
- *	Adjust path: If you specify a default route and want to connect
- *      a target on the digipeater path but w/o having a special route
- *	set before, the path has to be truncated from your target on.
- */
-static inline void ax25_adjust_path(ax25_address *addr, ax25_digi *digipeat)
-{
-	int k;
-
-	for (k = 0; k < digipeat->ndigi; k++) {
-		if (ax25cmp(addr, &digipeat->calls[k]) == 0)
-			break;
-	}
-
-	digipeat->ndigi = k;
-}
-
-
-/*
- *	Find which interface to use.
- */
-int ax25_rt_autobind(ax25_cb *ax25, ax25_address *addr)
-{
-	ax25_uid_assoc *user;
-	ax25_route *ax25_rt;
-	int err = 0;
-
-	ax25_route_lock_use();
-	ax25_rt = ax25_get_route(addr, NULL);
-	if (!ax25_rt) {
-		ax25_route_lock_unuse();
-		return -EHOSTUNREACH;
-	}
-	if ((ax25->ax25_dev = ax25_dev_ax25dev(ax25_rt->dev)) == NULL) {
-		err = -EHOSTUNREACH;
-		goto put;
-	}
-
-	user = ax25_findbyuid(current_euid());
-	if (user) {
-		ax25->source_addr = user->call;
-		ax25_uid_put(user);
-	} else {
-		if (ax25_uid_policy && !capable(CAP_NET_BIND_SERVICE)) {
-			err = -EPERM;
-			goto put;
-		}
-		ax25->source_addr = *(ax25_address *)ax25->ax25_dev->dev->dev_addr;
-	}
-
-	if (ax25_rt->digipeat != NULL) {
-		ax25->digipeat = kmemdup(ax25_rt->digipeat, sizeof(ax25_digi),
-					 GFP_ATOMIC);
-		if (ax25->digipeat == NULL) {
-			err = -ENOMEM;
-			goto put;
-		}
-		ax25_adjust_path(addr, ax25->digipeat);
-	}
-
-	if (ax25->sk != NULL) {
-		local_bh_disable();
-		bh_lock_sock(ax25->sk);
-		sock_reset_flag(ax25->sk, SOCK_ZAPPED);
-		bh_unlock_sock(ax25->sk);
-		local_bh_enable();
-	}
-
-put:
-	ax25_route_lock_unuse();
-	return err;
-}
 
 struct sk_buff *ax25_rt_build_path(struct sk_buff *skb, ax25_address *src,
 	ax25_address *dest, ax25_digi *digi)

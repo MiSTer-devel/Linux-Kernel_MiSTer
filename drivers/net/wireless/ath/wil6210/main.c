@@ -798,7 +798,7 @@ void wil6210_disconnect(struct wil6210_vif *vif, const u8 *bssid,
 
 	wil_dbg_misc(wil, "disconnecting\n");
 
-	del_timer_sync(&vif->connect_timer);
+	timer_delete_sync(&vif->connect_timer);
 	_wil6210_disconnect(vif, bssid, reason_code);
 }
 
@@ -818,7 +818,7 @@ void wil6210_disconnect_complete(struct wil6210_vif *vif, const u8 *bssid,
 
 	wil_dbg_misc(wil, "got disconnect\n");
 
-	del_timer_sync(&vif->connect_timer);
+	timer_delete_sync(&vif->connect_timer);
 	_wil6210_disconnect_complete(vif, bssid, reason_code);
 }
 
@@ -1305,7 +1305,7 @@ void wil_get_board_file(struct wil6210_priv *wil, char *buf, size_t len)
 			board_file = WIL_BOARD_FILE_NAME;
 	}
 
-	strlcpy(buf, board_file, len);
+	strscpy(buf, board_file, len);
 }
 
 static int wil_get_bl_info(struct wil6210_priv *wil)
@@ -1358,7 +1358,7 @@ static int wil_get_bl_info(struct wil6210_priv *wil)
 	ether_addr_copy(ndev->perm_addr, mac);
 	ether_addr_copy(wiphy->perm_addr, mac);
 	if (!is_valid_ether_addr(ndev->dev_addr))
-		ether_addr_copy(ndev->dev_addr, mac);
+		eth_hw_addr_set(ndev, mac);
 
 	if (rf_status) {/* bad RF cable? */
 		wil_err(wil, "RF communication error 0x%04x",
@@ -1431,7 +1431,7 @@ static int wil_get_otp_info(struct wil6210_priv *wil)
 	ether_addr_copy(ndev->perm_addr, mac);
 	ether_addr_copy(wiphy->perm_addr, mac);
 	if (!is_valid_ether_addr(ndev->dev_addr))
-		ether_addr_copy(ndev->dev_addr, mac);
+		eth_hw_addr_set(ndev, mac);
 
 	return 0;
 }
@@ -1465,7 +1465,7 @@ void wil_abort_scan(struct wil6210_vif *vif, bool sync)
 		return;
 
 	wil_dbg_misc(wil, "Abort scan_request 0x%p\n", vif->scan_request);
-	del_timer_sync(&vif->scan_timer);
+	timer_delete_sync(&vif->scan_timer);
 	mutex_unlock(&wil->vif_mutex);
 	rc = wmi_abort_scan(vif);
 	if (!rc && sync)
@@ -1609,7 +1609,7 @@ int wil_reset(struct wil6210_priv *wil, bool load_fw)
 		struct net_device *ndev = wil->main_ndev;
 
 		ether_addr_copy(ndev->perm_addr, mac);
-		ether_addr_copy(ndev->dev_addr, ndev->perm_addr);
+		eth_hw_addr_set(ndev, ndev->perm_addr);
 		return 0;
 	}
 

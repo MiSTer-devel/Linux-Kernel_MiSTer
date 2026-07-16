@@ -140,15 +140,13 @@ static void get_chipram(void)
 	return;
 }
 
-static int z2_open(struct block_device *bdev, fmode_t mode)
+static int z2_open(struct gendisk *disk, blk_mode_t mode)
 {
-	int device;
+	int device = disk->first_minor;
 	int max_z2_map = (Z2RAM_SIZE / Z2RAM_CHUNKSIZE) * sizeof(z2ram_map[0]);
 	int max_chip_map = (amiga_chip_size / Z2RAM_CHUNKSIZE) *
 	    sizeof(z2ram_map[0]);
 	int rc = -ENOMEM;
-
-	device = MINOR(bdev->bd_dev);
 
 	mutex_lock(&z2ram_mutex);
 	if (current_device != -1 && current_device != device) {
@@ -290,7 +288,7 @@ err_out:
 	return rc;
 }
 
-static void z2_release(struct gendisk *disk, fmode_t mode)
+static void z2_release(struct gendisk *disk)
 {
 	mutex_lock(&z2ram_mutex);
 	if (current_device == -1) {
@@ -318,14 +316,16 @@ static const struct blk_mq_ops z2_mq_ops = {
 static int z2ram_register_disk(int minor)
 {
 	struct gendisk *disk;
+	int err;
 
-	disk = blk_mq_alloc_disk(&tag_set, NULL);
+	disk = blk_mq_alloc_disk(&tag_set, NULL, NULL);
 	if (IS_ERR(disk))
 		return PTR_ERR(disk);
 
 	disk->major = Z2RAM_MAJOR;
 	disk->first_minor = minor;
 	disk->minors = 1;
+	disk->flags |= GENHD_FL_NO_PART;
 	disk->fops = &z2_fops;
 	if (minor)
 		sprintf(disk->disk_name, "z2ram%d", minor);
@@ -333,8 +333,10 @@ static int z2ram_register_disk(int minor)
 		sprintf(disk->disk_name, "z2ram");
 
 	z2ram_gendisk[minor] = disk;
-	add_disk(disk);
-	return 0;
+	err = add_disk(disk);
+	if (err)
+		put_disk(disk);
+	return err;
 }
 
 static int __init z2_init(void)
@@ -352,7 +354,6 @@ static int __init z2_init(void)
 	tag_set.nr_maps = 1;
 	tag_set.queue_depth = 16;
 	tag_set.numa_node = NUMA_NO_NODE;
-	tag_set.flags = BLK_MQ_F_SHOULD_MERGE;
 	ret = blk_mq_alloc_tag_set(&tag_set);
 	if (ret)
 		goto out_unregister_blkdev;
@@ -380,7 +381,6 @@ static void __exit z2_exit(void)
 
 	for (i = 0; i < Z2MINOR_COUNT; i++) {
 		del_gendisk(z2ram_gendisk[i]);
-		blk_cleanup_queue(z2ram_gendisk[i]->queue);
 		put_disk(z2ram_gendisk[i]);
 	}
 	blk_mq_free_tag_set(&tag_set);
@@ -408,4 +408,5 @@ static void __exit z2_exit(void)
 
 module_init(z2_init);
 module_exit(z2_exit);
+MODULE_DESCRIPTION("Amiga Zorro II ramdisk driver");
 MODULE_LICENSE("GPL");

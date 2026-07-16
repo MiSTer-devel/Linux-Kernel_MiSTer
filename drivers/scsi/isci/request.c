@@ -180,7 +180,7 @@ static void sci_io_request_build_ssp_command_iu(struct isci_request *ireq)
 	cmd_iu->_r_a = 0;
 	cmd_iu->_r_b = 0;
 	cmd_iu->en_fburst = 0; /* unsupported */
-	cmd_iu->task_prio = task->ssp_task.task_prio;
+	cmd_iu->task_prio = 0;
 	cmd_iu->task_attr = task->ssp_task.task_attr;
 	cmd_iu->_r_c = 0;
 
@@ -738,8 +738,7 @@ static enum sci_status sci_io_request_construct_basic_ssp(struct isci_request *i
 	return SCI_SUCCESS;
 }
 
-enum sci_status sci_task_request_construct_ssp(
-	struct isci_request *ireq)
+void sci_task_request_construct_ssp(struct isci_request *ireq)
 {
 	/* Construct the SSP Task SCU Task Context */
 	scu_ssp_task_request_construct_task_context(ireq);
@@ -748,8 +747,6 @@ enum sci_status sci_task_request_construct_ssp(
 	sci_task_request_build_ssp_task_iu(ireq);
 
 	sci_change_state(&ireq->sm, SCI_REQ_CONSTRUCTED);
-
-	return SCI_SUCCESS;
 }
 
 static enum sci_status sci_io_request_construct_basic_sata(struct isci_request *ireq)
@@ -1047,7 +1044,8 @@ request_started_state_tc_event(struct isci_request *ireq,
 		resp_iu = &ireq->ssp.rsp;
 		datapres = resp_iu->datapres;
 
-		if (datapres == 1 || datapres == 2) {
+		if (datapres == SAS_DATAPRES_RESPONSE_DATA ||
+		    datapres == SAS_DATAPRES_SENSE_DATA) {
 			ireq->scu_status = SCU_TASK_DONE_CHECK_RESPONSE;
 			ireq->sci_status = SCI_FAILURE_IO_RESPONSE_VALID;
 		} else {
@@ -1730,8 +1728,8 @@ sci_io_request_frame_handler(struct isci_request *ireq,
 
 			resp_iu = &ireq->ssp.rsp;
 
-			if (resp_iu->datapres == 0x01 ||
-			    resp_iu->datapres == 0x02) {
+			if (resp_iu->datapres == SAS_DATAPRES_RESPONSE_DATA ||
+			    resp_iu->datapres == SAS_DATAPRES_SENSE_DATA) {
 				ireq->scu_status = SCU_TASK_DONE_CHECK_RESPONSE;
 				ireq->sci_status = SCI_FAILURE_CONTROLLER_SPECIFIC_IO_ERR;
 			} else {
@@ -2181,7 +2179,7 @@ static enum sci_status atapi_data_tc_completion_handler(struct isci_request *ire
 	case (SCU_TASK_DONE_UNEXP_FIS << SCU_COMPLETION_TL_STATUS_SHIFT): {
 		u16 len = sci_req_tx_bytes(ireq);
 
-		/* likely non-error data underrrun, workaround missing
+		/* likely non-error data underrun, workaround missing
 		 * d2h frame from the controller
 		 */
 		if (d2h->fis_type != FIS_REGD2H) {
@@ -2906,7 +2904,7 @@ static void isci_request_io_request_complete(struct isci_host *ihost,
 					 task->total_xfer_len, task->data_dir);
 		else  /* unmap the sgl dma addresses */
 			dma_unmap_sg(&ihost->pdev->dev, task->scatter,
-				     request->num_sg_entries, task->data_dir);
+				     task->num_scatter, task->data_dir);
 		break;
 	case SAS_PROTOCOL_SMP: {
 		struct scatterlist *sg = &task->smp_task.smp_req;
@@ -2934,8 +2932,7 @@ static void isci_request_io_request_complete(struct isci_host *ihost,
 	if (test_bit(IREQ_COMPLETE_IN_TARGET, &request->flags)) {
 		/* Normal notification (task_done) */
 		task->task_state_flags |= SAS_TASK_STATE_DONE;
-		task->task_state_flags &= ~(SAS_TASK_AT_INITIATOR |
-					    SAS_TASK_STATE_PENDING);
+		task->task_state_flags &= ~SAS_TASK_STATE_PENDING;
 	}
 	spin_unlock_irqrestore(&task->task_state_lock, task_flags);
 
@@ -3390,7 +3387,7 @@ static enum sci_status isci_io_request_build(struct isci_host *ihost,
 		return SCI_FAILURE;
 	}
 
-	return SCI_SUCCESS;
+	return status;
 }
 
 static struct isci_request *isci_request_from_tag(struct isci_host *ihost, u16 tag)
@@ -3406,9 +3403,9 @@ static struct isci_request *isci_request_from_tag(struct isci_host *ihost, u16 t
 	return ireq;
 }
 
-static struct isci_request *isci_io_request_from_tag(struct isci_host *ihost,
-						     struct sas_task *task,
-						     u16 tag)
+struct isci_request *isci_io_request_from_tag(struct isci_host *ihost,
+					      struct sas_task *task,
+					      u16 tag)
 {
 	struct isci_request *ireq;
 
@@ -3434,15 +3431,11 @@ struct isci_request *isci_tmf_request_from_tag(struct isci_host *ihost,
 }
 
 int isci_request_execute(struct isci_host *ihost, struct isci_remote_device *idev,
-			 struct sas_task *task, u16 tag)
+			 struct sas_task *task, struct isci_request *ireq)
 {
 	enum sci_status status;
-	struct isci_request *ireq;
 	unsigned long flags;
 	int ret = 0;
-
-	/* do common allocation and init of request object. */
-	ireq = isci_io_request_from_tag(ihost, task, tag);
 
 	status = isci_io_request_build(ihost, ireq, idev);
 	if (status != SCI_SUCCESS) {

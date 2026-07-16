@@ -21,7 +21,7 @@
 #include <linux/percpu.h>
 #include <linux/module.h>
 #include <asm/probes.h>
-#include <asm/code-patching.h>
+#include <asm/text-patching.h>
 
 #ifdef CONFIG_KPROBES
 #define  __ARCH_WANT_KPROBES_INSN_SLOT
@@ -29,7 +29,7 @@
 struct pt_regs;
 struct kprobe;
 
-typedef ppc_opcode_t kprobe_opcode_t;
+typedef u32 kprobe_opcode_t;
 
 extern kprobe_opcode_t optinsn_slot;
 
@@ -51,7 +51,7 @@ extern kprobe_opcode_t optprobe_template_end[];
 #define flush_insn_slot(p)	do { } while (0)
 #define kretprobe_blacklist_size 0
 
-void kretprobe_trampoline(void);
+void __kretprobe_trampoline(void);
 extern void arch_remove_kprobe(struct kprobe *p);
 
 /* Architecture specific copy of original instruction */
@@ -84,8 +84,6 @@ struct arch_optimized_insn {
 	kprobe_opcode_t *insn;
 };
 
-extern int kprobe_exceptions_notify(struct notifier_block *self,
-					unsigned long val, void *data);
 extern int kprobe_fault_handler(struct pt_regs *regs, int trapnr);
 extern int kprobe_handler(struct pt_regs *regs);
 extern int kprobe_post_handler(struct pt_regs *regs);

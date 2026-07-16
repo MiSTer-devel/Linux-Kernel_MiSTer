@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright(c) 2020 Intel Corporation. All rights reserved.
+ * Copyright(c) 2020 Intel Corporation
  *
  * Author: Cezary Rojewski <cezary.rojewski@intel.com>
  */
@@ -219,10 +219,8 @@ int catpt_ipc_free_stream(struct catpt_dev *cdev, u8 stream_hw_id);
 enum catpt_ssp_iface {
 	CATPT_SSP_IFACE_0 = 0,
 	CATPT_SSP_IFACE_1 = 1,
-	CATPT_SSP_IFACE_LAST = CATPT_SSP_IFACE_1,
+	CATPT_SSP_COUNT,
 };
-
-#define CATPT_SSP_COUNT (CATPT_SSP_IFACE_LAST + 1)
 
 enum catpt_mclk_frequency {
 	CATPT_MCLK_OFF = 0,

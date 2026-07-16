@@ -7,10 +7,10 @@
  */
 
 #include <linux/clk-provider.h>
+#include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
@@ -522,14 +522,6 @@ static struct clk_hw *bm1880_clk_register_pll(struct bm1880_pll_hw_clock *pll_cl
 	return hw;
 }
 
-static void bm1880_clk_unregister_pll(struct clk_hw *hw)
-{
-	struct bm1880_pll_hw_clock *pll_hw = to_bm1880_pll_clk(hw);
-
-	clk_hw_unregister(hw);
-	kfree(pll_hw);
-}
-
 static int bm1880_clk_register_plls(struct bm1880_pll_hw_clock *clks,
 				    int num_clks,
 				    struct bm1880_clock_data *data)
@@ -555,7 +547,7 @@ static int bm1880_clk_register_plls(struct bm1880_pll_hw_clock *clks,
 
 err_clk:
 	while (i--)
-		bm1880_clk_unregister_pll(data->hw_data.hws[clks[i].pll.id]);
+		clk_hw_unregister(data->hw_data.hws[clks[i].pll.id]);
 
 	return PTR_ERR(hw);
 }
@@ -616,8 +608,8 @@ static unsigned long bm1880_clk_div_recalc_rate(struct clk_hw *hw,
 	return rate;
 }
 
-static long bm1880_clk_div_round_rate(struct clk_hw *hw, unsigned long rate,
-				      unsigned long *prate)
+static int bm1880_clk_div_determine_rate(struct clk_hw *hw,
+					 struct clk_rate_request *req)
 {
 	struct bm1880_div_hw_clock *div_hw = to_bm1880_div_clk(hw);
 	struct bm1880_div_clock *div = &div_hw->div;
@@ -629,13 +621,15 @@ static long bm1880_clk_div_round_rate(struct clk_hw *hw, unsigned long rate,
 		val = readl(reg_addr) >> div->shift;
 		val &= clk_div_mask(div->width);
 
-		return divider_ro_round_rate(hw, rate, prate, div->table,
-					     div->width, div->flags,
-					     val);
+		req->rate = divider_ro_round_rate(hw, req->rate,
+						  &req->best_parent_rate,
+						  div->table,
+						  div->width, div->flags, val);
+
+		return 0;
 	}
 
-	return divider_round_rate(hw, rate, prate, div->table,
-				  div->width, div->flags);
+	return divider_determine_rate(hw, req, div->table, div->width, div->flags);
 }
 
 static int bm1880_clk_div_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -673,7 +667,7 @@ static int bm1880_clk_div_set_rate(struct clk_hw *hw, unsigned long rate,
 
 static const struct clk_ops bm1880_clk_div_ops = {
 	.recalc_rate = bm1880_clk_div_recalc_rate,
-	.round_rate = bm1880_clk_div_round_rate,
+	.determine_rate = bm1880_clk_div_determine_rate,
 	.set_rate = bm1880_clk_div_set_rate,
 };
 
@@ -693,14 +687,6 @@ static struct clk_hw *bm1880_clk_register_div(struct bm1880_div_hw_clock *div_cl
 		return ERR_PTR(err);
 
 	return hw;
-}
-
-static void bm1880_clk_unregister_div(struct clk_hw *hw)
-{
-	struct bm1880_div_hw_clock *div_hw = to_bm1880_div_clk(hw);
-
-	clk_hw_unregister(hw);
-	kfree(div_hw);
 }
 
 static int bm1880_clk_register_divs(struct bm1880_div_hw_clock *clks,
@@ -729,7 +715,7 @@ static int bm1880_clk_register_divs(struct bm1880_div_hw_clock *clks,
 
 err_clk:
 	while (i--)
-		bm1880_clk_unregister_div(data->hw_data.hws[clks[i].div.id]);
+		clk_hw_unregister(data->hw_data.hws[clks[i].div.id]);
 
 	return PTR_ERR(hw);
 }
@@ -892,16 +878,13 @@ static int bm1880_clk_probe(struct platform_device *pdev)
 	struct bm1880_clock_data *clk_data;
 	void __iomem *pll_base, *sys_base;
 	struct device *dev = &pdev->dev;
-	struct resource *res;
 	int num_clks, i;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	pll_base = devm_ioremap_resource(&pdev->dev, res);
+	pll_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(pll_base))
 		return PTR_ERR(pll_base);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-	sys_base = devm_ioremap_resource(&pdev->dev, res);
+	sys_base = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(sys_base))
 		return PTR_ERR(sys_base);
 
@@ -965,4 +948,3 @@ module_platform_driver(bm1880_clk_driver);
 
 MODULE_AUTHOR("Manivannan Sadhasivam <manivannan.sadhasivam@linaro.org>");
 MODULE_DESCRIPTION("Clock driver for Bitmain BM1880 SoC");
-MODULE_LICENSE("GPL v2");

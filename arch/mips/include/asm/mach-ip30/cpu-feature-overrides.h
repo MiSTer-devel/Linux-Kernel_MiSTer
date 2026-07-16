@@ -5,7 +5,7 @@
  * Copyright (C) 2003 Ralf Baechle <ralf@linux-mips.org>
  *		 2004-2007 Stanislaw Skowronek <skylark@unaligned.org>
  *		 2009 Johannes Dickgreber <tanzy@gmx.de>
- *		 2015 Joshua Kinard <kumba@gentoo.org>
+ *		 2015 Joshua Kinard <linux@kumba.dev>
  *
  */
 #ifndef __ASM_MACH_IP30_CPU_FEATURE_OVERRIDES_H
@@ -28,8 +28,6 @@
 #define cpu_has_4kex			1
 #define cpu_has_3k_cache		0
 #define cpu_has_4k_cache		1
-#define cpu_has_tx39_cache		0
-#define cpu_has_fpu			1
 #define cpu_has_nofpuex			0
 #define cpu_has_32fpr			1
 #define cpu_has_counter			1

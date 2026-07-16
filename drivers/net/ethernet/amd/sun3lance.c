@@ -74,6 +74,7 @@ static int lance_debug = 1;
 #endif
 module_param(lance_debug, int, 0);
 MODULE_PARM_DESC(lance_debug, "SUN3 Lance debug level (0-3)");
+MODULE_DESCRIPTION("Sun3/Sun3x on-board LANCE Ethernet driver");
 MODULE_LICENSE("GPL");
 
 #define	DPRINTK(n,a) \
@@ -305,7 +306,6 @@ static int __init lance_probe( struct net_device *dev)
 	unsigned long ioaddr;
 
 	struct lance_private	*lp;
-	int 			i;
 	static int 		did_version;
 	volatile unsigned short *ioaddr_probe;
 	unsigned short tmp1, tmp2;
@@ -342,7 +342,7 @@ static int __init lance_probe( struct net_device *dev)
 
 	/* XXX - leak? */
 	MEM = dvma_malloc_align(sizeof(struct lance_memory), 0x10000);
-	if (MEM == NULL) {
+	if (!MEM) {
 #ifdef CONFIG_SUN3
 		iounmap((void __iomem *)ioaddr);
 #endif
@@ -373,8 +373,7 @@ static int __init lance_probe( struct net_device *dev)
 		   dev->irq);
 
 	/* copy in the ethernet address from the prom */
-	for(i = 0; i < 6 ; i++)
-	     dev->dev_addr[i] = idprom->id_ethaddr[i];
+	eth_hw_addr_set(dev, idprom->id_ethaddr);
 
 	/* tell the card it's ether address, bytes swapped */
 	MEM->init.hwaddr[0] = dev->dev_addr[1];
@@ -798,7 +797,7 @@ static int lance_rx( struct net_device *dev )
 			}
 			else {
 				skb = netdev_alloc_skb(dev, pkt_len + 2);
-				if (skb == NULL) {
+				if (!skb) {
 					dev->stats.rx_dropped++;
 					head->msg_length = 0;
 					head->flag |= RMD1_OWN_CHIP;

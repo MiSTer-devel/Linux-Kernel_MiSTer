@@ -23,9 +23,6 @@
 #define DM_VERITY_FEC_BUF_MAX \
 	(1 << (PAGE_SHIFT - DM_VERITY_FEC_BUF_RS_BITS))
 
-/* maximum recursion level for verity_fec_decode */
-#define DM_VERITY_FEC_MAX_RECURSION	4
-
 #define DM_VERITY_OPT_FEC_DEV		"use_fec_from_device"
 #define DM_VERITY_OPT_FEC_BLOCKS	"fec_blocks"
 #define DM_VERITY_OPT_FEC_START		"fec_start"
@@ -55,10 +52,9 @@ struct dm_verity_fec_io {
 	struct rs_control *rs;	/* Reed-Solomon state */
 	int erasures[DM_VERITY_FEC_MAX_RSN];	/* erasures for decode_rs8 */
 	u8 *bufs[DM_VERITY_FEC_BUF_MAX];	/* bufs for deinterleaving */
-	unsigned nbufs;		/* number of buffers allocated */
+	unsigned int nbufs;		/* number of buffers allocated */
 	u8 *output;		/* buffer for corrected output */
-	size_t output_pos;
-	unsigned level;		/* recursion level */
+	unsigned int level;		/* recursion level */
 };
 
 #ifdef CONFIG_DM_VERITY_FEC
@@ -70,17 +66,17 @@ extern bool verity_fec_is_enabled(struct dm_verity *v);
 
 extern int verity_fec_decode(struct dm_verity *v, struct dm_verity_io *io,
 			     enum verity_block_type type, sector_t block,
-			     u8 *dest, struct bvec_iter *iter);
+			     u8 *dest);
 
-extern unsigned verity_fec_status_table(struct dm_verity *v, unsigned sz,
-					char *result, unsigned maxlen);
+extern unsigned int verity_fec_status_table(struct dm_verity *v, unsigned int sz,
+					char *result, unsigned int maxlen);
 
 extern void verity_fec_finish_io(struct dm_verity_io *io);
 extern void verity_fec_init_io(struct dm_verity_io *io);
 
 extern bool verity_is_fec_opt_arg(const char *arg_name);
 extern int verity_fec_parse_opt_args(struct dm_arg_set *as,
-				     struct dm_verity *v, unsigned *argc,
+				     struct dm_verity *v, unsigned int *argc,
 				     const char *arg_name);
 
 extern void verity_fec_dtr(struct dm_verity *v);
@@ -100,15 +96,14 @@ static inline bool verity_fec_is_enabled(struct dm_verity *v)
 static inline int verity_fec_decode(struct dm_verity *v,
 				    struct dm_verity_io *io,
 				    enum verity_block_type type,
-				    sector_t block, u8 *dest,
-				    struct bvec_iter *iter)
+				    sector_t block, u8 *dest)
 {
 	return -EOPNOTSUPP;
 }
 
-static inline unsigned verity_fec_status_table(struct dm_verity *v,
-					       unsigned sz, char *result,
-					       unsigned maxlen)
+static inline unsigned int verity_fec_status_table(struct dm_verity *v,
+					       unsigned int sz, char *result,
+					       unsigned int maxlen)
 {
 	return sz;
 }
@@ -128,7 +123,7 @@ static inline bool verity_is_fec_opt_arg(const char *arg_name)
 
 static inline int verity_fec_parse_opt_args(struct dm_arg_set *as,
 					    struct dm_verity *v,
-					    unsigned *argc,
+					    unsigned int *argc,
 					    const char *arg_name)
 {
 	return -EINVAL;

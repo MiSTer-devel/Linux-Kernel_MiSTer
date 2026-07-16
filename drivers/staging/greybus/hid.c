@@ -201,7 +201,7 @@ static void gb_hid_init_report(struct gb_hid *ghid, struct hid_report *report)
 	 * we just need to setup the input fields, so using
 	 * hid_report_raw_event is safe.
 	 */
-	hid_report_raw_event(ghid->hid, report->type, ghid->inbuf, size, 1);
+	hid_report_raw_event(ghid->hid, report->type, ghid->inbuf, ghid->bufsize, size, 1);
 }
 
 static void gb_hid_init_reports(struct gb_hid *ghid)
@@ -381,7 +381,7 @@ static int gb_hid_power(struct hid_device *hid, int lvl)
 }
 
 /* HID structure to pass callbacks */
-static struct hid_ll_driver gb_hid_ll_driver = {
+static const struct hid_ll_driver gb_hid_ll_driver = {
 	.parse = gb_hid_parse,
 	.start = gb_hid_start,
 	.stop = gb_hid_stop,
@@ -516,4 +516,5 @@ static struct greybus_driver gb_hid_driver = {
 };
 module_greybus_driver(gb_hid_driver);
 
+MODULE_DESCRIPTION("HID class driver for the Greybus");
 MODULE_LICENSE("GPL v2");

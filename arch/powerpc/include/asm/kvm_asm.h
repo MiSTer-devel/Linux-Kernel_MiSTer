@@ -9,7 +9,7 @@
 #ifndef __POWERPC_KVM_ASM_H__
 #define __POWERPC_KVM_ASM_H__
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 #ifdef CONFIG_64BIT
 #define PPC_STD(sreg, offset, areg)  std sreg, (offset)(areg)
 #define PPC_LD(treg, offset, areg)   ld treg, (offset)(areg)
@@ -79,6 +79,7 @@
 #define BOOK3S_INTERRUPT_FP_UNAVAIL	0x800
 #define BOOK3S_INTERRUPT_DECREMENTER	0x900
 #define BOOK3S_INTERRUPT_HV_DECREMENTER	0x980
+#define BOOK3S_INTERRUPT_NESTED_HV_DECREMENTER	0x1980
 #define BOOK3S_INTERRUPT_DOORBELL	0xa00
 #define BOOK3S_INTERRUPT_SYSCALL	0xc00
 #define BOOK3S_INTERRUPT_TRACE		0xd00

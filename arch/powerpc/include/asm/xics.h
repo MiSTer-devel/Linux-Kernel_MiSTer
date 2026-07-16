@@ -31,20 +31,19 @@
 #ifdef CONFIG_PPC_ICP_NATIVE
 extern int icp_native_init(void);
 extern void icp_native_flush_interrupt(void);
-extern void icp_native_cause_ipi_rm(int cpu);
 #else
 static inline int icp_native_init(void) { return -ENODEV; }
 #endif
 
 /* PAPR ICP */
 #ifdef CONFIG_PPC_ICP_HV
-extern int icp_hv_init(void);
+int __init icp_hv_init(void);
 #else
 static inline int icp_hv_init(void) { return -ENODEV; }
 #endif
 
 #ifdef CONFIG_PPC_POWERNV
-extern int icp_opal_init(void);
+int __init icp_opal_init(void);
 extern void icp_opal_flush_interrupt(void);
 #else
 static inline int icp_opal_init(void) { return -ENODEV; }
@@ -159,7 +158,6 @@ extern void xics_setup_cpu(void);
 extern void xics_update_irq_servers(void);
 extern void xics_set_cpu_giq(unsigned int gserver, unsigned int join);
 extern void xics_mask_unknown_vec(unsigned int vec);
-extern irqreturn_t xics_ipi_dispatch(int cpu);
 extern void xics_smp_probe(void);
 extern void xics_register_ics(struct ics *ics);
 extern void xics_teardown_cpu(void);

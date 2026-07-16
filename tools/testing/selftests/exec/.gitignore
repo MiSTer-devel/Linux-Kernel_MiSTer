@@ -7,8 +7,15 @@ execveat.moved
 execveat.path.ephemeral
 execveat.ephemeral
 execveat.denatured
-/load_address_*
+non-regular
+null-argv
+/check-exec
+/false
+/inc
+/load_address.*
+!load_address.c
 /recursion-depth
+/set-exec
 xxxxxxxx*
 pipe
 S_I*.test

@@ -9,7 +9,7 @@
  */
 
 /*
- * This driver supports the asynchrounous DMA copy and RAID engines available
+ * This driver supports the asynchronous DMA copy and RAID engines available
  * on the AMCC PPC440SPe Processors.
  * Based on the Intel Xscale(R) family of I/O Processors (IOP 32x, 33x, 134x)
  * ADMA driver written by D.Williams.
@@ -28,7 +28,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <asm/dcr.h>
 #include <asm/dcr-regs.h>
 #include "adma.h"
@@ -874,7 +874,7 @@ static int ppc440spe_dma2_pq_slot_count(dma_addr_t *srcs,
 		pr_err("%s: src_cnt=%d, state=%d, addr_count=%d, order=%lld\n",
 			__func__, src_cnt, state, addr_count, order);
 		for (i = 0; i < src_cnt; i++)
-			pr_err("\t[%d] 0x%llx \n", i, srcs[i]);
+			pr_err("\t[%d] 0x%llx\n", i, srcs[i]);
 		BUG();
 	}
 
@@ -1686,8 +1686,8 @@ static struct ppc440spe_adma_desc_slot *ppc440spe_adma_alloc_slots(
 {
 	struct ppc440spe_adma_desc_slot *iter = NULL, *_iter;
 	struct ppc440spe_adma_desc_slot *alloc_start = NULL;
-	struct list_head chain = LIST_HEAD_INIT(chain);
 	int slots_found, retry = 0;
+	LIST_HEAD(chain);
 
 
 	BUG_ON(!num_slots || !slots_per_op);
@@ -3240,7 +3240,6 @@ static int ppc440spe_adma_dma2rxor_prep_src(
 		struct ppc440spe_rxor *cursor, int index,
 		int src_cnt, u32 addr)
 {
-	int rval = 0;
 	u32 sign;
 	struct ppc440spe_adma_desc_slot *desc = hdesc;
 	int i;
@@ -3348,7 +3347,7 @@ static int ppc440spe_adma_dma2rxor_prep_src(
 		break;
 	}
 
-	return rval;
+	return 0;
 }
 
 /**
@@ -3637,7 +3636,7 @@ static void ppc440spe_adma_issue_pending(struct dma_chan *chan)
 
 	ppc440spe_chan = to_ppc440spe_adma_chan(chan);
 	dev_dbg(ppc440spe_chan->device->common.dev,
-		"ppc440spe adma%d: %s %d \n", ppc440spe_chan->device->id,
+		"ppc440spe adma%d: %s %d\n", ppc440spe_chan->device->id,
 		__func__, ppc440spe_chan->pending);
 
 	if (ppc440spe_chan->pending) {
@@ -4231,7 +4230,7 @@ out:
 /**
  * ppc440spe_adma_remove - remove the asynch device
  */
-static int ppc440spe_adma_remove(struct platform_device *ofdev)
+static void ppc440spe_adma_remove(struct platform_device *ofdev)
 {
 	struct ppc440spe_adma_device *adev = platform_get_drvdata(ofdev);
 	struct device_node *np = ofdev->dev.of_node;
@@ -4279,7 +4278,6 @@ static int ppc440spe_adma_remove(struct platform_device *ofdev)
 	of_address_to_resource(np, 0, &res);
 	release_mem_region(res.start, resource_size(&res));
 	kfree(adev);
-	return 0;
 }
 
 /*
@@ -4300,9 +4298,8 @@ static ssize_t devices_show(struct device_driver *dev, char *buf)
 	for (i = 0; i < PPC440SPE_ADMA_ENGINES_NUM; i++) {
 		if (ppc440spe_adma_devices[i] == -1)
 			continue;
-		size += scnprintf(buf + size, PAGE_SIZE - size,
-				 "PPC440SP(E)-ADMA.%d: %s\n", i,
-				 ppc_adma_errors[ppc440spe_adma_devices[i]]);
+		size += sysfs_emit_at(buf, size, "PPC440SP(E)-ADMA.%d: %s\n",
+				     i, ppc_adma_errors[ppc440spe_adma_devices[i]]);
 	}
 	return size;
 }
@@ -4310,9 +4307,8 @@ static DRIVER_ATTR_RO(devices);
 
 static ssize_t enable_show(struct device_driver *dev, char *buf)
 {
-	return snprintf(buf, PAGE_SIZE,
-			"PPC440SP(e) RAID-6 capabilities are %sABLED.\n",
-			ppc440spe_r6_enabled ? "EN" : "DIS");
+	return sysfs_emit(buf, "PPC440SP(e) RAID-6 capabilities are %sABLED.\n",
+			  ppc440spe_r6_enabled ? "EN" : "DIS");
 }
 
 static ssize_t enable_store(struct device_driver *dev, const char *buf,
@@ -4363,7 +4359,7 @@ static ssize_t poly_show(struct device_driver *dev, char *buf)
 	reg &= 0xFF;
 #endif
 
-	size = snprintf(buf, PAGE_SIZE, "PPC440SP(e) RAID-6 driver "
+	size = sysfs_emit(buf, "PPC440SP(e) RAID-6 driver "
 			"uses 0x1%02x polynomial.\n", reg);
 	return size;
 }

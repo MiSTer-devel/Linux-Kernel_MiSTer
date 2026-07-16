@@ -158,9 +158,7 @@ static int ipoctal_get_icount(struct tty_struct *tty,
 static void ipoctal_irq_rx(struct ipoctal_channel *channel, u8 sr)
 {
 	struct tty_port *port = &channel->tty_port;
-	unsigned char value;
-	unsigned char flag;
-	u8 isr;
+	u8 isr, value, flag;
 
 	do {
 		value = ioread8(&channel->regs->r.rhr);
@@ -202,8 +200,8 @@ static void ipoctal_irq_rx(struct ipoctal_channel *channel, u8 sr)
 
 static void ipoctal_irq_tx(struct ipoctal_channel *channel)
 {
-	unsigned char value;
 	unsigned int *pointer_write = &channel->pointer_write;
+	u8 value;
 
 	if (channel->nb_bytes == 0)
 		return;
@@ -253,7 +251,7 @@ static void ipoctal_irq_channel(struct ipoctal_channel *channel)
 static irqreturn_t ipoctal_irq_handler(void *arg)
 {
 	unsigned int i;
-	struct ipoctal *ipoctal = (struct ipoctal *) arg;
+	struct ipoctal *ipoctal = arg;
 
 	/* Clear the IPack device interrupt */
 	readw(ipoctal->int_space + ACK_INT_REQ0);
@@ -276,7 +274,7 @@ static int ipoctal_inst_slot(struct ipoctal *ipoctal, unsigned int bus_nr,
 {
 	int res;
 	int i;
-	struct tty_driver *tty;
+	struct tty_driver *drv;
 	struct ipoctal_channel *channel;
 	struct ipack_region *region;
 	void __iomem *addr;
@@ -359,38 +357,38 @@ static int ipoctal_inst_slot(struct ipoctal *ipoctal, unsigned int bus_nr,
 	/* Register the TTY device */
 
 	/* Each IP-OCTAL channel is a TTY port */
-	tty = tty_alloc_driver(NR_CHANNELS, TTY_DRIVER_REAL_RAW |
+	drv = tty_alloc_driver(NR_CHANNELS, TTY_DRIVER_REAL_RAW |
 			TTY_DRIVER_DYNAMIC_DEV);
-	if (IS_ERR(tty))
-		return PTR_ERR(tty);
+	if (IS_ERR(drv))
+		return PTR_ERR(drv);
 
 	/* Fill struct tty_driver with ipoctal data */
-	tty->owner = THIS_MODULE;
-	tty->driver_name = KBUILD_MODNAME;
-	tty->name = kasprintf(GFP_KERNEL, KBUILD_MODNAME ".%d.%d.", bus_nr, slot);
-	if (!tty->name) {
+	drv->owner = THIS_MODULE;
+	drv->driver_name = KBUILD_MODNAME;
+	drv->name = kasprintf(GFP_KERNEL, KBUILD_MODNAME ".%d.%d.", bus_nr, slot);
+	if (!drv->name) {
 		res = -ENOMEM;
 		goto err_put_driver;
 	}
-	tty->major = 0;
+	drv->major = 0;
 
-	tty->minor_start = 0;
-	tty->type = TTY_DRIVER_TYPE_SERIAL;
-	tty->subtype = SERIAL_TYPE_NORMAL;
-	tty->init_termios = tty_std_termios;
-	tty->init_termios.c_cflag = B9600 | CS8 | CREAD | HUPCL | CLOCAL;
-	tty->init_termios.c_ispeed = 9600;
-	tty->init_termios.c_ospeed = 9600;
+	drv->minor_start = 0;
+	drv->type = TTY_DRIVER_TYPE_SERIAL;
+	drv->subtype = SERIAL_TYPE_NORMAL;
+	drv->init_termios = tty_std_termios;
+	drv->init_termios.c_cflag = B9600 | CS8 | CREAD | HUPCL | CLOCAL;
+	drv->init_termios.c_ispeed = 9600;
+	drv->init_termios.c_ospeed = 9600;
 
-	tty_set_operations(tty, &ipoctal_fops);
-	res = tty_register_driver(tty);
+	tty_set_operations(drv, &ipoctal_fops);
+	res = tty_register_driver(drv);
 	if (res) {
 		dev_err(&ipoctal->dev->dev, "Can't register tty driver.\n");
 		goto err_free_name;
 	}
 
 	/* Save struct tty_driver for use it when uninstalling the device */
-	ipoctal->tty_drv = tty;
+	ipoctal->tty_drv = drv;
 
 	for (i = 0; i < NR_CHANNELS; i++) {
 		struct device *tty_dev;
@@ -407,7 +405,7 @@ static int ipoctal_inst_slot(struct ipoctal *ipoctal, unsigned int bus_nr,
 		spin_lock_init(&channel->lock);
 		channel->pointer_read = 0;
 		channel->pointer_write = 0;
-		tty_dev = tty_port_register_device_attr(&channel->tty_port, tty,
+		tty_dev = tty_port_register_device_attr(&channel->tty_port, drv,
 							i, NULL, channel, NULL);
 		if (IS_ERR(tty_dev)) {
 			dev_err(&ipoctal->dev->dev, "Failed to register tty device.\n");
@@ -429,19 +427,18 @@ static int ipoctal_inst_slot(struct ipoctal *ipoctal, unsigned int bus_nr,
 	return 0;
 
 err_free_name:
-	kfree(tty->name);
+	kfree(drv->name);
 err_put_driver:
-	tty_driver_kref_put(tty);
+	tty_driver_kref_put(drv);
 
 	return res;
 }
 
-static inline int ipoctal_copy_write_buffer(struct ipoctal_channel *channel,
-					    const unsigned char *buf,
-					    int count)
+static inline size_t ipoctal_copy_write_buffer(struct ipoctal_channel *channel,
+					       const u8 *buf, size_t count)
 {
 	unsigned long flags;
-	int i;
+	size_t i;
 	unsigned int *pointer_read = &channel->pointer_read;
 
 	/* Copy the bytes from the user buffer to the internal one */
@@ -459,11 +456,11 @@ static inline int ipoctal_copy_write_buffer(struct ipoctal_channel *channel,
 	return i;
 }
 
-static int ipoctal_write_tty(struct tty_struct *tty,
-			     const unsigned char *buf, int count)
+static ssize_t ipoctal_write_tty(struct tty_struct *tty, const u8 *buf,
+				 size_t count)
 {
 	struct ipoctal_channel *channel = tty->driver_data;
-	unsigned int char_copied;
+	size_t char_copied;
 
 	char_copied = ipoctal_copy_write_buffer(channel, buf, count);
 
@@ -497,7 +494,7 @@ static unsigned int ipoctal_chars_in_buffer(struct tty_struct *tty)
 }
 
 static void ipoctal_set_termios(struct tty_struct *tty,
-				struct ktermios *old_termios)
+				const struct ktermios *old_termios)
 {
 	unsigned int cflag;
 	unsigned char mr1 = 0;
@@ -647,7 +644,7 @@ static void ipoctal_hangup(struct tty_struct *tty)
 	tty_port_hangup(&channel->tty_port);
 
 	ipoctal_reset_channel(channel);
-	tty_port_set_initialized(&channel->tty_port, 0);
+	tty_port_set_initialized(&channel->tty_port, false);
 	wake_up_interruptible(&channel->tty_port.open_wait);
 }
 
@@ -659,7 +656,7 @@ static void ipoctal_shutdown(struct tty_struct *tty)
 		return;
 
 	ipoctal_reset_channel(channel);
-	tty_port_set_initialized(&channel->tty_port, 0);
+	tty_port_set_initialized(&channel->tty_port, false);
 }
 
 static void ipoctal_cleanup(struct tty_struct *tty)

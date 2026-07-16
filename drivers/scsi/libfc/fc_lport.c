@@ -79,7 +79,7 @@
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <scsi/fc/fc_gs.h>
 
@@ -241,6 +241,12 @@ static void fc_lport_ptp_setup(struct fc_lport *lport,
 	}
 	mutex_lock(&lport->disc.disc_mutex);
 	lport->ptp_rdata = fc_rport_create(lport, remote_fid);
+	if (!lport->ptp_rdata) {
+		printk(KERN_WARNING "libfc: Failed to setup lport 0x%x\n",
+			lport->port_id);
+		mutex_unlock(&lport->disc.disc_mutex);
+		return;
+	}
 	kref_get(&lport->ptp_rdata->kref);
 	lport->ptp_rdata->ids.port_name = remote_wwpn;
 	lport->ptp_rdata->ids.node_name = remote_wwnn;
@@ -308,21 +314,21 @@ struct fc_host_statistics *fc_get_host_stats(struct Scsi_Host *shost)
 
 		stats = per_cpu_ptr(lport->stats, cpu);
 
-		fc_stats->tx_frames += stats->TxFrames;
-		fc_stats->tx_words += stats->TxWords;
-		fc_stats->rx_frames += stats->RxFrames;
-		fc_stats->rx_words += stats->RxWords;
-		fc_stats->error_frames += stats->ErrorFrames;
-		fc_stats->invalid_crc_count += stats->InvalidCRCCount;
-		fc_stats->fcp_input_requests += stats->InputRequests;
-		fc_stats->fcp_output_requests += stats->OutputRequests;
-		fc_stats->fcp_control_requests += stats->ControlRequests;
-		fcp_in_bytes += stats->InputBytes;
-		fcp_out_bytes += stats->OutputBytes;
-		fc_stats->fcp_packet_alloc_failures += stats->FcpPktAllocFails;
-		fc_stats->fcp_packet_aborts += stats->FcpPktAborts;
-		fc_stats->fcp_frame_alloc_failures += stats->FcpFrameAllocFails;
-		fc_stats->link_failure_count += stats->LinkFailureCount;
+		fc_stats->tx_frames += READ_ONCE(stats->TxFrames);
+		fc_stats->tx_words += READ_ONCE(stats->TxWords);
+		fc_stats->rx_frames += READ_ONCE(stats->RxFrames);
+		fc_stats->rx_words += READ_ONCE(stats->RxWords);
+		fc_stats->error_frames += READ_ONCE(stats->ErrorFrames);
+		fc_stats->invalid_crc_count += READ_ONCE(stats->InvalidCRCCount);
+		fc_stats->fcp_input_requests += READ_ONCE(stats->InputRequests);
+		fc_stats->fcp_output_requests += READ_ONCE(stats->OutputRequests);
+		fc_stats->fcp_control_requests += READ_ONCE(stats->ControlRequests);
+		fcp_in_bytes += READ_ONCE(stats->InputBytes);
+		fcp_out_bytes += READ_ONCE(stats->OutputBytes);
+		fc_stats->fcp_packet_alloc_failures += READ_ONCE(stats->FcpPktAllocFails);
+		fc_stats->fcp_packet_aborts += READ_ONCE(stats->FcpPktAborts);
+		fc_stats->fcp_frame_alloc_failures += READ_ONCE(stats->FcpFrameAllocFails);
+		fc_stats->link_failure_count += READ_ONCE(stats->LinkFailureCount);
 	}
 	fc_stats->fcp_input_megabytes = div_u64(fcp_in_bytes, 1000000);
 	fc_stats->fcp_output_megabytes = div_u64(fcp_out_bytes, 1000000);

@@ -51,10 +51,11 @@ to userspace as a V4L2 sub-device node and has two pads:
 .. tabularcolumns:: |p{0.8cm}|p{4.0cm}|p{4.0cm}|
 
 .. flat-table::
+    :header-rows: 1
 
-    * - pad
-      - direction
-      - purpose
+    * - Pad
+      - Direction
+      - Purpose
 
     * - 0
       - sink
@@ -97,7 +98,7 @@ frames in packed raw Bayer format to IPU3 CSI2 receiver.
     # and that ov5670 sensor is connected to i2c bus 10 with address 0x36
     export SDEV=$(media-ctl -d $MDEV -e "ov5670 10-0036")
 
-    # Establish the link for the media devices using media-ctl [#f3]_
+    # Establish the link for the media devices using media-ctl
     media-ctl -d $MDEV -l "ov5670:0 -> ipu3-csi2 0:0[1]"
 
     # Set the format for the media devices
@@ -148,10 +149,11 @@ Each pipe has two sink pads and three source pads for the following purpose:
 .. tabularcolumns:: |p{0.8cm}|p{4.0cm}|p{4.0cm}|
 
 .. flat-table::
+    :header-rows: 1
 
-    * - pad
-      - direction
-      - purpose
+    * - Pad
+      - Direction
+      - Purpose
 
     * - 0
       - sink
@@ -587,12 +589,8 @@ preserved.
 References
 ==========
 
-.. [#f5] drivers/staging/media/ipu3/include/uapi/intel-ipu3.h
-
 .. [#f1] https://github.com/intel/nvt
 
 .. [#f2] http://git.ideasonboard.org/yavta.git
-
-.. [#f3] http://git.ideasonboard.org/?p=media-ctl.git;a=summary
 
 .. [#f4] ImgU limitation requires an additional 16x16 for all input resolutions

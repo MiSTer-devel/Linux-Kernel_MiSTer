@@ -8,7 +8,6 @@
 #include <linux/init.h>
 #include <linux/mfd/syscon.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 
 #include "clk-uniphier.h"
@@ -87,15 +86,8 @@ static int uniphier_clk_probe(struct platform_device *pdev)
 			hw_data->hws[p->idx] = hw;
 	}
 
-	return of_clk_add_hw_provider(dev->of_node, of_clk_hw_onecell_get,
-				      hw_data);
-}
-
-static int uniphier_clk_remove(struct platform_device *pdev)
-{
-	of_clk_del_provider(pdev->dev.of_node);
-
-	return 0;
+	return devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get,
+					   hw_data);
 }
 
 static const struct of_device_id uniphier_clk_match[] = {
@@ -132,6 +124,10 @@ static const struct of_device_id uniphier_clk_match[] = {
 		.compatible = "socionext,uniphier-pxs3-clock",
 		.data = uniphier_pxs3_sys_clk_data,
 	},
+	{
+		.compatible = "socionext,uniphier-nx1-clock",
+		.data = uniphier_nx1_sys_clk_data,
+	},
 	/* Media I/O clock, SD clock */
 	{
 		.compatible = "socionext,uniphier-ld4-mio-clock",
@@ -163,6 +159,10 @@ static const struct of_device_id uniphier_clk_match[] = {
 	},
 	{
 		.compatible = "socionext,uniphier-pxs3-sd-clock",
+		.data = uniphier_pro5_sd_clk_data,
+	},
+	{
+		.compatible = "socionext,uniphier-nx1-sd-clock",
 		.data = uniphier_pro5_sd_clk_data,
 	},
 	/* Peripheral clock */
@@ -198,12 +198,20 @@ static const struct of_device_id uniphier_clk_match[] = {
 		.compatible = "socionext,uniphier-pxs3-peri-clock",
 		.data = uniphier_pro4_peri_clk_data,
 	},
+	{
+		.compatible = "socionext,uniphier-nx1-peri-clock",
+		.data = uniphier_pro4_peri_clk_data,
+	},
+	/* SoC-glue clock */
+	{
+		.compatible = "socionext,uniphier-pro4-sg-clock",
+		.data = uniphier_pro4_sg_clk_data,
+	},
 	{ /* sentinel */ }
 };
 
 static struct platform_driver uniphier_clk_driver = {
 	.probe = uniphier_clk_probe,
-	.remove = uniphier_clk_remove,
 	.driver = {
 		.name = "uniphier-clk",
 		.of_match_table = uniphier_clk_match,

@@ -81,9 +81,9 @@ void br_stp_disable_bridge(struct net_bridge *br)
 	br->topology_change_detected = 0;
 	spin_unlock_bh(&br->lock);
 
-	del_timer_sync(&br->hello_timer);
-	del_timer_sync(&br->topology_change_timer);
-	del_timer_sync(&br->tcn_timer);
+	timer_delete_sync(&br->hello_timer);
+	timer_delete_sync(&br->topology_change_timer);
+	timer_delete_sync(&br->tcn_timer);
 	cancel_delayed_work_sync(&br->gc_work);
 }
 
@@ -109,9 +109,9 @@ void br_stp_disable_port(struct net_bridge_port *p)
 
 	br_ifinfo_notify(RTM_NEWLINK, NULL, p);
 
-	del_timer(&p->message_age_timer);
-	del_timer(&p->forward_delay_timer);
-	del_timer(&p->hold_timer);
+	timer_delete(&p->message_age_timer);
+	timer_delete(&p->forward_delay_timer);
+	timer_delete(&p->hold_timer);
 
 	if (!rcu_access_pointer(p->backup_port))
 		br_fdb_delete_by_port(br, p, 0, 0);
@@ -233,7 +233,7 @@ void br_stp_change_bridge_id(struct net_bridge *br, const unsigned char *addr)
 
 	memcpy(oldaddr, br->bridge_id.addr, ETH_ALEN);
 	memcpy(br->bridge_id.addr, addr, ETH_ALEN);
-	memcpy(br->dev->dev_addr, addr, ETH_ALEN);
+	eth_hw_addr_set(br->dev, addr);
 
 	list_for_each_entry(p, &br->port_list, list) {
 		if (ether_addr_equal(p->designated_bridge.addr, oldaddr))

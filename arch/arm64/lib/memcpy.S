@@ -57,10 +57,7 @@
    The loop tail is handled by always copying 64 bytes from the end.
 */
 
-SYM_FUNC_START_ALIAS(__memmove)
-SYM_FUNC_START_WEAK_ALIAS_PI(memmove)
-SYM_FUNC_START_ALIAS(__memcpy)
-SYM_FUNC_START_WEAK_PI(memcpy)
+SYM_FUNC_START_LOCAL(__pi_memcpy_generic)
 	add	srcend, src, count
 	add	dstend, dstin, count
 	cmp	count, 128
@@ -241,12 +238,33 @@ L(copy64_from_start):
 	stp	B_l, B_h, [dstin, 16]
 	stp	C_l, C_h, [dstin]
 	ret
+SYM_FUNC_END(__pi_memcpy_generic)
 
-SYM_FUNC_END_PI(memcpy)
-EXPORT_SYMBOL(memcpy)
-SYM_FUNC_END_ALIAS(__memcpy)
+#ifdef CONFIG_AS_HAS_MOPS
+	.arch_extension mops
+SYM_FUNC_START(__pi_memcpy)
+alternative_if_not ARM64_HAS_MOPS
+	b	__pi_memcpy_generic
+alternative_else_nop_endif
+
+	mov	dst, dstin
+	cpyp	[dst]!, [src]!, count!
+	cpym	[dst]!, [src]!, count!
+	cpye	[dst]!, [src]!, count!
+	ret
+SYM_FUNC_END(__pi_memcpy)
+#else
+SYM_FUNC_ALIAS(__pi_memcpy, __pi_memcpy_generic)
+#endif
+
+SYM_FUNC_ALIAS(__memcpy, __pi_memcpy)
 EXPORT_SYMBOL(__memcpy)
-SYM_FUNC_END_ALIAS_PI(memmove)
-EXPORT_SYMBOL(memmove)
-SYM_FUNC_END_ALIAS(__memmove)
+SYM_FUNC_ALIAS_WEAK(memcpy, __memcpy)
+EXPORT_SYMBOL(memcpy)
+
+SYM_FUNC_ALIAS(__pi_memmove, __pi_memcpy)
+
+SYM_FUNC_ALIAS(__memmove, __pi_memmove)
 EXPORT_SYMBOL(__memmove)
+SYM_FUNC_ALIAS_WEAK(memmove, __memmove)
+EXPORT_SYMBOL(memmove)

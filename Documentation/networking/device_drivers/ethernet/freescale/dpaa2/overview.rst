@@ -183,6 +183,7 @@ PHY and allows physical transmission and reception of Ethernet frames.
   IRQ config, enable, reset
 
 DPNI (Datapath Network Interface)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Contains TX/RX queues, network interface configuration, and RX buffer pool
 configuration mechanisms.  The TX/RX queues are in memory and are identified
 by queue number.
@@ -338,7 +339,7 @@ Key functions include:
   a bind of the root DPRC to the DPRC driver
 
 The binding for the MC-bus device-tree node can be consulted at
-*Documentation/devicetree/bindings/misc/fsl,qoriq-mc.txt*.
+*Documentation/devicetree/bindings/misc/fsl,qoriq-mc.yaml*.
 The sysfs bind/unbind interfaces for the MC-bus can be consulted at
 *Documentation/ABI/testing/sysfs-bus-fsl-mc*.
 

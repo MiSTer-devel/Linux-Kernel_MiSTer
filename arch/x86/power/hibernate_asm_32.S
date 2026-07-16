@@ -32,7 +32,7 @@ SYM_FUNC_START(swsusp_arch_suspend)
 	FRAME_BEGIN
 	call swsusp_save
 	FRAME_END
-	ret
+	RET
 SYM_FUNC_END(swsusp_arch_suspend)
 
 SYM_CODE_START(restore_image)
@@ -69,8 +69,7 @@ copy_loop:
 	movl	pbe_orig_address(%edx), %edi
 
 	movl	$(PAGE_SIZE >> 2), %ecx
-	rep
-	movsl
+	rep movsl
 
 	movl	pbe_next(%edx), %edx
 	jmp	copy_loop
@@ -108,5 +107,5 @@ SYM_FUNC_START(restore_registers)
 	/* tell the hibernation core that we've just restored the memory */
 	movl	%eax, in_suspend
 
-	ret
+	RET
 SYM_FUNC_END(restore_registers)

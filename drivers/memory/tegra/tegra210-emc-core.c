@@ -9,10 +9,10 @@
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/kernel.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_address.h>
-#include <linux/of_platform.h>
 #include <linux/of_reserved_mem.h>
+#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/thermal.h>
 #include <soc/tegra/fuse.h>
@@ -558,7 +558,7 @@ tegra210_emc_table_register_offsets = {
 
 static void tegra210_emc_train(struct timer_list *timer)
 {
-	struct tegra210_emc *emc = from_timer(emc, timer, training);
+	struct tegra210_emc *emc = timer_container_of(emc, timer, training);
 	unsigned long flags;
 
 	if (!emc->last)
@@ -583,7 +583,7 @@ static void tegra210_emc_training_start(struct tegra210_emc *emc)
 
 static void tegra210_emc_training_stop(struct tegra210_emc *emc)
 {
-	del_timer(&emc->training);
+	timer_delete(&emc->training);
 }
 
 static unsigned int tegra210_emc_get_temperature(struct tegra210_emc *emc)
@@ -614,7 +614,8 @@ static unsigned int tegra210_emc_get_temperature(struct tegra210_emc *emc)
 
 static void tegra210_emc_poll_refresh(struct timer_list *timer)
 {
-	struct tegra210_emc *emc = from_timer(emc, timer, refresh_timer);
+	struct tegra210_emc *emc = timer_container_of(emc, timer,
+						      refresh_timer);
 	unsigned int temperature;
 
 	if (!emc->debugfs.temperature)
@@ -666,7 +667,7 @@ reset:
 static void tegra210_emc_poll_refresh_stop(struct tegra210_emc *emc)
 {
 	atomic_set(&emc->refresh_poll, 0);
-	del_timer_sync(&emc->refresh_timer);
+	timer_delete_sync(&emc->refresh_timer);
 }
 
 static void tegra210_emc_poll_refresh_start(struct tegra210_emc *emc)
@@ -711,7 +712,7 @@ static int tegra210_emc_cd_set_state(struct thermal_cooling_device *cd,
 	return 0;
 }
 
-static struct thermal_cooling_device_ops tegra210_emc_cd_ops = {
+static const struct thermal_cooling_device_ops tegra210_emc_cd_ops = {
 	.get_max_state = tegra210_emc_cd_max_state,
 	.get_cur_state = tegra210_emc_cd_get_state,
 	.set_cur_state = tegra210_emc_cd_set_state,
@@ -1621,20 +1622,7 @@ static int tegra210_emc_debug_available_rates_show(struct seq_file *s,
 
 	return 0;
 }
-
-static int tegra210_emc_debug_available_rates_open(struct inode *inode,
-						   struct file *file)
-{
-	return single_open(file, tegra210_emc_debug_available_rates_show,
-			   inode->i_private);
-}
-
-static const struct file_operations tegra210_emc_debug_available_rates_fops = {
-	.open = tegra210_emc_debug_available_rates_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(tegra210_emc_debug_available_rates);
 
 static int tegra210_emc_debug_min_rate_get(void *data, u64 *rate)
 {
@@ -1662,7 +1650,7 @@ static int tegra210_emc_debug_min_rate_set(void *data, u64 rate)
 	return 0;
 }
 
-DEFINE_SIMPLE_ATTRIBUTE(tegra210_emc_debug_min_rate_fops,
+DEFINE_DEBUGFS_ATTRIBUTE(tegra210_emc_debug_min_rate_fops,
 			tegra210_emc_debug_min_rate_get,
 			tegra210_emc_debug_min_rate_set, "%llu\n");
 
@@ -1692,7 +1680,7 @@ static int tegra210_emc_debug_max_rate_set(void *data, u64 rate)
 	return 0;
 }
 
-DEFINE_SIMPLE_ATTRIBUTE(tegra210_emc_debug_max_rate_fops,
+DEFINE_DEBUGFS_ATTRIBUTE(tegra210_emc_debug_max_rate_fops,
 			tegra210_emc_debug_max_rate_get,
 			tegra210_emc_debug_max_rate_set, "%llu\n");
 
@@ -1723,7 +1711,7 @@ static int tegra210_emc_debug_temperature_set(void *data, u64 temperature)
 	return 0;
 }
 
-DEFINE_SIMPLE_ATTRIBUTE(tegra210_emc_debug_temperature_fops,
+DEFINE_DEBUGFS_ATTRIBUTE(tegra210_emc_debug_temperature_fops,
 			tegra210_emc_debug_temperature_get,
 			tegra210_emc_debug_temperature_set, "%llu\n");
 
@@ -1998,15 +1986,13 @@ release:
 	return err;
 }
 
-static int tegra210_emc_remove(struct platform_device *pdev)
+static void tegra210_emc_remove(struct platform_device *pdev)
 {
 	struct tegra210_emc *emc = platform_get_drvdata(pdev);
 
 	debugfs_remove_recursive(emc->debugfs.root);
 	tegra210_clk_emc_detach(emc->clk);
 	of_reserved_mem_device_release(emc->dev);
-
-	return 0;
 }
 
 static int __maybe_unused tegra210_emc_suspend(struct device *dev)

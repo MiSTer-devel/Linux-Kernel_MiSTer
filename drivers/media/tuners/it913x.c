@@ -419,7 +419,7 @@ err:
 	return ret;
 }
 
-static int it913x_remove(struct platform_device *pdev)
+static void it913x_remove(struct platform_device *pdev)
 {
 	struct it913x_dev *dev = platform_get_drvdata(pdev);
 	struct dvb_frontend *fe = dev->fe;
@@ -429,8 +429,6 @@ static int it913x_remove(struct platform_device *pdev)
 	memset(&fe->ops.tuner_ops, 0, sizeof(struct dvb_tuner_ops));
 	fe->tuner_priv = NULL;
 	kfree(dev);
-
-	return 0;
 }
 
 static const struct platform_device_id it913x_id_table[] = {

@@ -5,6 +5,7 @@
  */
 
 #include <linux/kref.h>
+#include <linux/string_helpers.h>
 
 #include "gem/i915_gem_pm.h"
 #include "gt/intel_gt.h"
@@ -155,9 +156,9 @@ static int live_active_wait(void *arg)
 
 	__i915_active_wait(&active->base, TASK_UNINTERRUPTIBLE);
 	if (!READ_ONCE(active->retired)) {
-		struct drm_printer p = drm_err_printer(__func__);
+		struct drm_printer p = drm_err_printer(&i915->drm, __func__);
 
-		pr_err("i915_active not retired after waiting!\n");
+		drm_printf(&p, "i915_active not retired after waiting!\n");
 		i915_active_print(&active->base, &p);
 
 		err = -EINVAL;
@@ -188,9 +189,9 @@ static int live_active_retire(void *arg)
 		err = -EIO;
 
 	if (!READ_ONCE(active->retired)) {
-		struct drm_printer p = drm_err_printer(__func__);
+		struct drm_printer p = drm_err_printer(&i915->drm, __func__);
 
-		pr_err("i915_active not retired after flushing!\n");
+		drm_printf(&p, "i915_active not retired after flushing!\n");
 		i915_active_print(&active->base, &p);
 
 		err = -EINVAL;
@@ -254,7 +255,7 @@ int i915_active_live_selftests(struct drm_i915_private *i915)
 		SUBTEST(live_active_barrier),
 	};
 
-	if (intel_gt_is_wedged(&i915->gt))
+	if (intel_gt_is_wedged(to_gt(i915)))
 		return 0;
 
 	return i915_subtests(tests, i915);
@@ -280,7 +281,7 @@ void i915_active_print(struct i915_active *ref, struct drm_printer *m)
 	drm_printf(m, "active %ps:%ps\n", ref->active, ref->retire);
 	drm_printf(m, "\tcount: %d\n", atomic_read(&ref->count));
 	drm_printf(m, "\tpreallocated barriers? %s\n",
-		   yesno(!llist_empty(&ref->preallocated_barriers)));
+		   str_yes_no(!llist_empty(&ref->preallocated_barriers)));
 
 	if (i915_active_acquire_if_busy(ref)) {
 		struct active_node *it, *n;

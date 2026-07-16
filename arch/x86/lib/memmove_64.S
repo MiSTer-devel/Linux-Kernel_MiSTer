@@ -6,12 +6,15 @@
  * This assembly file is re-written from memmove_64.c file.
  *	- Copyright 2011 Fenghua Yu <fenghua.yu@intel.com>
  */
+#include <linux/export.h>
 #include <linux/linkage.h>
+#include <linux/cfi_types.h>
 #include <asm/cpufeatures.h>
 #include <asm/alternative.h>
-#include <asm/export.h>
 
 #undef memmove
+
+.section .noinstr.text, "ax"
 
 /*
  * Implement memmove(). This can handle overlap between src and dst.
@@ -24,8 +27,7 @@
  * Output:
  * rax: dest
  */
-SYM_FUNC_START_WEAK(memmove)
-SYM_FUNC_START(__memmove)
+SYM_TYPED_FUNC_START(__memmove)
 
 	mov %rdi, %rax
 
@@ -37,10 +39,12 @@ SYM_FUNC_START(__memmove)
 	cmp %rdi, %r8
 	jg 2f
 
-	/* FSRM implies ERMS => no length checks, do the copy directly */
+#define CHECK_LEN	cmp $0x20, %rdx; jb 1f
+#define MEMMOVE_BYTES	movq %rdx, %rcx; rep movsb; RET
 .Lmemmove_begin_forward:
-	ALTERNATIVE "cmp $0x20, %rdx; jb 1f", "", X86_FEATURE_FSRM
-	ALTERNATIVE "", "movq %rdx, %rcx; rep movsb; retq", X86_FEATURE_ERMS
+	ALTERNATIVE_2 __stringify(CHECK_LEN), \
+		      __stringify(CHECK_LEN; MEMMOVE_BYTES), X86_FEATURE_ERMS, \
+		      __stringify(MEMMOVE_BYTES), X86_FEATURE_FSRM
 
 	/*
 	 * movsq instruction have many startup latency
@@ -205,8 +209,9 @@ SYM_FUNC_START(__memmove)
 	movb (%rsi), %r11b
 	movb %r11b, (%rdi)
 13:
-	retq
+	RET
 SYM_FUNC_END(__memmove)
-SYM_FUNC_END_ALIAS(memmove)
 EXPORT_SYMBOL(__memmove)
+
+SYM_FUNC_ALIAS_MEMFUNC(memmove, __memmove)
 EXPORT_SYMBOL(memmove)

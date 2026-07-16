@@ -26,35 +26,78 @@ static int enable_slot(struct hotplug_slot *hotplug_slot)
 					     hotplug_slot);
 	int rc;
 
-	if (zdev->state != ZPCI_FN_STATE_STANDBY)
-		return -EIO;
+	mutex_lock(&zdev->state_lock);
+	if (zdev->state != ZPCI_FN_STATE_STANDBY) {
+		rc = -EIO;
+		goto out;
+	}
 
 	rc = sclp_pci_configure(zdev->fid);
 	zpci_dbg(3, "conf fid:%x, rc:%d\n", zdev->fid, rc);
 	if (rc)
-		return rc;
+		goto out;
 	zdev->state = ZPCI_FN_STATE_CONFIGURED;
 
-	return zpci_scan_configured_device(zdev, zdev->fh);
+	rc = zpci_scan_configured_device(zdev, zdev->fh);
+out:
+	mutex_unlock(&zdev->state_lock);
+	return rc;
 }
 
 static int disable_slot(struct hotplug_slot *hotplug_slot)
 {
 	struct zpci_dev *zdev = container_of(hotplug_slot, struct zpci_dev,
 					     hotplug_slot);
-	struct pci_dev *pdev;
+	struct pci_dev *pdev = NULL;
+	int rc;
 
-	if (zdev->state != ZPCI_FN_STATE_CONFIGURED)
-		return -EIO;
+	mutex_lock(&zdev->state_lock);
+	if (zdev->state != ZPCI_FN_STATE_CONFIGURED) {
+		rc = -EIO;
+		goto out;
+	}
 
 	pdev = pci_get_slot(zdev->zbus->bus, zdev->devfn);
 	if (pdev && pci_num_vf(pdev)) {
-		pci_dev_put(pdev);
-		return -EBUSY;
+		rc = -EBUSY;
+		goto out;
 	}
-	pci_dev_put(pdev);
 
-	return zpci_deconfigure_device(zdev);
+	rc = zpci_deconfigure_device(zdev);
+out:
+	if (pdev)
+		pci_dev_put(pdev);
+	mutex_unlock(&zdev->state_lock);
+	return rc;
+}
+
+static int reset_slot(struct hotplug_slot *hotplug_slot, bool probe)
+{
+	struct zpci_dev *zdev = container_of(hotplug_slot, struct zpci_dev,
+					     hotplug_slot);
+	int rc = -EIO;
+
+	/*
+	 * If we can't get the zdev->state_lock the device state is
+	 * currently undergoing a transition and we bail out - just
+	 * the same as if the device's state is not configured at all.
+	 */
+	if (!mutex_trylock(&zdev->state_lock))
+		return rc;
+
+	/* We can reset only if the function is configured */
+	if (zdev->state != ZPCI_FN_STATE_CONFIGURED)
+		goto out;
+
+	if (probe) {
+		rc = 0;
+		goto out;
+	}
+
+	rc = zpci_hot_reset_device(zdev);
+out:
+	mutex_unlock(&zdev->state_lock);
+	return rc;
 }
 
 static int get_power_status(struct hotplug_slot *hotplug_slot, u8 *value)
@@ -68,7 +111,7 @@ static int get_power_status(struct hotplug_slot *hotplug_slot, u8 *value)
 
 static int get_adapter_status(struct hotplug_slot *hotplug_slot, u8 *value)
 {
-	/* if the slot exits it always contains a function */
+	/* if the slot exists it always contains a function */
 	*value = 1;
 	return 0;
 }
@@ -76,6 +119,7 @@ static int get_adapter_status(struct hotplug_slot *hotplug_slot, u8 *value)
 static const struct hotplug_slot_ops s390_hotplug_slot_ops = {
 	.enable_slot =		enable_slot,
 	.disable_slot =		disable_slot,
+	.reset_slot =		reset_slot,
 	.get_power_status =	get_power_status,
 	.get_adapter_status =	get_adapter_status,
 };

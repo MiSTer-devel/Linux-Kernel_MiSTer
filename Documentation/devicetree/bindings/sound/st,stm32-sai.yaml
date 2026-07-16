@@ -7,7 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: STMicroelectronics STM32 Serial Audio Interface (SAI)
 
 maintainers:
-  - Olivier Moysan <olivier.moysan@st.com>
+  - Olivier Moysan <olivier.moysan@foss.st.com>
 
 description:
   The SAI interface (Serial Audio Interface) offers a wide set of audio
@@ -20,6 +20,7 @@ properties:
     enum:
       - st,stm32f4-sai
       - st,stm32h7-sai
+      - st,stm32mp25-sai
 
   reg:
     items:
@@ -43,10 +44,16 @@ properties:
     const: 1
 
   clocks:
+    minItems: 1
     maxItems: 3
 
   clock-names:
+    minItems: 1
     maxItems: 3
+
+  access-controllers:
+    minItems: 1
+    maxItems: 2
 
 required:
   - compatible
@@ -60,14 +67,15 @@ required:
 patternProperties:
   "^audio-controller@[0-9a-f]+$":
     type: object
+    additionalProperties: false
     description:
       Two subnodes corresponding to SAI sub-block instances A et B
-      can be defined. Subnode can be omitted for unsused sub-block.
+      can be defined. Subnode can be omitted for unused sub-block.
 
     properties:
       compatible:
         description: Compatible for SAI sub-block A or B.
-        pattern: "st,stm32-sai-sub-[ab]"
+        pattern: "^st,stm32-sai-sub-[ab]$"
 
       "#sound-dai-cells":
         const: 0
@@ -102,9 +110,11 @@ patternProperties:
           By default SAI sub-block is in asynchronous mode.
           Must contain the phandle and index of the SAI sub-block providing
           the synchronization.
-        allOf:
-          - $ref: /schemas/types.yaml#/definitions/phandle-array
-          - maxItems: 1
+        $ref: /schemas/types.yaml#/definitions/phandle-array
+        items:
+          - items:
+              - description: phandle of the SAI sub-block
+              - description: index of the SAI sub-block
 
       st,iec60958:
         description:
@@ -113,12 +123,15 @@ patternProperties:
           By default, custom protocol is assumed, meaning that protocol is
           configured according to protocol defined in related DAI link node,
           such as i2s, left justified, right justified, dsp and pdm protocols.
-        allOf:
-          - $ref: /schemas/types.yaml#/definitions/flag
+        $ref: /schemas/types.yaml#/definitions/flag
 
       "#clock-cells":
         description: Configure the SAI device as master clock provider.
         const: 0
+
+      port:
+        $ref: audio-graph-port.yaml#
+        unevaluatedProperties: false
 
     required:
       - compatible
@@ -135,8 +148,7 @@ allOf:
         compatible:
           contains:
             const: st,stm32f4-sai
-
-  - then:
+    then:
       properties:
         clocks:
           items:
@@ -148,7 +160,12 @@ allOf:
             - const: x8k
             - const: x11k
 
-  - else:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: st,stm32h7-sai
+    then:
       properties:
         clocks:
           items:
@@ -161,6 +178,21 @@ allOf:
             - const: pclk
             - const: x8k
             - const: x11k
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: st,stm32mp25-sai
+    then:
+      properties:
+        clocks:
+          items:
+            - description: pclk feeds the peripheral bus interface.
+
+        clock-names:
+          items:
+            - const: pclk
 
 additionalProperties: false
 

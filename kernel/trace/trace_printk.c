@@ -197,6 +197,7 @@ struct notifier_block module_trace_bprintk_format_nb = {
 	.notifier_call = module_trace_bprintk_format_notify,
 };
 
+__printf(2, 3)
 int __trace_bprintk(unsigned long ip, const char *fmt, ...)
 {
 	int ret;
@@ -384,7 +385,7 @@ static __init int init_trace_printk_function_export(void)
 	if (ret)
 		return 0;
 
-	trace_create_file("printk_formats", 0444, NULL,
+	trace_create_file("printk_formats", TRACE_MODE_READ, NULL,
 				    NULL, &ftrace_formats_fops);
 
 	return 0;

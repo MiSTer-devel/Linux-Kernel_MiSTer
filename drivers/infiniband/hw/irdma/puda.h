@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB */
+/* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
 /* Copyright (c) 2015 - 2020 Intel Corporation */
 #ifndef IRDMA_PUDA_H
 #define IRDMA_PUDA_H
@@ -91,7 +91,7 @@ struct irdma_puda_rsrc_info {
 	u32 rq_size;
 	u32 tx_buf_cnt; /* total bufs allocated will be rq_size + tx_buf_cnt */
 	u16 buf_size;
-	u8 stats_idx;
+	u16 stats_idx;
 	bool stats_idx_valid:1;
 	int abi_ver;
 };
@@ -119,7 +119,6 @@ struct irdma_puda_rsrc {
 	u32 rx_wqe_idx;
 	u32 rxq_invalid_cnt;
 	u32 tx_wqe_avail_cnt;
-	struct shash_desc *hash_desc;
 	struct list_head txpend;
 	struct list_head bufpool; /* free buffers pool list for recv and xmit */
 	u32 alloc_buf_count;
@@ -141,7 +140,7 @@ struct irdma_puda_rsrc {
 	u64 crc_err;
 	u64 pmode_count;
 	u64 partials_handled;
-	u8 stats_idx;
+	u16 stats_idx;
 	bool check_crc:1;
 	bool stats_idx_valid:1;
 };
@@ -151,42 +150,31 @@ void irdma_puda_ret_bufpool(struct irdma_puda_rsrc *rsrc,
 			    struct irdma_puda_buf *buf);
 void irdma_puda_send_buf(struct irdma_puda_rsrc *rsrc,
 			 struct irdma_puda_buf *buf);
-enum irdma_status_code irdma_puda_send(struct irdma_sc_qp *qp,
-				       struct irdma_puda_send_info *info);
-enum irdma_status_code
-irdma_puda_create_rsrc(struct irdma_sc_vsi *vsi,
-		       struct irdma_puda_rsrc_info *info);
+int irdma_puda_send(struct irdma_sc_qp *qp, struct irdma_puda_send_info *info);
+int irdma_puda_create_rsrc(struct irdma_sc_vsi *vsi,
+			   struct irdma_puda_rsrc_info *info);
 void irdma_puda_dele_rsrc(struct irdma_sc_vsi *vsi, enum puda_rsrc_type type,
 			  bool reset);
-enum irdma_status_code irdma_puda_poll_cmpl(struct irdma_sc_dev *dev,
-					    struct irdma_sc_cq *cq,
-					    u32 *compl_err);
+int irdma_puda_poll_cmpl(struct irdma_sc_dev *dev, struct irdma_sc_cq *cq,
+			 u32 *compl_err);
 
 struct irdma_sc_qp *irdma_ieq_get_qp(struct irdma_sc_dev *dev,
 				     struct irdma_puda_buf *buf);
-enum irdma_status_code
-irdma_puda_get_tcpip_info(struct irdma_puda_cmpl_info *info,
-			  struct irdma_puda_buf *buf);
-enum irdma_status_code irdma_ieq_check_mpacrc(struct shash_desc *desc,
-					      void *addr, u32 len, u32 val);
-enum irdma_status_code irdma_init_hash_desc(struct shash_desc **desc);
+int irdma_puda_get_tcpip_info(struct irdma_puda_cmpl_info *info,
+			      struct irdma_puda_buf *buf);
+int irdma_ieq_check_mpacrc(const void *addr, u32 len, u32 val);
 void irdma_ieq_mpa_crc_ae(struct irdma_sc_dev *dev, struct irdma_sc_qp *qp);
-void irdma_free_hash_desc(struct shash_desc *desc);
-void irdma_ieq_update_tcpip_info(struct irdma_puda_buf *buf, u16 len,
-				 u32 seqnum);
-enum irdma_status_code irdma_cqp_qp_create_cmd(struct irdma_sc_dev *dev,
-					       struct irdma_sc_qp *qp);
-enum irdma_status_code irdma_cqp_cq_create_cmd(struct irdma_sc_dev *dev,
-					       struct irdma_sc_cq *cq);
-enum irdma_status_code irdma_cqp_qp_destroy_cmd(struct irdma_sc_dev *dev, struct irdma_sc_qp *qp);
+void irdma_ieq_update_tcpip_info(struct irdma_puda_buf *buf, u16 len, u32 seqnum);
+int irdma_cqp_qp_create_cmd(struct irdma_sc_dev *dev, struct irdma_sc_qp *qp);
+int irdma_cqp_cq_create_cmd(struct irdma_sc_dev *dev, struct irdma_sc_cq *cq);
+int irdma_cqp_qp_destroy_cmd(struct irdma_sc_dev *dev, struct irdma_sc_qp *qp);
 void irdma_cqp_cq_destroy_cmd(struct irdma_sc_dev *dev, struct irdma_sc_cq *cq);
 void irdma_puda_ieq_get_ah_info(struct irdma_sc_qp *qp,
 				struct irdma_ah_info *ah_info);
-enum irdma_status_code irdma_puda_create_ah(struct irdma_sc_dev *dev,
-					    struct irdma_ah_info *ah_info,
-					    bool wait, enum puda_rsrc_type type,
-					    void *cb_param,
-					    struct irdma_sc_ah **ah);
+int irdma_puda_create_ah(struct irdma_sc_dev *dev,
+			 struct irdma_ah_info *ah_info, bool wait,
+			 enum puda_rsrc_type type, void *cb_param,
+			 struct irdma_sc_ah **ah);
 void irdma_puda_free_ah(struct irdma_sc_dev *dev, struct irdma_sc_ah *ah);
 void irdma_ieq_process_fpdus(struct irdma_sc_qp *qp,
 			     struct irdma_puda_rsrc *ieq);

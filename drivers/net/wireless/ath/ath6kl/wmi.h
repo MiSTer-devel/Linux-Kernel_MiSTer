@@ -655,7 +655,7 @@ enum wmi_mgmt_frame_type {
 
 enum wmi_ie_field_type {
 	WMI_RSN_IE_CAPB	= 0x1,
-	WMI_IE_FULL	= 0xFF,  /* indicats full IE */
+	WMI_IE_FULL	= 0xFF,  /* indicates full IE */
 };
 
 /* WMI_CONNECT_CMDID  */
@@ -698,7 +698,7 @@ enum auth_mode {
 
 /*
  * NB: these values are ordered carefully; there are lots of
- * of implications in any reordering.  In particular beware
+ * implications in any reordering.  In particular beware
  * that 4 is not used to avoid conflicting with IEEE80211_F_PRIVACY.
  */
 #define ATH6KL_CIPHER_WEP            0
@@ -863,7 +863,7 @@ struct wmi_begin_scan_cmd {
 	u8 num_ch;
 
 	/* channels in Mhz */
-	__le16 ch_list[1];
+	__le16 ch_list[];
 } __packed;
 
 /* wmi_start_scan_cmd is to be deprecated. Use
@@ -889,7 +889,7 @@ struct wmi_start_scan_cmd {
 	u8 num_ch;
 
 	/* channels in Mhz */
-	__le16 ch_list[1];
+	__le16 ch_list[];
 } __packed;
 
 /*
@@ -1178,10 +1178,10 @@ struct wmi_create_pstream_cmd {
 	__le32 sba;
 	__le32 medium_time;
 
-	/* in octects */
+	/* in octets */
 	__le16 nominal_msdu;
 
-	/* in octects */
+	/* in octets */
 	__le16 max_msdu;
 
 	u8 traffic_class;
@@ -1249,7 +1249,7 @@ struct wmi_rssi_threshold_params_cmd {
 	/* highest of upper */
 	a_sle16 thresh_above6_val;
 
-	/* lowest of bellow */
+	/* lowest of below */
 	a_sle16 thresh_below1_val;
 
 	a_sle16 thresh_below2_val;
@@ -1257,7 +1257,7 @@ struct wmi_rssi_threshold_params_cmd {
 	a_sle16 thresh_below4_val;
 	a_sle16 thresh_below5_val;
 
-	/* highest of bellow */
+	/* highest of below */
 	a_sle16 thresh_below6_val;
 
 	/* "alpha" */
@@ -1278,7 +1278,7 @@ struct wmi_snr_threshold_params_cmd {
 	/* "alpha" */
 	u8 weight;
 
-	/* lowest of uppper */
+	/* lowest of upper */
 	u8 thresh_above1_val;
 
 	u8 thresh_above2_val;
@@ -1287,13 +1287,13 @@ struct wmi_snr_threshold_params_cmd {
 	/* highest of upper */
 	u8 thresh_above4_val;
 
-	/* lowest of bellow */
+	/* lowest of below */
 	u8 thresh_below1_val;
 
 	u8 thresh_below2_val;
 	u8 thresh_below3_val;
 
-	/* highest of bellow */
+	/* highest of below */
 	u8 thresh_below4_val;
 
 	u8 reserved[3];
@@ -1373,7 +1373,7 @@ struct wmi_channel_list_reply {
 	u8 num_ch;
 
 	/* channel in Mhz */
-	__le16 ch_list[1];
+	__le16 ch_list[];
 } __packed;
 
 /* List of Events (target to host) */
@@ -1545,7 +1545,7 @@ struct wmi_connect_event {
 	u8 beacon_ie_len;
 	u8 assoc_req_len;
 	u8 assoc_resp_len;
-	u8 assoc_info[1];
+	u8 assoc_info[];
 } __packed;
 
 /* Disconnect Event */
@@ -1596,7 +1596,7 @@ struct wmi_disconnect_event {
 	u8 disconn_reason;
 
 	u8 assoc_resp_len;
-	u8 assoc_info[1];
+	u8 assoc_info[];
 } __packed;
 
 /*
@@ -1637,7 +1637,7 @@ struct bss_bias {
 
 struct bss_bias_info {
 	u8 num_bss;
-	struct bss_bias bss_bias[0];
+	struct bss_bias bss_bias[];
 } __packed;
 
 struct low_rssi_scan_params {
@@ -1720,7 +1720,7 @@ struct wmi_neighbor_info {
 
 struct wmi_neighbor_report_event {
 	u8 num_neighbors;
-	struct wmi_neighbor_info neighbor[0];
+	struct wmi_neighbor_info neighbor[];
 } __packed;
 
 /* TKIP MIC Error Event */
@@ -1742,7 +1742,7 @@ struct wmi_scan_complete_event {
 
 /*
  * Special frame receive Event.
- * Mechanism used to inform host of the receiption of the special frames.
+ * Mechanism used to inform host of the reception of the special frames.
  * Consists of special frame info header followed by special frame body.
  * The 802.11 header is not included.
  */
@@ -1860,7 +1860,7 @@ struct wmi_target_stats {
 /*
  * WMI_RSSI_THRESHOLD_EVENTID.
  * Indicate the RSSI events to host. Events are indicated when we breach a
- * thresold value.
+ * threshold value.
  */
 enum wmi_rssi_threshold_val {
 	WMI_RSSI_THRESHOLD1_ABOVE = 0,
@@ -1957,7 +1957,7 @@ union wmi_ap_info {
 struct wmi_aplist_event {
 	u8 ap_list_ver;
 	u8 num_ap;
-	union wmi_ap_info ap_list[1];
+	union wmi_ap_info ap_list[];
 } __packed;
 
 /* Developer Commands */
@@ -2051,7 +2051,7 @@ struct wmi_get_keepalive_cmd {
 struct wmi_set_appie_cmd {
 	u8 mgmt_frm_type; /* enum wmi_mgmt_frame_type */
 	u8 ie_len;
-	u8 ie_info[0];
+	u8 ie_info[];
 } __packed;
 
 struct wmi_set_ie_cmd {
@@ -2059,7 +2059,7 @@ struct wmi_set_ie_cmd {
 	u8 ie_field;	/* enum wmi_ie_field_type */
 	u8 ie_len;
 	u8 reserved;
-	u8 ie_info[0];
+	u8 ie_info[];
 } __packed;
 
 /* Notify the WSC registration status to the target */
@@ -2127,7 +2127,7 @@ struct wmi_add_wow_pattern_cmd {
 	u8 filter_list_id;
 	u8 filter_size;
 	u8 filter_offset;
-	u8 filter[0];
+	u8 filter[];
 } __packed;
 
 struct wmi_del_wow_pattern_cmd {
@@ -2360,7 +2360,7 @@ struct wmi_send_action_cmd {
 	__le32 freq;
 	__le32 wait;
 	__le16 len;
-	u8 data[0];
+	u8 data[];
 } __packed;
 
 struct wmi_send_mgmt_cmd {
@@ -2369,7 +2369,7 @@ struct wmi_send_mgmt_cmd {
 	__le32 wait;
 	__le32 no_cck;
 	__le16 len;
-	u8 data[0];
+	u8 data[];
 } __packed;
 
 struct wmi_tx_status_event {
@@ -2389,7 +2389,7 @@ struct wmi_set_appie_extended_cmd {
 	u8 role_id;
 	u8 mgmt_frm_type;
 	u8 ie_len;
-	u8 ie_info[0];
+	u8 ie_info[];
 } __packed;
 
 struct wmi_remain_on_chnl_event {
@@ -2406,18 +2406,18 @@ struct wmi_cancel_remain_on_chnl_event {
 struct wmi_rx_action_event {
 	__le32 freq;
 	__le16 len;
-	u8 data[0];
+	u8 data[];
 } __packed;
 
 struct wmi_p2p_capabilities_event {
 	__le16 len;
-	u8 data[0];
+	u8 data[];
 } __packed;
 
 struct wmi_p2p_rx_probe_req_event {
 	__le32 freq;
 	__le16 len;
-	u8 data[0];
+	u8 data[];
 } __packed;
 
 #define P2P_FLAG_CAPABILITIES_REQ   (0x00000001)
@@ -2431,7 +2431,7 @@ struct wmi_get_p2p_info {
 struct wmi_p2p_info_event {
 	__le32 info_req_flags;
 	__le16 len;
-	u8 data[0];
+	u8 data[];
 } __packed;
 
 struct wmi_p2p_capabilities {
@@ -2450,7 +2450,7 @@ struct wmi_p2p_probe_response_cmd {
 	__le32 freq;
 	u8 destination_addr[ETH_ALEN];
 	__le16 len;
-	u8 data[0];
+	u8 data[];
 } __packed;
 
 /* Extended WMI (WMIX)

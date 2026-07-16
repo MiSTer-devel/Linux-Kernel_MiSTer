@@ -168,7 +168,8 @@ il3945_rate_scale_flush_wins(struct il3945_rs_sta *rs_sta)
 static void
 il3945_bg_rate_scale_flush(struct timer_list *t)
 {
-	struct il3945_rs_sta *rs_sta = from_timer(rs_sta, t, rate_scale_flush);
+	struct il3945_rs_sta *rs_sta = timer_container_of(rs_sta, t,
+							  rate_scale_flush);
 	struct il_priv *il __maybe_unused = rs_sta->il;
 	int unflushed = 0;
 	unsigned long flags;
@@ -354,13 +355,13 @@ il3945_rs_rate_init(struct il_priv *il, struct ieee80211_sta *sta, u8 sta_id)
 	 * after assoc.. */
 
 	for (i = sband->n_bitrates - 1; i >= 0; i--) {
-		if (sta->supp_rates[sband->band] & (1 << i)) {
+		if (sta->deflink.supp_rates[sband->band] & (1 << i)) {
 			rs_sta->last_txrate_idx = i;
 			break;
 		}
 	}
 
-	il->_3945.sta_supp_rates = sta->supp_rates[sband->band];
+	il->_3945.sta_supp_rates = sta->deflink.supp_rates[sband->band];
 	/* For 5 GHz band it start at IL_FIRST_OFDM_RATE */
 	if (sband->band == NL80211_BAND_5GHZ) {
 		rs_sta->last_txrate_idx += IL_FIRST_OFDM_RATE;
@@ -413,7 +414,7 @@ il3945_rs_free_sta(void *il_priv, struct ieee80211_sta *sta, void *il_sta)
 	 * to use il_priv to print out debugging) since it may not be fully
 	 * initialized at this point.
 	 */
-	del_timer_sync(&rs_sta->rate_scale_flush);
+	timer_delete_sync(&rs_sta->rate_scale_flush);
 }
 
 /*
@@ -631,7 +632,7 @@ il3945_rs_get_rate(void *il_r, struct ieee80211_sta *sta, void *il_sta,
 		il_sta = NULL;
 	}
 
-	rate_mask = sta->supp_rates[sband->band];
+	rate_mask = sta->deflink.supp_rates[sband->band];
 
 	/* get user max rate if set */
 	max_rate_idx = fls(txrc->rate_idx_mask) - 1;

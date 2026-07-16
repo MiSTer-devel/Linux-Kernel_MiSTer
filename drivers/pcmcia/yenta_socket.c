@@ -144,6 +144,7 @@ static inline u8 exca_readb(struct yenta_socket *socket, unsigned reg)
 	return val;
 }
 
+/*
 static inline u8 exca_readw(struct yenta_socket *socket, unsigned reg)
 {
 	u16 val;
@@ -152,6 +153,7 @@ static inline u8 exca_readw(struct yenta_socket *socket, unsigned reg)
 	debug("%04x %04x\n", socket, reg, val);
 	return val;
 }
+*/
 
 static inline void exca_writeb(struct yenta_socket *socket, unsigned reg, u8 val)
 {
@@ -176,16 +178,16 @@ static ssize_t show_yenta_registers(struct device *yentadev, struct device_attri
 	struct yenta_socket *socket = dev_get_drvdata(yentadev);
 	int offset = 0, i;
 
-	offset = snprintf(buf, PAGE_SIZE, "CB registers:");
+	offset = sysfs_emit(buf, "CB registers:");
 	for (i = 0; i < 0x24; i += 4) {
 		unsigned val;
 		if (!(i & 15))
-			offset += scnprintf(buf + offset, PAGE_SIZE - offset, "\n%02x:", i);
+			offset += sysfs_emit_at(buf, offset, "\n%02x:", i);
 		val = cb_readl(socket, i);
-		offset += scnprintf(buf + offset, PAGE_SIZE - offset, " %08x", val);
+		offset += sysfs_emit_at(buf, offset, " %08x", val);
 	}
 
-	offset += scnprintf(buf + offset, PAGE_SIZE - offset, "\n\nExCA registers:");
+	offset += sysfs_emit_at(buf, offset, "\n\nExCA registers:");
 	for (i = 0; i < 0x45; i++) {
 		unsigned char val;
 		if (!(i & 7)) {
@@ -193,12 +195,12 @@ static ssize_t show_yenta_registers(struct device *yentadev, struct device_attri
 				memcpy(buf + offset, " -", 2);
 				offset += 2;
 			} else
-				offset += scnprintf(buf + offset, PAGE_SIZE - offset, "\n%02x:", i);
+				offset += sysfs_emit_at(buf, offset, "\n%02x:", i);
 		}
 		val = exca_readb(socket, i);
-		offset += scnprintf(buf + offset, PAGE_SIZE - offset, " %02x", val);
+		offset += sysfs_emit_at(buf, offset, " %02x", val);
 	}
-	buf[offset++] = '\n';
+	sysfs_emit_at(buf, offset, "\n");
 	return offset;
 }
 
@@ -537,7 +539,8 @@ static irqreturn_t yenta_interrupt(int irq, void *dev_id)
 
 static void yenta_interrupt_wrapper(struct timer_list *t)
 {
-	struct yenta_socket *socket = from_timer(socket, t, poll_timer);
+	struct yenta_socket *socket = timer_container_of(socket, t,
+							 poll_timer);
 
 	yenta_interrupt(0, (void *)socket);
 	socket->poll_timer.expires = jiffies + HZ;
@@ -636,11 +639,11 @@ static int yenta_search_one_res(struct resource *root, struct resource *res,
 		start = PCIBIOS_MIN_CARDBUS_IO;
 		end = ~0U;
 	} else {
-		unsigned long avail = root->end - root->start;
+		unsigned long avail = resource_size(root);
 		int i;
 		size = BRIDGE_MEM_MAX;
-		if (size > avail/8) {
-			size = (avail+1)/8;
+		if (size > (avail - 1) / 8) {
+			size = avail / 8;
 			/* round size down to next power of 2 */
 			i = 0;
 			while ((size /= 2) != 0)
@@ -812,7 +815,7 @@ static void yenta_close(struct pci_dev *dev)
 	if (sock->cb_irq)
 		free_irq(sock->cb_irq, sock);
 	else
-		del_timer_sync(&sock->poll_timer);
+		timer_shutdown_sync(&sock->poll_timer);
 
 	iounmap(sock->base);
 	yenta_free_resources(sock);
@@ -1283,7 +1286,7 @@ static int yenta_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	if (socket->cb_irq)
 		free_irq(socket->cb_irq, socket);
 	else
-		del_timer_sync(&socket->poll_timer);
+		timer_shutdown_sync(&socket->poll_timer);
  unmap:
 	iounmap(socket->base);
 	yenta_free_resources(socket);
@@ -1297,7 +1300,7 @@ static int yenta_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	return ret;
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int yenta_dev_suspend_noirq(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
@@ -1342,12 +1345,7 @@ static int yenta_dev_resume_noirq(struct device *dev)
 }
 
 static const struct dev_pm_ops yenta_pm_ops = {
-	.suspend_noirq = yenta_dev_suspend_noirq,
-	.resume_noirq = yenta_dev_resume_noirq,
-	.freeze_noirq = yenta_dev_suspend_noirq,
-	.thaw_noirq = yenta_dev_resume_noirq,
-	.poweroff_noirq = yenta_dev_suspend_noirq,
-	.restore_noirq = yenta_dev_resume_noirq,
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(yenta_dev_suspend_noirq, yenta_dev_resume_noirq)
 };
 
 #define YENTA_PM_OPS	(&yenta_pm_ops)
@@ -1455,4 +1453,5 @@ static struct pci_driver yenta_cardbus_driver = {
 
 module_pci_driver(yenta_cardbus_driver);
 
+MODULE_DESCRIPTION("Driver for CardBus yenta-compatible bridges");
 MODULE_LICENSE("GPL");

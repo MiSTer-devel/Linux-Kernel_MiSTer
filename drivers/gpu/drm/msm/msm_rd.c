@@ -62,6 +62,7 @@ enum rd_sect_type {
 	RD_FRAG_SHADER,
 	RD_BUFFER_CONTENTS,
 	RD_GPU_ID,
+	RD_CHIP_ID,
 };
 
 #define BUF_SZ 512  /* should be power of 2 */
@@ -82,15 +83,10 @@ struct msm_rd_state {
 
 	bool open;
 
-	/* current submit to read out: */
-	struct msm_gem_submit *submit;
-
 	/* fifo access is synchronized on the producer side by
-	 * struct_mutex held by submit code (otherwise we could
-	 * end up w/ cmds logged in different order than they
-	 * were executed).  And read_lock synchronizes the reads
+	 * write_lock.  And read_lock synchronizes the reads
 	 */
-	struct mutex read_lock;
+	struct mutex read_lock, write_lock;
 
 	wait_queue_head_t fifo_event;
 	struct circ_buf fifo;
@@ -179,11 +175,15 @@ static int rd_open(struct inode *inode, struct file *file)
 	struct msm_gpu *gpu = priv->gpu;
 	uint64_t val;
 	uint32_t gpu_id;
+	uint32_t zero = 0;
 	int ret = 0;
 
-	mutex_lock(&dev->struct_mutex);
+	if (!gpu)
+		return -ENODEV;
 
-	if (rd->open || !gpu) {
+	mutex_lock(&gpu->lock);
+
+	if (rd->open) {
 		ret = -EBUSY;
 		goto out;
 	}
@@ -191,16 +191,24 @@ static int rd_open(struct inode *inode, struct file *file)
 	file->private_data = rd;
 	rd->open = true;
 
+	/* Reset fifo to clear any previously unread data: */
+	rd->fifo.head = rd->fifo.tail = 0;
+
 	/* the parsing tools need to know gpu-id to know which
 	 * register database to load.
+	 *
+	 * Note: These particular params do not require a context
 	 */
-	gpu->funcs->get_param(gpu, MSM_PARAM_GPU_ID, &val);
+	gpu->funcs->get_param(gpu, NULL, MSM_PARAM_GPU_ID, &val, &zero);
 	gpu_id = val;
 
 	rd_write_section(rd, RD_GPU_ID, &gpu_id, sizeof(gpu_id));
 
+	gpu->funcs->get_param(gpu, NULL, MSM_PARAM_CHIP_ID, &val, &zero);
+	rd_write_section(rd, RD_CHIP_ID, &val, sizeof(val));
+
 out:
-	mutex_unlock(&dev->struct_mutex);
+	mutex_unlock(&gpu->lock);
 	return ret;
 }
 
@@ -219,7 +227,6 @@ static const struct file_operations rd_debugfs_fops = {
 	.owner = THIS_MODULE,
 	.open = rd_open,
 	.read = rd_read,
-	.llseek = no_llseek,
 	.release = rd_release,
 };
 
@@ -230,6 +237,7 @@ static void rd_cleanup(struct msm_rd_state *rd)
 		return;
 
 	mutex_destroy(&rd->read_lock);
+	mutex_destroy(&rd->write_lock);
 	kfree(rd);
 }
 
@@ -245,6 +253,7 @@ static struct msm_rd_state *rd_init(struct drm_minor *minor, const char *name)
 	rd->fifo.buf = rd->buf;
 
 	mutex_init(&rd->read_lock);
+	mutex_init(&rd->write_lock);
 
 	init_waitqueue_head(&rd->fifo_event);
 
@@ -259,6 +268,9 @@ int msm_rd_debugfs_init(struct drm_minor *minor)
 	struct msm_drm_private *priv = minor->dev->dev_private;
 	struct msm_rd_state *rd;
 	int ret;
+
+	if (!priv->gpu_pdev)
+		return 0;
 
 	/* only create on first minor: */
 	if (priv->rd)
@@ -296,20 +308,10 @@ void msm_rd_debugfs_cleanup(struct msm_drm_private *priv)
 	priv->hangrd = NULL;
 }
 
-static void snapshot_buf(struct msm_rd_state *rd,
-		struct msm_gem_submit *submit, int idx,
-		uint64_t iova, uint32_t size, bool full)
+static void snapshot_buf(struct msm_rd_state *rd, struct drm_gem_object *obj,
+			 uint64_t iova, bool full, size_t offset, size_t size)
 {
-	struct msm_gem_object *obj = submit->bos[idx].obj;
-	unsigned offset = 0;
 	const char *buf;
-
-	if (iova) {
-		offset = iova - submit->bos[idx].iova;
-	} else {
-		iova = submit->bos[idx].iova;
-		size = obj->base.size;
-	}
 
 	/*
 	 * Always write the GPUADDR header so can get a complete list of all the
@@ -321,30 +323,22 @@ static void snapshot_buf(struct msm_rd_state *rd,
 	if (!full)
 		return;
 
-	/* But only dump the contents of buffers marked READ */
-	if (!(submit->bos[idx].flags & MSM_SUBMIT_BO_READ))
-		return;
-
-	msm_gem_lock(&obj->base);
-	buf = msm_gem_get_vaddr_active(&obj->base);
+	buf = msm_gem_get_vaddr_active(obj);
 	if (IS_ERR(buf))
-		goto out_unlock;
+		return;
 
 	buf += offset;
 
 	rd_write_section(rd, RD_BUFFER_CONTENTS, buf, size);
 
-	msm_gem_put_vaddr_locked(&obj->base);
-
-out_unlock:
-	msm_gem_unlock(&obj->base);
+	msm_gem_put_vaddr_locked(obj);
 }
 
-/* called under struct_mutex */
+/* called under gpu->lock */
 void msm_rd_dump_submit(struct msm_rd_state *rd, struct msm_gem_submit *submit,
 		const char *fmt, ...)
 {
-	struct drm_device *dev = submit->dev;
+	extern bool rd_full;
 	struct task_struct *task;
 	char msg[256];
 	int i, n;
@@ -352,10 +346,7 @@ void msm_rd_dump_submit(struct msm_rd_state *rd, struct msm_gem_submit *submit,
 	if (!rd->open)
 		return;
 
-	/* writing into fifo is serialized by caller, and
-	 * rd->read_lock is used to serialize the reads
-	 */
-	WARN_ON(!mutex_is_locked(&dev->struct_mutex));
+	mutex_lock(&rd->write_lock);
 
 	if (fmt) {
 		va_list args;
@@ -381,16 +372,43 @@ void msm_rd_dump_submit(struct msm_rd_state *rd, struct msm_gem_submit *submit,
 
 	rd_write_section(rd, RD_CMD, msg, ALIGN(n, 4));
 
-	for (i = 0; i < submit->nr_bos; i++)
-		snapshot_buf(rd, submit, i, 0, 0, should_dump(submit, i));
+	if (msm_context_is_vmbind(submit->queue->ctx)) {
+		struct drm_gpuva *vma;
 
-	for (i = 0; i < submit->nr_cmds; i++) {
-		uint32_t szd  = submit->cmd[i].size; /* in dwords */
+		drm_gpuvm_resv_assert_held(submit->vm);
 
-		/* snapshot cmdstream bo's (if we haven't already): */
-		if (!should_dump(submit, i)) {
-			snapshot_buf(rd, submit, submit->cmd[i].idx,
-					submit->cmd[i].iova, szd * 4, true);
+		drm_gpuvm_for_each_va (vma, submit->vm) {
+			bool dump = rd_full || (vma->flags & MSM_VMA_DUMP);
+
+			/* Skip MAP_NULL/PRR VMAs: */
+			if (!vma->gem.obj)
+				continue;
+
+			snapshot_buf(rd, vma->gem.obj, vma->va.addr, dump,
+				     vma->gem.offset, vma->va.range);
+		}
+
+	} else {
+		for (i = 0; i < submit->nr_bos; i++) {
+			struct drm_gem_object *obj = submit->bos[i].obj;
+			bool dump = rd_full || (submit->bos[i].flags & MSM_SUBMIT_BO_DUMP);
+
+			snapshot_buf(rd, obj, submit->bos[i].iova, dump, 0, obj->size);
+		}
+
+		for (i = 0; i < submit->nr_cmds; i++) {
+			uint32_t szd  = submit->cmd[i].size; /* in dwords */
+			int idx = submit->cmd[i].idx;
+			bool dump = rd_full || (submit->bos[idx].flags & MSM_SUBMIT_BO_DUMP);
+
+			/* snapshot cmdstream bo's (if we haven't already): */
+			if (!dump) {
+				struct drm_gem_object *obj = submit->bos[idx].obj;
+				size_t offset = submit->cmd[i].iova - submit->bos[idx].iova;
+
+				snapshot_buf(rd, obj, submit->cmd[i].iova, true,
+					offset, szd * 4);
+			}
 		}
 	}
 
@@ -412,5 +430,7 @@ void msm_rd_dump_submit(struct msm_rd_state *rd, struct msm_gem_submit *submit,
 			break;
 		}
 	}
+
+	mutex_unlock(&rd->write_lock);
 }
 #endif

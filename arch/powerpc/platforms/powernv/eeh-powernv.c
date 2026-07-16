@@ -11,6 +11,7 @@
 #include <linux/export.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/irqdomain.h>
 #include <linux/list.h>
 #include <linux/msi.h>
 #include <linux/of.h>
@@ -98,7 +99,6 @@ static ssize_t pnv_eeh_ei_write(struct file *filp,
 
 static const struct file_operations pnv_eeh_ei_fops = {
 	.open	= simple_open,
-	.llseek	= no_llseek,
 	.write	= pnv_eeh_ei_write,
 };
 
@@ -390,7 +390,7 @@ static struct eeh_dev *pnv_eeh_probe(struct pci_dev *pdev)
 	 * should be blocked until PE reset. MMIO access is dropped
 	 * by hardware certainly. In order to drop PCI config requests,
 	 * one more flag (EEH_PE_CFG_RESTRICTED) is introduced, which
-	 * will be checked in the backend for PE state retrival. If
+	 * will be checked in the backend for PE state retrieval. If
 	 * the PE becomes frozen for the first time and the flag has
 	 * been set for the PE, we will set EEH_PE_CFG_BLOCKED for
 	 * that PE to block its config space.
@@ -854,13 +854,12 @@ static int pnv_eeh_bridge_reset(struct pci_dev *pdev, int option)
 	struct pci_controller *hose = pci_bus_to_host(pdev->bus);
 	struct pnv_phb *phb = hose->private_data;
 	struct device_node *dn = pci_device_to_OF_node(pdev);
-	uint64_t id = PCI_SLOT_ID(phb->opal_id,
-				  (pdev->bus->number << 8) | pdev->devfn);
+	uint64_t id = PCI_SLOT_ID(phb->opal_id, pci_dev_id(pdev));
 	uint8_t scope;
 	int64_t rc;
 
 	/* Hot reset to the bus if firmware cannot handle */
-	if (!dn || !of_get_property(dn, "ibm,reset-by-firmware", NULL))
+	if (!dn || !of_property_present(dn, "ibm,reset-by-firmware"))
 		return __pnv_eeh_bridge_reset(pdev, option);
 
 	pr_debug("%s: FW reset PCI bus %04x:%02x with option %d\n",
@@ -981,7 +980,7 @@ static int pnv_eeh_do_af_flr(struct pci_dn *pdn, int option)
 	case EEH_RESET_FUNDAMENTAL:
 		/*
 		 * Wait for Transaction Pending bit to clear. A word-aligned
-		 * test is used, so we use the conrol offset rather than status
+		 * test is used, so we use the control offset rather than status
 		 * and shift the test bit to match.
 		 */
 		pnv_eeh_wait_for_pending(pdn, "AF",
@@ -1048,7 +1047,7 @@ static int pnv_eeh_reset(struct eeh_pe *pe, int option)
 	 * frozen state during PE reset. However, the good idea here from
 	 * benh is to keep frozen state before we get PE reset done completely
 	 * (until BAR restore). With the frozen state, HW drops illegal IO
-	 * or MMIO access, which can incur recrusive frozen PE during PE
+	 * or MMIO access, which can incur recursive frozen PE during PE
 	 * reset. The side effect is that EEH core has to clear the frozen
 	 * state explicitly after BAR restore.
 	 */
@@ -1095,8 +1094,8 @@ static int pnv_eeh_reset(struct eeh_pe *pe, int option)
 	 * bus is behind a hotplug slot and it will use the slot provided
 	 * reset methods to prevent spurious hotplug events during the reset.
 	 *
-	 * Fundemental resets need to be handled internally to EEH since the
-	 * PCI core doesn't really have a concept of a fundemental reset,
+	 * Fundamental resets need to be handled internally to EEH since the
+	 * PCI core doesn't really have a concept of a fundamental reset,
 	 * mainly because there's no standard way to generate one. Only a
 	 * few devices require an FRESET so it should be fine.
 	 */
@@ -1639,24 +1638,6 @@ static struct eeh_ops pnv_eeh_ops = {
 	.restore_config		= pnv_eeh_restore_config,
 	.notify_resume		= NULL
 };
-
-#ifdef CONFIG_PCI_IOV
-static void pnv_pci_fixup_vf_mps(struct pci_dev *pdev)
-{
-	struct pci_dn *pdn = pci_get_pdn(pdev);
-	int parent_mps;
-
-	if (!pdev->is_virtfn)
-		return;
-
-	/* Synchronize MPS for VF and PF */
-	parent_mps = pcie_get_mps(pdev->physfn);
-	if ((128 << pdev->pcie_mpss) >= parent_mps)
-		pcie_set_mps(pdev, parent_mps);
-	pdn->mps = pcie_get_mps(pdev);
-}
-DECLARE_PCI_FIXUP_HEADER(PCI_ANY_ID, PCI_ANY_ID, pnv_pci_fixup_vf_mps);
-#endif /* CONFIG_PCI_IOV */
 
 /**
  * eeh_powernv_init - Register platform dependent EEH operations

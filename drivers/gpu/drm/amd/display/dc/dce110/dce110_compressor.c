@@ -23,9 +23,6 @@
  *
  */
 
-#include <linux/delay.h>
-#include <linux/slab.h>
-
 #include "dm_services.h"
 
 #include "dce/dce_11_0_d.h"
@@ -410,19 +407,6 @@ void dce110_compressor_destroy(struct compressor **compressor)
 {
 	kfree(TO_DCE110_COMPRESSOR(*compressor));
 	*compressor = NULL;
-}
-
-void get_max_support_fbc_buffersize(unsigned int *max_x, unsigned int *max_y)
-{
-	*max_x = FBC_MAX_X;
-	*max_y = FBC_MAX_Y;
-
-	/* if (m_smallLocalFrameBufferMemory == 1)
-	 * {
-	 *	*max_x = FBC_MAX_X_SG;
-	 *	*max_y = FBC_MAX_Y_SG;
-	 * }
-	 */
 }
 
 static const struct compressor_funcs dce110_compressor_funcs = {

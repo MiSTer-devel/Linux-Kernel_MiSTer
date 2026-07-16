@@ -7,14 +7,18 @@
 
 #include "debug.h"
 
-extern u8 rtw_cck_rates[];
-extern u8 rtw_ofdm_rates[];
-extern u8 rtw_ht_1s_rates[];
-extern u8 rtw_ht_2s_rates[];
-extern u8 rtw_vht_1s_rates[];
-extern u8 rtw_vht_2s_rates[];
-extern u8 *rtw_rate_section[];
-extern u8 rtw_rate_size[];
+extern const u8 rtw_cck_rates[];
+extern const u8 rtw_ofdm_rates[];
+extern const u8 rtw_ht_1s_rates[];
+extern const u8 rtw_ht_2s_rates[];
+extern const u8 rtw_vht_1s_rates[];
+extern const u8 rtw_vht_2s_rates[];
+extern const u8 rtw_ht_3s_rates[];
+extern const u8 rtw_ht_4s_rates[];
+extern const u8 rtw_vht_3s_rates[];
+extern const u8 rtw_vht_4s_rates[];
+extern const u8 * const rtw_rate_section[];
+extern const u8 rtw_rate_size[];
 
 void rtw_phy_init(struct rtw_dev *rtwdev);
 void rtw_phy_dynamic_mechanism(struct rtw_dev *rtwdev);
@@ -59,6 +63,8 @@ bool rtw_phy_pwrtrack_need_lck(struct rtw_dev *rtwdev);
 bool rtw_phy_pwrtrack_need_iqk(struct rtw_dev *rtwdev);
 void rtw_phy_config_swing_table(struct rtw_dev *rtwdev,
 				struct rtw_swing_table *swing_table);
+void rtw_phy_set_edcca_th(struct rtw_dev *rtwdev, u8 l2h, u8 h2l);
+void rtw_phy_adaptivity_set_mode(struct rtw_dev *rtwdev);
 void rtw_phy_parsing_cfo(struct rtw_dev *rtwdev,
 			 struct rtw_rx_pkt_stat *pkt_stat);
 void rtw_phy_tx_path_diversity(struct rtw_dev *rtwdev);
@@ -112,7 +118,7 @@ const struct rtw_table name ## _tbl = {			\
 
 static inline const struct rtw_rfe_def *rtw_get_rfe_def(struct rtw_dev *rtwdev)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
 	const struct rtw_rfe_def *rfe_def = NULL;
 
@@ -146,6 +152,7 @@ struct rtw_power_params {
 	s8 pwr_offset;
 	s8 pwr_limit;
 	s8 pwr_remnant;
+	s8 pwr_sar;
 };
 
 void

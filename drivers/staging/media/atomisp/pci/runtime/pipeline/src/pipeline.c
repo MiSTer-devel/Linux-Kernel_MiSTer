@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2010 - 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include "hmm.h"
@@ -140,8 +131,7 @@ void ia_css_pipeline_start(enum ia_css_pipe_id pipe_id,
 				false, false, false, true, SH_CSS_BDS_FACTOR_1_00,
 				SH_CSS_PIPE_CONFIG_OVRD_NO_OVRD,
 				IA_CSS_INPUT_MODE_MEMORY, NULL, NULL,
-				(enum mipi_port_id)0,
-				NULL, NULL);
+				(enum mipi_port_id)0);
 
 	ia_css_pipeline_get_sp_thread_id(pipe_num, &thread_id);
 	if (!sh_css_sp_is_running()) {
@@ -208,7 +198,6 @@ int ia_css_pipeline_request_stop(struct ia_css_pipeline *pipeline)
 	ia_css_debug_dtrace(IA_CSS_DEBUG_TRACE,
 			    "ia_css_pipeline_request_stop() enter: pipeline=%p\n",
 			    pipeline);
-	pipeline->stop_requested = true;
 
 	/* Send stop event to the sp*/
 	/* This needs improvement, stop on all the pipes available
@@ -455,12 +444,10 @@ bool ia_css_pipeline_has_stopped(struct ia_css_pipeline *pipeline)
 	return sp_group.pipe[thread_id].num_stages == 0;
 }
 
-#if defined(ISP2401)
 struct sh_css_sp_pipeline_io_status *ia_css_pipeline_get_pipe_io_status(void)
 {
 	return(&sh_css_sp_group.pipe_io_status);
 }
-#endif
 
 bool ia_css_pipeline_is_mapped(unsigned int key)
 {
@@ -675,7 +662,6 @@ static void pipeline_init_defaults(
 
 	pipeline->pipe_id = pipe_id;
 	pipeline->stages = NULL;
-	pipeline->stop_requested = false;
 	pipeline->current_stage = NULL;
 
 	memcpy(&pipeline->in_frame, &ia_css_default_frame,
@@ -696,7 +682,7 @@ static void pipeline_init_defaults(
 static void ia_css_pipeline_set_zoom_stage(struct ia_css_pipeline *pipeline)
 {
 	struct ia_css_pipeline_stage *stage = NULL;
-	int err = 0;
+	int err;
 
 	assert(pipeline);
 	if (pipeline->pipe_id == IA_CSS_PIPE_ID_PREVIEW) {
@@ -771,14 +757,6 @@ ia_css_pipeline_configure_inout_port(struct ia_css_pipeline *me,
 		SH_CSS_PIPE_PORT_CONFIG_SET(me->inout_port_config,
 					    (uint8_t)SH_CSS_PORT_INPUT,
 					    (uint8_t)(SH_CSS_HOST_TYPE), 1);
-		SH_CSS_PIPE_PORT_CONFIG_SET(me->inout_port_config,
-					    (uint8_t)SH_CSS_PORT_OUTPUT,
-					    (uint8_t)SH_CSS_HOST_TYPE, 1);
-		break;
-	case IA_CSS_PIPE_ID_ACC:
-		SH_CSS_PIPE_PORT_CONFIG_SET(me->inout_port_config,
-					    (uint8_t)SH_CSS_PORT_INPUT,
-					    (uint8_t)SH_CSS_HOST_TYPE, 1);
 		SH_CSS_PIPE_PORT_CONFIG_SET(me->inout_port_config,
 					    (uint8_t)SH_CSS_PORT_OUTPUT,
 					    (uint8_t)SH_CSS_HOST_TYPE, 1);

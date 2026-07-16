@@ -56,14 +56,6 @@
 #define DCDBAS_DEV_ATTR_WO(_name) \
 	DEVICE_ATTR(_name,0200,NULL,_name##_store);
 
-#define DCDBAS_BIN_ATTR_RW(_name) \
-struct bin_attribute bin_attr_##_name = { \
-	.attr =  { .name = __stringify(_name), \
-		   .mode = 0600 }, \
-	.read =  _name##_read, \
-	.write = _name##_write, \
-}
-
 struct smi_cmd {
 	__u32 magic;
 	__u32 ebx;
@@ -104,6 +96,15 @@ struct smm_eps_table {
 	u64 smm_comm_buff_addr;
 	u64 num_of_4k_pages;
 } __packed;
+
+struct smi_buffer {
+	u8 *virt;
+	unsigned long size;
+	dma_addr_t dma;
+};
+
+int dcdbas_smi_alloc(struct smi_buffer *smi_buffer, unsigned long size);
+void dcdbas_smi_free(struct smi_buffer *smi_buffer);
 
 #endif /* _DCDBAS_H_ */
 

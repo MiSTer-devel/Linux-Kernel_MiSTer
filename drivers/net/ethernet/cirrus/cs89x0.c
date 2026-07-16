@@ -54,7 +54,6 @@
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -71,6 +70,8 @@
 #include <linux/delay.h>
 #include <linux/gfp.h>
 #include <linux/io.h>
+
+#include <net/Space.h>
 
 #include <asm/irq.h>
 #include <linux/atomic.h>
@@ -985,7 +986,7 @@ release_irq:
 		if (result == DETECTED_NONE) {
 			pr_warn("%s: 10Base-5 (AUI) has no cable\n", dev->name);
 			if (lp->auto_neg_cnf & IMM_BIT) /* check "ignore missing media" bit */
-				result = DETECTED_AUI; /* Yes! I don't care if I see a carrrier */
+				result = DETECTED_AUI; /* Yes! I don't care if I see a carrier */
 		}
 		break;
 	case A_CNF_MEDIA_10B_2:
@@ -1227,7 +1228,7 @@ static int set_mac_address(struct net_device *dev, void *p)
 	if (netif_running(dev))
 		return -EBUSY;
 
-	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
+	eth_hw_addr_set(dev, addr->sa_data);
 
 	cs89_dbg(0, debug, "%s: Setting MAC address to %pM\n",
 		 dev->name, dev->dev_addr);
@@ -1270,7 +1271,6 @@ static const struct net_device_ops net_ops = {
 
 static void __init reset_chip(struct net_device *dev)
 {
-#if !defined(CONFIG_MACH_MX31ADS)
 	struct net_local *lp = netdev_priv(dev);
 	unsigned long reset_start_time;
 
@@ -1297,7 +1297,6 @@ static void __init reset_chip(struct net_device *dev)
 	while ((readreg(dev, PP_SelfST) & INIT_DONE) == 0 &&
 	       time_before(jiffies, reset_start_time + 2))
 		;
-#endif /* !CONFIG_MACH_MX31ADS */
 }
 
 /* This is the real probe routine.
@@ -1314,6 +1313,7 @@ cs89x0_probe1(struct net_device *dev, void __iomem *ioaddr, int modular)
 	int tmp;
 	unsigned rev_type = 0;
 	int eeprom_buff[CHKSUM_LEN];
+	u8 addr[ETH_ALEN];
 	int retval;
 
 	/* Initialize the device structure. */
@@ -1387,9 +1387,10 @@ cs89x0_probe1(struct net_device *dev, void __iomem *ioaddr, int modular)
 		for (i = 0; i < ETH_ALEN / 2; i++) {
 			unsigned int Addr;
 			Addr = readreg(dev, PP_IA + i * 2);
-			dev->dev_addr[i * 2] = Addr & 0xFF;
-			dev->dev_addr[i * 2 + 1] = Addr >> 8;
+			addr[i * 2] = Addr & 0xFF;
+			addr[i * 2 + 1] = Addr >> 8;
 		}
+		eth_hw_addr_set(dev, addr);
 
 		/* Load the Adapter Configuration.
 		 * Note:  Barring any more specific information from some
@@ -1464,9 +1465,10 @@ cs89x0_probe1(struct net_device *dev, void __iomem *ioaddr, int modular)
 		/* eeprom_buff has 32-bit ints, so we can't just memcpy it */
 		/* store the initial memory base address */
 		for (i = 0; i < ETH_ALEN / 2; i++) {
-			dev->dev_addr[i * 2] = eeprom_buff[i];
-			dev->dev_addr[i * 2 + 1] = eeprom_buff[i] >> 8;
+			addr[i * 2] = eeprom_buff[i];
+			addr[i * 2 + 1] = eeprom_buff[i] >> 8;
 		}
+		eth_hw_addr_set(dev, addr);
 		cs89_dbg(1, debug, "%s: new adapter_cnf: 0x%x\n",
 			 dev->name, lp->adapter_cnf);
 	}
@@ -1850,9 +1852,8 @@ static int __init cs89x0_platform_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	dev->irq = platform_get_irq(pdev, 0);
-	if (dev->irq <= 0) {
-		dev_warn(&dev->dev, "interrupt resource missing\n");
-		err = -ENXIO;
+	if (dev->irq < 0) {
+		err = dev->irq;
 		goto free;
 	}
 
@@ -1876,7 +1877,7 @@ free:
 	return err;
 }
 
-static int cs89x0_platform_remove(struct platform_device *pdev)
+static void cs89x0_platform_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 
@@ -1886,7 +1887,6 @@ static int cs89x0_platform_remove(struct platform_device *pdev)
 	 */
 	unregister_netdev(dev);
 	free_netdev(dev);
-	return 0;
 }
 
 static const struct of_device_id __maybe_unused cs89x0_match[] = {
@@ -1901,7 +1901,7 @@ static struct platform_driver cs89x0_driver = {
 		.name		= DRV_NAME,
 		.of_match_table	= of_match_ptr(cs89x0_match),
 	},
-	.remove	= cs89x0_platform_remove,
+	.remove = cs89x0_platform_remove,
 };
 
 module_platform_driver_probe(cs89x0_driver, cs89x0_platform_probe);

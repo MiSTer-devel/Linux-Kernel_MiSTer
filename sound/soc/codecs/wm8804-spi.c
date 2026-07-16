@@ -24,10 +24,9 @@ static int wm8804_spi_probe(struct spi_device *spi)
 	return wm8804_probe(&spi->dev, regmap);
 }
 
-static int wm8804_spi_remove(struct spi_device *spi)
+static void wm8804_spi_remove(struct spi_device *spi)
 {
 	wm8804_remove(&spi->dev);
-	return 0;
 }
 
 static const struct of_device_id wm8804_of_match[] = {
@@ -39,7 +38,7 @@ MODULE_DEVICE_TABLE(of, wm8804_of_match);
 static struct spi_driver wm8804_spi_driver = {
 	.driver = {
 		.name = "wm8804",
-		.pm = &wm8804_pm,
+		.pm = pm_ptr(&wm8804_pm),
 		.of_match_table = wm8804_of_match,
 	},
 	.probe = wm8804_spi_probe,

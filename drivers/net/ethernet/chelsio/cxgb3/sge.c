@@ -126,8 +126,10 @@ struct rsp_desc {		/* response queue descriptor */
 	struct rss_header rss_hdr;
 	__be32 flags;
 	__be32 len_cq;
-	u8 imm_data[47];
-	u8 intr_gen;
+	struct_group(immediate,
+		u8 imm_data[47];
+		u8 intr_gen;
+	);
 };
 
 /*
@@ -163,11 +165,6 @@ static u8 flit_desc_map[] = {
 # error "SGE_NUM_GENBITS must be 1 or 2"
 #endif
 };
-
-static inline struct sge_qset *fl_to_qset(const struct sge_fl *q, int qidx)
-{
-	return container_of(q, struct sge_qset, fl[qidx]);
-}
 
 static inline struct sge_qset *rspq_to_qset(const struct sge_rspq *q)
 {
@@ -925,7 +922,8 @@ static inline struct sk_buff *get_imm_packet(const struct rsp_desc *resp)
 
 	if (skb) {
 		__skb_put(skb, IMMED_PKT_SIZE);
-		skb_copy_to_linear_data(skb, resp->imm_data, IMMED_PKT_SIZE);
+		BUILD_BUG_ON(IMMED_PKT_SIZE != sizeof(resp->immediate));
+		skb_copy_to_linear_data(skb, &resp->immediate, IMMED_PKT_SIZE);
 	}
 	return skb;
 }
@@ -1953,7 +1951,7 @@ static int ofld_poll(struct napi_struct *napi, int budget)
  *	@rx_gather: a gather list of packets if we are building a bundle
  *	@gather_idx: index of the next available slot in the bundle
  *
- *	Process an ingress offload pakcet and add it to the offload ingress
+ *	Process an ingress offload packet and add it to the offload ingress
  *	queue. 	Returns the index of the next available slot in the bundle.
  */
 static inline int rx_offload(struct t3cdev *tdev, struct sge_rspq *rq,
@@ -2079,7 +2077,7 @@ static void cxgb3_process_iscsi_prov_pack(struct port_info *pi,
  *	@pad: padding
  *	@lro: large receive offload
  *
- *	Process an ingress ethernet pakcet and deliver it to the stack.
+ *	Process an ingress ethernet packet and deliver it to the stack.
  *	The padding is 2 if the packet was delivered in an Rx buffer and 0
  *	if it was immediate data in a response.
  */
@@ -2186,9 +2184,8 @@ static void lro_add_page(struct adapter *adap, struct sge_qset *qs,
 	len -= offset;
 
 	rx_frag += nr_frags;
-	__skb_frag_set_page(rx_frag, sd->pg_chunk.page);
-	skb_frag_off_set(rx_frag, sd->pg_chunk.offset + offset);
-	skb_frag_size_set(rx_frag, len);
+	skb_frag_fill_page_desc(rx_frag, sd->pg_chunk.page,
+				sd->pg_chunk.offset + offset, len);
 
 	skb->len += len;
 	skb->data_len += len;
@@ -2504,14 +2501,6 @@ static int napi_rx_handler(struct napi_struct *napi, int budget)
 	return work_done;
 }
 
-/*
- * Returns true if the device is already scheduled for polling.
- */
-static inline int napi_is_scheduled(struct napi_struct *napi)
-{
-	return test_bit(NAPI_STATE_SCHED, &napi->state);
-}
-
 /**
  *	process_pure_responses - process pure responses from a response queue
  *	@adap: the adapter
@@ -2677,12 +2666,7 @@ static int rspq_check_napi(struct sge_qset *qs)
 {
 	struct sge_rspq *q = &qs->rspq;
 
-	if (!napi_is_scheduled(&qs->napi) &&
-	    is_new_response(&q->desc[q->cidx], q)) {
-		napi_schedule(&qs->napi);
-		return 1;
-	}
-	return 0;
+	return is_new_response(&q->desc[q->cidx], q) && napi_schedule(&qs->napi);
 }
 
 /*
@@ -2922,7 +2906,7 @@ void t3_sge_err_intr_handler(struct adapter *adapter)
  */
 static void sge_timer_tx(struct timer_list *t)
 {
-	struct sge_qset *qs = from_timer(qs, t, tx_reclaim_timer);
+	struct sge_qset *qs = timer_container_of(qs, t, tx_reclaim_timer);
 	struct port_info *pi = netdev_priv(qs->netdev);
 	struct adapter *adap = pi->adapter;
 	unsigned int tbd[SGE_TXQ_PER_SET] = {0, 0};
@@ -2963,7 +2947,7 @@ static void sge_timer_tx(struct timer_list *t)
 static void sge_timer_rx(struct timer_list *t)
 {
 	spinlock_t *lock;
-	struct sge_qset *qs = from_timer(qs, t, rx_reclaim_timer);
+	struct sge_qset *qs = timer_container_of(qs, t, rx_reclaim_timer);
 	struct port_info *pi = netdev_priv(qs->netdev);
 	struct adapter *adap = pi->adapter;
 	u32 status;
@@ -3239,9 +3223,9 @@ void t3_stop_sge_timers(struct adapter *adap)
 		struct sge_qset *q = &adap->sge.qs[i];
 
 		if (q->tx_reclaim_timer.function)
-			del_timer_sync(&q->tx_reclaim_timer);
+			timer_delete_sync(&q->tx_reclaim_timer);
 		if (q->rx_reclaim_timer.function)
-			del_timer_sync(&q->rx_reclaim_timer);
+			timer_delete_sync(&q->rx_reclaim_timer);
 	}
 }
 

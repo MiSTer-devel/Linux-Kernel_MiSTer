@@ -48,9 +48,8 @@ struct xbtree_afakeroot;
 extern struct xfs_btree_cur *xfs_refcountbt_init_cursor(struct xfs_mount *mp,
 		struct xfs_trans *tp, struct xfs_buf *agbp,
 		struct xfs_perag *pag);
-struct xfs_btree_cur *xfs_refcountbt_stage_cursor(struct xfs_mount *mp,
-		struct xbtree_afakeroot *afake, struct xfs_perag *pag);
-extern int xfs_refcountbt_maxrecs(int blocklen, bool leaf);
+unsigned int xfs_refcountbt_maxrecs(struct xfs_mount *mp, unsigned int blocklen,
+		bool leaf);
 extern void xfs_refcountbt_compute_maxlevels(struct xfs_mount *mp);
 
 extern xfs_extlen_t xfs_refcountbt_calc_size(struct xfs_mount *mp,
@@ -64,5 +63,10 @@ extern int xfs_refcountbt_calc_reserves(struct xfs_mount *mp,
 
 void xfs_refcountbt_commit_staged_btree(struct xfs_btree_cur *cur,
 		struct xfs_trans *tp, struct xfs_buf *agbp);
+
+unsigned int xfs_refcountbt_maxlevels_ondisk(void);
+
+int __init xfs_refcountbt_init_cur_cache(void);
+void xfs_refcountbt_destroy_cur_cache(void);
 
 #endif	/* __XFS_REFCOUNT_BTREE_H__ */

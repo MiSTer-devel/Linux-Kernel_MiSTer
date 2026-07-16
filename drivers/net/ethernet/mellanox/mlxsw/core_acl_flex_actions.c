@@ -95,7 +95,7 @@ struct mlxsw_afa_set {
 		      */
 	   has_trap:1,
 	   has_police:1;
-	unsigned int ref_count;
+	refcount_t ref_count;
 	struct mlxsw_afa_set *next; /* Pointer to the next set. */
 	struct mlxsw_afa_set *prev; /* Pointer to the previous set,
 				     * note that set may have multiple
@@ -113,14 +113,14 @@ static const struct rhashtable_params mlxsw_afa_set_ht_params = {
 };
 
 struct mlxsw_afa_fwd_entry_ht_key {
-	u8 local_port;
+	u16 local_port;
 };
 
 struct mlxsw_afa_fwd_entry {
 	struct rhash_head ht_node;
 	struct mlxsw_afa_fwd_entry_ht_key ht_key;
 	u32 kvdl_index;
-	unsigned int ref_count;
+	refcount_t ref_count;
 };
 
 static const struct rhashtable_params mlxsw_afa_fwd_entry_ht_params = {
@@ -282,7 +282,7 @@ static struct mlxsw_afa_set *mlxsw_afa_set_create(bool is_first)
 	/* Need to initialize the set to pass by default */
 	mlxsw_afa_set_goto_set(set, MLXSW_AFA_SET_GOTO_BINDING_CMD_TERM, 0);
 	set->ht_key.is_first = is_first;
-	set->ref_count = 1;
+	refcount_set(&set->ref_count, 1);
 	return set;
 }
 
@@ -330,7 +330,7 @@ static void mlxsw_afa_set_unshare(struct mlxsw_afa *mlxsw_afa,
 static void mlxsw_afa_set_put(struct mlxsw_afa *mlxsw_afa,
 			      struct mlxsw_afa_set *set)
 {
-	if (--set->ref_count)
+	if (!refcount_dec_and_test(&set->ref_count))
 		return;
 	if (set->shared)
 		mlxsw_afa_set_unshare(mlxsw_afa, set);
@@ -350,7 +350,7 @@ static struct mlxsw_afa_set *mlxsw_afa_set_get(struct mlxsw_afa *mlxsw_afa,
 	set = rhashtable_lookup_fast(&mlxsw_afa->set_ht, &orig_set->ht_key,
 				     mlxsw_afa_set_ht_params);
 	if (set) {
-		set->ref_count++;
+		refcount_inc(&set->ref_count);
 		mlxsw_afa_set_put(mlxsw_afa, orig_set);
 	} else {
 		set = orig_set;
@@ -555,7 +555,7 @@ int mlxsw_afa_block_terminate(struct mlxsw_afa_block *block)
 EXPORT_SYMBOL(mlxsw_afa_block_terminate);
 
 static struct mlxsw_afa_fwd_entry *
-mlxsw_afa_fwd_entry_create(struct mlxsw_afa *mlxsw_afa, u8 local_port)
+mlxsw_afa_fwd_entry_create(struct mlxsw_afa *mlxsw_afa, u16 local_port)
 {
 	struct mlxsw_afa_fwd_entry *fwd_entry;
 	int err;
@@ -564,7 +564,7 @@ mlxsw_afa_fwd_entry_create(struct mlxsw_afa *mlxsw_afa, u8 local_port)
 	if (!fwd_entry)
 		return ERR_PTR(-ENOMEM);
 	fwd_entry->ht_key.local_port = local_port;
-	fwd_entry->ref_count = 1;
+	refcount_set(&fwd_entry->ref_count, 1);
 
 	err = rhashtable_insert_fast(&mlxsw_afa->fwd_entry_ht,
 				     &fwd_entry->ht_node,
@@ -598,7 +598,7 @@ static void mlxsw_afa_fwd_entry_destroy(struct mlxsw_afa *mlxsw_afa,
 }
 
 static struct mlxsw_afa_fwd_entry *
-mlxsw_afa_fwd_entry_get(struct mlxsw_afa *mlxsw_afa, u8 local_port)
+mlxsw_afa_fwd_entry_get(struct mlxsw_afa *mlxsw_afa, u16 local_port)
 {
 	struct mlxsw_afa_fwd_entry_ht_key ht_key = {0};
 	struct mlxsw_afa_fwd_entry *fwd_entry;
@@ -607,7 +607,7 @@ mlxsw_afa_fwd_entry_get(struct mlxsw_afa *mlxsw_afa, u8 local_port)
 	fwd_entry = rhashtable_lookup_fast(&mlxsw_afa->fwd_entry_ht, &ht_key,
 					   mlxsw_afa_fwd_entry_ht_params);
 	if (fwd_entry) {
-		fwd_entry->ref_count++;
+		refcount_inc(&fwd_entry->ref_count);
 		return fwd_entry;
 	}
 	return mlxsw_afa_fwd_entry_create(mlxsw_afa, local_port);
@@ -616,7 +616,7 @@ mlxsw_afa_fwd_entry_get(struct mlxsw_afa *mlxsw_afa, u8 local_port)
 static void mlxsw_afa_fwd_entry_put(struct mlxsw_afa *mlxsw_afa,
 				    struct mlxsw_afa_fwd_entry *fwd_entry)
 {
-	if (--fwd_entry->ref_count)
+	if (!refcount_dec_and_test(&fwd_entry->ref_count))
 		return;
 	mlxsw_afa_fwd_entry_destroy(mlxsw_afa, fwd_entry);
 }
@@ -647,7 +647,7 @@ mlxsw_afa_fwd_entry_ref_destructor(struct mlxsw_afa_block *block,
 }
 
 static struct mlxsw_afa_fwd_entry_ref *
-mlxsw_afa_fwd_entry_ref_create(struct mlxsw_afa_block *block, u8 local_port)
+mlxsw_afa_fwd_entry_ref_create(struct mlxsw_afa_block *block, u16 local_port)
 {
 	struct mlxsw_afa_fwd_entry_ref *fwd_entry_ref;
 	struct mlxsw_afa_fwd_entry *fwd_entry;
@@ -737,8 +737,9 @@ mlxsw_afa_cookie_create(struct mlxsw_afa *mlxsw_afa,
 	if (!cookie)
 		return ERR_PTR(-ENOMEM);
 	refcount_set(&cookie->ref_count, 1);
-	memcpy(&cookie->fa_cookie, fa_cookie,
-	       sizeof(*fa_cookie) + fa_cookie->cookie_len);
+	cookie->fa_cookie = *fa_cookie;
+	memcpy(cookie->fa_cookie.cookie, fa_cookie->cookie,
+	       fa_cookie->cookie_len);
 
 	err = rhashtable_insert_fast(&mlxsw_afa->cookie_ht, &cookie->ht_node,
 				     mlxsw_afa_cookie_ht_params);
@@ -1164,7 +1165,7 @@ EXPORT_SYMBOL(mlxsw_afa_block_append_vlan_modify);
  * trap control. In addition, the Trap / Discard action enables activating
  * SPAN (port mirroring).
  *
- * The Trap with userdef action action has the same functionality as
+ * The Trap with userdef action has the same functionality as
  * the Trap action with addition of user defined value that can be set
  * and used by higher layer applications.
  */
@@ -1352,7 +1353,7 @@ EXPORT_SYMBOL(mlxsw_afa_block_append_trap_and_forward);
 struct mlxsw_afa_mirror {
 	struct mlxsw_afa_resource resource;
 	int span_id;
-	u8 local_in_port;
+	u16 local_in_port;
 	bool ingress;
 };
 
@@ -1379,7 +1380,7 @@ mlxsw_afa_mirror_destructor(struct mlxsw_afa_block *block,
 }
 
 static struct mlxsw_afa_mirror *
-mlxsw_afa_mirror_create(struct mlxsw_afa_block *block, u8 local_in_port,
+mlxsw_afa_mirror_create(struct mlxsw_afa_block *block, u16 local_in_port,
 			const struct net_device *out_dev, bool ingress)
 {
 	struct mlxsw_afa_mirror *mirror;
@@ -1423,7 +1424,7 @@ mlxsw_afa_block_append_allocated_mirror(struct mlxsw_afa_block *block,
 }
 
 int
-mlxsw_afa_block_append_mirror(struct mlxsw_afa_block *block, u8 local_in_port,
+mlxsw_afa_block_append_mirror(struct mlxsw_afa_block *block, u16 local_in_port,
 			      const struct net_device *out_dev, bool ingress,
 			      struct netlink_ext_ack *extack)
 {
@@ -1663,7 +1664,7 @@ mlxsw_afa_forward_pack(char *payload, enum mlxsw_afa_forward_type type,
 }
 
 int mlxsw_afa_block_append_fwd(struct mlxsw_afa_block *block,
-			       u8 local_port, bool in_port,
+			       u16 local_port, bool in_port,
 			       struct netlink_ext_ack *extack)
 {
 	struct mlxsw_afa_fwd_entry_ref *fwd_entry_ref;
@@ -1886,6 +1887,46 @@ int mlxsw_afa_block_append_fid_set(struct mlxsw_afa_block *block, u16 fid,
 }
 EXPORT_SYMBOL(mlxsw_afa_block_append_fid_set);
 
+/* Ignore Action
+ * -------------
+ * The ignore action is used to ignore basic switching functions such as
+ * learning on a per-packet basis.
+ */
+
+#define MLXSW_AFA_IGNORE_CODE 0x0F
+#define MLXSW_AFA_IGNORE_SIZE 1
+
+/* afa_ignore_disable_learning
+ * Disable learning on ingress.
+ */
+MLXSW_ITEM32(afa, ignore, disable_learning, 0x00, 29, 1);
+
+/* afa_ignore_disable_security
+ * Disable security lookup on ingress.
+ * Reserved when Spectrum-1.
+ */
+MLXSW_ITEM32(afa, ignore, disable_security, 0x00, 28, 1);
+
+static void mlxsw_afa_ignore_pack(char *payload, bool disable_learning,
+				  bool disable_security)
+{
+	mlxsw_afa_ignore_disable_learning_set(payload, disable_learning);
+	mlxsw_afa_ignore_disable_security_set(payload, disable_security);
+}
+
+int mlxsw_afa_block_append_ignore(struct mlxsw_afa_block *block,
+				  bool disable_learning, bool disable_security)
+{
+	char *act = mlxsw_afa_block_append_action(block, MLXSW_AFA_IGNORE_CODE,
+						  MLXSW_AFA_IGNORE_SIZE);
+
+	if (IS_ERR(act))
+		return PTR_ERR(act);
+	mlxsw_afa_ignore_pack(act, disable_learning, disable_security);
+	return 0;
+}
+EXPORT_SYMBOL(mlxsw_afa_block_append_ignore);
+
 /* MC Routing Action
  * -----------------
  * The Multicast router action. Can be used by RMFT_V2 - Router Multicast
@@ -1956,6 +1997,83 @@ int mlxsw_afa_block_append_mcrouter(struct mlxsw_afa_block *block,
 	return 0;
 }
 EXPORT_SYMBOL(mlxsw_afa_block_append_mcrouter);
+
+/* SIP DIP Action
+ * --------------
+ * The SIP_DIP_ACTION is used for modifying the SIP and DIP fields of the
+ * packet, e.g. for NAT. The L3 checksum is updated. Also, if the L4 is TCP or
+ * if the L4 is UDP and the checksum field is not zero, then the L4 checksum is
+ * updated.
+ */
+
+#define MLXSW_AFA_IP_CODE 0x11
+#define MLXSW_AFA_IP_SIZE 2
+
+enum mlxsw_afa_ip_s_d {
+	/* ip refers to dip */
+	MLXSW_AFA_IP_S_D_DIP,
+	/* ip refers to sip */
+	MLXSW_AFA_IP_S_D_SIP,
+};
+
+/* afa_ip_s_d
+ * Source or destination.
+ */
+MLXSW_ITEM32(afa, ip, s_d, 0x00, 31, 1);
+
+enum mlxsw_afa_ip_m_l {
+	/* LSB: ip[63:0] refers to ip[63:0] */
+	MLXSW_AFA_IP_M_L_LSB,
+	/* MSB: ip[63:0] refers to ip[127:64] */
+	MLXSW_AFA_IP_M_L_MSB,
+};
+
+/* afa_ip_m_l
+ * MSB or LSB.
+ */
+MLXSW_ITEM32(afa, ip, m_l, 0x00, 30, 1);
+
+/* afa_ip_ip_63_32
+ * Bits [63:32] in the IP address to change to.
+ */
+MLXSW_ITEM32(afa, ip, ip_63_32, 0x08, 0, 32);
+
+/* afa_ip_ip_31_0
+ * Bits [31:0] in the IP address to change to.
+ */
+MLXSW_ITEM32(afa, ip, ip_31_0, 0x0C, 0, 32);
+
+static void mlxsw_afa_ip_pack(char *payload, enum mlxsw_afa_ip_s_d s_d,
+			      enum mlxsw_afa_ip_m_l m_l, u32 ip_31_0,
+			      u32 ip_63_32)
+{
+	mlxsw_afa_ip_s_d_set(payload, s_d);
+	mlxsw_afa_ip_m_l_set(payload, m_l);
+	mlxsw_afa_ip_ip_31_0_set(payload, ip_31_0);
+	mlxsw_afa_ip_ip_63_32_set(payload, ip_63_32);
+}
+
+int mlxsw_afa_block_append_ip(struct mlxsw_afa_block *block, bool is_dip,
+			      bool is_lsb, u32 val_31_0, u32 val_63_32,
+			      struct netlink_ext_ack *extack)
+{
+	enum mlxsw_afa_ip_s_d s_d = is_dip ? MLXSW_AFA_IP_S_D_DIP :
+					     MLXSW_AFA_IP_S_D_SIP;
+	enum mlxsw_afa_ip_m_l m_l = is_lsb ? MLXSW_AFA_IP_M_L_LSB :
+					     MLXSW_AFA_IP_M_L_MSB;
+	char *act = mlxsw_afa_block_append_action(block,
+						  MLXSW_AFA_IP_CODE,
+						  MLXSW_AFA_IP_SIZE);
+
+	if (IS_ERR(act)) {
+		NL_SET_ERR_MSG_MOD(extack, "Cannot append IP action");
+		return PTR_ERR(act);
+	}
+
+	mlxsw_afa_ip_pack(act, s_d, m_l, val_31_0, val_63_32);
+	return 0;
+}
+EXPORT_SYMBOL(mlxsw_afa_block_append_ip);
 
 /* L4 Port Action
  * --------------
@@ -2038,7 +2156,7 @@ static void mlxsw_afa_sampler_pack(char *payload, u8 mirror_agent, u32 rate)
 struct mlxsw_afa_sampler {
 	struct mlxsw_afa_resource resource;
 	int span_id;
-	u8 local_port;
+	u16 local_port;
 	bool ingress;
 };
 
@@ -2061,7 +2179,7 @@ static void mlxsw_afa_sampler_destructor(struct mlxsw_afa_block *block,
 }
 
 static struct mlxsw_afa_sampler *
-mlxsw_afa_sampler_create(struct mlxsw_afa_block *block, u8 local_port,
+mlxsw_afa_sampler_create(struct mlxsw_afa_block *block, u16 local_port,
 			 struct psample_group *psample_group, u32 rate,
 			 u32 trunc_size, bool truncate, bool ingress,
 			 struct netlink_ext_ack *extack)
@@ -2104,7 +2222,7 @@ mlxsw_afa_block_append_allocated_sampler(struct mlxsw_afa_block *block,
 	return 0;
 }
 
-int mlxsw_afa_block_append_sampler(struct mlxsw_afa_block *block, u8 local_port,
+int mlxsw_afa_block_append_sampler(struct mlxsw_afa_block *block, u16 local_port,
 				   struct psample_group *psample_group,
 				   u32 rate, u32 trunc_size, bool truncate,
 				   bool ingress,

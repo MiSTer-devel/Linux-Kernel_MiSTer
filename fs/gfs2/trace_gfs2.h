@@ -52,13 +52,20 @@
 	{(1UL << GLF_DEMOTE_IN_PROGRESS),	"p" },		\
 	{(1UL << GLF_DIRTY),			"y" },		\
 	{(1UL << GLF_LFLUSH),			"f" },		\
-	{(1UL << GLF_INVALIDATE_IN_PROGRESS),	"i" },		\
-	{(1UL << GLF_REPLY_PENDING),		"r" },		\
-	{(1UL << GLF_INITIAL),			"I" },		\
-	{(1UL << GLF_FROZEN),			"F" },		\
+	{(1UL << GLF_PENDING_REPLY),		"R" },		\
+	{(1UL << GLF_HAVE_REPLY),		"r" },		\
+	{(1UL << GLF_INITIAL),			"a" },		\
+	{(1UL << GLF_HAVE_FROZEN_REPLY),	"F" },		\
 	{(1UL << GLF_LRU),			"L" },		\
 	{(1UL << GLF_OBJECT),			"o" },		\
-	{(1UL << GLF_BLOCKING),			"b" })
+	{(1UL << GLF_BLOCKING),			"b" },		\
+	{(1UL << GLF_UNLOCKED),			"x" },		\
+	{(1UL << GLF_INSTANTIATE_NEEDED),	"n" },		\
+	{(1UL << GLF_INSTANTIATE_IN_PROG),	"N" },		\
+	{(1UL << GLF_TRY_TO_EVICT),		"e" },		\
+	{(1UL << GLF_VERIFY_DELETE),		"E" },		\
+	{(1UL << GLF_DEFER_DELETE),		"s" },		\
+	{(1UL << GLF_CANCELING),		"C" })
 
 #ifndef NUMPTY
 #define NUMPTY
@@ -197,15 +204,14 @@ TRACE_EVENT(gfs2_demote_rq,
 /* Promotion/grant of a glock */
 TRACE_EVENT(gfs2_promote,
 
-	TP_PROTO(const struct gfs2_holder *gh, int first),
+	TP_PROTO(const struct gfs2_holder *gh),
 
-	TP_ARGS(gh, first),
+	TP_ARGS(gh),
 
 	TP_STRUCT__entry(
 		__field(        dev_t,  dev                     )
 		__field(	u64,	glnum			)
 		__field(	u32,	gltype			)
-		__field(	int,	first			)
 		__field(	u8,	state			)
 	),
 
@@ -213,14 +219,12 @@ TRACE_EVENT(gfs2_promote,
 		__entry->dev	= gh->gh_gl->gl_name.ln_sbd->sd_vfs->s_dev;
 		__entry->glnum	= gh->gh_gl->gl_name.ln_number;
 		__entry->gltype	= gh->gh_gl->gl_name.ln_type;
-		__entry->first	= first;
 		__entry->state	= glock_trace_state(gh->gh_state);
 	),
 
-	TP_printk("%u,%u glock %u:%llu promote %s %s",
+	TP_printk("%u,%u glock %u:%llu promote %s",
 		  MAJOR(__entry->dev), MINOR(__entry->dev), __entry->gltype,
 		  (unsigned long long)__entry->glnum,
-		  __entry->first ? "first": "other",
 		  glock_trace_name(__entry->state))
 );
 

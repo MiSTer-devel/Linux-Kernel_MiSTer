@@ -26,7 +26,7 @@
 #include <net/llc_c_st.h>
 #include <net/llc_conn.h>
 
-static void llc_ui_format_mac(struct seq_file *seq, u8 *addr)
+static void llc_ui_format_mac(struct seq_file *seq, const u8 *addr)
 {
 	seq_printf(seq, "%pM", addr);
 }
@@ -151,7 +151,7 @@ static int llc_seq_socket_show(struct seq_file *seq, void *v)
 		   sk_wmem_alloc_get(sk),
 		   sk_rmem_alloc_get(sk) - llc->copied_seq,
 		   sk->sk_state,
-		   from_kuid_munged(seq_user_ns(seq), sock_i_uid(sk)),
+		   from_kuid_munged(seq_user_ns(seq), sk_uid(sk)),
 		   llc->link);
 out:
 	return 0;
@@ -195,7 +195,7 @@ static int llc_seq_core_show(struct seq_file *seq, void *v)
 		   timer_pending(&llc->pf_cycle_timer.timer),
 		   timer_pending(&llc->rej_sent_timer.timer),
 		   timer_pending(&llc->busy_state_timer.timer),
-		   !!sk->sk_backlog.tail, !!sk->sk_lock.owned);
+		   !!sk->sk_backlog.tail, sock_owned_by_user_nocheck(sk));
 out:
 	return 0;
 }

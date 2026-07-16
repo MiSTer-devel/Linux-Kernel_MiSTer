@@ -14,8 +14,7 @@
 
 #include "adau1761.h"
 
-static int adau1761_i2c_probe(struct i2c_client *client,
-	const struct i2c_device_id *id)
+static int adau1761_i2c_probe(struct i2c_client *client)
 {
 	struct regmap_config config;
 
@@ -25,13 +24,12 @@ static int adau1761_i2c_probe(struct i2c_client *client,
 
 	return adau1761_probe(&client->dev,
 		devm_regmap_init_i2c(client, &config),
-		id->driver_data, NULL);
+		(uintptr_t)i2c_get_match_data(client), NULL);
 }
 
-static int adau1761_i2c_remove(struct i2c_client *client)
+static void adau1761_i2c_remove(struct i2c_client *client)
 {
 	adau17x1_remove(&client->dev);
-	return 0;
 }
 
 static const struct i2c_device_id adau1761_i2c_ids[] = {

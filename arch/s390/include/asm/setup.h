@@ -11,29 +11,8 @@
 #include <linux/build_bug.h>
 
 #define PARMAREA		0x10400
-#define HEAD_END		0x11000
 
-/*
- * Machine features detected in early.c
- */
-
-#define MACHINE_FLAG_VM		BIT(0)
-#define MACHINE_FLAG_KVM	BIT(1)
-#define MACHINE_FLAG_LPAR	BIT(2)
-#define MACHINE_FLAG_DIAG9C	BIT(3)
-#define MACHINE_FLAG_ESOP	BIT(4)
-#define MACHINE_FLAG_IDTE	BIT(5)
-#define MACHINE_FLAG_EDAT1	BIT(7)
-#define MACHINE_FLAG_EDAT2	BIT(8)
-#define MACHINE_FLAG_TOPOLOGY	BIT(10)
-#define MACHINE_FLAG_TE		BIT(11)
-#define MACHINE_FLAG_TLB_LC	BIT(12)
-#define MACHINE_FLAG_VX		BIT(13)
-#define MACHINE_FLAG_TLB_GUEST	BIT(14)
-#define MACHINE_FLAG_NX		BIT(15)
-#define MACHINE_FLAG_GS		BIT(16)
-#define MACHINE_FLAG_SCC	BIT(17)
-#define MACHINE_FLAG_PCI_MIO	BIT(18)
+#define COMMAND_LINE_SIZE CONFIG_COMMAND_LINE_SIZE
 
 #define LPP_MAGIC		BIT(31)
 #define LPP_PID_MASK		_AC(0xffffffff, UL)
@@ -43,7 +22,9 @@
 #define STARTUP_NORMAL_OFFSET	0x10000
 #define STARTUP_KDUMP_OFFSET	0x10010
 
-#ifndef __ASSEMBLY__
+#define LEGACY_COMMAND_LINE_SIZE	896
+
+#ifndef __ASSEMBLER__
 
 #include <asm/lowcore.h>
 #include <asm/types.h>
@@ -55,9 +36,12 @@ struct parmarea {
 	unsigned long oldmem_base;			/* 0x10418 */
 	unsigned long oldmem_size;			/* 0x10420 */
 	unsigned long kernel_version;			/* 0x10428 */
-	char pad1[0x10480 - 0x10430];			/* 0x10430 - 0x10480 */
-	char command_line[ARCH_COMMAND_LINE_SIZE];	/* 0x10480 */
+	unsigned long max_command_line_size;		/* 0x10430 */
+	char pad1[0x10480-0x10438];			/* 0x10438 - 0x10480 */
+	char command_line[COMMAND_LINE_SIZE];		/* 0x10480 */
 };
+
+extern char arch_hw_string[128];
 
 extern struct parmarea parmarea;
 
@@ -68,30 +52,11 @@ extern unsigned int zlib_dfltcc_support;
 #define ZLIB_DFLTCC_INFLATE_ONLY	3
 #define ZLIB_DFLTCC_FULL_DEBUG		4
 
-extern int noexec_disabled;
 extern unsigned long ident_map_size;
+extern unsigned long max_mappable;
 
 /* The Write Back bit position in the physaddr is given by the SLPC PCI */
 extern unsigned long mio_wb_bit_mask;
-
-#define MACHINE_IS_VM		(S390_lowcore.machine_flags & MACHINE_FLAG_VM)
-#define MACHINE_IS_KVM		(S390_lowcore.machine_flags & MACHINE_FLAG_KVM)
-#define MACHINE_IS_LPAR		(S390_lowcore.machine_flags & MACHINE_FLAG_LPAR)
-
-#define MACHINE_HAS_DIAG9C	(S390_lowcore.machine_flags & MACHINE_FLAG_DIAG9C)
-#define MACHINE_HAS_ESOP	(S390_lowcore.machine_flags & MACHINE_FLAG_ESOP)
-#define MACHINE_HAS_IDTE	(S390_lowcore.machine_flags & MACHINE_FLAG_IDTE)
-#define MACHINE_HAS_EDAT1	(S390_lowcore.machine_flags & MACHINE_FLAG_EDAT1)
-#define MACHINE_HAS_EDAT2	(S390_lowcore.machine_flags & MACHINE_FLAG_EDAT2)
-#define MACHINE_HAS_TOPOLOGY	(S390_lowcore.machine_flags & MACHINE_FLAG_TOPOLOGY)
-#define MACHINE_HAS_TE		(S390_lowcore.machine_flags & MACHINE_FLAG_TE)
-#define MACHINE_HAS_TLB_LC	(S390_lowcore.machine_flags & MACHINE_FLAG_TLB_LC)
-#define MACHINE_HAS_VX		(S390_lowcore.machine_flags & MACHINE_FLAG_VX)
-#define MACHINE_HAS_TLB_GUEST	(S390_lowcore.machine_flags & MACHINE_FLAG_TLB_GUEST)
-#define MACHINE_HAS_NX		(S390_lowcore.machine_flags & MACHINE_FLAG_NX)
-#define MACHINE_HAS_GS		(S390_lowcore.machine_flags & MACHINE_FLAG_GS)
-#define MACHINE_HAS_SCC		(S390_lowcore.machine_flags & MACHINE_FLAG_SCC)
-#define MACHINE_HAS_PCI_MIO	(S390_lowcore.machine_flags & MACHINE_FLAG_PCI_MIO)
 
 /*
  * Console mode. Override with conmode=
@@ -112,13 +77,7 @@ extern unsigned int console_irq;
 #define SET_CONSOLE_VT220	do { console_mode = 4; } while (0)
 #define SET_CONSOLE_HVC		do { console_mode = 5; } while (0)
 
-#ifdef CONFIG_PFAULT
-extern int pfault_init(void);
-extern void pfault_fini(void);
-#else /* CONFIG_PFAULT */
-#define pfault_init()		({-1;})
-#define pfault_fini()		do { } while (0)
-#endif /* CONFIG_PFAULT */
+void register_early_console(void);
 
 #ifdef CONFIG_VMCP
 void vmcp_cma_reserve(void);
@@ -128,26 +87,9 @@ static inline void vmcp_cma_reserve(void) { }
 
 void report_user_fault(struct pt_regs *regs, long signr, int is_mm_fault);
 
-void cmma_init(void);
-void cmma_init_nodat(void);
-
 extern void (*_machine_restart)(char *command);
 extern void (*_machine_halt)(void);
 extern void (*_machine_power_off)(void);
-
-extern unsigned long __kaslr_offset;
-static inline unsigned long kaslr_offset(void)
-{
-	return __kaslr_offset;
-}
-
-extern int is_full_image;
-
-struct initrd_data {
-	unsigned long start;
-	unsigned long size;
-};
-extern struct initrd_data initrd_data;
 
 struct oldmem_data {
 	unsigned long start;
@@ -155,10 +97,10 @@ struct oldmem_data {
 };
 extern struct oldmem_data oldmem_data;
 
-static inline u32 gen_lpswe(unsigned long addr)
+static __always_inline u32 gen_lpswe(unsigned long addr)
 {
 	BUILD_BUG_ON(addr > 0xfff);
 	return 0xb2b20000 | addr;
 }
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 #endif /* _ASM_S390_SETUP_H */

@@ -4,7 +4,7 @@
 
 #include <asm/cache.h>
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 /*
  * We can't do CPP stringification and concatination directly into the section
  * name for some reason, so these macros can do it for us.
@@ -98,13 +98,9 @@ start_text:
 	. = sname##_len;
 
 #define USE_FIXED_SECTION(sname)				\
-	fs_label = start_##sname;				\
-	fs_start = sname##_start;				\
 	use_ftsec sname;
 
 #define USE_TEXT_SECTION()					\
-	fs_label = start_text;					\
-	fs_start = text_start;					\
 	.text
 
 #define CLOSE_FIXED_SECTION(sname)				\
@@ -161,14 +157,16 @@ name:
  * - ABS_ADDR is used to find the absolute address of any symbol, from within
  *   a fixed section.
  */
-#define DEFINE_FIXED_SYMBOL(label)				\
-	label##_absolute = (label - fs_label + fs_start)
+// define label as being _in_ sname
+#define DEFINE_FIXED_SYMBOL(label, sname) \
+	label##_absolute = (label - start_ ## sname + sname ## _start)
 
 #define FIXED_SYMBOL_ABS_ADDR(label)				\
 	(label##_absolute)
 
-#define ABS_ADDR(label) (label - fs_label + fs_start)
+// find label from _within_ sname
+#define ABS_ADDR(label, sname) (label - start_ ## sname + sname ## _start)
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 #endif	/* _ASM_POWERPC_HEAD_64_H */

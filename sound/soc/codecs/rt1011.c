@@ -13,11 +13,9 @@
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/pm.h>
-#include <linux/gpio.h>
 #include <linux/i2c.h>
 #include <linux/acpi.h>
 #include <linux/regmap.h>
-#include <linux/of_gpio.h>
 #include <linux/platform_device.h>
 #include <linux/firmware.h>
 #include <sound/core.h>
@@ -1311,6 +1309,55 @@ static int rt1011_r0_load_info(struct snd_kcontrol *kcontrol,
 	.put = rt1011_r0_load_mode_put \
 }
 
+static const char * const rt1011_i2s_ref[] = {
+	"None", "Left Channel", "Right Channel"
+};
+
+static SOC_ENUM_SINGLE_DECL(rt1011_i2s_ref_enum, 0, 0,
+	rt1011_i2s_ref);
+
+static int rt1011_i2s_ref_put(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component =
+		snd_soc_kcontrol_component(kcontrol);
+	struct rt1011_priv *rt1011 =
+		snd_soc_component_get_drvdata(component);
+
+	rt1011->i2s_ref = ucontrol->value.enumerated.item[0];
+	switch (rt1011->i2s_ref) {
+	case RT1011_I2S_REF_LEFT_CH:
+		regmap_write(rt1011->regmap, RT1011_TDM_TOTAL_SET, 0x0240);
+		regmap_write(rt1011->regmap, RT1011_TDM1_SET_2, 0x8);
+		regmap_write(rt1011->regmap, RT1011_TDM1_SET_1, 0x1022);
+		regmap_write(rt1011->regmap, RT1011_ADCDAT_OUT_SOURCE, 0x4);
+		break;
+	case RT1011_I2S_REF_RIGHT_CH:
+		regmap_write(rt1011->regmap, RT1011_TDM_TOTAL_SET, 0x0240);
+		regmap_write(rt1011->regmap, RT1011_TDM1_SET_2, 0x8);
+		regmap_write(rt1011->regmap, RT1011_TDM1_SET_1, 0x10a2);
+		regmap_write(rt1011->regmap, RT1011_ADCDAT_OUT_SOURCE, 0x4);
+		break;
+	default:
+		dev_info(component->dev, "I2S Reference: Do nothing\n");
+	}
+
+	return 0;
+}
+
+static int rt1011_i2s_ref_get(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component =
+		snd_soc_kcontrol_component(kcontrol);
+	struct rt1011_priv *rt1011 =
+		snd_soc_component_get_drvdata(component);
+
+	ucontrol->value.enumerated.item[0] = rt1011->i2s_ref;
+
+	return 0;
+}
+
 static const struct snd_kcontrol_new rt1011_snd_controls[] = {
 	/* I2S Data In Selection */
 	SOC_ENUM("DIN Source", rt1011_din_source_enum),
@@ -1349,6 +1396,9 @@ static const struct snd_kcontrol_new rt1011_snd_controls[] = {
 	/* R0 temperature */
 	SOC_SINGLE("R0 Temperature", RT1011_STP_INITIAL_RESISTANCE_TEMP,
 		2, 255, 0),
+	/* I2S Reference */
+	SOC_ENUM_EXT("I2S Reference", rt1011_i2s_ref_enum,
+		rt1011_i2s_ref_get, rt1011_i2s_ref_put),
 };
 
 static int rt1011_is_sys_clk_from_pll(struct snd_soc_dapm_widget *source,
@@ -1621,7 +1671,7 @@ static int rt1011_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 
 	snd_soc_dapm_mutex_lock(dapm);
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		reg_val |= RT1011_I2S_TDM_MS_S;
 		break;
 	default:
@@ -2007,6 +2057,7 @@ static int rt1011_probe(struct snd_soc_component *component)
 
 	schedule_work(&rt1011->cali_work);
 
+	rt1011->i2s_ref = 0;
 	rt1011->bq_drc_params = devm_kcalloc(component->dev,
 		RT1011_ADVMODE_NUM, sizeof(struct rt1011_bq_drc_params *),
 		GFP_KERNEL);
@@ -2123,7 +2174,6 @@ static const struct snd_soc_component_driver soc_component_dev_rt1011 = {
 	.set_pll = rt1011_set_component_pll,
 	.use_pmdown_time = 1,
 	.endianness = 1,
-	.non_legacy_dai_naming = 1,
 };
 
 static const struct regmap_config rt1011_regmap = {
@@ -2132,7 +2182,7 @@ static const struct regmap_config rt1011_regmap = {
 	.max_register = RT1011_MAX_REG + 1,
 	.volatile_reg = rt1011_volatile_register,
 	.readable_reg = rt1011_readable_register,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.reg_defaults = rt1011_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt1011_reg),
 	.use_single_read = true,
@@ -2142,21 +2192,21 @@ static const struct regmap_config rt1011_regmap = {
 #if defined(CONFIG_OF)
 static const struct of_device_id rt1011_of_match[] = {
 	{ .compatible = "realtek,rt1011", },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, rt1011_of_match);
 #endif
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id rt1011_acpi_match[] = {
-	{"10EC1011", 0,},
-	{},
+	{ "10EC1011" },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, rt1011_acpi_match);
 #endif
 
 static const struct i2c_device_id rt1011_i2c_id[] = {
-	{ "rt1011", 0 },
+	{ "rt1011" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt1011_i2c_id);
@@ -2380,8 +2430,7 @@ static int rt1011_parse_dp(struct rt1011_priv *rt1011, struct device *dev)
 	return 0;
 }
 
-static int rt1011_i2c_probe(struct i2c_client *i2c,
-		    const struct i2c_device_id *id)
+static int rt1011_i2c_probe(struct i2c_client *i2c)
 {
 	struct rt1011_priv *rt1011;
 	int ret;

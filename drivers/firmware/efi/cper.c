@@ -12,6 +12,7 @@
  * Specification version 2.4.
  */
 
+#include <linux/bitmap.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/time.h>
@@ -24,6 +25,7 @@
 #include <linux/bcd.h>
 #include <acpi/ghes.h>
 #include <ras/ras_event.h>
+#include <cxl/event.h>
 
 /*
  * CPER record ID need to be unique even after reboot, because record
@@ -104,6 +106,65 @@ void cper_print_bits(const char *pfx, unsigned int bits,
 	if (len)
 		printk("%s\n", buf);
 }
+
+/**
+ * cper_bits_to_str - return a string for set bits
+ * @buf: buffer to store the output string
+ * @buf_size: size of the output string buffer
+ * @bits: bit mask
+ * @strs: string array, indexed by bit position
+ * @strs_size: size of the string array: @strs
+ *
+ * Add to @buf the bitmask in hexadecimal. Then, for each set bit in @bits,
+ * add the corresponding string describing the bit in @strs to @buf.
+ *
+ * A typical example is::
+ *
+ *	const char * const bits[] = {
+ *		"bit 3 name",
+ *		"bit 4 name",
+ *		"bit 5 name",
+ *	};
+ *	char str[120];
+ *	unsigned int bitmask = BIT(3) | BIT(5);
+ *	#define MASK GENMASK(5,3)
+ *
+ *	cper_bits_to_str(str, sizeof(str), FIELD_GET(MASK, bitmask),
+ *			 bits, ARRAY_SIZE(bits));
+ *
+ * The above code fills the string ``str`` with ``bit 3 name|bit 5 name``.
+ *
+ * Return: number of bytes stored or an error code if lower than zero.
+ */
+int cper_bits_to_str(char *buf, int buf_size, unsigned long bits,
+		     const char * const strs[], unsigned int strs_size)
+{
+	int len = buf_size;
+	char *str = buf;
+	int i, size;
+
+	*buf = '\0';
+
+	for_each_set_bit(i, &bits, strs_size) {
+		if (!(bits & BIT_ULL(i)))
+			continue;
+
+		if (*buf && len > 0) {
+			*str = '|';
+			len--;
+			str++;
+		}
+
+		size = strscpy(str, strs[i], len);
+		if (size < 0)
+			return size;
+
+		len -= size;
+		str += size;
+	}
+	return buf_size - len;
+}
+EXPORT_SYMBOL_GPL(cper_bits_to_str);
 
 static const char * const proc_type_strs[] = {
 	"IA32/X64",
@@ -211,7 +272,33 @@ const char *cper_mem_err_type_str(unsigned int etype)
 }
 EXPORT_SYMBOL_GPL(cper_mem_err_type_str);
 
-static int cper_mem_err_location(struct cper_mem_err_compact *mem, char *msg)
+const char *cper_mem_err_status_str(u64 status)
+{
+	switch ((status >> 8) & 0xff) {
+	case  1:	return "Error detected internal to the component";
+	case  4:	return "Storage error in DRAM memory";
+	case  5:	return "Storage error in TLB";
+	case  6:	return "Storage error in cache";
+	case  7:	return "Error in one or more functional units";
+	case  8:	return "Component failed self test";
+	case  9:	return "Overflow or undervalue of internal queue";
+	case 16:	return "Error detected in the bus";
+	case 17:	return "Virtual address not found on IO-TLB or IO-PDIR";
+	case 18:	return "Improper access error";
+	case 19:	return "Access to a memory address which is not mapped to any component";
+	case 20:	return "Loss of Lockstep";
+	case 21:	return "Response not associated with a request";
+	case 22:	return "Bus parity error - must also set the A, C, or D Bits";
+	case 23:	return "Detection of a protocol error";
+	case 24:	return "Detection of a PATH_ERROR";
+	case 25:	return "Bus operation timeout";
+	case 26:	return "A read was issued to data that has been poisoned";
+	default:	return "Reserved";
+	}
+}
+EXPORT_SYMBOL_GPL(cper_mem_err_status_str);
+
+int cper_mem_err_location(struct cper_mem_err_compact *mem, char *msg)
 {
 	u32 len, n;
 
@@ -221,51 +308,52 @@ static int cper_mem_err_location(struct cper_mem_err_compact *mem, char *msg)
 	n = 0;
 	len = CPER_REC_LEN;
 	if (mem->validation_bits & CPER_MEM_VALID_NODE)
-		n += scnprintf(msg + n, len - n, "node: %d ", mem->node);
+		n += scnprintf(msg + n, len - n, "node:%d ", mem->node);
 	if (mem->validation_bits & CPER_MEM_VALID_CARD)
-		n += scnprintf(msg + n, len - n, "card: %d ", mem->card);
+		n += scnprintf(msg + n, len - n, "card:%d ", mem->card);
 	if (mem->validation_bits & CPER_MEM_VALID_MODULE)
-		n += scnprintf(msg + n, len - n, "module: %d ", mem->module);
+		n += scnprintf(msg + n, len - n, "module:%d ", mem->module);
 	if (mem->validation_bits & CPER_MEM_VALID_RANK_NUMBER)
-		n += scnprintf(msg + n, len - n, "rank: %d ", mem->rank);
+		n += scnprintf(msg + n, len - n, "rank:%d ", mem->rank);
 	if (mem->validation_bits & CPER_MEM_VALID_BANK)
-		n += scnprintf(msg + n, len - n, "bank: %d ", mem->bank);
+		n += scnprintf(msg + n, len - n, "bank:%d ", mem->bank);
 	if (mem->validation_bits & CPER_MEM_VALID_BANK_GROUP)
-		n += scnprintf(msg + n, len - n, "bank_group: %d ",
+		n += scnprintf(msg + n, len - n, "bank_group:%d ",
 			       mem->bank >> CPER_MEM_BANK_GROUP_SHIFT);
 	if (mem->validation_bits & CPER_MEM_VALID_BANK_ADDRESS)
-		n += scnprintf(msg + n, len - n, "bank_address: %d ",
+		n += scnprintf(msg + n, len - n, "bank_address:%d ",
 			       mem->bank & CPER_MEM_BANK_ADDRESS_MASK);
 	if (mem->validation_bits & CPER_MEM_VALID_DEVICE)
-		n += scnprintf(msg + n, len - n, "device: %d ", mem->device);
+		n += scnprintf(msg + n, len - n, "device:%d ", mem->device);
 	if (mem->validation_bits & (CPER_MEM_VALID_ROW | CPER_MEM_VALID_ROW_EXT)) {
 		u32 row = mem->row;
 
 		row |= cper_get_mem_extension(mem->validation_bits, mem->extended);
-		n += scnprintf(msg + n, len - n, "row: %d ", row);
+		n += scnprintf(msg + n, len - n, "row:%d ", row);
 	}
 	if (mem->validation_bits & CPER_MEM_VALID_COLUMN)
-		n += scnprintf(msg + n, len - n, "column: %d ", mem->column);
+		n += scnprintf(msg + n, len - n, "column:%d ", mem->column);
 	if (mem->validation_bits & CPER_MEM_VALID_BIT_POSITION)
-		n += scnprintf(msg + n, len - n, "bit_position: %d ",
+		n += scnprintf(msg + n, len - n, "bit_position:%d ",
 			       mem->bit_pos);
 	if (mem->validation_bits & CPER_MEM_VALID_REQUESTOR_ID)
-		n += scnprintf(msg + n, len - n, "requestor_id: 0x%016llx ",
+		n += scnprintf(msg + n, len - n, "requestor_id:0x%016llx ",
 			       mem->requestor_id);
 	if (mem->validation_bits & CPER_MEM_VALID_RESPONDER_ID)
-		n += scnprintf(msg + n, len - n, "responder_id: 0x%016llx ",
+		n += scnprintf(msg + n, len - n, "responder_id:0x%016llx ",
 			       mem->responder_id);
 	if (mem->validation_bits & CPER_MEM_VALID_TARGET_ID)
-		n += scnprintf(msg + n, len - n, "target_id: 0x%016llx ",
+		n += scnprintf(msg + n, len - n, "target_id:0x%016llx ",
 			       mem->target_id);
 	if (mem->validation_bits & CPER_MEM_VALID_CHIP_ID)
-		n += scnprintf(msg + n, len - n, "chip_id: %d ",
+		n += scnprintf(msg + n, len - n, "chip_id:%d ",
 			       mem->extended >> CPER_MEM_CHIP_ID_SHIFT);
 
 	return n;
 }
+EXPORT_SYMBOL_GPL(cper_mem_err_location);
 
-static int cper_dimm_err_location(struct cper_mem_err_compact *mem, char *msg)
+int cper_dimm_err_location(struct cper_mem_err_compact *mem, char *msg)
 {
 	u32 len, n;
 	const char *bank = NULL, *device = NULL;
@@ -284,6 +372,7 @@ static int cper_dimm_err_location(struct cper_mem_err_compact *mem, char *msg)
 
 	return n;
 }
+EXPORT_SYMBOL_GPL(cper_dimm_err_location);
 
 void cper_mem_err_pack(const struct cper_sec_mem_err *mem,
 		       struct cper_mem_err_compact *cmem)
@@ -305,6 +394,7 @@ void cper_mem_err_pack(const struct cper_sec_mem_err *mem,
 	cmem->mem_array_handle = mem->mem_array_handle;
 	cmem->mem_dev_handle = mem->mem_dev_handle;
 }
+EXPORT_SYMBOL_GPL(cper_mem_err_pack);
 
 const char *cper_mem_err_unpack(struct trace_seq *p,
 				struct cper_mem_err_compact *cmem)
@@ -334,7 +424,9 @@ static void cper_print_mem(const char *pfx, const struct cper_sec_mem_err *mem,
 		return;
 	}
 	if (mem->validation_bits & CPER_MEM_VALID_ERROR_STATUS)
-		printk("%s""error_status: 0x%016llx\n", pfx, mem->error_status);
+		printk("%s error_status: %s (0x%016llx)\n",
+		       pfx, cper_mem_err_status_str(mem->error_status),
+		       mem->error_status);
 	if (mem->validation_bits & CPER_MEM_VALID_PA)
 		printk("%s""physical_address: 0x%016llx\n",
 		       pfx, mem->physical_addr);
@@ -402,19 +494,24 @@ static void cper_print_pcie(const char *pfx, const struct cper_sec_pcie *pcie,
 	"%s""bridge: secondary_status: 0x%04x, control: 0x%04x\n",
 	pfx, pcie->bridge.secondary_status, pcie->bridge.control);
 
-	/* Fatal errors call __ghes_panic() before AER handler prints this */
-	if ((pcie->validation_bits & CPER_PCIE_VALID_AER_INFO) &&
-	    (gdata->error_severity & CPER_SEV_FATAL)) {
+	/*
+	 * Print all valid AER info. Record may be from BERT (boot-time) or GHES (run-time).
+	 *
+	 * Fatal errors call __ghes_panic() before AER handler prints this.
+	 */
+	if (pcie->validation_bits & CPER_PCIE_VALID_AER_INFO) {
 		struct aer_capability_regs *aer;
 
 		aer = (struct aer_capability_regs *)pcie->aer_info;
+		printk("%saer_cor_status: 0x%08x, aer_cor_mask: 0x%08x\n",
+		       pfx, aer->cor_status, aer->cor_mask);
 		printk("%saer_uncor_status: 0x%08x, aer_uncor_mask: 0x%08x\n",
 		       pfx, aer->uncor_status, aer->uncor_mask);
 		printk("%saer_uncor_severity: 0x%08x\n",
 		       pfx, aer->uncor_severity);
 		printk("%sTLP Header: %08x %08x %08x %08x\n", pfx,
-		       aer->header_log.dw0, aer->header_log.dw1,
-		       aer->header_log.dw2, aer->header_log.dw3);
+		       aer->header_log.dw[0], aer->header_log.dw[1],
+		       aer->header_log.dw[2], aer->header_log.dw[3]);
 	}
 }
 
@@ -463,6 +560,11 @@ static void cper_print_fw_err(const char *pfx,
 	} else {
 		offset = sizeof(*fw_err);
 	}
+	if (offset > length) {
+		printk("%s""error section length is too small: offset=%d, length=%d\n",
+		       pfx, offset, length);
+		return;
+	}
 
 	buf += offset;
 	length -= offset;
@@ -491,6 +593,17 @@ static void cper_print_tstamp(const char *pfx,
 	}
 }
 
+struct ignore_section {
+	guid_t guid;
+	const char *name;
+};
+
+static const struct ignore_section ignore_sections[] = {
+	{ .guid = CPER_SEC_CXL_GEN_MEDIA_GUID, .name = "CXL General Media Event" },
+	{ .guid = CPER_SEC_CXL_DRAM_GUID, .name = "CXL DRAM Event" },
+	{ .guid = CPER_SEC_CXL_MEM_MODULE_GUID, .name = "CXL Memory Module Event" },
+};
+
 static void
 cper_estatus_print_section(const char *pfx, struct acpi_hest_generic_data *gdata,
 			   int sec_no)
@@ -511,6 +624,14 @@ cper_estatus_print_section(const char *pfx, struct acpi_hest_generic_data *gdata
 		printk("%s""fru_text: %.20s\n", pfx, gdata->fru_text);
 
 	snprintf(newpfx, sizeof(newpfx), "%s ", pfx);
+
+	for (int i = 0; i < ARRAY_SIZE(ignore_sections); i++) {
+		if (guid_equal(sec_type, &ignore_sections[i].guid)) {
+			printk("%ssection_type: %s\n", newpfx, ignore_sections[i].name);
+			return;
+		}
+	}
+
 	if (guid_equal(sec_type, &CPER_SEC_PROC_GENERIC)) {
 		struct cper_sec_proc_generic *proc_err = acpi_hest_get_payload(gdata);
 
@@ -543,7 +664,8 @@ cper_estatus_print_section(const char *pfx, struct acpi_hest_generic_data *gdata
 
 		printk("%ssection_type: ARM processor error\n", newpfx);
 		if (gdata->error_data_length >= sizeof(*arm_err))
-			cper_print_proc_arm(newpfx, arm_err);
+			cper_print_proc_arm(newpfx, arm_err,
+					    gdata->error_data_length);
 		else
 			goto err_section_too_small;
 #endif
@@ -565,6 +687,14 @@ cper_estatus_print_section(const char *pfx, struct acpi_hest_generic_data *gdata
 		/* The minimal FW Error Record contains 16 bytes */
 		if (gdata->error_data_length >= SZ_16)
 			cper_print_fw_err(newpfx, gdata, fw_err);
+		else
+			goto err_section_too_small;
+	} else if (guid_equal(sec_type, &CPER_SEC_CXL_PROT_ERR)) {
+		struct cxl_cper_sec_prot_err *prot_err = acpi_hest_get_payload(gdata);
+
+		printk("%ssection_type: CXL Protocol Error\n", newpfx);
+		if (gdata->error_data_length >= sizeof(*prot_err))
+			cxl_cper_print_prot_err(newpfx, prot_err);
 		else
 			goto err_section_too_small;
 	} else {

@@ -32,10 +32,9 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
+#include <linux/comedi/comedi_pci.h>
+#include <linux/comedi/comedi_8254.h>
 
-#include "../comedi_pci.h"
-
-#include "comedi_8254.h"
 #include "plx9052.h"
 
 #define ME4000_FIRMWARE		"me4000_firmware.bin"
@@ -316,6 +315,18 @@ static int me4000_xilinx_download(struct comedi_device *dev,
 	unsigned int val;
 	unsigned int i;
 
+	/* Get data stream length from header. */
+	if (size >= 4) {
+		file_length = (((unsigned int)data[0] & 0xff) << 24) +
+			      (((unsigned int)data[1] & 0xff) << 16) +
+			      (((unsigned int)data[2] & 0xff) << 8) +
+			      ((unsigned int)data[3] & 0xff);
+	}
+	if (size < 16 || file_length > size - 16) {
+		dev_err(dev->class_dev, "Firmware length inconsistency\n");
+		return -EINVAL;
+	}
+
 	if (!xilinx_iobase)
 		return -ENODEV;
 
@@ -347,10 +358,6 @@ static int me4000_xilinx_download(struct comedi_device *dev,
 	outl(val, devpriv->plx_regbase + PLX9052_CNTRL);
 
 	/* Download Xilinx firmware */
-	file_length = (((unsigned int)data[0] & 0xff) << 24) +
-		      (((unsigned int)data[1] & 0xff) << 16) +
-		      (((unsigned int)data[2] & 0xff) << 8) +
-		      ((unsigned int)data[3] & 0xff);
 	usleep_range(10, 1000);
 
 	for (i = 0; i < file_length; i++) {
@@ -1210,9 +1217,9 @@ static int me4000_auto_attach(struct comedi_device *dev,
 		if (!timer_base)
 			return -ENODEV;
 
-		dev->pacer = comedi_8254_init(timer_base, 0, I8254_IO8, 0);
-		if (!dev->pacer)
-			return -ENOMEM;
+		dev->pacer = comedi_8254_io_alloc(timer_base, 0, I8254_IO8, 0);
+		if (IS_ERR(dev->pacer))
+			return PTR_ERR(dev->pacer);
 
 		comedi_8254_subdevice_init(s, dev->pacer);
 	} else {

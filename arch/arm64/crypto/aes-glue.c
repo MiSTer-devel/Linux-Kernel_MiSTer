@@ -5,26 +5,26 @@
  * Copyright (C) 2013 - 2017 Linaro Ltd <ard.biesheuvel@linaro.org>
  */
 
-#include <asm/neon.h>
 #include <asm/hwcap.h>
-#include <asm/simd.h>
+#include <asm/neon.h>
 #include <crypto/aes.h>
 #include <crypto/ctr.h>
-#include <crypto/sha2.h>
 #include <crypto/internal/hash.h>
-#include <crypto/internal/simd.h>
 #include <crypto/internal/skcipher.h>
 #include <crypto/scatterwalk.h>
-#include <linux/module.h>
-#include <linux/cpufeature.h>
+#include <crypto/sha2.h>
+#include <crypto/utils.h>
 #include <crypto/xts.h>
+#include <linux/cpufeature.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/string.h>
 
 #include "aes-ce-setkey.h"
 
 #ifdef USE_V8_CRYPTO_EXTENSIONS
 #define MODE			"ce"
 #define PRIO			300
-#define STRIDE			5
 #define aes_expandkey		ce_aes_expandkey
 #define aes_ecb_encrypt		ce_aes_ecb_encrypt
 #define aes_ecb_decrypt		ce_aes_ecb_decrypt
@@ -35,14 +35,14 @@
 #define aes_essiv_cbc_encrypt	ce_aes_essiv_cbc_encrypt
 #define aes_essiv_cbc_decrypt	ce_aes_essiv_cbc_decrypt
 #define aes_ctr_encrypt		ce_aes_ctr_encrypt
+#define aes_xctr_encrypt	ce_aes_xctr_encrypt
 #define aes_xts_encrypt		ce_aes_xts_encrypt
 #define aes_xts_decrypt		ce_aes_xts_decrypt
 #define aes_mac_update		ce_aes_mac_update
-MODULE_DESCRIPTION("AES-ECB/CBC/CTR/XTS using ARMv8 Crypto Extensions");
+MODULE_DESCRIPTION("AES-ECB/CBC/CTR/XTS/XCTR using ARMv8 Crypto Extensions");
 #else
 #define MODE			"neon"
 #define PRIO			200
-#define STRIDE			4
 #define aes_ecb_encrypt		neon_aes_ecb_encrypt
 #define aes_ecb_decrypt		neon_aes_ecb_decrypt
 #define aes_cbc_encrypt		neon_aes_cbc_encrypt
@@ -52,16 +52,18 @@ MODULE_DESCRIPTION("AES-ECB/CBC/CTR/XTS using ARMv8 Crypto Extensions");
 #define aes_essiv_cbc_encrypt	neon_aes_essiv_cbc_encrypt
 #define aes_essiv_cbc_decrypt	neon_aes_essiv_cbc_decrypt
 #define aes_ctr_encrypt		neon_aes_ctr_encrypt
+#define aes_xctr_encrypt	neon_aes_xctr_encrypt
 #define aes_xts_encrypt		neon_aes_xts_encrypt
 #define aes_xts_decrypt		neon_aes_xts_decrypt
 #define aes_mac_update		neon_aes_mac_update
-MODULE_DESCRIPTION("AES-ECB/CBC/CTR/XTS using ARMv8 NEON");
+MODULE_DESCRIPTION("AES-ECB/CBC/CTR/XTS/XCTR using ARMv8 NEON");
 #endif
 #if defined(USE_V8_CRYPTO_EXTENSIONS) || !IS_ENABLED(CONFIG_CRYPTO_AES_ARM64_BS)
 MODULE_ALIAS_CRYPTO("ecb(aes)");
 MODULE_ALIAS_CRYPTO("cbc(aes)");
 MODULE_ALIAS_CRYPTO("ctr(aes)");
 MODULE_ALIAS_CRYPTO("xts(aes)");
+MODULE_ALIAS_CRYPTO("xctr(aes)");
 #endif
 MODULE_ALIAS_CRYPTO("cts(cbc(aes))");
 MODULE_ALIAS_CRYPTO("essiv(cbc(aes),sha256)");
@@ -89,7 +91,10 @@ asmlinkage void aes_cbc_cts_decrypt(u8 out[], u8 const in[], u32 const rk[],
 				int rounds, int bytes, u8 const iv[]);
 
 asmlinkage void aes_ctr_encrypt(u8 out[], u8 const in[], u32 const rk[],
-				int rounds, int bytes, u8 ctr[], u8 finalbuf[]);
+				int rounds, int bytes, u8 ctr[]);
+
+asmlinkage void aes_xctr_encrypt(u8 out[], u8 const in[], u32 const rk[],
+				 int rounds, int bytes, u8 ctr[], int byte_ctr);
 
 asmlinkage void aes_xts_encrypt(u8 out[], u8 const in[], u32 const rk1[],
 				int rounds, int bytes, u32 const rk2[], u8 iv[],
@@ -117,7 +122,6 @@ struct crypto_aes_xts_ctx {
 struct crypto_aes_essiv_cbc_ctx {
 	struct crypto_aes_ctx key1;
 	struct crypto_aes_ctx __aligned(8) key2;
-	struct crypto_shash *hash;
 };
 
 struct mac_tfm_ctx {
@@ -126,7 +130,6 @@ struct mac_tfm_ctx {
 };
 
 struct mac_desc_ctx {
-	unsigned int len;
 	u8 dg[AES_BLOCK_SIZE];
 };
 
@@ -167,7 +170,7 @@ static int __maybe_unused essiv_cbc_set_key(struct crypto_skcipher *tfm,
 	if (ret)
 		return ret;
 
-	crypto_shash_tfm_digest(ctx->hash, in_key, key_len, digest);
+	sha256(in_key, key_len, digest);
 
 	return aes_expandkey(&ctx->key2, digest, sizeof(digest));
 }
@@ -384,22 +387,6 @@ static int cts_cbc_decrypt(struct skcipher_request *req)
 	return skcipher_walk_done(&walk, 0);
 }
 
-static int __maybe_unused essiv_cbc_init_tfm(struct crypto_skcipher *tfm)
-{
-	struct crypto_aes_essiv_cbc_ctx *ctx = crypto_skcipher_ctx(tfm);
-
-	ctx->hash = crypto_alloc_shash("sha256", 0, 0);
-
-	return PTR_ERR_OR_ZERO(ctx->hash);
-}
-
-static void __maybe_unused essiv_cbc_exit_tfm(struct crypto_skcipher *tfm)
-{
-	struct crypto_aes_essiv_cbc_ctx *ctx = crypto_skcipher_ctx(tfm);
-
-	crypto_free_shash(ctx->hash);
-}
-
 static int __maybe_unused essiv_cbc_encrypt(struct skcipher_request *req)
 {
 	struct crypto_skcipher *tfm = crypto_skcipher_reqtfm(req);
@@ -444,7 +431,53 @@ static int __maybe_unused essiv_cbc_decrypt(struct skcipher_request *req)
 	return err ?: cbc_decrypt_walk(req, &walk);
 }
 
-static int ctr_encrypt(struct skcipher_request *req)
+static int __maybe_unused xctr_encrypt(struct skcipher_request *req)
+{
+	struct crypto_skcipher *tfm = crypto_skcipher_reqtfm(req);
+	struct crypto_aes_ctx *ctx = crypto_skcipher_ctx(tfm);
+	int err, rounds = 6 + ctx->key_length / 4;
+	struct skcipher_walk walk;
+	unsigned int byte_ctr = 0;
+
+	err = skcipher_walk_virt(&walk, req, false);
+
+	while (walk.nbytes > 0) {
+		const u8 *src = walk.src.virt.addr;
+		unsigned int nbytes = walk.nbytes;
+		u8 *dst = walk.dst.virt.addr;
+		u8 buf[AES_BLOCK_SIZE];
+
+		/*
+		 * If given less than 16 bytes, we must copy the partial block
+		 * into a temporary buffer of 16 bytes to avoid out of bounds
+		 * reads and writes.  Furthermore, this code is somewhat unusual
+		 * in that it expects the end of the data to be at the end of
+		 * the temporary buffer, rather than the start of the data at
+		 * the start of the temporary buffer.
+		 */
+		if (unlikely(nbytes < AES_BLOCK_SIZE))
+			src = dst = memcpy(buf + sizeof(buf) - nbytes,
+					   src, nbytes);
+		else if (nbytes < walk.total)
+			nbytes &= ~(AES_BLOCK_SIZE - 1);
+
+		kernel_neon_begin();
+		aes_xctr_encrypt(dst, src, ctx->key_enc, rounds, nbytes,
+						 walk.iv, byte_ctr);
+		kernel_neon_end();
+
+		if (unlikely(nbytes < AES_BLOCK_SIZE))
+			memcpy(walk.dst.virt.addr,
+			       buf + sizeof(buf) - nbytes, nbytes);
+		byte_ctr += nbytes;
+
+		err = skcipher_walk_done(&walk, walk.nbytes - nbytes);
+	}
+
+	return err;
+}
+
+static int __maybe_unused ctr_encrypt(struct skcipher_request *req)
 {
 	struct crypto_skcipher *tfm = crypto_skcipher_reqtfm(req);
 	struct crypto_aes_ctx *ctx = crypto_skcipher_ctx(tfm);
@@ -458,54 +491,34 @@ static int ctr_encrypt(struct skcipher_request *req)
 		unsigned int nbytes = walk.nbytes;
 		u8 *dst = walk.dst.virt.addr;
 		u8 buf[AES_BLOCK_SIZE];
-		unsigned int tail;
 
+		/*
+		 * If given less than 16 bytes, we must copy the partial block
+		 * into a temporary buffer of 16 bytes to avoid out of bounds
+		 * reads and writes.  Furthermore, this code is somewhat unusual
+		 * in that it expects the end of the data to be at the end of
+		 * the temporary buffer, rather than the start of the data at
+		 * the start of the temporary buffer.
+		 */
 		if (unlikely(nbytes < AES_BLOCK_SIZE))
-			src = memcpy(buf, src, nbytes);
+			src = dst = memcpy(buf + sizeof(buf) - nbytes,
+					   src, nbytes);
 		else if (nbytes < walk.total)
 			nbytes &= ~(AES_BLOCK_SIZE - 1);
 
 		kernel_neon_begin();
 		aes_ctr_encrypt(dst, src, ctx->key_enc, rounds, nbytes,
-				walk.iv, buf);
+				walk.iv);
 		kernel_neon_end();
 
-		tail = nbytes % (STRIDE * AES_BLOCK_SIZE);
-		if (tail > 0 && tail < AES_BLOCK_SIZE)
-			/*
-			 * The final partial block could not be returned using
-			 * an overlapping store, so it was passed via buf[]
-			 * instead.
-			 */
-			memcpy(dst + nbytes - tail, buf, tail);
+		if (unlikely(nbytes < AES_BLOCK_SIZE))
+			memcpy(walk.dst.virt.addr,
+			       buf + sizeof(buf) - nbytes, nbytes);
 
 		err = skcipher_walk_done(&walk, walk.nbytes - nbytes);
 	}
 
 	return err;
-}
-
-static void ctr_encrypt_one(struct crypto_skcipher *tfm, const u8 *src, u8 *dst)
-{
-	const struct crypto_aes_ctx *ctx = crypto_skcipher_ctx(tfm);
-	unsigned long flags;
-
-	/*
-	 * Temporarily disable interrupts to avoid races where
-	 * cachelines are evicted when the CPU is interrupted
-	 * to do something else.
-	 */
-	local_irq_save(flags);
-	aes_encrypt(ctx, dst, src);
-	local_irq_restore(flags);
-}
-
-static int __maybe_unused ctr_encrypt_sync(struct skcipher_request *req)
-{
-	if (!crypto_simd_usable())
-		return crypto_ctr_encrypt_walk(req, ctr_encrypt_one);
-
-	return ctr_encrypt(req);
 }
 
 static int __maybe_unused xts_encrypt(struct skcipher_request *req)
@@ -656,10 +669,9 @@ static int __maybe_unused xts_decrypt(struct skcipher_request *req)
 static struct skcipher_alg aes_algs[] = { {
 #if defined(USE_V8_CRYPTO_EXTENSIONS) || !IS_ENABLED(CONFIG_CRYPTO_AES_ARM64_BS)
 	.base = {
-		.cra_name		= "__ecb(aes)",
-		.cra_driver_name	= "__ecb-aes-" MODE,
+		.cra_name		= "ecb(aes)",
+		.cra_driver_name	= "ecb-aes-" MODE,
 		.cra_priority		= PRIO,
-		.cra_flags		= CRYPTO_ALG_INTERNAL,
 		.cra_blocksize		= AES_BLOCK_SIZE,
 		.cra_ctxsize		= sizeof(struct crypto_aes_ctx),
 		.cra_module		= THIS_MODULE,
@@ -671,10 +683,9 @@ static struct skcipher_alg aes_algs[] = { {
 	.decrypt	= ecb_decrypt,
 }, {
 	.base = {
-		.cra_name		= "__cbc(aes)",
-		.cra_driver_name	= "__cbc-aes-" MODE,
+		.cra_name		= "cbc(aes)",
+		.cra_driver_name	= "cbc-aes-" MODE,
 		.cra_priority		= PRIO,
-		.cra_flags		= CRYPTO_ALG_INTERNAL,
 		.cra_blocksize		= AES_BLOCK_SIZE,
 		.cra_ctxsize		= sizeof(struct crypto_aes_ctx),
 		.cra_module		= THIS_MODULE,
@@ -687,10 +698,9 @@ static struct skcipher_alg aes_algs[] = { {
 	.decrypt	= cbc_decrypt,
 }, {
 	.base = {
-		.cra_name		= "__ctr(aes)",
-		.cra_driver_name	= "__ctr-aes-" MODE,
+		.cra_name		= "ctr(aes)",
+		.cra_driver_name	= "ctr-aes-" MODE,
 		.cra_priority		= PRIO,
-		.cra_flags		= CRYPTO_ALG_INTERNAL,
 		.cra_blocksize		= 1,
 		.cra_ctxsize		= sizeof(struct crypto_aes_ctx),
 		.cra_module		= THIS_MODULE,
@@ -704,9 +714,9 @@ static struct skcipher_alg aes_algs[] = { {
 	.decrypt	= ctr_encrypt,
 }, {
 	.base = {
-		.cra_name		= "ctr(aes)",
-		.cra_driver_name	= "ctr-aes-" MODE,
-		.cra_priority		= PRIO - 1,
+		.cra_name		= "xctr(aes)",
+		.cra_driver_name	= "xctr-aes-" MODE,
+		.cra_priority		= PRIO,
 		.cra_blocksize		= 1,
 		.cra_ctxsize		= sizeof(struct crypto_aes_ctx),
 		.cra_module		= THIS_MODULE,
@@ -716,14 +726,13 @@ static struct skcipher_alg aes_algs[] = { {
 	.ivsize		= AES_BLOCK_SIZE,
 	.chunksize	= AES_BLOCK_SIZE,
 	.setkey		= skcipher_aes_setkey,
-	.encrypt	= ctr_encrypt_sync,
-	.decrypt	= ctr_encrypt_sync,
+	.encrypt	= xctr_encrypt,
+	.decrypt	= xctr_encrypt,
 }, {
 	.base = {
-		.cra_name		= "__xts(aes)",
-		.cra_driver_name	= "__xts-aes-" MODE,
+		.cra_name		= "xts(aes)",
+		.cra_driver_name	= "xts-aes-" MODE,
 		.cra_priority		= PRIO,
-		.cra_flags		= CRYPTO_ALG_INTERNAL,
 		.cra_blocksize		= AES_BLOCK_SIZE,
 		.cra_ctxsize		= sizeof(struct crypto_aes_xts_ctx),
 		.cra_module		= THIS_MODULE,
@@ -738,10 +747,9 @@ static struct skcipher_alg aes_algs[] = { {
 }, {
 #endif
 	.base = {
-		.cra_name		= "__cts(cbc(aes))",
-		.cra_driver_name	= "__cts-cbc-aes-" MODE,
+		.cra_name		= "cts(cbc(aes))",
+		.cra_driver_name	= "cts-cbc-aes-" MODE,
 		.cra_priority		= PRIO,
-		.cra_flags		= CRYPTO_ALG_INTERNAL,
 		.cra_blocksize		= AES_BLOCK_SIZE,
 		.cra_ctxsize		= sizeof(struct crypto_aes_ctx),
 		.cra_module		= THIS_MODULE,
@@ -755,10 +763,9 @@ static struct skcipher_alg aes_algs[] = { {
 	.decrypt	= cts_cbc_decrypt,
 }, {
 	.base = {
-		.cra_name		= "__essiv(cbc(aes),sha256)",
-		.cra_driver_name	= "__essiv-cbc-aes-sha256-" MODE,
+		.cra_name		= "essiv(cbc(aes),sha256)",
+		.cra_driver_name	= "essiv-cbc-aes-sha256-" MODE,
 		.cra_priority		= PRIO + 1,
-		.cra_flags		= CRYPTO_ALG_INTERNAL,
 		.cra_blocksize		= AES_BLOCK_SIZE,
 		.cra_ctxsize		= sizeof(struct crypto_aes_essiv_cbc_ctx),
 		.cra_module		= THIS_MODULE,
@@ -769,8 +776,6 @@ static struct skcipher_alg aes_algs[] = { {
 	.setkey		= essiv_cbc_set_key,
 	.encrypt	= essiv_cbc_encrypt,
 	.decrypt	= essiv_cbc_decrypt,
-	.init		= essiv_cbc_init_tfm,
-	.exit		= essiv_cbc_exit_tfm,
 } };
 
 static int cbcmac_setkey(struct crypto_shash *tfm, const u8 *in_key,
@@ -845,109 +850,64 @@ static int mac_init(struct shash_desc *desc)
 	struct mac_desc_ctx *ctx = shash_desc_ctx(desc);
 
 	memset(ctx->dg, 0, AES_BLOCK_SIZE);
-	ctx->len = 0;
-
 	return 0;
 }
 
 static void mac_do_update(struct crypto_aes_ctx *ctx, u8 const in[], int blocks,
-			  u8 dg[], int enc_before, int enc_after)
+			  u8 dg[], int enc_before)
 {
 	int rounds = 6 + ctx->key_length / 4;
+	int rem;
 
-	if (crypto_simd_usable()) {
-		int rem;
-
-		do {
-			kernel_neon_begin();
-			rem = aes_mac_update(in, ctx->key_enc, rounds, blocks,
-					     dg, enc_before, enc_after);
-			kernel_neon_end();
-			in += (blocks - rem) * AES_BLOCK_SIZE;
-			blocks = rem;
-			enc_before = 0;
-		} while (blocks);
-	} else {
-		if (enc_before)
-			aes_encrypt(ctx, dg, dg);
-
-		while (blocks--) {
-			crypto_xor(dg, in, AES_BLOCK_SIZE);
-			in += AES_BLOCK_SIZE;
-
-			if (blocks || enc_after)
-				aes_encrypt(ctx, dg, dg);
-		}
-	}
+	do {
+		kernel_neon_begin();
+		rem = aes_mac_update(in, ctx->key_enc, rounds, blocks,
+				     dg, enc_before, !enc_before);
+		kernel_neon_end();
+		in += (blocks - rem) * AES_BLOCK_SIZE;
+		blocks = rem;
+	} while (blocks);
 }
 
 static int mac_update(struct shash_desc *desc, const u8 *p, unsigned int len)
 {
 	struct mac_tfm_ctx *tctx = crypto_shash_ctx(desc->tfm);
 	struct mac_desc_ctx *ctx = shash_desc_ctx(desc);
+	int blocks = len / AES_BLOCK_SIZE;
 
-	while (len > 0) {
-		unsigned int l;
-
-		if ((ctx->len % AES_BLOCK_SIZE) == 0 &&
-		    (ctx->len + len) > AES_BLOCK_SIZE) {
-
-			int blocks = len / AES_BLOCK_SIZE;
-
-			len %= AES_BLOCK_SIZE;
-
-			mac_do_update(&tctx->key, p, blocks, ctx->dg,
-				      (ctx->len != 0), (len != 0));
-
-			p += blocks * AES_BLOCK_SIZE;
-
-			if (!len) {
-				ctx->len = AES_BLOCK_SIZE;
-				break;
-			}
-			ctx->len = 0;
-		}
-
-		l = min(len, AES_BLOCK_SIZE - ctx->len);
-
-		if (l <= AES_BLOCK_SIZE) {
-			crypto_xor(ctx->dg + ctx->len, p, l);
-			ctx->len += l;
-			len -= l;
-			p += l;
-		}
-	}
-
-	return 0;
+	len %= AES_BLOCK_SIZE;
+	mac_do_update(&tctx->key, p, blocks, ctx->dg, 0);
+	return len;
 }
 
-static int cbcmac_final(struct shash_desc *desc, u8 *out)
+static int cbcmac_finup(struct shash_desc *desc, const u8 *src,
+			unsigned int len, u8 *out)
 {
 	struct mac_tfm_ctx *tctx = crypto_shash_ctx(desc->tfm);
 	struct mac_desc_ctx *ctx = shash_desc_ctx(desc);
 
-	mac_do_update(&tctx->key, NULL, 0, ctx->dg, (ctx->len != 0), 0);
-
+	if (len) {
+		crypto_xor(ctx->dg, src, len);
+		mac_do_update(&tctx->key, NULL, 0, ctx->dg, 1);
+	}
 	memcpy(out, ctx->dg, AES_BLOCK_SIZE);
-
 	return 0;
 }
 
-static int cmac_final(struct shash_desc *desc, u8 *out)
+static int cmac_finup(struct shash_desc *desc, const u8 *src, unsigned int len,
+		      u8 *out)
 {
 	struct mac_tfm_ctx *tctx = crypto_shash_ctx(desc->tfm);
 	struct mac_desc_ctx *ctx = shash_desc_ctx(desc);
 	u8 *consts = tctx->consts;
 
-	if (ctx->len != AES_BLOCK_SIZE) {
-		ctx->dg[ctx->len] ^= 0x80;
+	crypto_xor(ctx->dg, src, len);
+	if (len != AES_BLOCK_SIZE) {
+		ctx->dg[len] ^= 0x80;
 		consts += AES_BLOCK_SIZE;
 	}
-
-	mac_do_update(&tctx->key, consts, 1, ctx->dg, 0, 1);
-
+	mac_do_update(&tctx->key, consts, 1, ctx->dg, 0);
 	memcpy(out, ctx->dg, AES_BLOCK_SIZE);
-
 	return 0;
 }
 
@@ -955,6 +915,8 @@ static struct shash_alg mac_algs[] = { {
 	.base.cra_name		= "cmac(aes)",
 	.base.cra_driver_name	= "cmac-aes-" MODE,
 	.base.cra_priority	= PRIO,
+	.base.cra_flags		= CRYPTO_AHASH_ALG_BLOCK_ONLY |
+				  CRYPTO_AHASH_ALG_FINAL_NONZERO,
 	.base.cra_blocksize	= AES_BLOCK_SIZE,
 	.base.cra_ctxsize	= sizeof(struct mac_tfm_ctx) +
 				  2 * AES_BLOCK_SIZE,
@@ -963,13 +925,15 @@ static struct shash_alg mac_algs[] = { {
 	.digestsize		= AES_BLOCK_SIZE,
 	.init			= mac_init,
 	.update			= mac_update,
-	.final			= cmac_final,
+	.finup			= cmac_finup,
 	.setkey			= cmac_setkey,
 	.descsize		= sizeof(struct mac_desc_ctx),
 }, {
 	.base.cra_name		= "xcbc(aes)",
 	.base.cra_driver_name	= "xcbc-aes-" MODE,
 	.base.cra_priority	= PRIO,
+	.base.cra_flags		= CRYPTO_AHASH_ALG_BLOCK_ONLY |
+				  CRYPTO_AHASH_ALG_FINAL_NONZERO,
 	.base.cra_blocksize	= AES_BLOCK_SIZE,
 	.base.cra_ctxsize	= sizeof(struct mac_tfm_ctx) +
 				  2 * AES_BLOCK_SIZE,
@@ -978,47 +942,35 @@ static struct shash_alg mac_algs[] = { {
 	.digestsize		= AES_BLOCK_SIZE,
 	.init			= mac_init,
 	.update			= mac_update,
-	.final			= cmac_final,
+	.finup			= cmac_finup,
 	.setkey			= xcbc_setkey,
 	.descsize		= sizeof(struct mac_desc_ctx),
 }, {
 	.base.cra_name		= "cbcmac(aes)",
 	.base.cra_driver_name	= "cbcmac-aes-" MODE,
 	.base.cra_priority	= PRIO,
-	.base.cra_blocksize	= 1,
+	.base.cra_flags		= CRYPTO_AHASH_ALG_BLOCK_ONLY,
+	.base.cra_blocksize	= AES_BLOCK_SIZE,
 	.base.cra_ctxsize	= sizeof(struct mac_tfm_ctx),
 	.base.cra_module	= THIS_MODULE,
 
 	.digestsize		= AES_BLOCK_SIZE,
 	.init			= mac_init,
 	.update			= mac_update,
-	.final			= cbcmac_final,
+	.finup			= cbcmac_finup,
 	.setkey			= cbcmac_setkey,
 	.descsize		= sizeof(struct mac_desc_ctx),
 } };
 
-static struct simd_skcipher_alg *aes_simd_algs[ARRAY_SIZE(aes_algs)];
-
 static void aes_exit(void)
 {
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(aes_simd_algs); i++)
-		if (aes_simd_algs[i])
-			simd_skcipher_free(aes_simd_algs[i]);
-
 	crypto_unregister_shashes(mac_algs, ARRAY_SIZE(mac_algs));
 	crypto_unregister_skciphers(aes_algs, ARRAY_SIZE(aes_algs));
 }
 
 static int __init aes_init(void)
 {
-	struct simd_skcipher_alg *simd;
-	const char *basename;
-	const char *algname;
-	const char *drvname;
 	int err;
-	int i;
 
 	err = crypto_register_skciphers(aes_algs, ARRAY_SIZE(aes_algs));
 	if (err)
@@ -1028,26 +980,8 @@ static int __init aes_init(void)
 	if (err)
 		goto unregister_ciphers;
 
-	for (i = 0; i < ARRAY_SIZE(aes_algs); i++) {
-		if (!(aes_algs[i].base.cra_flags & CRYPTO_ALG_INTERNAL))
-			continue;
-
-		algname = aes_algs[i].base.cra_name + 2;
-		drvname = aes_algs[i].base.cra_driver_name + 2;
-		basename = aes_algs[i].base.cra_driver_name;
-		simd = simd_skcipher_create_compat(algname, drvname, basename);
-		err = PTR_ERR(simd);
-		if (IS_ERR(simd))
-			goto unregister_simds;
-
-		aes_simd_algs[i] = simd;
-	}
-
 	return 0;
 
-unregister_simds:
-	aes_exit();
-	return err;
 unregister_ciphers:
 	crypto_unregister_skciphers(aes_algs, ARRAY_SIZE(aes_algs));
 	return err;
@@ -1055,10 +989,12 @@ unregister_ciphers:
 
 #ifdef USE_V8_CRYPTO_EXTENSIONS
 module_cpu_feature_match(AES, aes_init);
+EXPORT_SYMBOL_NS(ce_aes_mac_update, "CRYPTO_INTERNAL");
 #else
 module_init(aes_init);
 EXPORT_SYMBOL(neon_aes_ecb_encrypt);
 EXPORT_SYMBOL(neon_aes_cbc_encrypt);
+EXPORT_SYMBOL(neon_aes_ctr_encrypt);
 EXPORT_SYMBOL(neon_aes_xts_encrypt);
 EXPORT_SYMBOL(neon_aes_xts_decrypt);
 #endif

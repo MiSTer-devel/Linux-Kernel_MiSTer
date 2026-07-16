@@ -95,7 +95,7 @@ static struct g760a_data *g760a_update_client(struct device *dev)
 		data->fan_sta = g760a_read_value(client, G760A_REG_FAN_STA);
 
 		data->last_updated = jiffies;
-		data->valid = 1;
+		data->valid = true;
 	}
 
 	mutex_unlock(&data->update_lock);
@@ -197,7 +197,7 @@ static int g760a_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id g760a_id[] = {
-	{ "g760a", 0 },
+	{ "g760a" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, g760a_id);
@@ -206,7 +206,7 @@ static struct i2c_driver g760a_driver = {
 	.driver = {
 		.name	= "g760a",
 	},
-	.probe_new = g760a_probe,
+	.probe = g760a_probe,
 	.id_table = g760a_id,
 };
 

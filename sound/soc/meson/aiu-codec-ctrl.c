@@ -57,7 +57,7 @@ static int aiu_codec_ctrl_mux_put_enum(struct snd_kcontrol *kcontrol,
 
 	snd_soc_dapm_mux_update_power(dapm, kcontrol, mux, e, NULL);
 
-	return 0;
+	return 1;
 }
 
 static SOC_ENUM_SINGLE_DECL(aiu_hdmi_ctrl_mux_enum, AIU_HDMI_CLK_DATA_CTRL,
@@ -75,6 +75,8 @@ static const struct snd_soc_dapm_widget aiu_hdmi_ctrl_widgets[] = {
 };
 
 static const struct snd_soc_dai_ops aiu_codec_ctrl_input_ops = {
+	.probe		= meson_codec_glue_input_dai_probe,
+	.remove		= meson_codec_glue_input_dai_remove,
 	.hw_params	= meson_codec_glue_input_hw_params,
 	.set_fmt	= meson_codec_glue_input_set_fmt,
 };
@@ -102,8 +104,6 @@ static const struct snd_soc_dai_ops aiu_codec_ctrl_output_ops = {
 	.name = "CODEC CTRL " xname,				\
 	.playback = AIU_CODEC_CTRL_STREAM(xname, "Playback"),	\
 	.ops = &aiu_codec_ctrl_input_ops,			\
-	.probe = meson_codec_glue_input_dai_probe,		\
-	.remove = meson_codec_glue_input_dai_remove,		\
 }
 
 #define AIU_CODEC_CTRL_OUTPUT(xname) {				\
@@ -139,7 +139,9 @@ static const struct snd_soc_component_driver aiu_hdmi_ctrl_component = {
 	.num_dapm_routes	= ARRAY_SIZE(aiu_hdmi_ctrl_routes),
 	.of_xlate_dai_name	= aiu_hdmi_of_xlate_dai_name,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
+#ifdef CONFIG_DEBUG_FS
+	.debugfs_prefix		= "hdmi",
+#endif
 };
 
 int aiu_hdmi_ctrl_register_component(struct device *dev)

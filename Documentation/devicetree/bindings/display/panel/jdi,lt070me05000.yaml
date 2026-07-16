@@ -16,8 +16,10 @@ properties:
   compatible:
     const: jdi,lt070me05000
 
+  reg:
+    maxItems: 1
+
   enable-gpios: true
-  reg: true
   reset-gpios: true
 
   vddp-supply:
@@ -34,6 +36,8 @@ properties:
     description: |
       phandle of the gpio for power ic line
       Power IC supply enable, High active
+
+  port: true
 
 required:
   - compatible

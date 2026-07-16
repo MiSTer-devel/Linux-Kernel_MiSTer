@@ -33,7 +33,7 @@
 #include <linux/prefetch.h>
 #include <linux/moduleparam.h>
 #include <asm/byteorder.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include "amd5536udc.h"
 
 static void udc_setup_endpoints(struct udc *dev);
@@ -80,7 +80,7 @@ static int stop_timer;
  * This cannot be solved by letting the RX DMA disabled until a
  * request gets queued because there may be other OUT packets
  * in the FIFO (important for not blocking control traffic).
- * The value of set_rde controls the correspondig timer.
+ * The value of set_rde controls the corresponding timer.
  *
  * set_rde -1 == not used, means it is alloed to be set to 0 or 1
  * set_rde  0 == do not touch RDE, do no start the RDE timer
@@ -1933,7 +1933,6 @@ static int amd5536_udc_start(struct usb_gadget *g,
 	struct udc *dev = to_amd5536_udc(g);
 	u32 tmp;
 
-	driver->driver.bus = NULL;
 	dev->driver = driver;
 
 	/* Some gadget drivers use both ep0 directions.
@@ -2708,7 +2707,7 @@ static irqreturn_t udc_control_in_isr(struct udc *dev)
 					/* write fifo */
 					udc_txfifo_write(ep, &req->req);
 
-					/* lengh bytes transferred */
+					/* length bytes transferred */
 					len = req->req.length - req->req.actual;
 					if (len > ep->ep.maxpacket)
 						len = ep->ep.maxpacket;
@@ -3036,12 +3035,12 @@ void udc_remove(struct udc *dev)
 	stop_timer++;
 	if (timer_pending(&udc_timer))
 		wait_for_completion(&on_exit);
-	del_timer_sync(&udc_timer);
+	timer_delete_sync(&udc_timer);
 	/* remove pollstall timer */
 	stop_pollstall_timer++;
 	if (timer_pending(&udc_pollstall_timer))
 		wait_for_completion(&on_pollstall_exit);
-	del_timer_sync(&udc_pollstall_timer);
+	timer_delete_sync(&udc_pollstall_timer);
 	udc = NULL;
 }
 EXPORT_SYMBOL_GPL(udc_remove);

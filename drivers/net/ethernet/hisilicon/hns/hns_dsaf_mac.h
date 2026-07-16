@@ -348,7 +348,7 @@ struct mac_driver {
 	/*disable mac when disable nic or dsaf*/
 	void (*mac_disable)(void *mac_drv, enum mac_commom_mode mode);
 	/* config mac address*/
-	void (*set_mac_addr)(void *mac_drv,	char *mac_addr);
+	void (*set_mac_addr)(void *mac_drv,	const char *mac_addr);
 	/*adjust mac mode of port,include speed and duplex*/
 	int (*adjust_link)(void *mac_drv, enum mac_speed speed,
 			   u32 full_duplex);
@@ -378,7 +378,7 @@ struct mac_driver {
 	void (*get_regs)(void *mac_drv, void *data);
 	int (*get_regs_count)(void);
 	/* get strings name for ethtool statistic */
-	void (*get_strings)(u32 stringset, u8 *data);
+	void (*get_strings)(u32 stringset, u8 **data);
 	/* get the number of strings*/
 	int (*get_sset_count)(int stringset);
 
@@ -422,10 +422,10 @@ void *hns_xgmac_config(struct hns_mac_cb *mac_cb,
 		       struct mac_params *mac_param);
 
 int hns_mac_init(struct dsaf_device *dsaf_dev);
-void mac_adjust_link(struct net_device *net_dev);
 bool hns_mac_need_adjust_link(struct hns_mac_cb *mac_cb, int speed, int duplex);
 void hns_mac_get_link_status(struct hns_mac_cb *mac_cb,	u32 *link_status);
-int hns_mac_change_vf_addr(struct hns_mac_cb *mac_cb, u32 vmid, char *addr);
+int hns_mac_change_vf_addr(struct hns_mac_cb *mac_cb, u32 vmid,
+			   const char *addr);
 int hns_mac_set_multi(struct hns_mac_cb *mac_cb,
 		      u32 port_num, char *addr, bool enable);
 int hns_mac_vm_config_bc_en(struct hns_mac_cb *mac_cb, u32 vm, bool enable);
@@ -445,7 +445,7 @@ int hns_mac_config_mac_loopback(struct hns_mac_cb *mac_cb,
 				enum hnae_loop loop, int en);
 void hns_mac_update_stats(struct hns_mac_cb *mac_cb);
 void hns_mac_get_stats(struct hns_mac_cb *mac_cb, u64 *data);
-void hns_mac_get_strings(struct hns_mac_cb *mac_cb, int stringset, u8 *data);
+void hns_mac_get_strings(struct hns_mac_cb *mac_cb, int stringset, u8 **data);
 int hns_mac_get_sset_count(struct hns_mac_cb *mac_cb, int stringset);
 void hns_mac_get_regs(struct hns_mac_cb *mac_cb, void *data);
 int hns_mac_get_regs_count(struct hns_mac_cb *mac_cb);

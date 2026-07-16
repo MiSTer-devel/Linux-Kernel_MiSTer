@@ -2,7 +2,7 @@
 /*
     Copyright (C) 2003-2004  Kevin Thayer <nufan_wfk at yahoo.com>
     Copyright (C) 2004  Chris Kennedy <c@groovy.org>
-    Copyright (C) 2006-2007  Hans Verkuil <hverkuil@xs4all.nl>
+    Copyright (C) 2006-2007  Hans Verkuil <hverkuil@kernel.org>
 
  */
 
@@ -23,14 +23,14 @@ void ivtv_udma_start(struct ivtv *itv);
 
 static inline void ivtv_udma_sync_for_device(struct ivtv *itv)
 {
-	pci_dma_sync_single_for_device(itv->pdev, itv->udma.SG_handle,
-		sizeof(itv->udma.SGarray), PCI_DMA_TODEVICE);
+	dma_sync_single_for_device(&itv->pdev->dev, itv->udma.SG_handle,
+				   sizeof(itv->udma.SGarray), DMA_TO_DEVICE);
 }
 
 static inline void ivtv_udma_sync_for_cpu(struct ivtv *itv)
 {
-	pci_dma_sync_single_for_cpu(itv->pdev, itv->udma.SG_handle,
-		sizeof(itv->udma.SGarray), PCI_DMA_TODEVICE);
+	dma_sync_single_for_cpu(&itv->pdev->dev, itv->udma.SG_handle,
+				sizeof(itv->udma.SGarray), DMA_TO_DEVICE);
 }
 
 #endif

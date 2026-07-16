@@ -44,14 +44,6 @@ struct xfs_dquot_res {
 	 * in seconds since the Unix epoch.
 	 */
 	time64_t		timer;
-
-	/*
-	 * For root dquots, this is the maximum number of warnings that will
-	 * be issued for this quota type.  Otherwise, this is the number of
-	 * warnings issued against this quota.  Note that none of this is
-	 * implemented.
-	 */
-	xfs_qwarncnt_t		warnings;
 };
 
 static inline bool
@@ -63,6 +55,12 @@ xfs_dquot_res_over_limits(
 		return true;
 	return false;
 }
+
+struct xfs_dquot_pre {
+	xfs_qcnt_t		q_prealloc_lo_wmark;
+	xfs_qcnt_t		q_prealloc_hi_wmark;
+	int64_t			q_low_space[XFS_QLOWSP_MAX];
+};
 
 /*
  * The incore dquot structure
@@ -84,9 +82,9 @@ struct xfs_dquot {
 
 	struct xfs_dq_logitem	q_logitem;
 
-	xfs_qcnt_t		q_prealloc_lo_wmark;
-	xfs_qcnt_t		q_prealloc_hi_wmark;
-	int64_t			q_low_space[XFS_QLOWSP_MAX];
+	struct xfs_dquot_pre	q_blk_prealloc;
+	struct xfs_dquot_pre	q_rtb_prealloc;
+
 	struct mutex		q_qlock;
 	struct completion	q_flush;
 	atomic_t		q_pincount;
@@ -162,6 +160,9 @@ static inline struct xfs_dquot *xfs_inode_dquot(
 	struct xfs_inode	*ip,
 	xfs_dqtype_t		type)
 {
+	if (xfs_is_metadir_inode(ip))
+		return NULL;
+
 	switch (type) {
 	case XFS_DQTYPE_USER:
 		return ip->i_udquot;
@@ -200,7 +201,11 @@ static inline bool xfs_dquot_lowsp(struct xfs_dquot *dqp)
 	int64_t freesp;
 
 	freesp = dqp->q_blk.hardlimit - dqp->q_blk.reserved;
-	if (freesp < dqp->q_low_space[XFS_QLOWSP_1_PCNT])
+	if (freesp < dqp->q_blk_prealloc.q_low_space[XFS_QLOWSP_1_PCNT])
+		return true;
+
+	freesp = dqp->q_rtb.hardlimit - dqp->q_rtb.reserved;
+	if (freesp < dqp->q_rtb_prealloc.q_low_space[XFS_QLOWSP_1_PCNT])
 		return true;
 
 	return false;
@@ -212,7 +217,7 @@ void xfs_dquot_to_disk(struct xfs_disk_dquot *ddqp, struct xfs_dquot *dqp);
 #define XFS_DQ_IS_DIRTY(dqp)	((dqp)->q_flags & XFS_DQFLAG_DIRTY)
 
 void		xfs_qm_dqdestroy(struct xfs_dquot *dqp);
-int		xfs_qm_dqflush(struct xfs_dquot *dqp, struct xfs_buf **bpp);
+int		xfs_qm_dqflush(struct xfs_dquot *dqp, struct xfs_buf *bp);
 void		xfs_qm_dqunpin_wait(struct xfs_dquot *dqp);
 void		xfs_qm_adjust_dqtimers(struct xfs_dquot *d);
 void		xfs_qm_adjust_dqlimits(struct xfs_dquot *d);
@@ -231,8 +236,13 @@ int		xfs_qm_dqget_uncached(struct xfs_mount *mp,
 void		xfs_qm_dqput(struct xfs_dquot *dqp);
 
 void		xfs_dqlock2(struct xfs_dquot *, struct xfs_dquot *);
+void		xfs_dqlockn(struct xfs_dqtrx *q);
 
 void		xfs_dquot_set_prealloc_limits(struct xfs_dquot *);
+
+int xfs_dquot_attach_buf(struct xfs_trans *tp, struct xfs_dquot *dqp);
+int xfs_dquot_use_attached_buf(struct xfs_dquot *dqp, struct xfs_buf **bpp);
+void xfs_dquot_detach_buf(struct xfs_dquot *dqp);
 
 static inline struct xfs_dquot *xfs_qm_dqhold(struct xfs_dquot *dqp)
 {
@@ -242,12 +252,10 @@ static inline struct xfs_dquot *xfs_qm_dqhold(struct xfs_dquot *dqp)
 	return dqp;
 }
 
-typedef int (*xfs_qm_dqiterate_fn)(struct xfs_dquot *dq,
-		xfs_dqtype_t type, void *priv);
-int xfs_qm_dqiterate(struct xfs_mount *mp, xfs_dqtype_t type,
-		xfs_qm_dqiterate_fn iter_fn, void *priv);
-
 time64_t xfs_dquot_set_timeout(struct xfs_mount *mp, time64_t timeout);
 time64_t xfs_dquot_set_grace_period(time64_t grace);
+
+void xfs_qm_init_dquot_blk(struct xfs_trans *tp, xfs_dqid_t id, xfs_dqtype_t
+		type, struct xfs_buf *bp);
 
 #endif /* __XFS_DQUOT_H__ */

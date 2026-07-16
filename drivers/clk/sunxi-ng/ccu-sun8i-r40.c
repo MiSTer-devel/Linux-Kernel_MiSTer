@@ -5,6 +5,7 @@
 
 #include <linux/clk-provider.h>
 #include <linux/io.h>
+#include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 
@@ -438,7 +439,7 @@ static SUNXI_CCU_GATE(bus_i2c2_clk,	"bus-i2c2",	"apb2",
 static SUNXI_CCU_GATE(bus_i2c3_clk,	"bus-i2c3",	"apb2",
 		      0x06c, BIT(3), 0);
 /*
- * In datasheet here's "Reserved", however the gate exists in BSP soucre
+ * In datasheet here's "Reserved", however the gate exists in BSP source
  * code.
  */
 static SUNXI_CCU_GATE(bus_can_clk,	"bus-can",	"apb2",
@@ -1161,7 +1162,7 @@ static struct clk_hw_onecell_data sun8i_r40_hw_clks = {
 	.num	= CLK_NUMBER,
 };
 
-static struct ccu_reset_map sun8i_r40_ccu_resets[] = {
+static const struct ccu_reset_map sun8i_r40_ccu_resets[] = {
 	[RST_USB_PHY0]		=  { 0x0cc, BIT(0) },
 	[RST_USB_PHY1]		=  { 0x0cc, BIT(1) },
 	[RST_USB_PHY2]		=  { 0x0cc, BIT(2) },
@@ -1291,7 +1292,7 @@ static bool sun8i_r40_ccu_regmap_accessible_reg(struct device *dev,
 	return false;
 }
 
-static struct regmap_config sun8i_r40_ccu_regmap_config = {
+static const struct regmap_config sun8i_r40_ccu_regmap_config = {
 	.reg_bits	= 32,
 	.val_bits	= 32,
 	.reg_stride	= 4,
@@ -1307,14 +1308,12 @@ static struct regmap_config sun8i_r40_ccu_regmap_config = {
 
 static int sun8i_r40_ccu_probe(struct platform_device *pdev)
 {
-	struct resource *res;
 	struct regmap *regmap;
 	void __iomem *reg;
 	u32 val;
 	int ret;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	reg = devm_ioremap_resource(&pdev->dev, res);
+	reg = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(reg))
 		return PTR_ERR(reg);
 
@@ -1346,7 +1345,7 @@ static int sun8i_r40_ccu_probe(struct platform_device *pdev)
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
-	ret = sunxi_ccu_probe(pdev->dev.of_node, reg, &sun8i_r40_ccu_desc);
+	ret = devm_sunxi_ccu_probe(&pdev->dev, reg, &sun8i_r40_ccu_desc);
 	if (ret)
 		return ret;
 
@@ -1364,12 +1363,18 @@ static const struct of_device_id sun8i_r40_ccu_ids[] = {
 	{ .compatible = "allwinner,sun8i-r40-ccu" },
 	{ }
 };
+MODULE_DEVICE_TABLE(of, sun8i_r40_ccu_ids);
 
 static struct platform_driver sun8i_r40_ccu_driver = {
 	.probe	= sun8i_r40_ccu_probe,
 	.driver	= {
 		.name	= "sun8i-r40-ccu",
+		.suppress_bind_attrs = true,
 		.of_match_table	= sun8i_r40_ccu_ids,
 	},
 };
-builtin_platform_driver(sun8i_r40_ccu_driver);
+module_platform_driver(sun8i_r40_ccu_driver);
+
+MODULE_IMPORT_NS("SUNXI_CCU");
+MODULE_DESCRIPTION("Support for the Allwinner R40 CCU");
+MODULE_LICENSE("GPL");

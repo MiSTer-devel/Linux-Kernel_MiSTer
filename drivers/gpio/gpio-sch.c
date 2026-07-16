@@ -38,9 +38,8 @@
 
 struct sch_gpio {
 	struct gpio_chip chip;
-	struct irq_chip irqchip;
+	void __iomem *regs;
 	spinlock_t lock;
-	unsigned short iobase;
 	unsigned short resume_base;
 
 	/* GPE handling */
@@ -76,7 +75,7 @@ static int sch_gpio_reg_get(struct sch_gpio *sch, unsigned int gpio, unsigned in
 	offset = sch_gpio_offset(sch, gpio, reg);
 	bit = sch_gpio_bit(sch, gpio);
 
-	reg_val = !!(inb(sch->iobase + offset) & BIT(bit));
+	reg_val = !!(ioread8(sch->regs + offset) & BIT(bit));
 
 	return reg_val;
 }
@@ -90,12 +89,14 @@ static void sch_gpio_reg_set(struct sch_gpio *sch, unsigned int gpio, unsigned i
 	offset = sch_gpio_offset(sch, gpio, reg);
 	bit = sch_gpio_bit(sch, gpio);
 
-	reg_val = inb(sch->iobase + offset);
+	reg_val = ioread8(sch->regs + offset);
 
 	if (val)
-		outb(reg_val | BIT(bit), sch->iobase + offset);
+		reg_val |= BIT(bit);
 	else
-		outb((reg_val & ~BIT(bit)), sch->iobase + offset);
+		reg_val &= ~BIT(bit);
+
+	iowrite8(reg_val, sch->regs + offset);
 }
 
 static int sch_gpio_direction_in(struct gpio_chip *gc, unsigned int gpio_num)
@@ -116,7 +117,7 @@ static int sch_gpio_get(struct gpio_chip *gc, unsigned int gpio_num)
 	return sch_gpio_reg_get(sch, gpio_num, GLV);
 }
 
-static void sch_gpio_set(struct gpio_chip *gc, unsigned int gpio_num, int val)
+static int sch_gpio_set(struct gpio_chip *gc, unsigned int gpio_num, int val)
 {
 	struct sch_gpio *sch = gpiochip_get_data(gc);
 	unsigned long flags;
@@ -124,6 +125,8 @@ static void sch_gpio_set(struct gpio_chip *gc, unsigned int gpio_num, int val)
 	spin_lock_irqsave(&sch->lock, flags);
 	sch_gpio_reg_set(sch, gpio_num, GLV, val);
 	spin_unlock_irqrestore(&sch->lock, flags);
+
+	return 0;
 }
 
 static int sch_gpio_direction_out(struct gpio_chip *gc, unsigned int gpio_num,
@@ -139,14 +142,13 @@ static int sch_gpio_direction_out(struct gpio_chip *gc, unsigned int gpio_num,
 	/*
 	 * according to the datasheet, writing to the level register has no
 	 * effect when GPIO is programmed as input.
-	 * Actually the the level register is read-only when configured as input.
+	 * Actually the level register is read-only when configured as input.
 	 * Thus presetting the output level before switching to output is _NOT_ possible.
 	 * Hence we set the level after configuring the GPIO as output.
 	 * But we cannot prevent a short low pulse if direction is set to high
 	 * and an external pull-up is connected.
 	 */
-	sch_gpio_set(gc, gpio_num, val);
-	return 0;
+	return sch_gpio_set(gc, gpio_num, val);
 }
 
 static int sch_gpio_get_direction(struct gpio_chip *gc, unsigned int gpio_num)
@@ -218,11 +220,9 @@ static void sch_irq_ack(struct irq_data *d)
 	spin_unlock_irqrestore(&sch->lock, flags);
 }
 
-static void sch_irq_mask_unmask(struct irq_data *d, int val)
+static void sch_irq_mask_unmask(struct gpio_chip *gc, irq_hw_number_t gpio_num, int val)
 {
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct sch_gpio *sch = gpiochip_get_data(gc);
-	irq_hw_number_t gpio_num = irqd_to_hwirq(d);
 	unsigned long flags;
 
 	spin_lock_irqsave(&sch->lock, flags);
@@ -232,13 +232,31 @@ static void sch_irq_mask_unmask(struct irq_data *d, int val)
 
 static void sch_irq_mask(struct irq_data *d)
 {
-	sch_irq_mask_unmask(d, 0);
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	irq_hw_number_t gpio_num = irqd_to_hwirq(d);
+
+	sch_irq_mask_unmask(gc, gpio_num, 0);
+	gpiochip_disable_irq(gc, gpio_num);
 }
 
 static void sch_irq_unmask(struct irq_data *d)
 {
-	sch_irq_mask_unmask(d, 1);
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	irq_hw_number_t gpio_num = irqd_to_hwirq(d);
+
+	gpiochip_enable_irq(gc, gpio_num);
+	sch_irq_mask_unmask(gc, gpio_num, 1);
 }
+
+static const struct irq_chip sch_irqchip = {
+	.name = "sch_gpio",
+	.irq_ack = sch_irq_ack,
+	.irq_mask = sch_irq_mask,
+	.irq_unmask = sch_irq_unmask,
+	.irq_set_type = sch_irq_type,
+	.flags = IRQCHIP_IMMUTABLE,
+	GPIOCHIP_IRQ_RESOURCE_HELPERS,
+};
 
 static u32 sch_gpio_gpe_handler(acpi_handle gpe_device, u32 gpe, void *context)
 {
@@ -252,8 +270,8 @@ static u32 sch_gpio_gpe_handler(acpi_handle gpe_device, u32 gpe, void *context)
 
 	spin_lock_irqsave(&sch->lock, flags);
 
-	core_status = inl(sch->iobase + CORE_BANK_OFFSET + GTS);
-	resume_status = inl(sch->iobase + RESUME_BANK_OFFSET + GTS);
+	core_status = ioread32(sch->regs + CORE_BANK_OFFSET + GTS);
+	resume_status = ioread32(sch->regs + RESUME_BANK_OFFSET + GTS);
 
 	spin_unlock_irqrestore(&sch->lock, flags);
 
@@ -304,12 +322,14 @@ static int sch_gpio_install_gpe_handler(struct sch_gpio *sch)
 
 static int sch_gpio_probe(struct platform_device *pdev)
 {
+	struct device *dev = &pdev->dev;
 	struct gpio_irq_chip *girq;
 	struct sch_gpio *sch;
 	struct resource *res;
+	void __iomem *regs;
 	int ret;
 
-	sch = devm_kzalloc(&pdev->dev, sizeof(*sch), GFP_KERNEL);
+	sch = devm_kzalloc(dev, sizeof(*sch), GFP_KERNEL);
 	if (!sch)
 		return -ENOMEM;
 
@@ -317,15 +337,16 @@ static int sch_gpio_probe(struct platform_device *pdev)
 	if (!res)
 		return -EBUSY;
 
-	if (!devm_request_region(&pdev->dev, res->start, resource_size(res),
-				 pdev->name))
+	regs = devm_ioport_map(dev, res->start, resource_size(res));
+	if (!regs)
 		return -EBUSY;
 
+	sch->regs = regs;
+
 	spin_lock_init(&sch->lock);
-	sch->iobase = res->start;
 	sch->chip = sch_gpio_chip;
-	sch->chip.label = dev_name(&pdev->dev);
-	sch->chip.parent = &pdev->dev;
+	sch->chip.label = dev_name(dev);
+	sch->chip.parent = dev;
 
 	switch (pdev->id) {
 	case PCI_DEVICE_ID_INTEL_SCH_LPC:
@@ -365,16 +386,8 @@ static int sch_gpio_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	platform_set_drvdata(pdev, sch);
-
-	sch->irqchip.name = "sch_gpio";
-	sch->irqchip.irq_ack = sch_irq_ack;
-	sch->irqchip.irq_mask = sch_irq_mask;
-	sch->irqchip.irq_unmask = sch_irq_unmask;
-	sch->irqchip.irq_set_type = sch_irq_type;
-
 	girq = &sch->chip.irq;
-	girq->chip = &sch->irqchip;
+	gpio_irq_chip_set_chip(girq, &sch_irqchip);
 	girq->num_parents = 0;
 	girq->parents = NULL;
 	girq->parent_handler = NULL;
@@ -387,9 +400,9 @@ static int sch_gpio_probe(struct platform_device *pdev)
 
 	ret = sch_gpio_install_gpe_handler(sch);
 	if (ret)
-		dev_warn(&pdev->dev, "Can't setup GPE, no IRQ support\n");
+		dev_warn(dev, "Can't setup GPE, no IRQ support\n");
 
-	return devm_gpiochip_add_data(&pdev->dev, &sch->chip, sch);
+	return devm_gpiochip_add_data(dev, &sch->chip, sch);
 }
 
 static struct platform_driver sch_gpio_driver = {

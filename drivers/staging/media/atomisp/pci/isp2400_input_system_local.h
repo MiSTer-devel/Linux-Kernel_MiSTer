@@ -2,23 +2,10 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2010-2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
-#ifndef __INPUT_SYSTEM_LOCAL_H_INCLUDED__
-#define __INPUT_SYSTEM_LOCAL_H_INCLUDED__
-
-#include <type_support.h>
-
-#include "input_system_global.h"
+#ifndef __INPUT_SYSTEM_2400_LOCAL_H_INCLUDED__
+#define __INPUT_SYSTEM_2400_LOCAL_H_INCLUDED__
 
 #include "input_system_defs.h"		/* HIVE_ISYS_GPREG_MULTICAST_A_IDX,... */
 
@@ -33,78 +20,11 @@
 #include "isp_acquisition_defs.h"
 #include "input_system_ctrl_defs.h"
 
-typedef enum {
-	INPUT_SYSTEM_PORT_A = 0,
-	INPUT_SYSTEM_PORT_B,
-	INPUT_SYSTEM_PORT_C,
-	N_INPUT_SYSTEM_PORTS
-} input_system_csi_port_t;
-
-typedef struct ctrl_unit_cfg_s			ctrl_unit_cfg_t;
-typedef struct input_system_network_cfg_s	input_system_network_cfg_t;
-typedef struct target_cfg2400_s		target_cfg2400_t;
-typedef struct channel_cfg_s			channel_cfg_t;
-typedef struct backend_channel_cfg_s		backend_channel_cfg_t;
-typedef struct input_system_cfg2400_s		input_system_cfg2400_t;
-typedef struct mipi_port_state_s		mipi_port_state_t;
-typedef struct rx_channel_state_s		rx_channel_state_t;
-typedef struct input_switch_cfg_channel_s	input_switch_cfg_channel_t;
-typedef struct input_switch_cfg_s		input_switch_cfg_t;
-
-struct ctrl_unit_cfg_s {
-	isp2400_ib_buffer_t		buffer_mipi[N_CAPTURE_UNIT_ID];
-	isp2400_ib_buffer_t		buffer_acquire[N_ACQUISITION_UNIT_ID];
-};
-
-struct input_system_network_cfg_s {
-	input_system_connection_t	multicast_cfg[N_CAPTURE_UNIT_ID];
-	input_system_multiplex_t	mux_cfg;
-	ctrl_unit_cfg_t				ctrl_unit_cfg[N_CTRL_UNIT_ID];
-};
-
-typedef struct {
-// TBD.
-	u32	dummy_parameter;
-} target_isp_cfg_t;
-
-typedef struct {
-// TBD.
-	u32	dummy_parameter;
-} target_sp_cfg_t;
-
-typedef struct {
-// TBD.
-	u32	dummy_parameter;
-} target_strm2mem_cfg_t;
-
-struct input_switch_cfg_channel_s {
-	u32 hsync_data_reg[2];
-	u32 vsync_data_reg;
-};
-
 struct target_cfg2400_s {
 	input_switch_cfg_channel_t		input_switch_channel_cfg;
 	target_isp_cfg_t	target_isp_cfg;
 	target_sp_cfg_t		target_sp_cfg;
 	target_strm2mem_cfg_t	target_strm2mem_cfg;
-};
-
-struct backend_channel_cfg_s {
-	u32	fmt_control_word_1; // Format config.
-	u32	fmt_control_word_2;
-	u32	no_side_band;
-};
-
-typedef union  {
-	csi_cfg_t	csi_cfg;
-	tpg_cfg_t	tpg_cfg;
-	prbs_cfg_t	prbs_cfg;
-	gpfifo_cfg_t	gpfifo_cfg;
-} source_cfg_t;
-
-struct input_switch_cfg_s {
-	u32 hsync_data_reg[N_RX_CHANNEL_ID * 2];
-	u32 vsync_data_reg;
 };
 
 // Configuration of a channel.
@@ -234,86 +154,39 @@ struct input_system_cfg2400_s {
 #define	_HRT_CSS_RECEIVER_DATA_TIMEOUT_IDX		_HRT_CSS_RECEIVER_2400_CSI2_DATA_TIMEOUT_IDX
 #define	_HRT_CSS_RECEIVER_DATA_TIMEOUT_BITS		_HRT_CSS_RECEIVER_2400_CSI2_DATA_TIMEOUT_BITS
 
-typedef struct capture_unit_state_s	capture_unit_state_t;
-typedef struct acquisition_unit_state_s	acquisition_unit_state_t;
-typedef struct ctrl_unit_state_s	ctrl_unit_state_t;
-
-/*
- * In 2300 ports can be configured independently and stream
- * formats need to be specified. In 2400, there are only 8
- * supported configurations but the HW is fused to support
- * only a single one.
- *
- * In 2300 the compressed format types are programmed by the
- * user. In 2400 all stream formats are encoded on the stream.
- *
- * Use the enum to check validity of a user configuration
- */
 typedef enum {
-	MONO_4L_1L_0L = 0,
-	MONO_3L_1L_0L,
-	MONO_2L_1L_0L,
-	MONO_1L_1L_0L,
-	STEREO_2L_1L_2L,
-	STEREO_3L_1L_1L,
-	STEREO_2L_1L_1L,
-	STEREO_1L_1L_1L,
-	N_RX_MODE
-} rx_mode_t;
+	MIPI_FORMAT_2400_RGB888 = 0,
+	MIPI_FORMAT_2400_RGB555,
+	MIPI_FORMAT_2400_RGB444,
+	MIPI_FORMAT_2400_RGB565,
+	MIPI_FORMAT_2400_RGB666,
+	MIPI_FORMAT_2400_RAW8,		/* 5 */
+	MIPI_FORMAT_2400_RAW10,
+	MIPI_FORMAT_2400_RAW6,
+	MIPI_FORMAT_2400_RAW7,
+	MIPI_FORMAT_2400_RAW12,
+	MIPI_FORMAT_2400_RAW14,		/* 10 */
+	MIPI_FORMAT_2400_YUV420_8,
+	MIPI_FORMAT_2400_YUV420_10,
+	MIPI_FORMAT_2400_YUV422_8,
+	MIPI_FORMAT_2400_YUV422_10,
+	MIPI_FORMAT_2400_CUSTOM0,	/* 15 */
+	MIPI_FORMAT_2400_YUV420_8_LEGACY,
+	MIPI_FORMAT_2400_EMBEDDED,
+	MIPI_FORMAT_2400_CUSTOM1,
+	MIPI_FORMAT_2400_CUSTOM2,
+	MIPI_FORMAT_2400_CUSTOM3,	/* 20 */
+	MIPI_FORMAT_2400_CUSTOM4,
+	MIPI_FORMAT_2400_CUSTOM5,
+	MIPI_FORMAT_2400_CUSTOM6,
+	MIPI_FORMAT_2400_CUSTOM7,
+	MIPI_FORMAT_2400_YUV420_8_SHIFT,	/* 25 */
+	MIPI_FORMAT_2400_YUV420_10_SHIFT,
+	MIPI_FORMAT_2400_RAW16,
+	MIPI_FORMAT_2400_RAW18,
+	N_MIPI_FORMAT_2400,
+} mipi_format_2400_t;
 
-typedef enum {
-	MIPI_PREDICTOR_NONE = 0,
-	MIPI_PREDICTOR_TYPE1,
-	MIPI_PREDICTOR_TYPE2,
-	N_MIPI_PREDICTOR_TYPES
-} mipi_predictor_t;
-
-typedef enum {
-	MIPI_COMPRESSOR_NONE = 0,
-	MIPI_COMPRESSOR_10_6_10,
-	MIPI_COMPRESSOR_10_7_10,
-	MIPI_COMPRESSOR_10_8_10,
-	MIPI_COMPRESSOR_12_6_12,
-	MIPI_COMPRESSOR_12_7_12,
-	MIPI_COMPRESSOR_12_8_12,
-	N_MIPI_COMPRESSOR_METHODS
-} mipi_compressor_t;
-
-typedef enum {
-	MIPI_FORMAT_RGB888 = 0,
-	MIPI_FORMAT_RGB555,
-	MIPI_FORMAT_RGB444,
-	MIPI_FORMAT_RGB565,
-	MIPI_FORMAT_RGB666,
-	MIPI_FORMAT_RAW8,		/* 5 */
-	MIPI_FORMAT_RAW10,
-	MIPI_FORMAT_RAW6,
-	MIPI_FORMAT_RAW7,
-	MIPI_FORMAT_RAW12,
-	MIPI_FORMAT_RAW14,		/* 10 */
-	MIPI_FORMAT_YUV420_8,
-	MIPI_FORMAT_YUV420_10,
-	MIPI_FORMAT_YUV422_8,
-	MIPI_FORMAT_YUV422_10,
-	MIPI_FORMAT_CUSTOM0,	/* 15 */
-	MIPI_FORMAT_YUV420_8_LEGACY,
-	MIPI_FORMAT_EMBEDDED,
-	MIPI_FORMAT_CUSTOM1,
-	MIPI_FORMAT_CUSTOM2,
-	MIPI_FORMAT_CUSTOM3,	/* 20 */
-	MIPI_FORMAT_CUSTOM4,
-	MIPI_FORMAT_CUSTOM5,
-	MIPI_FORMAT_CUSTOM6,
-	MIPI_FORMAT_CUSTOM7,
-	MIPI_FORMAT_YUV420_8_SHIFT,	/* 25 */
-	MIPI_FORMAT_YUV420_10_SHIFT,
-	MIPI_FORMAT_RAW16,
-	MIPI_FORMAT_RAW18,
-	N_MIPI_FORMAT,
-} mipi_format_t;
-
-#define MIPI_FORMAT_JPEG		MIPI_FORMAT_CUSTOM0
-#define MIPI_FORMAT_BINARY_8	MIPI_FORMAT_CUSTOM0
 #define N_MIPI_FORMAT_CUSTOM	8
 
 /* The number of stores for compressed format types */
@@ -339,22 +212,6 @@ typedef enum {
 	RX_IRQ_INFO_ERR_LINE_SYNC    = 1UL << _HRT_CSS_RECEIVER_IRQ_ERR_LINE_SYNC_BIT,
 }  rx_irq_info_t;
 
-typedef struct rx_cfg_s		rx_cfg_t;
-
-/*
- * Applied per port
- */
-struct rx_cfg_s {
-	rx_mode_t			mode;	/* The HW config */
-	enum mipi_port_id		port;	/* The port ID to apply the control on */
-	unsigned int		timeout;
-	unsigned int		initcount;
-	unsigned int		synccount;
-	unsigned int		rxcount;
-	mipi_predictor_t	comp;	/* Just for backward compatibility */
-	bool                is_two_ppc;
-};
-
 /* NOTE: The base has already an offset of 0x0100 */
 static const hrt_address __maybe_unused MIPI_PORT_OFFSET[N_MIPI_PORT_ID] = {
 	0x00000000UL,
@@ -372,132 +229,6 @@ static const hrt_address __maybe_unused SUB_SYSTEM_OFFSET[N_SUB_SYSTEM_ID] = {
 	0x0000A000UL,
 	0x0000B000UL,
 	0x0000C000UL
-};
-
-struct capture_unit_state_s {
-	int	Packet_Length;
-	int	Received_Length;
-	int	Received_Short_Packets;
-	int	Received_Long_Packets;
-	int	Last_Command;
-	int	Next_Command;
-	int	Last_Acknowledge;
-	int	Next_Acknowledge;
-	int	FSM_State_Info;
-	int	StartMode;
-	int	Start_Addr;
-	int	Mem_Region_Size;
-	int	Num_Mem_Regions;
-	/*	int	Init;   write-only registers
-		int	Start;
-		int	Stop;      */
-};
-
-struct acquisition_unit_state_s {
-	/*	int	Init;   write-only register */
-	int	Received_Short_Packets;
-	int	Received_Long_Packets;
-	int	Last_Command;
-	int	Next_Command;
-	int	Last_Acknowledge;
-	int	Next_Acknowledge;
-	int	FSM_State_Info;
-	int	Int_Cntr_Info;
-	int	Start_Addr;
-	int	Mem_Region_Size;
-	int	Num_Mem_Regions;
-};
-
-struct ctrl_unit_state_s {
-	int	last_cmd;
-	int	next_cmd;
-	int	last_ack;
-	int	next_ack;
-	int	top_fsm_state;
-	int	captA_fsm_state;
-	int	captB_fsm_state;
-	int	captC_fsm_state;
-	int	acq_fsm_state;
-	int	captA_start_addr;
-	int	captB_start_addr;
-	int	captC_start_addr;
-	int	captA_mem_region_size;
-	int	captB_mem_region_size;
-	int	captC_mem_region_size;
-	int	captA_num_mem_regions;
-	int	captB_num_mem_regions;
-	int	captC_num_mem_regions;
-	int	acq_start_addr;
-	int	acq_mem_region_size;
-	int	acq_num_mem_regions;
-	/*	int	ctrl_init;  write only register */
-	int	capt_reserve_one_mem_region;
-};
-
-struct input_system_state_s {
-	int	str_multicastA_sel;
-	int	str_multicastB_sel;
-	int	str_multicastC_sel;
-	int	str_mux_sel;
-	int	str_mon_status;
-	int	str_mon_irq_cond;
-	int	str_mon_irq_en;
-	int	isys_srst;
-	int	isys_slv_reg_srst;
-	int	str_deint_portA_cnt;
-	int	str_deint_portB_cnt;
-	struct capture_unit_state_s		capture_unit[N_CAPTURE_UNIT_ID];
-	struct acquisition_unit_state_s	acquisition_unit[N_ACQUISITION_UNIT_ID];
-	struct ctrl_unit_state_s		ctrl_unit_state[N_CTRL_UNIT_ID];
-};
-
-struct mipi_port_state_s {
-	int	device_ready;
-	int	irq_status;
-	int	irq_enable;
-	u32	timeout_count;
-	u16	init_count;
-	u16	raw16_18;
-	u32	sync_count;		/*4 x uint8_t */
-	u32	rx_count;		/*4 x uint8_t */
-	u8		lane_sync_count[MIPI_4LANE_CFG];
-	u8		lane_rx_count[MIPI_4LANE_CFG];
-};
-
-struct rx_channel_state_s {
-	u32	comp_scheme0;
-	u32	comp_scheme1;
-	mipi_predictor_t		pred[N_MIPI_FORMAT_CUSTOM];
-	mipi_compressor_t		comp[N_MIPI_FORMAT_CUSTOM];
-};
-
-struct receiver_state_s {
-	u8	fs_to_ls_delay;
-	u8	ls_to_data_delay;
-	u8	data_to_le_delay;
-	u8	le_to_fe_delay;
-	u8	fe_to_fs_delay;
-	u8	le_to_fs_delay;
-	bool	is_two_ppc;
-	int	backend_rst;
-	u16	raw18;
-	bool		force_raw8;
-	u16	raw16;
-	struct mipi_port_state_s	mipi_port_state[N_MIPI_PORT_ID];
-	struct rx_channel_state_s	rx_channel_state[N_RX_CHANNEL_ID];
-	int	be_gsp_acc_ovl;
-	int	be_srst;
-	int	be_is_two_ppc;
-	int	be_comp_format0;
-	int	be_comp_format1;
-	int	be_comp_format2;
-	int	be_comp_format3;
-	int	be_sel;
-	int	be_raw16_config;
-	int	be_raw18_config;
-	int	be_force_raw8;
-	int	be_irq_status;
-	int	be_irq_clear;
 };
 
 #endif /* __INPUT_SYSTEM_LOCAL_H_INCLUDED__ */

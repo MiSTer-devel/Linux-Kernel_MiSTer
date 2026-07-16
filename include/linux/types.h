@@ -10,6 +10,11 @@
 #define DECLARE_BITMAP(name,bits) \
 	unsigned long name[BITS_TO_LONGS(bits)]
 
+#ifdef __SIZEOF_INT128__
+typedef __s128 s128;
+typedef __u128 u128;
+#endif
+
 typedef u32 __kernel_dev_t;
 
 typedef __kernel_fd_set		fd_set;
@@ -35,9 +40,10 @@ typedef __kernel_uid16_t        uid16_t;
 typedef __kernel_gid16_t        gid16_t;
 
 typedef unsigned long		uintptr_t;
+typedef long			intptr_t;
 
 #ifdef CONFIG_HAVE_UID16
-/* This is defined by include/asm-{arch}/posix_types.h */
+/* This is defined by arch/{arch}/include/asm/posix_types.h */
 typedef __kernel_old_uid_t	old_uid_t;
 typedef __kernel_old_gid_t	old_gid_t;
 #endif /* CONFIG_UID16 */
@@ -86,6 +92,7 @@ typedef unsigned char		unchar;
 typedef unsigned short		ushort;
 typedef unsigned int		uint;
 typedef unsigned long		ulong;
+typedef unsigned long long	ullong;
 
 #ifndef __BIT_TYPES_DEFINED__
 #define __BIT_TYPES_DEFINED__
@@ -109,10 +116,14 @@ typedef u64			u_int64_t;
 typedef s64			int64_t;
 #endif
 
-/* this is a special 64bit data type that is 8-byte aligned */
+/* These are the special 64-bit data types that are 8-byte aligned */
 #define aligned_u64		__aligned_u64
+#define aligned_s64		__aligned_s64
 #define aligned_be64		__aligned_be64
 #define aligned_le64		__aligned_le64
+
+/* Nanosecond scalar representation for kernel time values */
+typedef s64	ktime_t;
 
 /**
  * The type used for indexing onto a disc or disc partition.
@@ -124,6 +135,10 @@ typedef s64			int64_t;
  */
 typedef u64 sector_t;
 typedef u64 blkcnt_t;
+
+/* generic data direction definitions */
+#define READ			0
+#define WRITE			1
 
 /*
  * The type of an index into the pagecache.
@@ -174,6 +189,12 @@ typedef struct {
 	s64 counter;
 } atomic64_t;
 #endif
+
+typedef struct {
+	atomic_t refcnt;
+} rcuref_t;
+
+#define RCUREF_INIT(i)	{ .refcnt = ATOMIC_INIT(i - 1) }
 
 struct list_head {
 	struct list_head *next, *prev;
@@ -226,10 +247,23 @@ struct callback_head {
 typedef void (*rcu_callback_t)(struct rcu_head *head);
 typedef void (*call_rcu_func_t)(struct rcu_head *head, rcu_callback_t func);
 
+typedef void (*swap_r_func_t)(void *a, void *b, int size, const void *priv);
 typedef void (*swap_func_t)(void *a, void *b, int size);
 
 typedef int (*cmp_r_func_t)(const void *a, const void *b, const void *priv);
 typedef int (*cmp_func_t)(const void *a, const void *b);
+
+/*
+ * rcuwait provides a way of blocking and waking up a single
+ * task in an rcu-safe manner.
+ *
+ * The only time @task is non-nil is when a user is blocked (or
+ * checking if it needs to) on a condition, and reset as soon as we
+ * know that the condition has succeeded and are awoken.
+ */
+struct rcuwait {
+	struct task_struct __rcu *task;
+};
 
 #endif /*  __ASSEMBLY__ */
 #endif /* _LINUX_TYPES_H */

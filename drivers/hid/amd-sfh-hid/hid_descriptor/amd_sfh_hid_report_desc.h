@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * HID  descriptor stuructures
- * Copyright 2020 Advanced Micro Devices, Inc.
+ * Copyright 2020-2021 Advanced Micro Devices, Inc.
  * Authors: Nehal Bakulchandra Shah <Nehal-bakulchandra.shah@amd.com>
  *	    Sandeep Singh <Sandeep.singh@amd.com>
+ *	    Basavaraj Natikar <Basavaraj.Natikar@amd.com>
  */
 
 #ifndef AMD_SFH_HID_REPORT_DESCRIPTOR_H
@@ -178,7 +179,7 @@ static const u8 accel3_report_descriptor[] = {
 0xC0			/* HID end collection */
 };
 
-const u8 gyro3_report_descriptor[] = {
+static const u8 gyro3_report_descriptor[] = {
 0x05, 0x20,		/* Usage page */
 0x09, 0x76,		/* Motion type Gyro3D */
 0xA1, 0x00,		/* HID Collection (Physical) */
@@ -339,7 +340,7 @@ const u8 gyro3_report_descriptor[] = {
 0xC0,			/* HID end collection */
 };
 
-const u8 comp3_report_descriptor[] = {
+static const u8 comp3_report_descriptor[] = {
 0x05, 0x20,		/* Usage page */
 0x09, 0x83,		/* Motion type Orientation compass 3D */
 0xA1, 0x00,		/* HID Collection (Physical) */
@@ -511,7 +512,7 @@ const u8 comp3_report_descriptor[] = {
 0xC0				/* HID end collection */
 };
 
-const u8 als_report_descriptor[] = {
+static const u8 als_report_descriptor[] = {
 0x05, 0x20,	/* HID usage page sensor */
 0x09, 0x41,	/* HID usage sensor type Ambientlight  */
 0xA1, 0x00,	/* HID Collection (Physical) */
@@ -640,6 +641,27 @@ const u8 als_report_descriptor[] = {
 0x75, 32,		/* HID report size(32) */
 0x95, 1,		/* HID report count (1) */
 0X81, 0x02,		/* HID Input (Data_Arr_Abs) */
+0x0A, 0xD2, 0x04,	/* HID usage sensor data light temperature */
+0x17, 0x00, 0x00, 0x01, 0x80,	 /* HID logical Min_32 */
+0x27, 0xFF, 0xFF, 0xFF, 0x7F,	 /* HID logical Max_32 */
+0x55, 0x0,		/* HID unit exponent(0x0) */
+0x75, 32,		/* HID report size(32) */
+0x95, 1,		/* HID report count (1) */
+0X81, 0x02,		/* HID Input (Data_Arr_Abs) */
+0x0A, 0xD4, 0x04,       /* HID usage sensor data light chromaticity_x */
+0x17, 0x00, 0x00, 0x01, 0x80,	 /* HID logical Min_32 */
+0x27, 0xFF, 0xFF, 0xFF, 0x7F,	 /* HID logical Max_32 */
+0x55, 0x0,		/* HID unit exponent(0x0) */
+0x75, 32,		/* HID report size(32) */
+0x95, 1,		/* HID report count(1) */
+0X81, 0x02,		/* HID Input (Data_Var_Abs) */
+0x0A, 0xD5, 0x04,       /* HID usage sensor data light chromaticity_y */
+0x17, 0x00, 0x00, 0x01, 0x80,	 /* HID logical Min_32 */
+0x27, 0xFF, 0xFF, 0xFF, 0x7F,	 /* HID logical Max_32 */
+0x55, 0x0,		/* HID unit exponent(0x0) */
+0x75, 32,		/* HID report size(32) */
+0x95, 1,		/* HID report count (1) */
+0X81, 0x02,		/* HID Input (Data_Var_Abs) */
 0xC0			/* HID end collection */
 };
 

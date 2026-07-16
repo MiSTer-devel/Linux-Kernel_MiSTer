@@ -42,11 +42,6 @@ struct rn5t618_adc_data {
 	int irq;
 };
 
-struct rn5t618_channel_ratios {
-	u16 numerator;
-	u16 denominator;
-};
-
 enum rn5t618_channels {
 	LIMMON = 0,
 	VBAT,
@@ -58,7 +53,7 @@ enum rn5t618_channels {
 	AIN0
 };
 
-static const struct rn5t618_channel_ratios rn5t618_ratios[8] = {
+static const struct u16_fract rn5t618_ratios[8] = {
 	[LIMMON] = {50, 32}, /* measured across 20mOhm, amplified by 32 */
 	[VBAT] = {2, 1},
 	[VADP] = {3, 1},
@@ -142,9 +137,8 @@ static int rn5t618_adc_read(struct iio_dev *iio_dev,
 
 	init_completion(&adc->conv_completion);
 	/* single conversion */
-	ret = regmap_update_bits(adc->rn5t618->regmap, RN5T618_ADCCNT3,
-				 RN5T618_ADCCNT3_GODONE,
-				 RN5T618_ADCCNT3_GODONE);
+	ret = regmap_set_bits(adc->rn5t618->regmap, RN5T618_ADCCNT3,
+			      RN5T618_ADCCNT3_GODONE);
 	if (ret < 0)
 		return ret;
 
@@ -191,18 +185,11 @@ static const struct iio_chan_spec rn5t618_adc_iio_channels[] = {
 	RN5T618_ADC_CHANNEL(AIN0, IIO_VOLTAGE, "AIN0")
 };
 
-static struct iio_map rn5t618_maps[] = {
+static const struct iio_map rn5t618_maps[] = {
 	IIO_MAP("VADP", "rn5t618-power", "vadp"),
 	IIO_MAP("VUSB", "rn5t618-power", "vusb"),
-	{ /* sentinel */ }
+	{ }
 };
-
-static void unregister_map(void *data)
-{
-	struct iio_dev *iio_dev = (struct iio_dev *) data;
-
-	iio_map_array_unregister(iio_dev);
-}
 
 static int rn5t618_adc_probe(struct platform_device *pdev)
 {
@@ -212,10 +199,8 @@ static int rn5t618_adc_probe(struct platform_device *pdev)
 	struct rn5t618 *rn5t618 = dev_get_drvdata(pdev->dev.parent);
 
 	iio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(*adc));
-	if (!iio_dev) {
-		dev_err(&pdev->dev, "failed allocating iio device\n");
+	if (!iio_dev)
 		return -ENOMEM;
-	}
 
 	adc = iio_priv(iio_dev);
 	adc->dev = &pdev->dev;
@@ -254,11 +239,7 @@ static int rn5t618_adc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	ret = iio_map_array_register(iio_dev, rn5t618_maps);
-	if (ret < 0)
-		return ret;
-
-	ret = devm_add_action_or_reset(adc->dev, unregister_map, iio_dev);
+	ret = devm_iio_map_array_register(adc->dev, iio_dev, rn5t618_maps);
 	if (ret < 0)
 		return ret;
 

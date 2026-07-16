@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <linux/dma-buf-map.h>
+#include <linux/export.h>
+#include <linux/iosys-map.h>
 #include <linux/module.h>
 
 #include <drm/drm_debugfs.h>
@@ -9,15 +10,16 @@
 #include <drm/drm_file.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
+#include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_gem_ttm_helper.h>
 #include <drm/drm_gem_vram_helper.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_mode.h>
 #include <drm/drm_plane.h>
 #include <drm/drm_prime.h>
-#include <drm/drm_simple_kms_helper.h>
 
 #include <drm/ttm/ttm_range_manager.h>
+#include <drm/ttm/ttm_tt.h>
 
 static const struct drm_gem_object_funcs drm_gem_vram_object_funcs;
 
@@ -43,7 +45,7 @@ static const struct drm_gem_object_funcs drm_gem_vram_object_funcs;
  * the frame's scanout buffer or the cursor image. If there's no more space
  * left in VRAM, inactive GEM objects can be moved to system memory.
  *
- * To initialize the VRAM helper library call drmm_vram_helper_alloc_mm().
+ * To initialize the VRAM helper library call drmm_vram_helper_init().
  * The function allocates and initializes an instance of &struct drm_vram_mm
  * in &struct drm_device.vram_mm . Use &DRM_GEM_VRAM_DRIVER to initialize
  * &struct drm_driver and  &DRM_VRAM_MM_FILE_OPERATIONS to initialize
@@ -71,7 +73,7 @@ static const struct drm_gem_object_funcs drm_gem_vram_object_funcs;
  *		// setup device, vram base and size
  *		// ...
  *
- *		ret = drmm_vram_helper_alloc_mm(dev, vram_base, vram_size);
+ *		ret = drmm_vram_helper_init(dev, vram_base, vram_size);
  *		if (ret)
  *			return ret;
  *		return 0;
@@ -84,13 +86,8 @@ static const struct drm_gem_object_funcs drm_gem_vram_object_funcs;
  * to userspace.
  *
  * You don't have to clean up the instance of VRAM MM.
- * drmm_vram_helper_alloc_mm() is a managed interface that installs a
+ * drmm_vram_helper_init() is a managed interface that installs a
  * clean-up handler to run during the DRM device's release.
- *
- * For drawing or scanout operations, rsp. buffer objects have to be pinned
- * in video RAM. Call drm_gem_vram_pin() with &DRM_GEM_VRAM_PL_FLAG_VRAM or
- * &DRM_GEM_VRAM_PL_FLAG_SYSTEM to pin a buffer object in video RAM or system
- * memory. Call drm_gem_vram_unpin() to release the pinned object afterwards.
  *
  * A buffer object that is pinned in video RAM has a fixed address within that
  * memory region. Call drm_gem_vram_offset() to retrieve this value. Typically
@@ -116,7 +113,7 @@ static void drm_gem_vram_cleanup(struct drm_gem_vram_object *gbo)
 	 */
 
 	WARN_ON(gbo->vmap_use_count);
-	WARN_ON(dma_buf_map_is_set(&gbo->map));
+	WARN_ON(iosys_map_is_set(&gbo->map));
 
 	drm_gem_object_release(&gbo->bo.base);
 }
@@ -145,7 +142,6 @@ static void drm_gem_vram_placement(struct drm_gem_vram_object *gbo,
 		invariant_flags = TTM_PL_FLAG_TOPDOWN;
 
 	gbo->placement.placement = gbo->placements;
-	gbo->placement.busy_placement = gbo->placements;
 
 	if (pl_flag & DRM_GEM_VRAM_PL_FLAG_VRAM) {
 		gbo->placements[c].mem_type = TTM_PL_VRAM;
@@ -158,7 +154,6 @@ static void drm_gem_vram_placement(struct drm_gem_vram_object *gbo,
 	}
 
 	gbo->placement.num_placement = c;
-	gbo->placement.num_busy_placement = c;
 
 	for (i = 0; i < c; ++i) {
 		gbo->placements[i].fpfn = 0;
@@ -197,8 +192,8 @@ struct drm_gem_vram_object *drm_gem_vram_create(struct drm_device *dev,
 
 	if (dev->driver->gem_create_object) {
 		gem = dev->driver->gem_create_object(dev, size);
-		if (!gem)
-			return ERR_PTR(-ENOMEM);
+		if (IS_ERR(gem))
+			return ERR_CAST(gem);
 		gbo = drm_gem_vram_of_gem(gem);
 	} else {
 		gbo = kzalloc(sizeof(*gbo), GFP_KERNEL);
@@ -225,9 +220,9 @@ struct drm_gem_vram_object *drm_gem_vram_create(struct drm_device *dev,
 	 * A failing ttm_bo_init will call ttm_buffer_object_destroy
 	 * to release gbo->bo.base and kfree gbo.
 	 */
-	ret = ttm_bo_init(bdev, &gbo->bo, size, ttm_bo_type_device,
-			  &gbo->placement, pg_align, false, NULL, NULL,
-			  ttm_buffer_object_destroy);
+	ret = ttm_bo_init_validate(bdev, &gbo->bo, ttm_bo_type_device,
+				   &gbo->placement, pg_align, false, NULL, NULL,
+				   ttm_buffer_object_destroy);
 	if (ret)
 		return ERR_PTR(ret);
 
@@ -258,8 +253,7 @@ static u64 drm_gem_vram_pg_offset(struct drm_gem_vram_object *gbo)
 }
 
 /**
- * drm_gem_vram_offset() - \
-	Returns a GEM VRAM object's offset in video memory
+ * drm_gem_vram_offset() - Returns a GEM VRAM object's offset in video memory
  * @gbo:	the GEM VRAM object
  *
  * This function returns the buffer object's offset in the device's video
@@ -283,6 +277,8 @@ static int drm_gem_vram_pin_locked(struct drm_gem_vram_object *gbo,
 	struct ttm_operation_ctx ctx = { false, false };
 	int ret;
 
+	dma_resv_assert_held(gbo->bo.base.resv);
+
 	if (gbo->bo.pin_count)
 		goto out;
 
@@ -299,30 +295,7 @@ out:
 	return 0;
 }
 
-/**
- * drm_gem_vram_pin() - Pins a GEM VRAM object in a region.
- * @gbo:	the GEM VRAM object
- * @pl_flag:	a bitmask of possible memory regions
- *
- * Pinning a buffer object ensures that it is not evicted from
- * a memory region. A pinned buffer object has to be unpinned before
- * it can be pinned to another region. If the pl_flag argument is 0,
- * the buffer is pinned at its current location (video RAM or system
- * memory).
- *
- * Small buffer objects, such as cursor images, can lead to memory
- * fragmentation if they are pinned in the middle of video RAM. This
- * is especially a problem on devices with only a small amount of
- * video RAM. Fragmentation can prevent the primary framebuffer from
- * fitting in, even though there's enough memory overall. The modifier
- * DRM_GEM_VRAM_PL_FLAG_TOPDOWN marks the buffer object to be pinned
- * at the high end of the memory region to avoid fragmentation.
- *
- * Returns:
- * 0 on success, or
- * a negative error code otherwise.
- */
-int drm_gem_vram_pin(struct drm_gem_vram_object *gbo, unsigned long pl_flag)
+static int drm_gem_vram_pin(struct drm_gem_vram_object *gbo, unsigned long pl_flag)
 {
 	int ret;
 
@@ -334,22 +307,15 @@ int drm_gem_vram_pin(struct drm_gem_vram_object *gbo, unsigned long pl_flag)
 
 	return ret;
 }
-EXPORT_SYMBOL(drm_gem_vram_pin);
 
 static void drm_gem_vram_unpin_locked(struct drm_gem_vram_object *gbo)
 {
+	dma_resv_assert_held(gbo->bo.base.resv);
+
 	ttm_bo_unpin(&gbo->bo);
 }
 
-/**
- * drm_gem_vram_unpin() - Unpins a GEM VRAM object
- * @gbo:	the GEM VRAM object
- *
- * Returns:
- * 0 on success, or
- * a negative error code otherwise.
- */
-int drm_gem_vram_unpin(struct drm_gem_vram_object *gbo)
+static int drm_gem_vram_unpin(struct drm_gem_vram_object *gbo)
 {
 	int ret;
 
@@ -361,55 +327,6 @@ int drm_gem_vram_unpin(struct drm_gem_vram_object *gbo)
 	ttm_bo_unreserve(&gbo->bo);
 
 	return 0;
-}
-EXPORT_SYMBOL(drm_gem_vram_unpin);
-
-static int drm_gem_vram_kmap_locked(struct drm_gem_vram_object *gbo,
-				    struct dma_buf_map *map)
-{
-	int ret;
-
-	if (gbo->vmap_use_count > 0)
-		goto out;
-
-	/*
-	 * VRAM helpers unmap the BO only on demand. So the previous
-	 * page mapping might still be around. Only vmap if the there's
-	 * no mapping present.
-	 */
-	if (dma_buf_map_is_null(&gbo->map)) {
-		ret = ttm_bo_vmap(&gbo->bo, &gbo->map);
-		if (ret)
-			return ret;
-	}
-
-out:
-	++gbo->vmap_use_count;
-	*map = gbo->map;
-
-	return 0;
-}
-
-static void drm_gem_vram_kunmap_locked(struct drm_gem_vram_object *gbo,
-				       struct dma_buf_map *map)
-{
-	struct drm_device *dev = gbo->bo.base.dev;
-
-	if (drm_WARN_ON_ONCE(dev, !gbo->vmap_use_count))
-		return;
-
-	if (drm_WARN_ON_ONCE(dev, !dma_buf_map_is_equal(&gbo->map, map)))
-		return; /* BUG: map not mapped from this BO */
-
-	if (--gbo->vmap_use_count > 0)
-		return;
-
-	/*
-	 * Permanently mapping and unmapping buffers adds overhead from
-	 * updating the page tables and creates debugging output. Therefore,
-	 * we delay the actual unmap operation until the BO gets evicted
-	 * from memory. See drm_gem_vram_bo_driver_move_notify().
-	 */
 }
 
 /**
@@ -428,30 +345,31 @@ static void drm_gem_vram_kunmap_locked(struct drm_gem_vram_object *gbo,
  * Returns:
  * 0 on success, or a negative error code otherwise.
  */
-int drm_gem_vram_vmap(struct drm_gem_vram_object *gbo, struct dma_buf_map *map)
+int drm_gem_vram_vmap(struct drm_gem_vram_object *gbo, struct iosys_map *map)
 {
 	int ret;
 
-	ret = ttm_bo_reserve(&gbo->bo, true, false, NULL);
-	if (ret)
-		return ret;
+	dma_resv_assert_held(gbo->bo.base.resv);
 
-	ret = drm_gem_vram_pin_locked(gbo, 0);
-	if (ret)
-		goto err_ttm_bo_unreserve;
-	ret = drm_gem_vram_kmap_locked(gbo, map);
-	if (ret)
-		goto err_drm_gem_vram_unpin_locked;
+	if (gbo->vmap_use_count > 0)
+		goto out;
 
-	ttm_bo_unreserve(&gbo->bo);
+	/*
+	 * VRAM helpers unmap the BO only on demand. So the previous
+	 * page mapping might still be around. Only vmap if the there's
+	 * no mapping present.
+	 */
+	if (iosys_map_is_null(&gbo->map)) {
+		ret = ttm_bo_vmap(&gbo->bo, &gbo->map);
+		if (ret)
+			return ret;
+	}
+
+out:
+	++gbo->vmap_use_count;
+	*map = gbo->map;
 
 	return 0;
-
-err_drm_gem_vram_unpin_locked:
-	drm_gem_vram_unpin_locked(gbo);
-err_ttm_bo_unreserve:
-	ttm_bo_unreserve(&gbo->bo);
-	return ret;
 }
 EXPORT_SYMBOL(drm_gem_vram_vmap);
 
@@ -463,30 +381,41 @@ EXPORT_SYMBOL(drm_gem_vram_vmap);
  * A call to drm_gem_vram_vunmap() unmaps and unpins a GEM VRAM buffer. See
  * the documentation for drm_gem_vram_vmap() for more information.
  */
-void drm_gem_vram_vunmap(struct drm_gem_vram_object *gbo, struct dma_buf_map *map)
+void drm_gem_vram_vunmap(struct drm_gem_vram_object *gbo,
+			 struct iosys_map *map)
 {
-	int ret;
+	struct drm_device *dev = gbo->bo.base.dev;
 
-	ret = ttm_bo_reserve(&gbo->bo, false, false, NULL);
-	if (WARN_ONCE(ret, "ttm_bo_reserve_failed(): ret=%d\n", ret))
+	dma_resv_assert_held(gbo->bo.base.resv);
+
+	if (drm_WARN_ON_ONCE(dev, !gbo->vmap_use_count))
 		return;
 
-	drm_gem_vram_kunmap_locked(gbo, map);
-	drm_gem_vram_unpin_locked(gbo);
+	if (drm_WARN_ON_ONCE(dev, !iosys_map_is_equal(&gbo->map, map)))
+		return; /* BUG: map not mapped from this BO */
 
-	ttm_bo_unreserve(&gbo->bo);
+	if (--gbo->vmap_use_count > 0)
+		return;
+
+	/*
+	 * Permanently mapping and unmapping buffers adds overhead from
+	 * updating the page tables and creates debugging output. Therefore,
+	 * we delay the actual unmap operation until the BO gets evicted
+	 * from memory. See drm_gem_vram_bo_driver_move_notify().
+	 */
 }
 EXPORT_SYMBOL(drm_gem_vram_vunmap);
 
 /**
- * drm_gem_vram_fill_create_dumb() - \
-	Helper for implementing &struct drm_driver.dumb_create
+ * drm_gem_vram_fill_create_dumb() - Helper for implementing
+ *				     &struct drm_driver.dumb_create
+ *
  * @file:		the DRM file
  * @dev:		the DRM device
  * @pg_align:		the buffer's alignment in multiples of the page size
  * @pitch_align:	the scanline's alignment in powers of 2
- * @args:		the arguments as provided to \
-				&struct drm_driver.dumb_create
+ * @args:		the arguments as provided to
+ *			&struct drm_driver.dumb_create
  *
  * This helper function fills &struct drm_mode_create_dumb, which is used
  * by &struct drm_driver.dumb_create. Implementations of this interface
@@ -567,7 +496,7 @@ static void drm_gem_vram_bo_driver_move_notify(struct drm_gem_vram_object *gbo)
 		return;
 
 	ttm_bo_vunmap(bo, &gbo->map);
-	dma_buf_map_clear(&gbo->map); /* explicitly clear mapping for next vmap call */
+	iosys_map_clear(&gbo->map); /* explicitly clear mapping for next vmap call */
 }
 
 static int drm_gem_vram_bo_driver_move(struct drm_gem_vram_object *gbo,
@@ -584,8 +513,7 @@ static int drm_gem_vram_bo_driver_move(struct drm_gem_vram_object *gbo,
  */
 
 /**
- * drm_gem_vram_object_free() - \
-	Implements &struct drm_gem_object_funcs.free
+ * drm_gem_vram_object_free() - Implements &struct drm_gem_object_funcs.free
  * @gem:       GEM object. Refers to &struct drm_gem_vram_object.gem
  */
 static void drm_gem_vram_object_free(struct drm_gem_object *gem)
@@ -600,12 +528,11 @@ static void drm_gem_vram_object_free(struct drm_gem_object *gem)
  */
 
 /**
- * drm_gem_vram_driver_dumb_create() - \
-	Implements &struct drm_driver.dumb_create
+ * drm_gem_vram_driver_dumb_create() - Implements &struct drm_driver.dumb_create
  * @file:		the DRM file
  * @dev:		the DRM device
- * @args:		the arguments as provided to \
-				&struct drm_driver.dumb_create
+ * @args:		the arguments as provided to
+ *			&struct drm_driver.dumb_create
  *
  * This function requires the driver to use @drm_device.vram_mm for its
  * instance of VRAM MM.
@@ -629,9 +556,27 @@ EXPORT_SYMBOL(drm_gem_vram_driver_dumb_create);
  * Helpers for struct drm_plane_helper_funcs
  */
 
+static void __drm_gem_vram_plane_helper_cleanup_fb(struct drm_plane *plane,
+						   struct drm_plane_state *state,
+						   unsigned int num_planes)
+{
+	struct drm_gem_object *obj;
+	struct drm_gem_vram_object *gbo;
+	struct drm_framebuffer *fb = state->fb;
+
+	while (num_planes) {
+		--num_planes;
+		obj = drm_gem_fb_get_obj(fb, num_planes);
+		if (!obj)
+			continue;
+		gbo = drm_gem_vram_of_gem(obj);
+		drm_gem_vram_unpin(gbo);
+	}
+}
+
 /**
- * drm_gem_vram_plane_helper_prepare_fb() - \
- *	Implements &struct drm_plane_helper_funcs.prepare_fb
+ * drm_gem_vram_plane_helper_prepare_fb() - Implements &struct
+ *					    drm_plane_helper_funcs.prepare_fb
  * @plane:	a DRM plane
  * @new_state:	the plane's new state
  *
@@ -647,17 +592,22 @@ int
 drm_gem_vram_plane_helper_prepare_fb(struct drm_plane *plane,
 				     struct drm_plane_state *new_state)
 {
-	size_t i;
+	struct drm_framebuffer *fb = new_state->fb;
 	struct drm_gem_vram_object *gbo;
+	struct drm_gem_object *obj;
+	unsigned int i;
 	int ret;
 
-	if (!new_state->fb)
+	if (!fb)
 		return 0;
 
-	for (i = 0; i < ARRAY_SIZE(new_state->fb->obj); ++i) {
-		if (!new_state->fb->obj[i])
-			continue;
-		gbo = drm_gem_vram_of_gem(new_state->fb->obj[i]);
+	for (i = 0; i < fb->format->num_planes; ++i) {
+		obj = drm_gem_fb_get_obj(fb, i);
+		if (!obj) {
+			ret = -EINVAL;
+			goto err_drm_gem_vram_unpin;
+		}
+		gbo = drm_gem_vram_of_gem(obj);
 		ret = drm_gem_vram_pin(gbo, DRM_GEM_VRAM_PL_FLAG_VRAM);
 		if (ret)
 			goto err_drm_gem_vram_unpin;
@@ -670,18 +620,14 @@ drm_gem_vram_plane_helper_prepare_fb(struct drm_plane *plane,
 	return 0;
 
 err_drm_gem_vram_unpin:
-	while (i) {
-		--i;
-		gbo = drm_gem_vram_of_gem(new_state->fb->obj[i]);
-		drm_gem_vram_unpin(gbo);
-	}
+	__drm_gem_vram_plane_helper_cleanup_fb(plane, new_state, i);
 	return ret;
 }
 EXPORT_SYMBOL(drm_gem_vram_plane_helper_prepare_fb);
 
 /**
- * drm_gem_vram_plane_helper_cleanup_fb() - \
- *	Implements &struct drm_plane_helper_funcs.cleanup_fb
+ * drm_gem_vram_plane_helper_cleanup_fb() - Implements &struct
+ *					    drm_plane_helper_funcs.cleanup_fb
  * @plane:	a DRM plane
  * @old_state:	the plane's old state
  *
@@ -693,104 +639,18 @@ void
 drm_gem_vram_plane_helper_cleanup_fb(struct drm_plane *plane,
 				     struct drm_plane_state *old_state)
 {
-	size_t i;
-	struct drm_gem_vram_object *gbo;
+	struct drm_framebuffer *fb = old_state->fb;
 
-	if (!old_state->fb)
+	if (!fb)
 		return;
 
-	for (i = 0; i < ARRAY_SIZE(old_state->fb->obj); ++i) {
-		if (!old_state->fb->obj[i])
-			continue;
-		gbo = drm_gem_vram_of_gem(old_state->fb->obj[i]);
-		drm_gem_vram_unpin(gbo);
-	}
+	__drm_gem_vram_plane_helper_cleanup_fb(plane, old_state, fb->format->num_planes);
 }
 EXPORT_SYMBOL(drm_gem_vram_plane_helper_cleanup_fb);
 
 /*
- * Helpers for struct drm_simple_display_pipe_funcs
- */
-
-/**
- * drm_gem_vram_simple_display_pipe_prepare_fb() - \
- *	Implements &struct drm_simple_display_pipe_funcs.prepare_fb
- * @pipe:	a simple display pipe
- * @new_state:	the plane's new state
- *
- * During plane updates, this function pins the GEM VRAM
- * objects of the plane's new framebuffer to VRAM. Call
- * drm_gem_vram_simple_display_pipe_cleanup_fb() to unpin them.
- *
- * Returns:
- *	0 on success, or
- *	a negative errno code otherwise.
- */
-int drm_gem_vram_simple_display_pipe_prepare_fb(
-	struct drm_simple_display_pipe *pipe,
-	struct drm_plane_state *new_state)
-{
-	return drm_gem_vram_plane_helper_prepare_fb(&pipe->plane, new_state);
-}
-EXPORT_SYMBOL(drm_gem_vram_simple_display_pipe_prepare_fb);
-
-/**
- * drm_gem_vram_simple_display_pipe_cleanup_fb() - \
- *	Implements &struct drm_simple_display_pipe_funcs.cleanup_fb
- * @pipe:	a simple display pipe
- * @old_state:	the plane's old state
- *
- * During plane updates, this function unpins the GEM VRAM
- * objects of the plane's old framebuffer from VRAM. Complements
- * drm_gem_vram_simple_display_pipe_prepare_fb().
- */
-void drm_gem_vram_simple_display_pipe_cleanup_fb(
-	struct drm_simple_display_pipe *pipe,
-	struct drm_plane_state *old_state)
-{
-	drm_gem_vram_plane_helper_cleanup_fb(&pipe->plane, old_state);
-}
-EXPORT_SYMBOL(drm_gem_vram_simple_display_pipe_cleanup_fb);
-
-/*
  * PRIME helpers
  */
-
-/**
- * drm_gem_vram_object_pin() - \
-	Implements &struct drm_gem_object_funcs.pin
- * @gem:	The GEM object to pin
- *
- * Returns:
- * 0 on success, or
- * a negative errno code otherwise.
- */
-static int drm_gem_vram_object_pin(struct drm_gem_object *gem)
-{
-	struct drm_gem_vram_object *gbo = drm_gem_vram_of_gem(gem);
-
-	/* Fbdev console emulation is the use case of these PRIME
-	 * helpers. This may involve updating a hardware buffer from
-	 * a shadow FB. We pin the buffer to it's current location
-	 * (either video RAM or system memory) to prevent it from
-	 * being relocated during the update operation. If you require
-	 * the buffer to be pinned to VRAM, implement a callback that
-	 * sets the flags accordingly.
-	 */
-	return drm_gem_vram_pin(gbo, 0);
-}
-
-/**
- * drm_gem_vram_object_unpin() - \
-	Implements &struct drm_gem_object_funcs.unpin
- * @gem:	The GEM object to unpin
- */
-static void drm_gem_vram_object_unpin(struct drm_gem_object *gem)
-{
-	struct drm_gem_vram_object *gbo = drm_gem_vram_of_gem(gem);
-
-	drm_gem_vram_unpin(gbo);
-}
 
 /**
  * drm_gem_vram_object_vmap() -
@@ -802,7 +662,8 @@ static void drm_gem_vram_object_unpin(struct drm_gem_object *gem)
  * Returns:
  * 0 on success, or a negative error code otherwise.
  */
-static int drm_gem_vram_object_vmap(struct drm_gem_object *gem, struct dma_buf_map *map)
+static int drm_gem_vram_object_vmap(struct drm_gem_object *gem,
+				    struct iosys_map *map)
 {
 	struct drm_gem_vram_object *gbo = drm_gem_vram_of_gem(gem);
 
@@ -815,7 +676,8 @@ static int drm_gem_vram_object_vmap(struct drm_gem_object *gem, struct dma_buf_m
  * @gem: The GEM object to unmap
  * @map: Kernel virtual address where the VRAM GEM object was mapped
  */
-static void drm_gem_vram_object_vunmap(struct drm_gem_object *gem, struct dma_buf_map *map)
+static void drm_gem_vram_object_vunmap(struct drm_gem_object *gem,
+				       struct iosys_map *map)
 {
 	struct drm_gem_vram_object *gbo = drm_gem_vram_of_gem(gem);
 
@@ -828,8 +690,6 @@ static void drm_gem_vram_object_vunmap(struct drm_gem_object *gem, struct dma_bu
 
 static const struct drm_gem_object_funcs drm_gem_vram_object_funcs = {
 	.free	= drm_gem_vram_object_free,
-	.pin	= drm_gem_vram_object_pin,
-	.unpin	= drm_gem_vram_object_unpin,
 	.vmap	= drm_gem_vram_object_vmap,
 	.vunmap	= drm_gem_vram_object_vunmap,
 	.mmap   = drm_gem_ttm_mmap,
@@ -846,7 +706,6 @@ static const struct drm_gem_object_funcs drm_gem_vram_object_funcs = {
 
 static void bo_driver_ttm_tt_destroy(struct ttm_device *bdev, struct ttm_tt *tt)
 {
-	ttm_tt_destroy_common(bdev, tt);
 	ttm_tt_fini(tt);
 	kfree(tt);
 }
@@ -865,7 +724,7 @@ static struct ttm_tt *bo_driver_ttm_tt_create(struct ttm_buffer_object *bo,
 	if (!tt)
 		return NULL;
 
-	ret = ttm_tt_init(tt, bo, page_flags, ttm_cached);
+	ret = ttm_tt_init(tt, bo, page_flags, ttm_cached, 0);
 	if (ret < 0)
 		goto err_ttm_tt_init;
 
@@ -911,6 +770,17 @@ static int bo_driver_move(struct ttm_buffer_object *bo,
 {
 	struct drm_gem_vram_object *gbo;
 
+	if (!bo->resource) {
+		if (new_mem->mem_type != TTM_PL_SYSTEM) {
+			hop->mem_type = TTM_PL_SYSTEM;
+			hop->flags = TTM_PL_FLAG_TEMPORARY;
+			return -EMULTIHOP;
+		}
+
+		ttm_bo_move_null(bo, new_mem);
+		return 0;
+	}
+
 	gbo = drm_gem_vram_of_bo(bo);
 
 	return drm_gem_vram_bo_driver_move(gbo, evict, ctx, new_mem);
@@ -952,8 +822,8 @@ static struct ttm_device_funcs bo_driver = {
 
 static int drm_vram_mm_debugfs(struct seq_file *m, void *data)
 {
-	struct drm_info_node *node = (struct drm_info_node *) m->private;
-	struct drm_vram_mm *vmm = node->minor->dev->vram_mm;
+	struct drm_debugfs_entry *entry = m->private;
+	struct drm_vram_mm *vmm = entry->dev->vram_mm;
 	struct ttm_resource_manager *man = ttm_manager_type(&vmm->bdev, TTM_PL_VRAM);
 	struct drm_printer p = drm_seq_file_printer(m);
 
@@ -961,7 +831,7 @@ static int drm_vram_mm_debugfs(struct seq_file *m, void *data)
 	return 0;
 }
 
-static const struct drm_info_list drm_vram_mm_debugfs_list[] = {
+static const struct drm_debugfs_info drm_vram_mm_debugfs_list[] = {
 	{ "vram-mm", drm_vram_mm_debugfs, 0, NULL },
 };
 
@@ -973,9 +843,8 @@ static const struct drm_info_list drm_vram_mm_debugfs_list[] = {
  */
 void drm_vram_mm_debugfs_init(struct drm_minor *minor)
 {
-	drm_debugfs_create_files(drm_vram_mm_debugfs_list,
-				 ARRAY_SIZE(drm_vram_mm_debugfs_list),
-				 minor->debugfs_root, minor);
+	drm_debugfs_add_files(minor->dev, drm_vram_mm_debugfs_list,
+			      ARRAY_SIZE(drm_vram_mm_debugfs_list));
 }
 EXPORT_SYMBOL(drm_vram_mm_debugfs_init);
 

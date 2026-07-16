@@ -13,7 +13,7 @@
  * This file contains the functions and defines necessary to modify and use
  * the i386 page table tree.
  */
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <asm/processor.h>
 #include <linux/threads.h>
 #include <asm/paravirt.h>
@@ -45,16 +45,7 @@ do {						\
 	flush_tlb_one_kernel((vaddr));		\
 } while (0)
 
-#endif /* !__ASSEMBLY__ */
-
-/*
- * kern_addr_valid() is (1) for FLATMEM and (0) for SPARSEMEM
- */
-#ifdef CONFIG_FLATMEM
-#define kern_addr_valid(addr)	(1)
-#else
-#define kern_addr_valid(kaddr)	(0)
-#endif
+#endif /* !__ASSEMBLER__ */
 
 /*
  * This is used to calculate the .brk reservation for initial pagetables.

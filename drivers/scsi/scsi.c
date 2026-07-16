@@ -55,8 +55,7 @@
 #include <linux/notifier.h>
 #include <linux/cpu.h>
 #include <linux/mutex.h>
-#include <linux/async.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
@@ -85,14 +84,6 @@ unsigned int scsi_logging_level;
 #if defined(CONFIG_SCSI_LOGGING)
 EXPORT_SYMBOL(scsi_logging_level);
 #endif
-
-/*
- * Domain for asynchronous system resume operations.  It is marked 'exclusive'
- * to avoid being included in the async_synchronize_full() that is invoked by
- * dpm_resume().
- */
-ASYNC_DOMAIN_EXCLUSIVE(scsi_sd_pm_domain);
-EXPORT_SYMBOL(scsi_sd_pm_domain);
 
 #ifdef CONFIG_SCSI_LOGGING
 void scsi_log_send(struct scsi_cmnd *cmd)
@@ -209,11 +200,11 @@ void scsi_finish_command(struct scsi_cmnd *cmd)
 
 
 /*
- * 1024 is big enough for saturating the fast scsi LUN now
+ * 4096 is big enough for saturating fast SCSI LUNs.
  */
 int scsi_device_max_queue_depth(struct scsi_device *sdev)
 {
-	return max_t(int, sdev->host->can_queue, 1024);
+	return min_t(int, sdev->host->can_queue, 4096);
 }
 
 /**
@@ -251,9 +242,11 @@ EXPORT_SYMBOL(scsi_change_queue_depth);
  * 		specific SCSI device to determine if and when there is a
  * 		need to adjust the queue depth on the device.
  *
- * Returns:	0 - No change needed, >0 - Adjust queue depth to this new depth,
- * 		-1 - Drop back to untagged operation using host->cmd_per_lun
- * 			as the untagged command depth
+ * Returns:
+ * * 0 - No change needed
+ * * >0 - Adjust queue depth to this new depth,
+ * * -1 - Drop back to untagged operation using host->cmd_per_lun as the
+ *   untagged command depth
  *
  * Lock Status:	None held on entry
  *
@@ -318,16 +311,76 @@ static int scsi_vpd_inquiry(struct scsi_device *sdev, unsigned char *buffer,
 	 * I'm not convinced we need to try quite this hard to get VPD, but
 	 * all the existing users tried this hard.
 	 */
-	result = scsi_execute_req(sdev, cmd, DMA_FROM_DEVICE, buffer,
-				  len, NULL, 30 * HZ, 3, NULL);
+	result = scsi_execute_cmd(sdev, cmd, REQ_OP_DRV_IN, buffer, len,
+				  30 * HZ, 3, NULL);
 	if (result)
 		return -EIO;
 
-	/* Sanity check that we got the page back that we asked for */
+	/*
+	 * Sanity check that we got the page back that we asked for and that
+	 * the page size is not 0.
+	 */
 	if (buffer[1] != page)
 		return -EIO;
 
-	return get_unaligned_be16(&buffer[2]) + 4;
+	result = get_unaligned_be16(&buffer[2]);
+	if (!result)
+		return -EIO;
+
+	return result + 4;
+}
+
+enum scsi_vpd_parameters {
+	SCSI_VPD_HEADER_SIZE = 4,
+	SCSI_VPD_LIST_SIZE = 36,
+};
+
+static int scsi_get_vpd_size(struct scsi_device *sdev, u8 page)
+{
+	unsigned char vpd[SCSI_VPD_LIST_SIZE] __aligned(4);
+	int result;
+
+	if (sdev->no_vpd_size)
+		return SCSI_DEFAULT_VPD_LEN;
+
+	/*
+	 * Fetch the supported pages VPD and validate that the requested page
+	 * number is present.
+	 */
+	if (page != 0) {
+		result = scsi_vpd_inquiry(sdev, vpd, 0, sizeof(vpd));
+		if (result < SCSI_VPD_HEADER_SIZE)
+			return 0;
+
+		if (result > sizeof(vpd)) {
+			dev_warn_once(&sdev->sdev_gendev,
+				      "%s: long VPD page 0 length: %d bytes\n",
+				      __func__, result);
+			result = sizeof(vpd);
+		}
+
+		result -= SCSI_VPD_HEADER_SIZE;
+		if (!memchr(&vpd[SCSI_VPD_HEADER_SIZE], page, result))
+			return 0;
+	}
+	/*
+	 * Fetch the VPD page header to find out how big the page
+	 * is. This is done to prevent problems on legacy devices
+	 * which can not handle allocation lengths as large as
+	 * potentially requested by the caller.
+	 */
+	result = scsi_vpd_inquiry(sdev, vpd, page, SCSI_VPD_HEADER_SIZE);
+	if (result < 0)
+		return 0;
+
+	if (result < SCSI_VPD_HEADER_SIZE) {
+		dev_warn_once(&sdev->sdev_gendev,
+			      "%s: short VPD page 0x%02x length: %d bytes\n",
+			      __func__, page, result);
+		return 0;
+	}
+
+	return result;
 }
 
 /**
@@ -339,47 +392,38 @@ static int scsi_vpd_inquiry(struct scsi_device *sdev, unsigned char *buffer,
  *
  * SCSI devices may optionally supply Vital Product Data.  Each 'page'
  * of VPD is defined in the appropriate SCSI document (eg SPC, SBC).
- * If the device supports this VPD page, this routine returns a pointer
- * to a buffer containing the data from that page.  The caller is
- * responsible for calling kfree() on this pointer when it is no longer
- * needed.  If we cannot retrieve the VPD page this routine returns %NULL.
+ * If the device supports this VPD page, this routine fills @buf
+ * with the data from that page and return 0. If the VPD page is not
+ * supported or its content cannot be retrieved, -EINVAL is returned.
  */
 int scsi_get_vpd_page(struct scsi_device *sdev, u8 page, unsigned char *buf,
 		      int buf_len)
 {
-	int i, result;
+	int result, vpd_len;
 
-	if (sdev->skip_vpd_pages)
-		goto fail;
+	if (!scsi_device_supports_vpd(sdev))
+		return -EINVAL;
 
-	/* Ask for all the pages supported by this device */
-	result = scsi_vpd_inquiry(sdev, buf, 0, buf_len);
-	if (result < 4)
-		goto fail;
+	vpd_len = scsi_get_vpd_size(sdev, page);
+	if (vpd_len <= 0)
+		return -EINVAL;
 
-	/* If the user actually wanted this page, we can skip the rest */
-	if (page == 0)
-		return 0;
+	vpd_len = min(vpd_len, buf_len);
 
-	for (i = 4; i < min(result, buf_len); i++)
-		if (buf[i] == page)
-			goto found;
-
-	if (i < result && i >= buf_len)
-		/* ran off the end of the buffer, give us benefit of doubt */
-		goto found;
-	/* The device claims it doesn't support the requested page */
-	goto fail;
-
- found:
-	result = scsi_vpd_inquiry(sdev, buf, page, buf_len);
+	/*
+	 * Fetch the actual page. Since the appropriate size was reported
+	 * by the device it is now safe to ask for something bigger.
+	 */
+	memset(buf, 0, buf_len);
+	result = scsi_vpd_inquiry(sdev, buf, page, vpd_len);
 	if (result < 0)
-		goto fail;
+		return -EINVAL;
+	else if (result > vpd_len)
+		dev_warn_once(&sdev->sdev_gendev,
+			      "%s: VPD page 0x%02x result %d > %d bytes\n",
+			      __func__, page, result, vpd_len);
 
 	return 0;
-
- fail:
-	return -EINVAL;
 }
 EXPORT_SYMBOL_GPL(scsi_get_vpd_page);
 
@@ -393,9 +437,17 @@ EXPORT_SYMBOL_GPL(scsi_get_vpd_page);
 static struct scsi_vpd *scsi_get_vpd_buf(struct scsi_device *sdev, u8 page)
 {
 	struct scsi_vpd *vpd_buf;
-	int vpd_len = SCSI_VPD_PG_LEN, result;
+	int vpd_len, result;
+
+	vpd_len = scsi_get_vpd_size(sdev, page);
+	if (vpd_len <= 0)
+		return NULL;
 
 retry_pg:
+	/*
+	 * Fetch the actual page. Since the appropriate size was reported
+	 * by the device it is now safe to ask for something bigger.
+	 */
 	vpd_buf = kmalloc(sizeof(*vpd_buf) + vpd_len, GFP_KERNEL);
 	if (!vpd_buf)
 		return NULL;
@@ -406,6 +458,9 @@ retry_pg:
 		return NULL;
 	}
 	if (result > vpd_len) {
+		dev_warn_once(&sdev->sdev_gendev,
+			      "%s: VPD page 0x%02x result %d > %d bytes\n",
+			      __func__, page, result, vpd_len);
 		vpd_len = result;
 		kfree(vpd_buf);
 		goto retry_pg;
@@ -457,50 +512,91 @@ void scsi_attach_vpd(struct scsi_device *sdev)
 		return;
 
 	for (i = 4; i < vpd_buf->len; i++) {
-		if (vpd_buf->data[i] == 0x0)
+		switch (vpd_buf->data[i]) {
+		case 0x0:
 			scsi_update_vpd_page(sdev, 0x0, &sdev->vpd_pg0);
-		if (vpd_buf->data[i] == 0x80)
+			break;
+		case 0x80:
 			scsi_update_vpd_page(sdev, 0x80, &sdev->vpd_pg80);
-		if (vpd_buf->data[i] == 0x83)
+			break;
+		case 0x83:
 			scsi_update_vpd_page(sdev, 0x83, &sdev->vpd_pg83);
-		if (vpd_buf->data[i] == 0x89)
+			break;
+		case 0x89:
 			scsi_update_vpd_page(sdev, 0x89, &sdev->vpd_pg89);
+			break;
+		case 0xb0:
+			scsi_update_vpd_page(sdev, 0xb0, &sdev->vpd_pgb0);
+			break;
+		case 0xb1:
+			scsi_update_vpd_page(sdev, 0xb1, &sdev->vpd_pgb1);
+			break;
+		case 0xb2:
+			scsi_update_vpd_page(sdev, 0xb2, &sdev->vpd_pgb2);
+			break;
+		case 0xb7:
+			scsi_update_vpd_page(sdev, 0xb7, &sdev->vpd_pgb7);
+			break;
+		default:
+			break;
+		}
 	}
 	kfree(vpd_buf);
 }
 
 /**
- * scsi_report_opcode - Find out if a given command opcode is supported
+ * scsi_report_opcode - Find out if a given command is supported
  * @sdev:	scsi device to query
  * @buffer:	scratch buffer (must be at least 20 bytes long)
  * @len:	length of buffer
- * @opcode:	opcode for command to look up
+ * @opcode:	opcode for the command to look up
+ * @sa:		service action for the command to look up
  *
- * Uses the REPORT SUPPORTED OPERATION CODES to look up the given
- * opcode. Returns -EINVAL if RSOC fails, 0 if the command opcode is
- * unsupported and 1 if the device claims to support the command.
+ * Uses the REPORT SUPPORTED OPERATION CODES to check support for the
+ * command identified with @opcode and @sa. If the command does not
+ * have a service action, @sa must be 0. Returns -EINVAL if RSOC fails,
+ * 0 if the command is not supported and 1 if the device claims to
+ * support the command.
  */
 int scsi_report_opcode(struct scsi_device *sdev, unsigned char *buffer,
-		       unsigned int len, unsigned char opcode)
+		       unsigned int len, unsigned char opcode,
+		       unsigned short sa)
 {
 	unsigned char cmd[16];
 	struct scsi_sense_hdr sshdr;
-	int result;
+	int result, request_len;
+	const struct scsi_exec_args exec_args = {
+		.sshdr = &sshdr,
+	};
 
 	if (sdev->no_report_opcodes || sdev->scsi_level < SCSI_SPC_3)
 		return -EINVAL;
 
+	/* RSOC header + size of command we are asking about */
+	request_len = 4 + COMMAND_SIZE(opcode);
+	if (request_len > len) {
+		dev_warn_once(&sdev->sdev_gendev,
+			      "%s: len %u bytes, opcode 0x%02x needs %u\n",
+			      __func__, len, opcode, request_len);
+		return -EINVAL;
+	}
+
 	memset(cmd, 0, 16);
 	cmd[0] = MAINTENANCE_IN;
 	cmd[1] = MI_REPORT_SUPPORTED_OPERATION_CODES;
-	cmd[2] = 1;		/* One command format */
-	cmd[3] = opcode;
-	put_unaligned_be32(len, &cmd[6]);
+	if (!sa) {
+		cmd[2] = 1;	/* One command format */
+		cmd[3] = opcode;
+	} else {
+		cmd[2] = 3;	/* One command format with service action */
+		cmd[3] = opcode;
+		put_unaligned_be16(sa, &cmd[4]);
+	}
+	put_unaligned_be32(request_len, &cmd[6]);
 	memset(buffer, 0, len);
 
-	result = scsi_execute_req(sdev, cmd, DMA_FROM_DEVICE, buffer, len,
-				  &sshdr, 30 * HZ, 3, NULL);
-
+	result = scsi_execute_cmd(sdev, cmd, REQ_OP_DRV_IN, buffer,
+				  request_len, 30 * HZ, 3, &exec_args);
 	if (result < 0)
 		return result;
 	if (result && scsi_sense_valid(&sshdr) &&
@@ -514,6 +610,165 @@ int scsi_report_opcode(struct scsi_device *sdev, unsigned char *buffer,
 	return 0;
 }
 EXPORT_SYMBOL(scsi_report_opcode);
+
+#define SCSI_CDL_CHECK_BUF_LEN	64
+
+static bool scsi_cdl_check_cmd(struct scsi_device *sdev, u8 opcode, u16 sa,
+			       unsigned char *buf)
+{
+	int ret;
+	u8 cdlp;
+
+	/* Check operation code */
+	ret = scsi_report_opcode(sdev, buf, SCSI_CDL_CHECK_BUF_LEN, opcode, sa);
+	if (ret <= 0)
+		return false;
+
+	if ((buf[1] & 0x03) != 0x03)
+		return false;
+
+	/*
+	 * See SPC-6, One_command parameter data format for
+	 * REPORT SUPPORTED OPERATION CODES. We have the following cases
+	 * depending on rwcdlp (buf[0] & 0x01) value:
+	 *  - rwcdlp == 0: then cdlp indicates support for the A mode page when
+	 *		   it is equal to 1 and for the B mode page when it is
+	 *		   equal to 2.
+	 *  - rwcdlp == 1: then cdlp indicates support for the T2A mode page
+	 *		   when it is equal to 1 and for the T2B mode page when
+	 *		   it is equal to 2.
+	 * Overall, to detect support for command duration limits, we only need
+	 * to check that cdlp is 1 or 2.
+	 */
+	cdlp = (buf[1] & 0x18) >> 3;
+
+	return cdlp == 0x01 || cdlp == 0x02;
+}
+
+/**
+ * scsi_cdl_check - Check if a SCSI device supports Command Duration Limits
+ * @sdev: The device to check
+ */
+void scsi_cdl_check(struct scsi_device *sdev)
+{
+	bool cdl_supported;
+	unsigned char *buf;
+
+	/*
+	 * Support for CDL was defined in SPC-5. Ignore devices reporting an
+	 * lower SPC version. This also avoids problems with old drives choking
+	 * on MAINTENANCE_IN / MI_REPORT_SUPPORTED_OPERATION_CODES with a
+	 * service action specified, as done in scsi_cdl_check_cmd().
+	 */
+	if (sdev->scsi_level < SCSI_SPC_5) {
+		sdev->cdl_supported = 0;
+		return;
+	}
+
+	buf = kmalloc(SCSI_CDL_CHECK_BUF_LEN, GFP_KERNEL);
+	if (!buf) {
+		sdev->cdl_supported = 0;
+		return;
+	}
+
+	/* Check support for READ_16, WRITE_16, READ_32 and WRITE_32 commands */
+	cdl_supported =
+		scsi_cdl_check_cmd(sdev, READ_16, 0, buf) ||
+		scsi_cdl_check_cmd(sdev, WRITE_16, 0, buf) ||
+		scsi_cdl_check_cmd(sdev, VARIABLE_LENGTH_CMD, READ_32, buf) ||
+		scsi_cdl_check_cmd(sdev, VARIABLE_LENGTH_CMD, WRITE_32, buf);
+	if (cdl_supported) {
+		/*
+		 * We have CDL support: force the use of READ16/WRITE16.
+		 * READ32 and WRITE32 will be used for devices that support
+		 * the T10_PI_TYPE2_PROTECTION protection type.
+		 */
+		sdev->use_16_for_rw = 1;
+		sdev->use_10_for_rw = 0;
+
+		sdev->cdl_supported = 1;
+
+		/*
+		 * If the device supports CDL, make sure that the current drive
+		 * feature status is consistent with the user controlled
+		 * cdl_enable state.
+		 */
+		scsi_cdl_enable(sdev, sdev->cdl_enable);
+	} else {
+		sdev->cdl_supported = 0;
+	}
+
+	kfree(buf);
+}
+
+/**
+ * scsi_cdl_enable - Enable or disable a SCSI device supports for Command
+ *                   Duration Limits
+ * @sdev: The target device
+ * @enable: the target state
+ */
+int scsi_cdl_enable(struct scsi_device *sdev, bool enable)
+{
+	char buf[64];
+	int ret;
+
+	if (!sdev->cdl_supported)
+		return -EOPNOTSUPP;
+
+	/*
+	 * For ATA devices, CDL needs to be enabled with a SET FEATURES command.
+	 */
+	if (sdev->is_ata) {
+		struct scsi_mode_data data;
+		struct scsi_sense_hdr sshdr;
+		char *buf_data;
+		int len;
+
+		ret = scsi_mode_sense(sdev, 0x08, 0x0a, 0xf2, buf, sizeof(buf),
+				      5 * HZ, 3, &data, NULL);
+		if (ret)
+			return -EINVAL;
+
+		/* Enable or disable CDL using the ATA feature page */
+		len = min_t(size_t, sizeof(buf),
+			    data.length - data.header_length -
+			    data.block_descriptor_length);
+		buf_data = buf + data.header_length +
+			data.block_descriptor_length;
+
+		/*
+		 * If we want to enable CDL and CDL is already enabled on the
+		 * device, do nothing. This avoids needlessly resetting the CDL
+		 * statistics on the device as that is implied by the CDL enable
+		 * action. Similar to this, there is no need to do anything if
+		 * we want to disable CDL and CDL is already disabled.
+		 */
+		if (enable) {
+			if ((buf_data[4] & 0x03) == 0x02)
+				goto out;
+			buf_data[4] &= ~0x03;
+			buf_data[4] |= 0x02;
+		} else {
+			if ((buf_data[4] & 0x03) == 0x00)
+				goto out;
+			buf_data[4] &= ~0x03;
+		}
+
+		ret = scsi_mode_select(sdev, 1, 0, buf_data, len, 5 * HZ, 3,
+				       &data, &sshdr);
+		if (ret) {
+			if (ret > 0 && scsi_sense_valid(&sshdr))
+				scsi_print_sense_hdr(sdev,
+					dev_name(&sdev->sdev_gendev), &sshdr);
+			return ret;
+		}
+	}
+
+out:
+	sdev->cdl_enable = enable;
+
+	return 0;
+}
 
 /**
  * scsi_device_get  -  get an additional reference to a scsi_device
@@ -530,14 +785,14 @@ int scsi_device_get(struct scsi_device *sdev)
 {
 	if (sdev->sdev_state == SDEV_DEL || sdev->sdev_state == SDEV_CANCEL)
 		goto fail;
-	if (!get_device(&sdev->sdev_gendev))
-		goto fail;
 	if (!try_module_get(sdev->host->hostt->module))
-		goto fail_put_device;
+		goto fail;
+	if (!get_device(&sdev->sdev_gendev))
+		goto fail_put_module;
 	return 0;
 
-fail_put_device:
-	put_device(&sdev->sdev_gendev);
+fail_put_module:
+	module_put(sdev->host->hostt->module);
 fail:
 	return -ENXIO;
 }

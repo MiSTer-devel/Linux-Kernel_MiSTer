@@ -13,7 +13,7 @@
 #include <linux/iopoll.h>
 #include <linux/of.h>
 
-#include <dt-bindings/clock/jz4780-cgu.h>
+#include <dt-bindings/clock/ingenic,jz4780-cgu.h>
 
 #include "cgu.h"
 #include "pm.h"
@@ -128,19 +128,19 @@ static unsigned long jz4780_otg_phy_recalc_rate(struct clk_hw *hw,
 	return parent_rate;
 }
 
-static long jz4780_otg_phy_round_rate(struct clk_hw *hw, unsigned long req_rate,
-				      unsigned long *parent_rate)
+static int jz4780_otg_phy_determine_rate(struct clk_hw *hw,
+					 struct clk_rate_request *req)
 {
-	if (req_rate < 15600000)
-		return 12000000;
+	if (req->rate < 15600000)
+		req->rate = 12000000;
+	else if (req->rate < 21600000)
+		req->rate = 19200000;
+	else if (req->rate < 36000000)
+		req->rate = 24000000;
+	else
+		req->rate = 48000000;
 
-	if (req_rate < 21600000)
-		return 19200000;
-
-	if (req_rate < 36000000)
-		return 24000000;
-
-	return 48000000;
+	return 0;
 }
 
 static int jz4780_otg_phy_set_rate(struct clk_hw *hw, unsigned long req_rate,
@@ -212,7 +212,7 @@ static int jz4780_otg_phy_is_enabled(struct clk_hw *hw)
 
 static const struct clk_ops jz4780_otg_phy_ops = {
 	.recalc_rate = jz4780_otg_phy_recalc_rate,
-	.round_rate = jz4780_otg_phy_round_rate,
+	.determine_rate = jz4780_otg_phy_determine_rate,
 	.set_rate = jz4780_otg_phy_set_rate,
 
 	.enable		= jz4780_otg_phy_enable,
@@ -341,12 +341,22 @@ static const struct ingenic_cgu_clk_info jz4780_cgu_clocks[] = {
 
 	[JZ4780_CLK_CPU] = {
 		"cpu", CGU_CLK_DIV,
+		/*
+		 * Disabling the CPU clock or any parent clocks will hang the
+		 * system; mark it critical.
+		 */
+		.flags = CLK_IS_CRITICAL,
 		.parents = { JZ4780_CLK_CPUMUX, -1, -1, -1 },
 		.div = { CGU_REG_CLOCKCONTROL, 0, 1, 4, 22, -1, -1 },
 	},
 
 	[JZ4780_CLK_L2CACHE] = {
 		"l2cache", CGU_CLK_DIV,
+		/*
+		 * The L2 cache clock is critical if caches are enabled and
+		 * disabling it or any parent clocks will hang the system.
+		 */
+		.flags = CLK_IS_CRITICAL,
 		.parents = { JZ4780_CLK_CPUMUX, -1, -1, -1 },
 		.div = { CGU_REG_CLOCKCONTROL, 4, 1, 4, -1, -1, -1 },
 	},
@@ -380,6 +390,11 @@ static const struct ingenic_cgu_clk_info jz4780_cgu_clocks[] = {
 
 	[JZ4780_CLK_DDR] = {
 		"ddr", CGU_CLK_MUX | CGU_CLK_DIV,
+		/*
+		 * Disabling DDR clock or its parents will render DRAM
+		 * inaccessible; mark it critical.
+		 */
+		.flags = CLK_IS_CRITICAL,
 		.parents = { -1, JZ4780_CLK_SCLKA, JZ4780_CLK_MPLL, -1 },
 		.mux = { CGU_REG_DDRCDR, 30, 2 },
 		.div = { CGU_REG_DDRCDR, 0, 1, 4, 29, 28, 27 },

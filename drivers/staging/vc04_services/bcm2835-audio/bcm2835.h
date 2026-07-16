@@ -6,10 +6,11 @@
 
 #include <linux/device.h>
 #include <linux/wait.h>
-#include <linux/raspberrypi/vchiq.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm-indirect.h>
+
+#include "../include/linux/raspberrypi/vchiq.h"
 
 #define MAX_SUBSTREAMS   (8)
 #define AVAIL_SUBSTREAMS_MASK  (0xff)
@@ -61,7 +62,7 @@ struct bcm2835_chip {
 
 	unsigned int opened;
 	unsigned int spdif_status;
-	struct mutex audio_mutex;
+	struct mutex audio_mutex; /* Serialize chip data access */
 
 	struct bcm2835_vchi_ctx *vchi_ctx;
 };
@@ -83,7 +84,6 @@ struct bcm2835_alsa_stream {
 	int idx;
 };
 
-int snd_bcm2835_new_ctl(struct bcm2835_chip *chip);
 int snd_bcm2835_new_pcm(struct bcm2835_chip *chip, const char *name,
 			int idx, enum snd_bcm2835_route route,
 			u32 numchannels, bool spdif);

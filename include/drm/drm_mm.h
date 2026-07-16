@@ -39,13 +39,15 @@
  */
 #include <linux/bug.h>
 #include <linux/rbtree.h>
-#include <linux/kernel.h>
+#include <linux/limits.h>
 #include <linux/mm_types.h>
 #include <linux/list.h>
 #include <linux/spinlock.h>
 #ifdef CONFIG_DRM_DEBUG_MM
 #include <linux/stackdepot.h>
 #endif
+#include <linux/types.h>
+
 #include <drm/drm_print.h>
 
 #ifdef CONFIG_DRM_DEBUG_MM
@@ -461,7 +463,6 @@ static inline int drm_mm_insert_node(struct drm_mm *mm,
 }
 
 void drm_mm_remove_node(struct drm_mm_node *node);
-void drm_mm_replace_node(struct drm_mm_node *old, struct drm_mm_node *new);
 void drm_mm_init(struct drm_mm *mm, u64 start, u64 size);
 void drm_mm_takedown(struct drm_mm *mm);
 

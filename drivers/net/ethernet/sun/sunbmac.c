@@ -25,7 +25,7 @@
 #include <linux/bitops.h>
 #include <linux/dma-mapping.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/gfp.h>
 
 #include <asm/auxio.h>
@@ -526,7 +526,7 @@ static int try_next_permutation(struct bigmac *bp, void __iomem *tregs)
 
 static void bigmac_timer(struct timer_list *t)
 {
-	struct bigmac *bp = from_timer(bp, t, bigmac_timer);
+	struct bigmac *bp = timer_container_of(bp, t, bigmac_timer);
 	void __iomem *tregs = bp->tregs;
 	int restart_timer = 0;
 
@@ -623,7 +623,7 @@ static int bigmac_init_hw(struct bigmac *bp, bool non_blocking)
 	void __iomem *cregs        = bp->creg;
 	void __iomem *bregs        = bp->bregs;
 	__u32 bblk_dvma = (__u32)bp->bblock_dvma;
-	unsigned char *e = &bp->dev->dev_addr[0];
+	const unsigned char *e = &bp->dev->dev_addr[0];
 
 	/* Latch current counters into statistics. */
 	bigmac_get_counters(bp, bregs);
@@ -931,7 +931,7 @@ static int bigmac_close(struct net_device *dev)
 {
 	struct bigmac *bp = netdev_priv(dev);
 
-	del_timer(&bp->bigmac_timer);
+	timer_delete(&bp->bigmac_timer);
 	bp->timer_state = asleep;
 	bp->timer_ticks = 0;
 
@@ -1038,8 +1038,8 @@ static void bigmac_set_multicast(struct net_device *dev)
 /* Ethtool support... */
 static void bigmac_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, "sunbmac", sizeof(info->driver));
-	strlcpy(info->version, "2.0", sizeof(info->version));
+	strscpy(info->driver, "sunbmac", sizeof(info->driver));
+	strscpy(info->version, "2.0", sizeof(info->version));
 }
 
 static u32 bigmac_get_link(struct net_device *dev)
@@ -1076,7 +1076,6 @@ static int bigmac_ether_init(struct platform_device *op,
 	struct net_device *dev;
 	u8 bsizes, bsizes_more;
 	struct bigmac *bp;
-	int i;
 
 	/* Get a new device struct for this interface. */
 	dev = alloc_etherdev(sizeof(struct bigmac));
@@ -1086,8 +1085,7 @@ static int bigmac_ether_init(struct platform_device *op,
 	if (version_printed++ == 0)
 		printk(KERN_INFO "%s", version);
 
-	for (i = 0; i < 6; i++)
-		dev->dev_addr[i] = idprom->id_ethaddr[i];
+	eth_hw_addr_set(dev, idprom->id_ethaddr);
 
 	/* Setup softc, with backpointers to QEC and BigMAC SBUS device structs. */
 	bp = netdev_priv(dev);
@@ -1236,7 +1234,7 @@ static int bigmac_sbus_probe(struct platform_device *op)
 	return bigmac_ether_init(op, qec_op);
 }
 
-static int bigmac_sbus_remove(struct platform_device *op)
+static void bigmac_sbus_remove(struct platform_device *op)
 {
 	struct bigmac *bp = platform_get_drvdata(op);
 	struct device *parent = op->dev.parent;
@@ -1257,8 +1255,6 @@ static int bigmac_sbus_remove(struct platform_device *op)
 			  bp->bblock_dvma);
 
 	free_netdev(net_dev);
-
-	return 0;
 }
 
 static const struct of_device_id bigmac_sbus_match[] = {

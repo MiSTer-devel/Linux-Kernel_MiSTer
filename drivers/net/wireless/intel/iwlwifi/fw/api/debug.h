@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
- * Copyright (C) 2005-2014, 2018-2020 Intel Corporation
+ * Copyright (C) 2005-2014, 2018-2025 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2016-2017 Intel Deutschland GmbH
  */
 #ifndef __iwl_fw_api_debug_h__
 #define __iwl_fw_api_debug_h__
+#include "dbg-tlv.h"
 
 /**
  * enum iwl_debug_cmds - debug commands
@@ -30,6 +31,11 @@ enum iwl_debug_cmds {
 	 */
 	HOST_EVENT_CFG = 0x3,
 	/**
+	 * @INVALID_WR_PTR_CMD: invalid write pointer, set in the TFD
+	 *	when it's not in use
+	 */
+	INVALID_WR_PTR_CMD = 0x6,
+	/**
 	 * @DBGC_SUSPEND_RESUME:
 	 * DBGC suspend/resume commad. Uses a single dword as data:
 	 * 0 - resume DBGC recording
@@ -42,6 +48,24 @@ enum iwl_debug_cmds {
 	 * &struct iwl_buf_alloc_cmd
 	 */
 	BUFFER_ALLOCATION = 0x8,
+	/**
+	 * @GET_TAS_STATUS:
+	 * sends command to fw to get TAS status
+	 * the response is &struct iwl_tas_status_resp
+	 */
+	GET_TAS_STATUS = 0xA,
+	/**
+	 * @FW_DUMP_COMPLETE_CMD:
+	 * sends command to fw once dump collection completed
+	 * &struct iwl_dbg_dump_complete_cmd
+	 */
+	FW_DUMP_COMPLETE_CMD = 0xB,
+	/**
+	 * @FW_CLEAR_BUFFER:
+	 * clears the firmware's internal buffer
+	 * no payload
+	 */
+	FW_CLEAR_BUFFER = 0xD,
 	/**
 	 * @MFU_ASSERT_DUMP_NTF:
 	 * &struct iwl_mfu_assert_dump_notif
@@ -234,7 +258,7 @@ struct iwl_mfu_assert_dump_notif {
 	__le16   index_num;
 	__le16   parts_num;
 	__le32   data_size;
-	__le32   data[0];
+	__le32   data[];
 } __packed; /* MFU_DUMP_ASSERT_API_S_VER_1 */
 
 /**
@@ -270,7 +294,7 @@ struct iwl_mvm_marker {
 	u8 marker_id;
 	__le16 reserved;
 	__le64 timestamp;
-	__le32 metadata[0];
+	__le32 metadata[];
 } __packed; /* MARKER_API_S_VER_1 */
 
 /**
@@ -361,12 +385,172 @@ struct iwl_buf_alloc_cmd {
 	struct iwl_buf_alloc_frag frags[BUF_ALLOC_MAX_NUM_FRAGS];
 } __packed; /* BUFFER_ALLOCATION_CMD_API_S_VER_2 */
 
+#define DRAM_INFO_FIRST_MAGIC_WORD 0x76543210
+#define DRAM_INFO_SECOND_MAGIC_WORD 0x89ABCDEF
+
 /**
- * struct iwl_dbg_host_event_cfg_cmd
+ * struct iwl_dram_info - DRAM fragments allocation struct
+ *
+ * Driver will fill in the first 1K(+) of the pointed DRAM fragment
+ *
+ * @first_word: magic word value
+ * @second_word: magic word value
+ * @dram_frags: DRAM fragmentaion detail
+*/
+struct iwl_dram_info {
+	__le32 first_word;
+	__le32 second_word;
+	struct iwl_buf_alloc_cmd dram_frags[IWL_FW_INI_ALLOCATION_NUM - 1];
+} __packed; /* INIT_DRAM_FRAGS_ALLOCATIONS_S_VER_1 */
+
+/**
+ * struct iwl_dbgc1_info - DBGC1 address and size
+ *
+ * Driver will fill the dbcg1 address and size at address based on config TLV.
+ *
+ * @first_word: all 0 set as identifier
+ * @dbgc1_add_lsb: LSB bits of DBGC1 physical address
+ * @dbgc1_add_msb: MSB bits of DBGC1 physical address
+ * @dbgc1_size: DBGC1 size
+*/
+struct iwl_dbgc1_info {
+	__le32 first_word;
+	__le32 dbgc1_add_lsb;
+	__le32 dbgc1_add_msb;
+	__le32 dbgc1_size;
+} __packed; /* INIT_DRAM_FRAGS_ALLOCATIONS_S_VER_1 */
+
+/**
+ * struct iwl_dbg_host_event_cfg_cmd - host event config command
  * @enabled_severities: enabled severities
  */
 struct iwl_dbg_host_event_cfg_cmd {
 	__le32 enabled_severities;
 } __packed; /* DEBUG_HOST_EVENT_CFG_CMD_API_S_VER_1 */
+
+/**
+ * struct iwl_dbg_dump_complete_cmd - dump complete cmd
+ *
+ * @tp: timepoint whose dump has completed
+ * @tp_data: timepoint data
+ */
+struct iwl_dbg_dump_complete_cmd {
+	__le32 tp;
+	__le32 tp_data;
+} __packed; /* FW_DUMP_COMPLETE_CMD_API_S_VER_1 */
+
+/**
+ * struct iwl_tas_status_per_mac - tas status per lmac
+ * @static_status: tas statically enabled or disabled per lmac - TRUE/FALSE
+ * @static_dis_reason: TAS static disable reason, uses
+ *	&enum iwl_tas_statically_disabled_reason
+ * @dynamic_status: Current TAS  status. uses
+ *	&enum iwl_tas_dyna_status
+ * @near_disconnection: is TAS currently near disconnection per lmac? - TRUE/FALSE
+ * @max_reg_pwr_limit: Regulatory power limits in dBm
+ * @sar_limit: SAR limits per lmac in dBm
+ * @band: Band per lmac
+ * @reserved: reserved
+ */
+struct iwl_tas_status_per_mac {
+	u8 static_status;
+	u8 static_dis_reason;
+	u8 dynamic_status;
+	u8 near_disconnection;
+	__le16 max_reg_pwr_limit;
+	__le16 sar_limit;
+	u8 band;
+	u8 reserved[3];
+} __packed; /* DEBUG_GET_TAS_STATUS_PER_MAC_S_VER_1 */
+
+/**
+ * struct iwl_tas_status_resp - Response to GET_TAS_STATUS
+ * @tas_fw_version: TAS FW version
+ * @is_uhb_for_usa_enable: is UHB enabled in USA? - TRUE/FALSE
+ * @curr_mcc: current mcc
+ * @block_list: country block list
+ * @tas_status_mac: TAS status per lmac, uses
+ *	&struct iwl_tas_status_per_mac
+ * @in_dual_radio: is TAS in dual radio? - TRUE/FALSE
+ * @uhb_allowed_flags: see &enum iwl_tas_uhb_allowed_flags.
+ *	This member is valid only when fw has
+ *	%IWL_UCODE_TLV_CAPA_UHB_CANADA_TAS_SUPPORT capability.
+ * @reserved: reserved
+ */
+struct iwl_tas_status_resp {
+	u8 tas_fw_version;
+	u8 is_uhb_for_usa_enable;
+	__le16 curr_mcc;
+	__le16 block_list[16];
+	struct iwl_tas_status_per_mac tas_status_mac[2];
+	u8 in_dual_radio;
+	u8 uhb_allowed_flags;
+	u8 reserved[2];
+} __packed; /* DEBUG_GET_TAS_STATUS_RSP_API_S_VER_3 */
+
+/**
+ * enum iwl_tas_dyna_status - TAS current running status
+ * @TAS_DYNA_INACTIVE: TAS status is inactive
+ * @TAS_DYNA_INACTIVE_MVM_MODE: TAS is disabled due because FW is in MVM mode
+ *	or is in softap mode.
+ * @TAS_DYNA_INACTIVE_TRIGGER_MODE: TAS is disabled because FW is in
+ *	multi user trigger mode
+ * @TAS_DYNA_INACTIVE_BLOCK_LISTED: TAS is disabled because  current mcc
+ *	is blocklisted mcc
+ * @TAS_DYNA_INACTIVE_UHB_NON_US: TAS is disabled because current band is UHB
+ *	and current mcc is USA
+ * @TAS_DYNA_ACTIVE: TAS is currently active
+ * @TAS_DYNA_STATUS_MAX: TAS status max value
+ */
+enum iwl_tas_dyna_status {
+	TAS_DYNA_INACTIVE,
+	TAS_DYNA_INACTIVE_MVM_MODE,
+	TAS_DYNA_INACTIVE_TRIGGER_MODE,
+	TAS_DYNA_INACTIVE_BLOCK_LISTED,
+	TAS_DYNA_INACTIVE_UHB_NON_US,
+	TAS_DYNA_ACTIVE,
+
+	TAS_DYNA_STATUS_MAX,
+};
+
+/**
+ * enum iwl_tas_statically_disabled_reason - TAS statically disabled reason
+ * @TAS_DISABLED_DUE_TO_BIOS: TAS is disabled because TAS is disabled in BIOS
+ * @TAS_DISABLED_DUE_TO_SAR_6DBM: TAS is disabled because SAR limit is less than 6 Dbm
+ * @TAS_DISABLED_REASON_INVALID: TAS disable reason is invalid
+ * @TAS_DISABLED_DUE_TO_TABLE_SOURCE_INVALID: TAS is disabled due to
+ *	table source invalid
+ * @TAS_DISABLED_REASON_MAX: TAS disable reason max value
+ */
+enum iwl_tas_statically_disabled_reason {
+	TAS_DISABLED_DUE_TO_BIOS,
+	TAS_DISABLED_DUE_TO_SAR_6DBM,
+	TAS_DISABLED_REASON_INVALID,
+	TAS_DISABLED_DUE_TO_TABLE_SOURCE_INVALID,
+
+	TAS_DISABLED_REASON_MAX,
+}; /*_TAS_STATICALLY_DISABLED_REASON_E*/
+
+/**
+ * enum iwl_fw_dbg_config_cmd_type - types of FW debug config command
+ * @DEBUG_TOKEN_CONFIG_TYPE: token config type
+ */
+enum iwl_fw_dbg_config_cmd_type {
+	DEBUG_TOKEN_CONFIG_TYPE = 0x2B,
+}; /* LDBG_CFG_CMD_TYPE_API_E_VER_1 */
+
+/* this token disables debug asserts in the firmware */
+#define IWL_FW_DBG_CONFIG_TOKEN 0x00010001
+
+/**
+ * struct iwl_fw_dbg_config_cmd - configure FW debug
+ *
+ * @type: according to &enum iwl_fw_dbg_config_cmd_type
+ * @conf: FW configuration
+ */
+struct iwl_fw_dbg_config_cmd {
+	__le32 type;
+	__le32 conf;
+} __packed; /* LDBG_CFG_CMD_API_S_VER_7 */
 
 #endif /* __iwl_fw_api_debug_h__ */

@@ -307,7 +307,7 @@ get_remote_info_exit:
 struct iwpm_nlmsg_request *iwpm_get_nlmsg_request(__u32 nlmsg_seq,
 					u8 nl_client, gfp_t gfp)
 {
-	struct iwpm_nlmsg_request *nlmsg_request = NULL;
+	struct iwpm_nlmsg_request *nlmsg_request;
 	unsigned long flags;
 
 	nlmsg_request = kzalloc(sizeof(struct iwpm_nlmsg_request), gfp);
@@ -762,7 +762,7 @@ int iwpm_send_hello(u8 nl_client, int iwpm_pid, u16 abi_version)
 {
 	struct sk_buff *skb = NULL;
 	struct nlmsghdr *nlh;
-	const char *err_str = "";
+	const char *err_str;
 	int ret = -EINVAL;
 
 	skb = iwpm_create_nlmsg(RDMA_NL_IWPM_HELLO, &nlh, nl_client);

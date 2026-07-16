@@ -107,7 +107,7 @@
  * If header mode is set in DMA descriptor,
  *   If bit 30 is disabled, HDR_LEN must be configured according to channel
  *     requirement.
- *   If bit 30 is enabled(checksum with heade mode), HDR_LEN has no need to
+ *   If bit 30 is enabled(checksum with header mode), HDR_LEN has no need to
  *     be configured. It will enable check sum for switch
  * If header mode is not set in DMA descriptor,
  *   This register setting doesn't matter
@@ -914,7 +914,7 @@ static void ldma_dev_init(struct ldma_dev *d)
 	}
 }
 
-static int ldma_cfg_init(struct ldma_dev *d)
+static int ldma_parse_dt(struct ldma_dev *d)
 {
 	struct fwnode_handle *fwnode = dev_fwnode(d->dev);
 	struct ldma_port *p;
@@ -1593,11 +1593,12 @@ static int intel_ldma_probe(struct platform_device *pdev)
 	d->core_clk = devm_clk_get_optional(dev, NULL);
 	if (IS_ERR(d->core_clk))
 		return PTR_ERR(d->core_clk);
-	clk_prepare_enable(d->core_clk);
 
 	d->rst = devm_reset_control_get_optional(dev, NULL);
 	if (IS_ERR(d->rst))
 		return PTR_ERR(d->rst);
+
+	clk_prepare_enable(d->core_clk);
 	reset_control_deassert(d->rst);
 
 	ret = devm_add_action_or_reset(dev, ldma_clk_disable, d);
@@ -1660,10 +1661,6 @@ static int intel_ldma_probe(struct platform_device *pdev)
 		p->ldev = d;
 	}
 
-	ret = ldma_cfg_init(d);
-	if (ret)
-		return ret;
-
 	dma_dev->dev = &pdev->dev;
 
 	ch_mask = (unsigned long)d->channels_mask;
@@ -1673,6 +1670,10 @@ static int intel_ldma_probe(struct platform_device *pdev)
 		else
 			ldma_dma_init_v3X(j, d);
 	}
+
+	ret = ldma_parse_dt(d);
+	if (ret)
+		return ret;
 
 	dma_dev->device_alloc_chan_resources = ldma_alloc_chan_resources;
 	dma_dev->device_free_chan_resources = ldma_free_chan_resources;
@@ -1731,9 +1732,4 @@ static struct platform_driver intel_ldma_driver = {
  * registered DMA channels and DMA capabilities to clients before their
  * initialization.
  */
-static int __init intel_ldma_init(void)
-{
-	return platform_driver_register(&intel_ldma_driver);
-}
-
-device_initcall(intel_ldma_init);
+builtin_platform_driver(intel_ldma_driver);

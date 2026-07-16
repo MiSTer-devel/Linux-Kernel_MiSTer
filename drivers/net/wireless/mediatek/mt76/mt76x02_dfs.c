@@ -630,7 +630,7 @@ static void mt76x02_dfs_tasklet(struct tasklet_struct *t)
 		radar_detected = mt76x02_dfs_check_detection(dev);
 		if (radar_detected) {
 			/* sw detector rx radar pattern */
-			ieee80211_radar_detected(dev->mt76.hw);
+			ieee80211_radar_detected(dev->mt76.hw, NULL);
 			mt76x02_dfs_detector_reset(dev);
 
 			return;
@@ -658,7 +658,7 @@ static void mt76x02_dfs_tasklet(struct tasklet_struct *t)
 
 		/* hw detector rx radar pattern */
 		dfs_pd->stats[i].hw_pattern++;
-		ieee80211_radar_detected(dev->mt76.hw);
+		ieee80211_radar_detected(dev->mt76.hw, NULL);
 		mt76x02_dfs_detector_reset(dev);
 
 		return;
@@ -823,10 +823,7 @@ EXPORT_SYMBOL_GPL(mt76x02_phy_dfs_adjust_agc);
 
 void mt76x02_dfs_init_params(struct mt76x02_dev *dev)
 {
-	struct cfg80211_chan_def *chandef = &dev->mphy.chandef;
-
-	if ((chandef->chan->flags & IEEE80211_CHAN_RADAR) &&
-	    dev->mt76.region != NL80211_DFS_UNSET) {
+	if (mt76_phy_dfs_state(&dev->mphy) > MT_DFS_STATE_DISABLED) {
 		mt76x02_dfs_init_sw_detector(dev);
 		mt76x02_dfs_set_bbp_params(dev);
 		/* enable debug mode */

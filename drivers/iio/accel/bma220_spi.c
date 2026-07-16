@@ -9,6 +9,7 @@
 #include <linux/kernel.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/types.h>
 #include <linux/spi/spi.h>
 
 #include <linux/iio/buffer.h>
@@ -27,7 +28,6 @@
 #define BMA220_CHIP_ID				0xDD
 #define BMA220_READ_MASK			BIT(7)
 #define BMA220_RANGE_MASK			GENMASK(1, 0)
-#define BMA220_DATA_SHIFT			2
 #define BMA220_SUSPEND_SLEEP			0xFF
 #define BMA220_SUSPEND_WAKE			0x00
 
@@ -45,7 +45,7 @@
 		.sign = 's',						\
 		.realbits = 6,						\
 		.storagebits = 8,					\
-		.shift = BMA220_DATA_SHIFT,				\
+		.shift = 2,						\
 		.endianness = IIO_CPU,					\
 	},								\
 }
@@ -66,9 +66,9 @@ struct bma220_data {
 	struct {
 		s8 chans[3];
 		/* Ensure timestamp is naturally aligned. */
-		s64 timestamp __aligned(8);
+		aligned_s64 timestamp;
 	} scan;
-	u8 tx_buf[2] ____cacheline_aligned;
+	u8 tx_buf[2] __aligned(IIO_DMA_MINALIGN);
 };
 
 static const struct iio_chan_spec bma220_channels[] = {
@@ -103,8 +103,8 @@ static irqreturn_t bma220_trigger_handler(int irq, void *p)
 	if (ret < 0)
 		goto err;
 
-	iio_push_to_buffers_with_timestamp(indio_dev, &data->scan,
-					   pf->timestamp);
+	iio_push_to_buffers_with_ts(indio_dev, &data->scan, sizeof(data->scan),
+				    pf->timestamp);
 err:
 	mutex_unlock(&data->lock);
 	iio_trigger_notify_done(indio_dev->trig);
@@ -125,7 +125,8 @@ static int bma220_read_raw(struct iio_dev *indio_dev,
 		ret = bma220_read_reg(data->spi_device, chan->address);
 		if (ret < 0)
 			return -EINVAL;
-		*val = sign_extend32(ret >> BMA220_DATA_SHIFT, 5);
+		*val = sign_extend32(ret >> chan->scan_type.shift,
+				     chan->scan_type.realbits - 1);
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SCALE:
 		ret = bma220_read_reg(data->spi_device, BMA220_REG_RANGE);
@@ -254,10 +255,8 @@ static int bma220_probe(struct spi_device *spi)
 	struct bma220_data *data;
 
 	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*data));
-	if (!indio_dev) {
-		dev_err(&spi->dev, "iio allocation failed!\n");
+	if (!indio_dev)
 		return -ENOMEM;
-	}
 
 	data = iio_priv(indio_dev);
 	data->spi_device = spi;
@@ -289,36 +288,36 @@ static int bma220_probe(struct spi_device *spi)
 	return devm_iio_device_register(&spi->dev, indio_dev);
 }
 
-static __maybe_unused int bma220_suspend(struct device *dev)
+static int bma220_suspend(struct device *dev)
 {
 	struct spi_device *spi = to_spi_device(dev);
 
 	return bma220_power(spi, false);
 }
 
-static __maybe_unused int bma220_resume(struct device *dev)
+static int bma220_resume(struct device *dev)
 {
 	struct spi_device *spi = to_spi_device(dev);
 
 	return bma220_power(spi, true);
 }
-static SIMPLE_DEV_PM_OPS(bma220_pm_ops, bma220_suspend, bma220_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(bma220_pm_ops, bma220_suspend, bma220_resume);
 
 static const struct spi_device_id bma220_spi_id[] = {
 	{"bma220", 0},
-	{}
+	{ }
 };
 
 static const struct acpi_device_id bma220_acpi_id[] = {
 	{"BMA0220", 0},
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, bma220_spi_id);
 
 static struct spi_driver bma220_driver = {
 	.driver = {
 		.name = "bma220_spi",
-		.pm = &bma220_pm_ops,
+		.pm = pm_sleep_ptr(&bma220_pm_ops),
 		.acpi_match_table = bma220_acpi_id,
 	},
 	.probe =            bma220_probe,

@@ -10,13 +10,14 @@
 
 #include <linux/clk-provider.h>
 #include <linux/bcd.h>
+#include <linux/bitfield.h>
 #include <linux/bitops.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/log2.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/rtc.h>
 
@@ -80,6 +81,10 @@
 
 #define RV3028_BACKUP_TCE		BIT(5)
 #define RV3028_BACKUP_TCR_MASK		GENMASK(1,0)
+#define RV3028_BACKUP_BSM		GENMASK(3,2)
+
+#define RV3028_BACKUP_BSM_DSM		0x1
+#define RV3028_BACKUP_BSM_LSM		0x3
 
 #define OFFSET_STEP_PPT			953674
 
@@ -115,8 +120,9 @@ static ssize_t timestamp0_show(struct device *dev,
 {
 	struct rv3028_data *rv3028 = dev_get_drvdata(dev->parent);
 	struct rtc_time tm;
-	int ret, count;
+	unsigned int count;
 	u8 date[6];
+	int ret;
 
 	ret = regmap_read(rv3028->regmap, RV3028_TS_COUNT, &count);
 	if (ret)
@@ -151,7 +157,8 @@ static ssize_t timestamp0_count_show(struct device *dev,
 				     struct device_attribute *attr, char *buf)
 {
 	struct rv3028_data *rv3028 = dev_get_drvdata(dev->parent);
-	int ret, count;
+	unsigned int count;
+	int ret;
 
 	ret = regmap_read(rv3028->regmap, RV3028_TS_COUNT, &count);
 	if (ret)
@@ -512,6 +519,70 @@ exit_eerd:
 
 }
 
+static int rv3028_param_get(struct device *dev, struct rtc_param *param)
+{
+	struct rv3028_data *rv3028 = dev_get_drvdata(dev);
+	int ret;
+	u32 value;
+
+	switch(param->param) {
+	case RTC_PARAM_BACKUP_SWITCH_MODE:
+		ret = regmap_read(rv3028->regmap, RV3028_BACKUP, &value);
+		if (ret < 0)
+			return ret;
+
+		value = FIELD_GET(RV3028_BACKUP_BSM, value);
+
+		switch(value) {
+		case RV3028_BACKUP_BSM_DSM:
+			param->uvalue = RTC_BSM_DIRECT;
+			break;
+		case RV3028_BACKUP_BSM_LSM:
+			param->uvalue = RTC_BSM_LEVEL;
+			break;
+		default:
+			param->uvalue = RTC_BSM_DISABLED;
+		}
+		break;
+
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int rv3028_param_set(struct device *dev, struct rtc_param *param)
+{
+	struct rv3028_data *rv3028 = dev_get_drvdata(dev);
+	u8 mode;
+
+	switch(param->param) {
+	case RTC_PARAM_BACKUP_SWITCH_MODE:
+		switch (param->uvalue) {
+		case RTC_BSM_DISABLED:
+			mode = 0;
+			break;
+		case RTC_BSM_DIRECT:
+			mode = RV3028_BACKUP_BSM_DSM;
+			break;
+		case RTC_BSM_LEVEL:
+			mode = RV3028_BACKUP_BSM_LSM;
+			break;
+		default:
+			return -EINVAL;
+		}
+
+		return rv3028_update_cfg(rv3028, RV3028_BACKUP, RV3028_BACKUP_BSM,
+					 FIELD_PREP(RV3028_BACKUP_BSM, mode));
+
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int rv3028_ioctl(struct device *dev, unsigned int cmd, unsigned long arg)
 {
 	struct rv3028_data *rv3028 = dev_get_drvdata(dev);
@@ -660,14 +731,19 @@ static unsigned long rv3028_clkout_recalc_rate(struct clk_hw *hw,
 	return clkout_rates[clkout];
 }
 
-static long rv3028_clkout_round_rate(struct clk_hw *hw, unsigned long rate,
-				     unsigned long *prate)
+static int rv3028_clkout_determine_rate(struct clk_hw *hw,
+					struct clk_rate_request *req)
 {
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(clkout_rates); i++)
-		if (clkout_rates[i] <= rate)
-			return clkout_rates[i];
+		if (clkout_rates[i] <= req->rate) {
+			req->rate = clkout_rates[i];
+
+			return 0;
+		}
+
+	req->rate = clkout_rates[0];
 
 	return 0;
 }
@@ -731,7 +807,7 @@ static const struct clk_ops rv3028_clkout_ops = {
 	.unprepare = rv3028_clkout_unprepare,
 	.is_prepared = rv3028_clkout_is_prepared,
 	.recalc_rate = rv3028_clkout_recalc_rate,
-	.round_rate = rv3028_clkout_round_rate,
+	.determine_rate = rv3028_clkout_determine_rate,
 	.set_rate = rv3028_clkout_set_rate,
 };
 
@@ -776,6 +852,8 @@ static const struct rtc_class_ops rv3028_rtc_ops = {
 	.read_offset = rv3028_read_offset,
 	.set_offset = rv3028_set_offset,
 	.ioctl = rv3028_ioctl,
+	.param_get = rv3028_param_get,
+	.param_set = rv3028_param_set,
 };
 
 static const struct regmap_config regmap_config = {
@@ -784,11 +862,68 @@ static const struct regmap_config regmap_config = {
         .max_register = 0x37,
 };
 
+static u8 rv3028_set_trickle_charger(struct rv3028_data *rv3028,
+				     struct i2c_client *client)
+{
+	int ret, val_old, val;
+	u32 ohms, chargeable;
+
+	ret = regmap_read(rv3028->regmap, RV3028_BACKUP, &val_old);
+	if (ret < 0)
+		return ret;
+
+	/* mask out only trickle charger bits */
+	val_old = val_old & (RV3028_BACKUP_TCE | RV3028_BACKUP_TCR_MASK);
+	val = val_old;
+
+	/* setup trickle charger */
+	if (!device_property_read_u32(&client->dev, "trickle-resistor-ohms",
+				      &ohms)) {
+		int i;
+
+		for (i = 0; i < ARRAY_SIZE(rv3028_trickle_resistors); i++)
+			if (ohms == rv3028_trickle_resistors[i])
+				break;
+
+		if (i < ARRAY_SIZE(rv3028_trickle_resistors)) {
+			/* enable trickle charger and its resistor */
+			val = RV3028_BACKUP_TCE | i;
+		} else {
+			dev_warn(&client->dev, "invalid trickle resistor value\n");
+		}
+	}
+
+	if (!device_property_read_u32(&client->dev, "aux-voltage-chargeable",
+				      &chargeable)) {
+		switch (chargeable) {
+		case 0:
+			val &= ~RV3028_BACKUP_TCE;
+			break;
+		case 1:
+			val |= RV3028_BACKUP_TCE;
+			break;
+		default:
+			dev_warn(&client->dev,
+				 "unsupported aux-voltage-chargeable value\n");
+			break;
+		}
+	}
+
+	/* only update EEPROM if changes are necessary */
+	if (val_old != val) {
+		ret = rv3028_update_cfg(rv3028, RV3028_BACKUP, RV3028_BACKUP_TCE |
+						RV3028_BACKUP_TCR_MASK, val);
+		if (ret)
+			return ret;
+	}
+
+	return ret;
+}
+
 static int rv3028_probe(struct i2c_client *client)
 {
 	struct rv3028_data *rv3028;
 	int ret, status;
-	u32 ohms;
 	struct nvmem_config nvmem_cfg = {
 		.name = "rv3028_nvram",
 		.word_size = 1,
@@ -831,9 +966,20 @@ static int rv3028_probe(struct i2c_client *client)
 		return PTR_ERR(rv3028->rtc);
 
 	if (client->irq > 0) {
+		unsigned long flags;
+
+		/*
+		 * If flags = 0, devm_request_threaded_irq() will use IRQ flags
+		 * obtained from device tree.
+		 */
+		if (dev_fwnode(&client->dev))
+			flags = 0;
+		else
+			flags = IRQF_TRIGGER_LOW;
+
 		ret = devm_request_threaded_irq(&client->dev, client->irq,
 						NULL, rv3028_handle_irq,
-						IRQF_TRIGGER_LOW | IRQF_ONESHOT,
+						flags | IRQF_ONESHOT,
 						"rv3028", rv3028);
 		if (ret) {
 			dev_warn(&client->dev, "unable to request IRQ, alarms disabled\n");
@@ -855,28 +1001,15 @@ static int rv3028_probe(struct i2c_client *client)
 	if (ret)
 		return ret;
 
-	/* setup trickle charger */
-	if (!device_property_read_u32(&client->dev, "trickle-resistor-ohms",
-				      &ohms)) {
-		int i;
-
-		for (i = 0; i < ARRAY_SIZE(rv3028_trickle_resistors); i++)
-			if (ohms == rv3028_trickle_resistors[i])
-				break;
-
-		if (i < ARRAY_SIZE(rv3028_trickle_resistors)) {
-			ret = rv3028_update_cfg(rv3028, RV3028_BACKUP, RV3028_BACKUP_TCE |
-						 RV3028_BACKUP_TCR_MASK, RV3028_BACKUP_TCE | i);
-			if (ret)
-				return ret;
-		} else {
-			dev_warn(&client->dev, "invalid trickle resistor value\n");
-		}
-	}
+	ret = rv3028_set_trickle_charger(rv3028, client);
+	if (ret)
+		return ret;
 
 	ret = rtc_add_group(rv3028->rtc, &rv3028_attr_group);
 	if (ret)
 		return ret;
+
+	set_bit(RTC_FEATURE_BACKUP_SWITCH_MODE, rv3028->rtc->features);
 
 	rv3028->rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;
 	rv3028->rtc->range_max = RTC_TIMESTAMP_END_2099;
@@ -898,18 +1031,32 @@ static int rv3028_probe(struct i2c_client *client)
 	return 0;
 }
 
+static const struct acpi_device_id rv3028_i2c_acpi_match[] = {
+	{ "MCRY3028" },
+	{ }
+};
+MODULE_DEVICE_TABLE(acpi, rv3028_i2c_acpi_match);
+
 static const __maybe_unused struct of_device_id rv3028_of_match[] = {
 	{ .compatible = "microcrystal,rv3028", },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, rv3028_of_match);
 
+static const struct i2c_device_id rv3028_id_table[] = {
+	{ .name = "rv3028", },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, rv3028_id_table);
+
 static struct i2c_driver rv3028_driver = {
 	.driver = {
 		.name = "rtc-rv3028",
+		.acpi_match_table = rv3028_i2c_acpi_match,
 		.of_match_table = of_match_ptr(rv3028_of_match),
 	},
-	.probe_new	= rv3028_probe,
+	.id_table	= rv3028_id_table,
+	.probe		= rv3028_probe,
 };
 module_i2c_driver(rv3028_driver);
 

@@ -7,6 +7,7 @@
  */
 
 #include <linux/device.h>
+#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
@@ -37,12 +38,12 @@ static void scmdev_remove(struct device *dev)
 		scmdrv->remove(scmdev);
 }
 
-static int scmdev_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int scmdev_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
 	return add_uevent_var(env, "MODALIAS=scm:scmdev");
 }
 
-static struct bus_type scm_bus_type = {
+static const struct bus_type scm_bus_type = {
 	.name  = "scm",
 	.probe = scmdev_probe,
 	.remove = scmdev_remove,
@@ -91,7 +92,7 @@ static ssize_t show_##name(struct device *dev,				\
 	int ret;							\
 									\
 	device_lock(dev);						\
-	ret = sprintf(buf, "%u\n", scmdev->attrs.name);			\
+	ret = sysfs_emit(buf, "%u\n", scmdev->attrs.name);		\
 	device_unlock(dev);						\
 									\
 	return ret;							\

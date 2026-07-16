@@ -639,7 +639,7 @@ struct ov5648_ctrls {
 	struct v4l2_ctrl *pixel_rate;
 
 	struct v4l2_ctrl_handler handler;
-} __packed;
+};
 
 struct ov5648_sensor {
 	struct device *dev;
@@ -1061,8 +1061,8 @@ static int ov5648_sw_standby(struct ov5648_sensor *sensor, int standby)
 
 static int ov5648_chip_id_check(struct ov5648_sensor *sensor)
 {
-	u16 regs[] = { OV5648_CHIP_ID_H_REG, OV5648_CHIP_ID_L_REG };
-	u8 values[] = { OV5648_CHIP_ID_H_VALUE, OV5648_CHIP_ID_L_VALUE };
+	static const u16 regs[] = { OV5648_CHIP_ID_H_REG, OV5648_CHIP_ID_L_REG };
+	static const u8 values[] = { OV5648_CHIP_ID_H_VALUE, OV5648_CHIP_ID_L_VALUE };
 	unsigned int i;
 	u8 value;
 	int ret;
@@ -1112,7 +1112,7 @@ static int ov5648_pad_configure(struct ov5648_sensor *sensor)
 
 static int ov5648_mipi_configure(struct ov5648_sensor *sensor)
 {
-	struct v4l2_fwnode_bus_mipi_csi2 *bus_mipi_csi2 =
+	struct v4l2_mbus_config_mipi_csi2 *bus_mipi_csi2 =
 		&sensor->endpoint.bus.mipi_csi2;
 	unsigned int lanes_count = bus_mipi_csi2->num_data_lanes;
 	int ret;
@@ -1692,7 +1692,7 @@ static int ov5648_state_mipi_configure(struct ov5648_sensor *sensor,
 				       u32 mbus_code)
 {
 	struct ov5648_ctrls *ctrls = &sensor->ctrls;
-	struct v4l2_fwnode_bus_mipi_csi2 *bus_mipi_csi2 =
+	struct v4l2_mbus_config_mipi_csi2 *bus_mipi_csi2 =
 		&sensor->endpoint.bus.mipi_csi2;
 	unsigned long mipi_clk_rate;
 	unsigned int bits_per_sample;
@@ -1778,8 +1778,14 @@ static int ov5648_state_configure(struct ov5648_sensor *sensor,
 
 static int ov5648_state_init(struct ov5648_sensor *sensor)
 {
-	return ov5648_state_configure(sensor, &ov5648_modes[0],
-				      ov5648_mbus_codes[0]);
+	int ret;
+
+	mutex_lock(&sensor->mutex);
+	ret = ov5648_state_configure(sensor, &ov5648_modes[0],
+				     ov5648_mbus_codes[0]);
+	mutex_unlock(&sensor->mutex);
+
+	return ret;
 }
 
 /* Sensor Base */
@@ -2152,37 +2158,8 @@ static int ov5648_s_stream(struct v4l2_subdev *subdev, int enable)
 	return 0;
 }
 
-static int ov5648_g_frame_interval(struct v4l2_subdev *subdev,
-				   struct v4l2_subdev_frame_interval *interval)
-{
-	struct ov5648_sensor *sensor = ov5648_subdev_sensor(subdev);
-	const struct ov5648_mode *mode;
-	int ret = 0;
-
-	mutex_lock(&sensor->mutex);
-
-	mode = sensor->state.mode;
-
-	switch (sensor->state.mbus_code) {
-	case MEDIA_BUS_FMT_SBGGR8_1X8:
-		interval->interval = mode->frame_interval[0];
-		break;
-	case MEDIA_BUS_FMT_SBGGR10_1X10:
-		interval->interval = mode->frame_interval[1];
-		break;
-	default:
-		ret = -EINVAL;
-	}
-
-	mutex_unlock(&sensor->mutex);
-
-	return ret;
-}
-
 static const struct v4l2_subdev_video_ops ov5648_subdev_video_ops = {
 	.s_stream		= ov5648_s_stream,
-	.g_frame_interval	= ov5648_g_frame_interval,
-	.s_frame_interval	= ov5648_g_frame_interval,
 };
 
 /* Subdev Pad Operations */
@@ -2226,8 +2203,8 @@ static int ov5648_get_fmt(struct v4l2_subdev *subdev,
 	mutex_lock(&sensor->mutex);
 
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY)
-		*mbus_format = *v4l2_subdev_get_try_format(subdev, sd_state,
-							   format->pad);
+		*mbus_format = *v4l2_subdev_state_get_format(sd_state,
+							     format->pad);
 	else
 		ov5648_mbus_format_fill(mbus_format, sensor->state.mbus_code,
 					sensor->state.mode);
@@ -2279,13 +2256,48 @@ static int ov5648_set_fmt(struct v4l2_subdev *subdev,
 	ov5648_mbus_format_fill(mbus_format, mbus_code, mode);
 
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY)
-		*v4l2_subdev_get_try_format(subdev, sd_state, format->pad) =
+		*v4l2_subdev_state_get_format(sd_state, format->pad) =
 			*mbus_format;
 	else if (sensor->state.mode != mode ||
 		 sensor->state.mbus_code != mbus_code)
 		ret = ov5648_state_configure(sensor, mode, mbus_code);
 
 complete:
+	mutex_unlock(&sensor->mutex);
+
+	return ret;
+}
+
+static int ov5648_get_frame_interval(struct v4l2_subdev *subdev,
+				     struct v4l2_subdev_state *sd_state,
+				     struct v4l2_subdev_frame_interval *interval)
+{
+	struct ov5648_sensor *sensor = ov5648_subdev_sensor(subdev);
+	const struct ov5648_mode *mode;
+	int ret = 0;
+
+	/*
+	 * FIXME: Implement support for V4L2_SUBDEV_FORMAT_TRY, using the V4L2
+	 * subdev active state API.
+	 */
+	if (interval->which != V4L2_SUBDEV_FORMAT_ACTIVE)
+		return -EINVAL;
+
+	mutex_lock(&sensor->mutex);
+
+	mode = sensor->state.mode;
+
+	switch (sensor->state.mbus_code) {
+	case MEDIA_BUS_FMT_SBGGR8_1X8:
+		interval->interval = mode->frame_interval[0];
+		break;
+	case MEDIA_BUS_FMT_SBGGR10_1X10:
+		interval->interval = mode->frame_interval[1];
+		break;
+	default:
+		ret = -EINVAL;
+	}
+
 	mutex_unlock(&sensor->mutex);
 
 	return ret;
@@ -2357,6 +2369,8 @@ static const struct v4l2_subdev_pad_ops ov5648_subdev_pad_ops = {
 	.enum_mbus_code		= ov5648_enum_mbus_code,
 	.get_fmt		= ov5648_get_fmt,
 	.set_fmt		= ov5648_set_fmt,
+	.get_frame_interval	= ov5648_get_frame_interval,
+	.set_frame_interval	= ov5648_get_frame_interval,
 	.enum_frame_size	= ov5648_enum_frame_size,
 	.enum_frame_interval	= ov5648_enum_frame_interval,
 };
@@ -2492,9 +2506,9 @@ static int ov5648_probe(struct i2c_client *client)
 
 	/* DOVDD: digital I/O */
 	sensor->dovdd = devm_regulator_get(dev, "dovdd");
-	if (IS_ERR(sensor->dvdd)) {
+	if (IS_ERR(sensor->dovdd)) {
 		dev_err(dev, "cannot get DOVDD (digital I/O) regulator\n");
-		ret = PTR_ERR(sensor->dvdd);
+		ret = PTR_ERR(sensor->dovdd);
 		goto error_endpoint;
 	}
 
@@ -2507,10 +2521,10 @@ static int ov5648_probe(struct i2c_client *client)
 
 	/* External Clock */
 
-	sensor->xvclk = devm_clk_get(dev, NULL);
+	sensor->xvclk = devm_v4l2_sensor_clk_get(dev, NULL);
 	if (IS_ERR(sensor->xvclk)) {
-		dev_err(dev, "failed to get external clock\n");
-		ret = PTR_ERR(sensor->xvclk);
+		ret = dev_err_probe(dev, PTR_ERR(sensor->xvclk),
+				    "failed to get external clock\n");
 		goto error_endpoint;
 	}
 
@@ -2581,7 +2595,7 @@ error_endpoint:
 	return ret;
 }
 
-static int ov5648_remove(struct i2c_client *client)
+static void ov5648_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
 	struct ov5648_sensor *sensor = ov5648_subdev_sensor(subdev);
@@ -2591,8 +2605,7 @@ static int ov5648_remove(struct i2c_client *client)
 	v4l2_ctrl_handler_free(&sensor->ctrls.handler);
 	mutex_destroy(&sensor->mutex);
 	media_entity_cleanup(&subdev->entity);
-
-	return 0;
+	v4l2_fwnode_endpoint_free(&sensor->endpoint);
 }
 
 static const struct dev_pm_ops ov5648_pm_ops = {
@@ -2611,8 +2624,8 @@ static struct i2c_driver ov5648_driver = {
 		.of_match_table = ov5648_of_match,
 		.pm = &ov5648_pm_ops,
 	},
-	.probe_new = ov5648_probe,
-	.remove	 = ov5648_remove,
+	.probe = ov5648_probe,
+	.remove = ov5648_remove,
 };
 
 module_i2c_driver(ov5648_driver);

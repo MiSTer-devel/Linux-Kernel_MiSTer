@@ -605,7 +605,7 @@ static void aeq_elements_init(struct hinic_eq *eq, u32 init_val)
 /**
  * ceq_elements_init - Initialize all the elements in the ceq
  * @eq: the event queue
- * @init_val: value to init with it the elements
+ * @init_val: value to init the elements with
  **/
 static void ceq_elements_init(struct hinic_eq *eq, u32 init_val)
 {
@@ -631,16 +631,15 @@ static int alloc_eq_pages(struct hinic_eq *eq)
 	struct hinic_hwif *hwif = eq->hwif;
 	struct pci_dev *pdev = hwif->pdev;
 	u32 init_val, addr, val;
-	size_t addr_size;
 	int err, pg;
 
-	addr_size = eq->num_pages * sizeof(*eq->dma_addr);
-	eq->dma_addr = devm_kzalloc(&pdev->dev, addr_size, GFP_KERNEL);
+	eq->dma_addr = devm_kcalloc(&pdev->dev, eq->num_pages,
+				    sizeof(*eq->dma_addr), GFP_KERNEL);
 	if (!eq->dma_addr)
 		return -ENOMEM;
 
-	addr_size = eq->num_pages * sizeof(*eq->virt_addr);
-	eq->virt_addr = devm_kzalloc(&pdev->dev, addr_size, GFP_KERNEL);
+	eq->virt_addr = devm_kcalloc(&pdev->dev, eq->num_pages,
+				     sizeof(*eq->virt_addr), GFP_KERNEL);
 	if (!eq->virt_addr) {
 		err = -ENOMEM;
 		goto err_virt_addr_alloc;

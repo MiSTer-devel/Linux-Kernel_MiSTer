@@ -399,6 +399,14 @@ out:
 	return ret;
 }
 
+static inline const char *eeh_driver_name(struct pci_dev *pdev)
+{
+	if (pdev)
+		return dev_driver_string(&pdev->dev);
+
+	return "<null>";
+}
+
 /**
  * eeh_dev_check_failure - Check if all 1's data is due to EEH slot freeze
  * @edev: eeh device
@@ -498,9 +506,18 @@ int eeh_dev_check_failure(struct eeh_dev *edev)
 	 * We will punt with the following conditions: Failure to get
 	 * PE's state, EEH not support and Permanently unavailable
 	 * state, PE is in good state.
+	 *
+	 * On the pSeries, after reaching the threshold, get_state might
+	 * return EEH_STATE_NOT_SUPPORT. However, it's possible that the
+	 * device state remains uncleared if the device is not marked
+	 * pci_channel_io_perm_failure. Therefore, consider logging the
+	 * event to let device removal happen.
+	 *
 	 */
 	if ((ret < 0) ||
-	    (ret == EEH_STATE_NOT_SUPPORT) || eeh_state_active(ret)) {
+	    (ret == EEH_STATE_NOT_SUPPORT &&
+	     dev->error_state == pci_channel_io_perm_failure) ||
+	    eeh_state_active(ret)) {
 		eeh_stats.false_positives++;
 		pe->false_positives++;
 		rc = 0;
@@ -589,6 +606,7 @@ EXPORT_SYMBOL(eeh_check_failure);
 /**
  * eeh_pci_enable - Enable MMIO or DMA transfers for this slot
  * @pe: EEH PE
+ * @function: EEH option
  *
  * This routine should be called to reenable frozen MMIO or DMA
  * so that it would work correctly again. It's useful while doing
@@ -761,8 +779,8 @@ int pcibios_set_pcie_reset_state(struct pci_dev *dev, enum pcie_reset_state stat
 }
 
 /**
- * eeh_set_pe_freset - Check the required reset for the indicated device
- * @data: EEH device
+ * eeh_set_dev_freset - Check the required reset for the indicated device
+ * @edev: EEH device
  * @flag: return value
  *
  * Each device might have its preferred reset type: fundamental or
@@ -801,6 +819,7 @@ static void eeh_pe_refreeze_passed(struct eeh_pe *root)
 /**
  * eeh_pe_reset_full - Complete a full reset process on the indicated PE
  * @pe: EEH PE
+ * @include_passed: include passed-through devices?
  *
  * This function executes a full reset procedure on a PE, including setting
  * the appropriate flags, performing a fundamental or hot reset, and then
@@ -937,6 +956,7 @@ static struct notifier_block eeh_device_nb = {
 
 /**
  * eeh_init - System wide EEH initialization
+ * @ops: struct to trace EEH operation callback functions
  *
  * It's the platform's job to call this from an arch_initcall().
  */
@@ -1119,6 +1139,7 @@ int eeh_unfreeze_pe(struct eeh_pe *pe)
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(eeh_unfreeze_pe);
 
 
 static struct pci_device_id eeh_reset_ids[] = {
@@ -1188,16 +1209,16 @@ int eeh_dev_open(struct pci_dev *pdev)
 	struct eeh_dev *edev;
 	int ret = -ENODEV;
 
-	mutex_lock(&eeh_dev_mutex);
+	guard(mutex)(&eeh_dev_mutex);
 
 	/* No PCI device ? */
 	if (!pdev)
-		goto out;
+		return ret;
 
 	/* No EEH device or PE ? */
 	edev = pci_dev_to_eeh_dev(pdev);
 	if (!edev || !edev->pe)
-		goto out;
+		return ret;
 
 	/*
 	 * The PE might have been put into frozen state, but we
@@ -1207,16 +1228,12 @@ int eeh_dev_open(struct pci_dev *pdev)
 	 */
 	ret = eeh_pe_change_owner(edev->pe);
 	if (ret)
-		goto out;
+		return ret;
 
 	/* Increase PE's pass through count */
 	atomic_inc(&edev->pe->pass_dev_cnt);
-	mutex_unlock(&eeh_dev_mutex);
 
 	return 0;
-out:
-	mutex_unlock(&eeh_dev_mutex);
-	return ret;
 }
 EXPORT_SYMBOL_GPL(eeh_dev_open);
 
@@ -1232,42 +1249,24 @@ void eeh_dev_release(struct pci_dev *pdev)
 {
 	struct eeh_dev *edev;
 
-	mutex_lock(&eeh_dev_mutex);
+	guard(mutex)(&eeh_dev_mutex);
 
 	/* No PCI device ? */
 	if (!pdev)
-		goto out;
+		return;
 
 	/* No EEH device ? */
 	edev = pci_dev_to_eeh_dev(pdev);
 	if (!edev || !edev->pe || !eeh_pe_passed(edev->pe))
-		goto out;
+		return;
 
 	/* Decrease PE's pass through count */
 	WARN_ON(atomic_dec_if_positive(&edev->pe->pass_dev_cnt) < 0);
 	eeh_pe_change_owner(edev->pe);
-out:
-	mutex_unlock(&eeh_dev_mutex);
 }
 EXPORT_SYMBOL(eeh_dev_release);
 
 #ifdef CONFIG_IOMMU_API
-
-static int dev_has_iommu_table(struct device *dev, void *data)
-{
-	struct pci_dev *pdev = to_pci_dev(dev);
-	struct pci_dev **ppdev = data;
-
-	if (!dev)
-		return 0;
-
-	if (device_iommu_mapped(dev)) {
-		*ppdev = pdev;
-		return 1;
-	}
-
-	return 0;
-}
 
 /**
  * eeh_iommu_group_to_pe - Convert IOMMU group to EEH PE
@@ -1318,7 +1317,7 @@ int eeh_pe_set_option(struct eeh_pe *pe, int option)
 
 	/*
 	 * EEH functionality could possibly be disabled, just
-	 * return error for the case. And the EEH functinality
+	 * return error for the case. And the EEH functionality
 	 * isn't expected to be disabled on one specific PE.
 	 */
 	switch (option) {
@@ -1442,6 +1441,7 @@ static int eeh_pe_reenable_devices(struct eeh_pe *pe, bool include_passed)
  * eeh_pe_reset - Issue PE reset according to specified type
  * @pe: EEH PE
  * @option: reset type
+ * @include_passed: include passed-through devices?
  *
  * The routine is called to reset the specified PE with the
  * indicated type, either fundamental reset or hot reset.
@@ -1504,6 +1504,8 @@ int eeh_pe_configure(struct eeh_pe *pe)
 	/* Invalid PE ? */
 	if (!pe)
 		return -ENODEV;
+	else
+		ret = eeh_ops->configure_bridge(pe);
 
 	return ret;
 }
@@ -1513,12 +1515,12 @@ EXPORT_SYMBOL_GPL(eeh_pe_configure);
  * eeh_pe_inject_err - Injecting the specified PCI error to the indicated PE
  * @pe: the indicated PE
  * @type: error type
- * @function: error function
+ * @func: error function
  * @addr: address
  * @mask: address mask
  *
  * The routine is called to inject the specified PCI error, which
- * is determined by @type and @function, to the indicated PE for
+ * is determined by @type and @func, to the indicated PE for
  * testing purpose.
  */
 int eeh_pe_inject_err(struct eeh_pe *pe, int type, int func,
@@ -1531,10 +1533,6 @@ int eeh_pe_inject_err(struct eeh_pe *pe, int type, int func,
 	/* Unsupported operation ? */
 	if (!eeh_ops || !eeh_ops->err_inject)
 		return -ENOENT;
-
-	/* Check on PCI error type */
-	if (type != EEH_ERR_TYPE_32 && type != EEH_ERR_TYPE_64)
-		return -EINVAL;
 
 	/* Check on PCI error function */
 	if (func < EEH_ERR_FUNC_MIN || func > EEH_ERR_FUNC_MAX)
@@ -1572,6 +1570,104 @@ static int proc_eeh_show(struct seq_file *m, void *v)
 	return 0;
 }
 #endif /* CONFIG_PROC_FS */
+
+static int eeh_break_device(struct pci_dev *pdev)
+{
+	struct resource *bar = NULL;
+	void __iomem *mapped;
+	u16 old, bit;
+	int i, pos;
+
+	/* Do we have an MMIO BAR to disable? */
+	for (i = 0; i <= PCI_STD_RESOURCE_END; i++) {
+		struct resource *r = &pdev->resource[i];
+
+		if (!r->flags || !r->start)
+			continue;
+		if (r->flags & IORESOURCE_IO)
+			continue;
+		if (r->flags & IORESOURCE_UNSET)
+			continue;
+
+		bar = r;
+		break;
+	}
+
+	if (!bar) {
+		pci_err(pdev, "Unable to find Memory BAR to cause EEH with\n");
+		return -ENXIO;
+	}
+
+	pci_err(pdev, "Going to break: %pR\n", bar);
+
+	if (pdev->is_virtfn) {
+#ifndef CONFIG_PCI_IOV
+		return -ENXIO;
+#else
+		/*
+		 * VFs don't have a per-function COMMAND register, so the best
+		 * we can do is clear the Memory Space Enable bit in the PF's
+		 * SRIOV control reg.
+		 *
+		 * Unfortunately, this requires that we have a PF (i.e doesn't
+		 * work for a passed-through VF) and it has the potential side
+		 * effect of also causing an EEH on every other VF under the
+		 * PF. Oh well.
+		 */
+		pdev = pdev->physfn;
+		if (!pdev)
+			return -ENXIO; /* passed through VFs have no PF */
+
+		pos  = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_SRIOV);
+		pos += PCI_SRIOV_CTRL;
+		bit  = PCI_SRIOV_CTRL_MSE;
+#endif /* !CONFIG_PCI_IOV */
+	} else {
+		bit = PCI_COMMAND_MEMORY;
+		pos = PCI_COMMAND;
+	}
+
+	/*
+	 * Process here is:
+	 *
+	 * 1. Disable Memory space.
+	 *
+	 * 2. Perform an MMIO to the device. This should result in an error
+	 *    (CA  / UR) being raised by the device which results in an EEH
+	 *    PE freeze. Using the in_8() accessor skips the eeh detection hook
+	 *    so the freeze hook so the EEH Detection machinery won't be
+	 *    triggered here. This is to match the usual behaviour of EEH
+	 *    where the HW will asynchronously freeze a PE and it's up to
+	 *    the kernel to notice and deal with it.
+	 *
+	 * 3. Turn Memory space back on. This is more important for VFs
+	 *    since recovery will probably fail if we don't. For normal
+	 *    the COMMAND register is reset as a part of re-initialising
+	 *    the device.
+	 *
+	 * Breaking stuff is the point so who cares if it's racy ;)
+	 */
+	pci_read_config_word(pdev, pos, &old);
+
+	mapped = ioremap(bar->start, PAGE_SIZE);
+	if (!mapped) {
+		pci_err(pdev, "Unable to map MMIO BAR %pR\n", bar);
+		return -ENXIO;
+	}
+
+	pci_write_config_word(pdev, pos, old & ~bit);
+	in_8(mapped);
+	pci_write_config_word(pdev, pos, old);
+
+	iounmap(mapped);
+
+	return 0;
+}
+
+int eeh_pe_inject_mmio_error(struct pci_dev *pdev)
+{
+	return eeh_break_device(pdev);
+}
 
 #ifdef CONFIG_DEBUG_FS
 
@@ -1677,7 +1773,6 @@ static ssize_t eeh_force_recover_write(struct file *filp,
 
 static const struct file_operations eeh_force_recover_fops = {
 	.open	= simple_open,
-	.llseek	= no_llseek,
 	.write	= eeh_force_recover_write,
 };
 
@@ -1721,103 +1816,9 @@ static ssize_t eeh_dev_check_write(struct file *filp,
 
 static const struct file_operations eeh_dev_check_fops = {
 	.open	= simple_open,
-	.llseek	= no_llseek,
 	.write	= eeh_dev_check_write,
 	.read   = eeh_debugfs_dev_usage,
 };
-
-static int eeh_debugfs_break_device(struct pci_dev *pdev)
-{
-	struct resource *bar = NULL;
-	void __iomem *mapped;
-	u16 old, bit;
-	int i, pos;
-
-	/* Do we have an MMIO BAR to disable? */
-	for (i = 0; i <= PCI_STD_RESOURCE_END; i++) {
-		struct resource *r = &pdev->resource[i];
-
-		if (!r->flags || !r->start)
-			continue;
-		if (r->flags & IORESOURCE_IO)
-			continue;
-		if (r->flags & IORESOURCE_UNSET)
-			continue;
-
-		bar = r;
-		break;
-	}
-
-	if (!bar) {
-		pci_err(pdev, "Unable to find Memory BAR to cause EEH with\n");
-		return -ENXIO;
-	}
-
-	pci_err(pdev, "Going to break: %pR\n", bar);
-
-	if (pdev->is_virtfn) {
-#ifndef CONFIG_PCI_IOV
-		return -ENXIO;
-#else
-		/*
-		 * VFs don't have a per-function COMMAND register, so the best
-		 * we can do is clear the Memory Space Enable bit in the PF's
-		 * SRIOV control reg.
-		 *
-		 * Unfortunately, this requires that we have a PF (i.e doesn't
-		 * work for a passed-through VF) and it has the potential side
-		 * effect of also causing an EEH on every other VF under the
-		 * PF. Oh well.
-		 */
-		pdev = pdev->physfn;
-		if (!pdev)
-			return -ENXIO; /* passed through VFs have no PF */
-
-		pos  = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_SRIOV);
-		pos += PCI_SRIOV_CTRL;
-		bit  = PCI_SRIOV_CTRL_MSE;
-#endif /* !CONFIG_PCI_IOV */
-	} else {
-		bit = PCI_COMMAND_MEMORY;
-		pos = PCI_COMMAND;
-	}
-
-	/*
-	 * Process here is:
-	 *
-	 * 1. Disable Memory space.
-	 *
-	 * 2. Perform an MMIO to the device. This should result in an error
-	 *    (CA  / UR) being raised by the device which results in an EEH
-	 *    PE freeze. Using the in_8() accessor skips the eeh detection hook
-	 *    so the freeze hook so the EEH Detection machinery won't be
-	 *    triggered here. This is to match the usual behaviour of EEH
-	 *    where the HW will asyncronously freeze a PE and it's up to
-	 *    the kernel to notice and deal with it.
-	 *
-	 * 3. Turn Memory space back on. This is more important for VFs
-	 *    since recovery will probably fail if we don't. For normal
-	 *    the COMMAND register is reset as a part of re-initialising
-	 *    the device.
-	 *
-	 * Breaking stuff is the point so who cares if it's racy ;)
-	 */
-	pci_read_config_word(pdev, pos, &old);
-
-	mapped = ioremap(bar->start, PAGE_SIZE);
-	if (!mapped) {
-		pci_err(pdev, "Unable to map MMIO BAR %pR\n", bar);
-		return -ENXIO;
-	}
-
-	pci_write_config_word(pdev, pos, old & ~bit);
-	in_8(mapped);
-	pci_write_config_word(pdev, pos, old);
-
-	iounmap(mapped);
-
-	return 0;
-}
 
 static ssize_t eeh_dev_break_write(struct file *filp,
 				const char __user *user_buf,
@@ -1830,7 +1831,7 @@ static ssize_t eeh_dev_break_write(struct file *filp,
 	if (IS_ERR(pdev))
 		return PTR_ERR(pdev);
 
-	ret = eeh_debugfs_break_device(pdev);
+	ret = eeh_break_device(pdev);
 	pci_dev_put(pdev);
 
 	if (ret < 0)
@@ -1841,7 +1842,6 @@ static ssize_t eeh_dev_break_write(struct file *filp,
 
 static const struct file_operations eeh_dev_break_fops = {
 	.open	= simple_open,
-	.llseek	= no_llseek,
 	.write	= eeh_dev_break_write,
 	.read   = eeh_debugfs_dev_usage,
 };
@@ -1888,7 +1888,6 @@ static ssize_t eeh_dev_can_recover(struct file *filp,
 
 static const struct file_operations eeh_dev_can_recover_fops = {
 	.open	= simple_open,
-	.llseek	= no_llseek,
 	.write	= eeh_dev_can_recover,
 	.read   = eeh_debugfs_dev_usage,
 };

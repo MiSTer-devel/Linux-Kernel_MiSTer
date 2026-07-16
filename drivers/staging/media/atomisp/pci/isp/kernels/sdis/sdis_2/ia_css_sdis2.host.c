@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include "hmm.h"
@@ -294,7 +285,7 @@ ia_css_isp_dvs2_statistics_allocate(
 	       * grid->aligned_height * IA_CSS_DVS2_NUM_COEF_TYPES;
 
 	me->size = 2 * size;
-	me->data_ptr = hmm_alloc(me->size, HMM_BO_PRIVATE, 0, NULL, 0);
+	me->data_ptr = hmm_alloc(me->size);
 	if (me->data_ptr == mmgr_NULL)
 		goto err;
 	me->hor_proj = me->data_ptr;

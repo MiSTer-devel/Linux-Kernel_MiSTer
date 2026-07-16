@@ -12,6 +12,7 @@
 #include <uapi/linux/if_arp.h>
 #include <linux/rtnetlink.h>
 #include <linux/if_vlan.h>
+#include <net/netdev_lock.h>
 #include <net/failover.h>
 
 static LIST_HEAD(failover_list);
@@ -80,14 +81,14 @@ static int failover_slave_register(struct net_device *slave_dev)
 		goto err_upper_link;
 	}
 
-	slave_dev->priv_flags |= (IFF_FAILOVER_SLAVE | IFF_LIVE_RENAME_OK);
+	slave_dev->priv_flags |= (IFF_FAILOVER_SLAVE | IFF_NO_ADDRCONF);
 
 	if (fops && fops->slave_register &&
 	    !fops->slave_register(slave_dev, failover_dev))
 		return NOTIFY_OK;
 
 	netdev_upper_dev_unlink(slave_dev, failover_dev);
-	slave_dev->priv_flags &= ~(IFF_FAILOVER_SLAVE | IFF_LIVE_RENAME_OK);
+	slave_dev->priv_flags &= ~(IFF_FAILOVER_SLAVE | IFF_NO_ADDRCONF);
 err_upper_link:
 	netdev_rx_handler_unregister(slave_dev);
 done:
@@ -121,7 +122,7 @@ int failover_slave_unregister(struct net_device *slave_dev)
 
 	netdev_rx_handler_unregister(slave_dev);
 	netdev_upper_dev_unlink(slave_dev, failover_dev);
-	slave_dev->priv_flags &= ~(IFF_FAILOVER_SLAVE | IFF_LIVE_RENAME_OK);
+	slave_dev->priv_flags &= ~(IFF_FAILOVER_SLAVE | IFF_NO_ADDRCONF);
 
 	if (fops && fops->slave_unregister &&
 	    !fops->slave_unregister(slave_dev, failover_dev))
@@ -221,8 +222,11 @@ failover_existing_slave_register(struct net_device *failover_dev)
 	for_each_netdev(net, dev) {
 		if (netif_is_failover(dev))
 			continue;
-		if (ether_addr_equal(failover_dev->perm_addr, dev->perm_addr))
+		if (ether_addr_equal(failover_dev->perm_addr, dev->perm_addr)) {
+			netdev_lock_ops(dev);
 			failover_slave_register(dev);
+			netdev_unlock_ops(dev);
+		}
 	}
 	rtnl_unlock();
 }
@@ -252,7 +256,7 @@ struct failover *failover_register(struct net_device *dev,
 		return ERR_PTR(-ENOMEM);
 
 	rcu_assign_pointer(failover->ops, ops);
-	dev_hold(dev);
+	netdev_hold(dev, &failover->dev_tracker, GFP_KERNEL);
 	dev->priv_flags |= IFF_FAILOVER;
 	rcu_assign_pointer(failover->failover_dev, dev);
 
@@ -285,7 +289,7 @@ void failover_unregister(struct failover *failover)
 		    failover_dev->name);
 
 	failover_dev->priv_flags &= ~IFF_FAILOVER;
-	dev_put(failover_dev);
+	netdev_put(failover_dev, &failover->dev_tracker);
 
 	spin_lock(&failover_lock);
 	list_del(&failover->list);

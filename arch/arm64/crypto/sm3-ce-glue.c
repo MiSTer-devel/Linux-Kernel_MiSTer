@@ -6,14 +6,11 @@
  */
 
 #include <asm/neon.h>
-#include <asm/simd.h>
-#include <asm/unaligned.h>
 #include <crypto/internal/hash.h>
-#include <crypto/internal/simd.h>
 #include <crypto/sm3.h>
 #include <crypto/sm3_base.h>
 #include <linux/cpufeature.h>
-#include <linux/crypto.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
 
 MODULE_DESCRIPTION("SM3 secure hash using ARMv8 Crypto Extensions");
@@ -26,53 +23,36 @@ asmlinkage void sm3_ce_transform(struct sm3_state *sst, u8 const *src,
 static int sm3_ce_update(struct shash_desc *desc, const u8 *data,
 			 unsigned int len)
 {
-	if (!crypto_simd_usable())
-		return crypto_sm3_update(desc, data, len);
+	int remain;
 
 	kernel_neon_begin();
-	sm3_base_do_update(desc, data, len, sm3_ce_transform);
+	remain = sm3_base_do_update_blocks(desc, data, len, sm3_ce_transform);
 	kernel_neon_end();
-
-	return 0;
-}
-
-static int sm3_ce_final(struct shash_desc *desc, u8 *out)
-{
-	if (!crypto_simd_usable())
-		return crypto_sm3_finup(desc, NULL, 0, out);
-
-	kernel_neon_begin();
-	sm3_base_do_finalize(desc, sm3_ce_transform);
-	kernel_neon_end();
-
-	return sm3_base_finish(desc, out);
+	return remain;
 }
 
 static int sm3_ce_finup(struct shash_desc *desc, const u8 *data,
 			unsigned int len, u8 *out)
 {
-	if (!crypto_simd_usable())
-		return crypto_sm3_finup(desc, data, len, out);
-
 	kernel_neon_begin();
-	sm3_base_do_update(desc, data, len, sm3_ce_transform);
+	sm3_base_do_finup(desc, data, len, sm3_ce_transform);
 	kernel_neon_end();
-
-	return sm3_ce_final(desc, out);
+	return sm3_base_finish(desc, out);
 }
 
 static struct shash_alg sm3_alg = {
 	.digestsize		= SM3_DIGEST_SIZE,
 	.init			= sm3_base_init,
 	.update			= sm3_ce_update,
-	.final			= sm3_ce_final,
 	.finup			= sm3_ce_finup,
-	.descsize		= sizeof(struct sm3_state),
+	.descsize		= SM3_STATE_SIZE,
 	.base.cra_name		= "sm3",
 	.base.cra_driver_name	= "sm3-ce",
+	.base.cra_flags		= CRYPTO_AHASH_ALG_BLOCK_ONLY |
+				  CRYPTO_AHASH_ALG_FINUP_MAX,
 	.base.cra_blocksize	= SM3_BLOCK_SIZE,
 	.base.cra_module	= THIS_MODULE,
-	.base.cra_priority	= 200,
+	.base.cra_priority	= 400,
 };
 
 static int __init sm3_ce_mod_init(void)

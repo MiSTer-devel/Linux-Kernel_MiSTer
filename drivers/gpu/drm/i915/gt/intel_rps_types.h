@@ -37,12 +37,27 @@ enum {
 	INTEL_RPS_TIMER,
 };
 
+/**
+ * struct intel_rps_freq_caps - rps freq capabilities
+ * @rp0_freq: non-overclocked max frequency
+ * @rp1_freq: "less than" RP0 power/frequency
+ * @min_freq: aka RPn, minimum frequency
+ *
+ * Freq caps exposed by HW, values are in "hw units" and intel_gpu_freq()
+ * should be used to convert to MHz
+ */
+struct intel_rps_freq_caps {
+	u8 rp0_freq;
+	u8 rp1_freq;
+	u8 min_freq;
+};
+
 struct intel_rps {
 	struct mutex lock; /* protects enabling and the worker */
 
 	/*
 	 * work, interrupts_enabled and pm_iir are protected by
-	 * dev_priv->irq_lock
+	 * gt->irq_lock
 	 */
 	struct timer_list timer;
 	struct work_struct work;
@@ -75,7 +90,7 @@ struct intel_rps {
 	u8 boost_freq;		/* Frequency to request when wait boosting */
 	u8 idle_freq;		/* Frequency to request when we are idle */
 	u8 efficient_freq;	/* AKA RPe. Pre-determined balanced frequency */
-	u8 rp1_freq;		/* "less than" RP0 power/freqency */
+	u8 rp1_freq;		/* "less than" RP0 power/frequency */
 	u8 rp0_freq;		/* Non-overclocked max frequency. */
 	u16 gpll_ref_freq;	/* vlv/chv GPLL reference frequency */
 

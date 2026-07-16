@@ -4,7 +4,9 @@
 #include <linux/device.h>
 #include <linux/iopoll.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 
+#include "ipu3.h"
 #include "ipu3-css.h"
 #include "ipu3-css-fw.h"
 #include "ipu3-css-params.h"
@@ -53,7 +55,6 @@ static const struct imgu_css_format imgu_css_formats[] = {
 		.frame_format = IMGU_ABI_FRAME_FORMAT_NV12,
 		.osys_format = IMGU_ABI_OSYS_FORMAT_NV12,
 		.osys_tiling = IMGU_ABI_OSYS_TILING_NONE,
-		.bytesperpixel_num = 1 * IPU3_CSS_FORMAT_BPP_DEN,
 		.chroma_decim = 4,
 		.width_align = IPU3_UAPI_ISP_VEC_ELEMS,
 		.flags = IPU3_CSS_FORMAT_FL_OUT | IPU3_CSS_FORMAT_FL_VF,
@@ -64,7 +65,6 @@ static const struct imgu_css_format imgu_css_formats[] = {
 		.frame_format = IMGU_ABI_FRAME_FORMAT_RAW_PACKED,
 		.bayer_order = IMGU_ABI_BAYER_ORDER_BGGR,
 		.bit_depth = 10,
-		.bytesperpixel_num = 64,
 		.width_align = 2 * IPU3_UAPI_ISP_VEC_ELEMS,
 		.flags = IPU3_CSS_FORMAT_FL_IN,
 	}, {
@@ -73,7 +73,6 @@ static const struct imgu_css_format imgu_css_formats[] = {
 		.frame_format = IMGU_ABI_FRAME_FORMAT_RAW_PACKED,
 		.bayer_order = IMGU_ABI_BAYER_ORDER_GBRG,
 		.bit_depth = 10,
-		.bytesperpixel_num = 64,
 		.width_align = 2 * IPU3_UAPI_ISP_VEC_ELEMS,
 		.flags = IPU3_CSS_FORMAT_FL_IN,
 	}, {
@@ -82,7 +81,6 @@ static const struct imgu_css_format imgu_css_formats[] = {
 		.frame_format = IMGU_ABI_FRAME_FORMAT_RAW_PACKED,
 		.bayer_order = IMGU_ABI_BAYER_ORDER_GRBG,
 		.bit_depth = 10,
-		.bytesperpixel_num = 64,
 		.width_align = 2 * IPU3_UAPI_ISP_VEC_ELEMS,
 		.flags = IPU3_CSS_FORMAT_FL_IN,
 	}, {
@@ -91,7 +89,6 @@ static const struct imgu_css_format imgu_css_formats[] = {
 		.frame_format = IMGU_ABI_FRAME_FORMAT_RAW_PACKED,
 		.bayer_order = IMGU_ABI_BAYER_ORDER_RGGB,
 		.bit_depth = 10,
-		.bytesperpixel_num = 64,
 		.width_align = 2 * IPU3_UAPI_ISP_VEC_ELEMS,
 		.flags = IPU3_CSS_FORMAT_FL_IN,
 	},
@@ -150,17 +147,8 @@ static int imgu_css_queue_init(struct imgu_css_queue *queue,
 	f->height = ALIGN(clamp_t(u32, f->height,
 				  IPU3_CSS_MIN_RES, IPU3_CSS_MAX_H), 2);
 	queue->width_pad = ALIGN(f->width, queue->css_fmt->width_align);
-	if (queue->css_fmt->frame_format != IMGU_ABI_FRAME_FORMAT_RAW_PACKED)
-		f->plane_fmt[0].bytesperline = DIV_ROUND_UP(queue->width_pad *
-					queue->css_fmt->bytesperpixel_num,
-					IPU3_CSS_FORMAT_BPP_DEN);
-	else
-		/* For packed raw, alignment for bpl is by 50 to the width */
-		f->plane_fmt[0].bytesperline =
-				DIV_ROUND_UP(f->width,
-					     IPU3_CSS_FORMAT_BPP_DEN) *
-					     queue->css_fmt->bytesperpixel_num;
-
+	f->plane_fmt[0].bytesperline =
+		imgu_bytesperline(f->width, queue->css_fmt->frame_format);
 	sizeimage = f->height * f->plane_fmt[0].bytesperline;
 	if (queue->css_fmt->chroma_decim)
 		sizeimage += 2 * sizeimage / queue->css_fmt->chroma_decim;
@@ -239,7 +227,7 @@ int imgu_css_set_powerup(struct device *dev, void __iomem *base,
 	state = readl(base + IMGU_REG_STATE);
 
 	dev_dbg(dev, "CSS pm_ctrl 0x%x state 0x%x (power %s)\n",
-		pm_ctrl, state, state & IMGU_STATE_POWER_DOWN ? "down" : "up");
+		pm_ctrl, state, str_down_up(state & IMGU_STATE_POWER_DOWN));
 
 	/* Power up CSS using wrapper */
 	if (state & IMGU_STATE_POWER_DOWN) {
@@ -1206,14 +1194,14 @@ static int imgu_css_binary_preallocate(struct imgu_css *css, unsigned int pipe)
 
 	for (i = 0; i < IPU3_CSS_AUX_FRAMES; i++)
 		if (!imgu_dmamap_alloc(imgu,
-				       &css_pipe->aux_frames[IPU3_CSS_AUX_FRAME_REF].
-				       mem[i], CSS_BDS_SIZE))
+				       &css_pipe->aux_frames[IPU3_CSS_AUX_FRAME_REF].mem[i],
+				       CSS_BDS_SIZE))
 			goto out_of_memory;
 
 	for (i = 0; i < IPU3_CSS_AUX_FRAMES; i++)
 		if (!imgu_dmamap_alloc(imgu,
-				       &css_pipe->aux_frames[IPU3_CSS_AUX_FRAME_TNR].
-				       mem[i], CSS_GDC_SIZE))
+				       &css_pipe->aux_frames[IPU3_CSS_AUX_FRAME_TNR].mem[i],
+				       CSS_GDC_SIZE))
 			goto out_of_memory;
 
 	return 0;
@@ -1441,13 +1429,11 @@ static int imgu_css_map_init(struct imgu_css *css, unsigned int pipe)
 	for (p = 0; p < IPU3_CSS_PIPE_ID_NUM; p++)
 		for (i = 0; i < IMGU_ABI_MAX_STAGES; i++) {
 			if (!imgu_dmamap_alloc(imgu,
-					       &css_pipe->
-					       xmem_sp_stage_ptrs[p][i],
+					       &css_pipe->xmem_sp_stage_ptrs[p][i],
 					       sizeof(struct imgu_abi_sp_stage)))
 				return -ENOMEM;
 			if (!imgu_dmamap_alloc(imgu,
-					       &css_pipe->
-					       xmem_isp_stage_ptrs[p][i],
+					       &css_pipe->xmem_isp_stage_ptrs[p][i],
 					       sizeof(struct imgu_abi_isp_stage)))
 				return -ENOMEM;
 		}
@@ -2070,7 +2056,6 @@ struct imgu_css_buffer *imgu_css_buf_dequeue(struct imgu_css *css)
 			return ERR_PTR(-EIO);
 		}
 
-		css_pipe = &css->pipes[pipe];
 		dev_dbg(css->dev, "event: pipeline done 0x%8x for pipe %d\n",
 			event, pipe);
 		break;

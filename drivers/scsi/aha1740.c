@@ -55,8 +55,12 @@
 #include <asm/dma.h>
 #include <asm/io.h>
 
-#include "scsi.h"
+#include <scsi/scsi.h>
+#include <scsi/scsi_cmnd.h>
+#include <scsi/scsi_device.h>
+#include <scsi/scsi_eh.h>
 #include <scsi/scsi_host.h>
+#include <scsi/scsi_tcq.h>
 #include "aha1740.h"
 
 /* IF YOU ARE HAVING PROBLEMS WITH THIS DRIVER, AND WANT TO WATCH
@@ -315,9 +319,9 @@ static irqreturn_t aha1740_intr_handle(int irq, void *dev_id)
 	return IRQ_RETVAL(handled);
 }
 
-static int aha1740_queuecommand_lck(struct scsi_cmnd * SCpnt,
-				    void (*done)(struct scsi_cmnd *))
+static int aha1740_queuecommand_lck(struct scsi_cmnd *SCpnt)
 {
+	void (*done)(struct scsi_cmnd *) = scsi_done;
 	unchar direction;
 	unchar *cmd = (unchar *) SCpnt->cmnd;
 	unchar target = scmd_id(SCpnt);
@@ -506,7 +510,7 @@ static void aha1740_getconfig(unsigned int base, unsigned int *irq_level,
 }
 
 static int aha1740_biosparam(struct scsi_device *sdev,
-			     struct block_device *dev,
+			     struct gendisk *unused,
 			     sector_t capacity, int* ip)
 {
 	int size = capacity;
@@ -539,7 +543,7 @@ static int aha1740_eh_abort_handler (struct scsi_cmnd *dummy)
 	return SUCCESS;
 }
 
-static struct scsi_host_template aha1740_template = {
+static const struct scsi_host_template aha1740_template = {
 	.module           = THIS_MODULE,
 	.proc_name        = "aha1740",
 	.show_info        = aha1740_show_info,
@@ -677,4 +681,5 @@ static __exit void aha1740_exit (void)
 module_init (aha1740_init);
 module_exit (aha1740_exit);
 
+MODULE_DESCRIPTION("Adaptec AHA1740 SCSI host adapter driver");
 MODULE_LICENSE("GPL");

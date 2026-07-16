@@ -18,7 +18,6 @@
 #include <netinet/in.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
-#include "bpf_rlimit.h"
 #include "bpf_util.h"
 
 #include "test_progs.h"
@@ -38,9 +37,7 @@ static int sk_fds[REUSEPORT_ARRAY_SIZE];
 static int reuseport_array = -1, outer_map = -1;
 static enum bpf_map_type inner_map_type;
 static int select_by_skb_data_prog;
-static int saved_tcp_syncookie = -1;
 static struct bpf_object *obj;
-static int saved_tcp_fo = -1;
 static __u32 index_zero;
 static int epfd;
 
@@ -66,29 +63,20 @@ static union sa46 {
 
 static int create_maps(enum bpf_map_type inner_type)
 {
-	struct bpf_create_map_attr attr = {};
+	LIBBPF_OPTS(bpf_map_create_opts, opts);
 
 	inner_map_type = inner_type;
 
 	/* Creating reuseport_array */
-	attr.name = "reuseport_array";
-	attr.map_type = inner_type;
-	attr.key_size = sizeof(__u32);
-	attr.value_size = sizeof(__u32);
-	attr.max_entries = REUSEPORT_ARRAY_SIZE;
-
-	reuseport_array = bpf_create_map_xattr(&attr);
+	reuseport_array = bpf_map_create(inner_type, "reuseport_array",
+					 sizeof(__u32), sizeof(__u32), REUSEPORT_ARRAY_SIZE, NULL);
 	RET_ERR(reuseport_array < 0, "creating reuseport_array",
 		"reuseport_array:%d errno:%d\n", reuseport_array, errno);
 
 	/* Creating outer_map */
-	attr.name = "outer_map";
-	attr.map_type = BPF_MAP_TYPE_ARRAY_OF_MAPS;
-	attr.key_size = sizeof(__u32);
-	attr.value_size = sizeof(__u32);
-	attr.max_entries = 1;
-	attr.inner_map_fd = reuseport_array;
-	outer_map = bpf_create_map_xattr(&attr);
+	opts.inner_map_fd = reuseport_array;
+	outer_map = bpf_map_create(BPF_MAP_TYPE_ARRAY_OF_MAPS, "outer_map",
+				   sizeof(__u32), sizeof(__u32), 1, &opts);
 	RET_ERR(outer_map < 0, "creating outer_map",
 		"outer_map:%d errno:%d\n", outer_map, errno);
 
@@ -101,9 +89,9 @@ static int prepare_bpf_obj(void)
 	struct bpf_map *map;
 	int err;
 
-	obj = bpf_object__open("test_select_reuseport_kern.o");
+	obj = bpf_object__open("test_select_reuseport_kern.bpf.o");
 	err = libbpf_get_error(obj);
-	RET_ERR(err, "open test_select_reuseport_kern.o",
+	RET_ERR(err, "open test_select_reuseport_kern.bpf.o",
 		"obj:%p PTR_ERR(obj):%d\n", obj, err);
 
 	map = bpf_object__find_map_by_name(obj, "outer_map");
@@ -114,7 +102,7 @@ static int prepare_bpf_obj(void)
 	err = bpf_object__load(obj);
 	RET_ERR(err, "load bpf_object", "err:%d\n", err);
 
-	prog = bpf_program__next(NULL, obj);
+	prog = bpf_object__next_program(obj, NULL);
 	RET_ERR(!prog, "get first bpf_program", "!prog\n");
 	select_by_skb_data_prog = bpf_program__fd(prog);
 	RET_ERR(select_by_skb_data_prog < 0, "get prog fd",
@@ -201,14 +189,6 @@ static int write_int_sysctl(const char *sysctl, int v)
 
 	close(fd);
 	return 0;
-}
-
-static void restore_sysctls(void)
-{
-	if (saved_tcp_fo != -1)
-		write_int_sysctl(TCP_FO_SYSCTL, saved_tcp_fo);
-	if (saved_tcp_syncookie != -1)
-		write_int_sysctl(TCP_SYNCOOKIE_SYSCTL, saved_tcp_syncookie);
 }
 
 static int enable_fastopen(void)
@@ -803,6 +783,7 @@ static void test_config(int sotype, sa_family_t family, bool inany)
 		TEST_INIT(test_pass_on_err),
 		TEST_INIT(test_detach_bpf),
 	};
+	struct netns_obj *netns;
 	char s[MAX_TEST_NAME];
 	const struct test *t;
 
@@ -818,9 +799,21 @@ static void test_config(int sotype, sa_family_t family, bool inany)
 		if (!test__start_subtest(s))
 			continue;
 
+		netns = netns_new("select_reuseport", true);
+		if (!ASSERT_OK_PTR(netns, "netns_new"))
+			continue;
+
+		if (CHECK_FAIL(enable_fastopen()))
+			goto out;
+		if (CHECK_FAIL(disable_syncookie()))
+			goto out;
+
 		setup_per_test(sotype, family, inany, t->no_inner_map);
 		t->fn(sotype, family);
 		cleanup_per_test(t->no_inner_map);
+
+out:
+		netns_free(netns);
 	}
 }
 
@@ -858,23 +851,9 @@ out:
 	cleanup();
 }
 
-void test_select_reuseport(void)
+void serial_test_select_reuseport(void)
 {
-	saved_tcp_fo = read_int_sysctl(TCP_FO_SYSCTL);
-	if (saved_tcp_fo < 0)
-		goto out;
-	saved_tcp_syncookie = read_int_sysctl(TCP_SYNCOOKIE_SYSCTL);
-	if (saved_tcp_syncookie < 0)
-		goto out;
-
-	if (enable_fastopen())
-		goto out;
-	if (disable_syncookie())
-		goto out;
-
 	test_map_type(BPF_MAP_TYPE_REUSEPORT_SOCKARRAY);
 	test_map_type(BPF_MAP_TYPE_SOCKMAP);
 	test_map_type(BPF_MAP_TYPE_SOCKHASH);
-out:
-	restore_sysctls();
 }

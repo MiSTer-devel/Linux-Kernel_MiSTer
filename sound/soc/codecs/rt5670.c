@@ -2439,10 +2439,10 @@ static int rt5670_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	unsigned int reg_val = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		rt5670->master[dai->id] = 1;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		reg_val |= RT5670_I2S_MS_S;
 		rt5670->master[dai->id] = 0;
 		break;
@@ -2577,7 +2577,7 @@ static int rt5670_set_dai_pll(struct snd_soc_dai *dai, int pll_id, int source,
 
 	ret = rl6231_pll_calc(freq_in, freq_out, &pll_code);
 	if (ret < 0) {
-		dev_err(component->dev, "Unsupport input clock %d\n", freq_in);
+		dev_err(component->dev, "Unsupported input clock %d\n", freq_in);
 		return ret;
 	}
 
@@ -2852,7 +2852,6 @@ static const struct snd_soc_component_driver soc_component_dev_rt5670 = {
 	.num_dapm_routes	= ARRAY_SIZE(rt5670_dapm_routes),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config rt5670_regmap = {
@@ -2864,7 +2863,7 @@ static const struct regmap_config rt5670_regmap = {
 					       RT5670_PR_SPACING),
 	.volatile_reg = rt5670_volatile_register,
 	.readable_reg = rt5670_readable_register,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.reg_defaults = rt5670_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt5670_reg),
 	.ranges = rt5670_ranges,
@@ -2872,19 +2871,19 @@ static const struct regmap_config rt5670_regmap = {
 };
 
 static const struct i2c_device_id rt5670_i2c_id[] = {
-	{ "rt5670", 0 },
-	{ "rt5671", 0 },
-	{ "rt5672", 0 },
+	{ "rt5670" },
+	{ "rt5671" },
+	{ "rt5672" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt5670_i2c_id);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id rt5670_acpi_match[] = {
-	{ "10EC5670", 0},
-	{ "10EC5672", 0},
-	{ "10EC5640", 0}, /* quirk */
-	{ },
+	{ "10EC5640" }, /* quirk */
+	{ "10EC5670" },
+	{ "10EC5672" },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, rt5670_acpi_match);
 #endif
@@ -3046,8 +3045,7 @@ const char *rt5670_components(void)
 }
 EXPORT_SYMBOL_GPL(rt5670_components);
 
-static int rt5670_i2c_probe(struct i2c_client *i2c,
-		    const struct i2c_device_id *id)
+static int rt5670_i2c_probe(struct i2c_client *i2c)
 {
 	struct rt5670_priv *rt5670;
 	int ret;
@@ -3313,8 +3311,6 @@ static int rt5670_i2c_probe(struct i2c_client *i2c,
 	if (ret < 0)
 		goto err;
 
-	pm_runtime_put(&i2c->dev);
-
 	return 0;
 err:
 	pm_runtime_disable(&i2c->dev);
@@ -3322,11 +3318,9 @@ err:
 	return ret;
 }
 
-static int rt5670_i2c_remove(struct i2c_client *i2c)
+static void rt5670_i2c_remove(struct i2c_client *i2c)
 {
 	pm_runtime_disable(&i2c->dev);
-
-	return 0;
 }
 
 static struct i2c_driver rt5670_i2c_driver = {
@@ -3334,7 +3328,7 @@ static struct i2c_driver rt5670_i2c_driver = {
 		.name = "rt5670",
 		.acpi_match_table = ACPI_PTR(rt5670_acpi_match),
 	},
-	.probe = rt5670_i2c_probe,
+	.probe    = rt5670_i2c_probe,
 	.remove   = rt5670_i2c_remove,
 	.id_table = rt5670_i2c_id,
 };

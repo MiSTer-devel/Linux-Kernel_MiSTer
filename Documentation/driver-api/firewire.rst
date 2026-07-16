@@ -19,7 +19,7 @@ of kernel interfaces is available via exported symbols in `firewire-core` module
 Firewire char device data structures
 ====================================
 
-.. include:: /ABI/stable/firewire-cdev
+.. include:: ../ABI/stable/firewire-cdev
     :literal:
 
 .. kernel-doc:: include/uapi/linux/firewire-cdev.h
@@ -28,7 +28,7 @@ Firewire char device data structures
 Firewire device probing and sysfs interfaces
 ============================================
 
-.. include:: /ABI/stable/sysfs-bus-firewire
+.. include:: ../ABI/stable/sysfs-bus-firewire
     :literal:
 
 .. kernel-doc:: drivers/firewire/core-device.c
@@ -43,6 +43,8 @@ Firewire core transaction interfaces
 Firewire Isochronous I/O interfaces
 ===================================
 
+.. kernel-doc:: include/linux/firewire.h
+   :functions: fw_iso_context_schedule_flush_completions
 .. kernel-doc:: drivers/firewire/core-iso.c
    :export:
 

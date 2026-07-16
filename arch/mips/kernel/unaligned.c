@@ -91,6 +91,7 @@
 #include <asm/inst.h>
 #include <asm/unaligned-emul.h>
 #include <asm/mmu_context.h>
+#include <asm/traps.h>
 #include <linux/uaccess.h>
 
 #include "access-helper.h"
@@ -160,6 +161,47 @@ static void emulate_load_store_insn(struct pt_regs *regs,
 		 * The remaining opcodes are the ones that are really of
 		 * interest.
 		 */
+#ifdef CONFIG_MACH_INGENIC
+	case spec2_op:
+		if (insn.mxu_lx_format.func != mxu_lx_op)
+			goto sigbus; /* other MXU instructions we don't care */
+
+		switch (insn.mxu_lx_format.op) {
+		case mxu_lxw_op:
+			if (user && !access_ok(addr, 4))
+				goto sigbus;
+			LoadW(addr, value, res);
+			if (res)
+				goto fault;
+			compute_return_epc(regs);
+			regs->regs[insn.mxu_lx_format.rd] = value;
+			break;
+		case mxu_lxh_op:
+			if (user && !access_ok(addr, 2))
+				goto sigbus;
+			LoadHW(addr, value, res);
+			if (res)
+				goto fault;
+			compute_return_epc(regs);
+			regs->regs[insn.dsp_format.rd] = value;
+			break;
+		case mxu_lxhu_op:
+			if (user && !access_ok(addr, 2))
+				goto sigbus;
+			LoadHWU(addr, value, res);
+			if (res)
+				goto fault;
+			compute_return_epc(regs);
+			regs->regs[insn.dsp_format.rd] = value;
+			break;
+		case mxu_lxb_op:
+		case mxu_lxbu_op:
+			goto sigbus;
+		default:
+			goto sigill;
+		}
+		break;
+#endif
 	case spec3_op:
 		if (insn.dsp_format.func == lx_op) {
 			switch (insn.dsp_format.op) {
@@ -1480,6 +1522,23 @@ asmlinkage void do_ade(struct pt_regs *regs)
 	prev_state = exception_enter();
 	perf_sw_event(PERF_COUNT_SW_ALIGNMENT_FAULTS,
 			1, regs, regs->cp0_badvaddr);
+
+#ifdef CONFIG_64BIT
+	/*
+	 * check, if we are hitting space between CPU implemented maximum
+	 * virtual user address and 64bit maximum virtual user address
+	 * and do exception handling to get EFAULTs for get_user/put_user
+	 */
+	if ((regs->cp0_badvaddr >= (1UL << cpu_vmbits)) &&
+	    (regs->cp0_badvaddr < XKSSEG)) {
+		if (fixup_exception(regs)) {
+			current->thread.cp0_baduaddr = regs->cp0_badvaddr;
+			return;
+		}
+		goto sigbus;
+	}
+#endif
+
 	/*
 	 * Did we catch a fault trying to load an instruction?
 	 */

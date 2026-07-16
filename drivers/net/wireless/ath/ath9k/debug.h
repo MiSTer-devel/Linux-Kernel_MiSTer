@@ -39,6 +39,7 @@ struct fft_sample_tlv;
 #endif
 
 enum ath_reset_type {
+	RESET_TYPE_USER,
 	RESET_TYPE_BB_HANG,
 	RESET_TYPE_BB_WATCHDOG,
 	RESET_TYPE_FATAL_INT,
@@ -52,6 +53,7 @@ enum ath_reset_type {
 	RESET_TYPE_CALIBRATION,
 	RESET_TX_DMA_ERROR,
 	RESET_RX_DMA_ERROR,
+	RESET_TYPE_RX_INACTIVE,
 	__RESET_TYPE_MAX
 };
 

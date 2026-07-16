@@ -8,9 +8,9 @@
  * Copyright (C) 2007 by Maciej W. Rozycki
  * Copyright (C) 2011, 2012 MIPS Technologies, Inc.
  */
+#include <linux/export.h>
 #include <asm/asm.h>
 #include <asm/asm-offsets.h>
-#include <asm/export.h>
 #include <asm/regdef.h>
 
 #if LONGSIZE == 4
@@ -52,7 +52,7 @@
 9:		___BUILD_EVA_INSN(insn, reg, addr);	\
 	.endif;						\
 	.section __ex_table,"a";			\
-	PTR	9b, handler;				\
+	PTR_WD	9b, handler;				\
 	.previous
 
 	.macro	f_fill64 dst, offset, val, fixup, mode

@@ -4,8 +4,11 @@
 #ifndef ST_LSM9DS0_H
 #define ST_LSM9DS0_H
 
-struct iio_dev;
+struct device;
+struct regmap;
 struct regulator;
+
+struct iio_dev;
 
 struct st_lsm9ds0 {
 	struct device *dev;
@@ -18,6 +21,5 @@ struct st_lsm9ds0 {
 };
 
 int st_lsm9ds0_probe(struct st_lsm9ds0 *lsm9ds0, struct regmap *regmap);
-int st_lsm9ds0_remove(struct st_lsm9ds0 *lsm9ds0);
 
 #endif /* ST_LSM9DS0_H */

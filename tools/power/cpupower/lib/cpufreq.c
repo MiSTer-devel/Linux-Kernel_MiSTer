@@ -83,24 +83,29 @@ static const char *cpufreq_value_files[MAX_CPUFREQ_VALUE_READ_FILES] = {
 	[STATS_NUM_TRANSITIONS] = "stats/total_trans"
 };
 
-
-static unsigned long sysfs_cpufreq_get_one_value(unsigned int cpu,
-						 enum cpufreq_value which)
+unsigned long cpufreq_get_sysfs_value_from_table(unsigned int cpu,
+						 const char **table,
+						 unsigned int index,
+						 unsigned int size)
 {
 	unsigned long value;
 	unsigned int len;
 	char linebuf[MAX_LINE_LEN];
 	char *endp;
 
-	if (which >= MAX_CPUFREQ_VALUE_READ_FILES)
+	if (!table || index >= size || !table[index])
 		return 0;
 
-	len = sysfs_cpufreq_read_file(cpu, cpufreq_value_files[which],
-				linebuf, sizeof(linebuf));
+	len = sysfs_cpufreq_read_file(cpu, table[index], linebuf,
+				      sizeof(linebuf));
 
 	if (len == 0)
 		return 0;
 
+	if (!strcmp(linebuf, "enabled\n"))
+		return 1;
+	if (!strcmp(linebuf, "disabled\n"))
+		return 0;
 	value = strtoul(linebuf, &endp, 0);
 
 	if (endp == linebuf || errno == ERANGE)
@@ -109,22 +114,32 @@ static unsigned long sysfs_cpufreq_get_one_value(unsigned int cpu,
 	return value;
 }
 
+static unsigned long sysfs_cpufreq_get_one_value(unsigned int cpu,
+						 enum cpufreq_value which)
+{
+	return cpufreq_get_sysfs_value_from_table(cpu, cpufreq_value_files,
+						  which,
+						  MAX_CPUFREQ_VALUE_READ_FILES);
+}
+
 /* read access to files which contain one string */
 
 enum cpufreq_string {
 	SCALING_DRIVER,
 	SCALING_GOVERNOR,
+	ENERGY_PERFORMANCE_PREFERENCE,
 	MAX_CPUFREQ_STRING_FILES
 };
 
 static const char *cpufreq_string_files[MAX_CPUFREQ_STRING_FILES] = {
 	[SCALING_DRIVER] = "scaling_driver",
 	[SCALING_GOVERNOR] = "scaling_governor",
+	[ENERGY_PERFORMANCE_PREFERENCE] = "energy_performance_preference",
 };
 
 
 static char *sysfs_cpufreq_get_one_string(unsigned int cpu,
-					   enum cpufreq_string which)
+					  enum cpufreq_string which)
 {
 	char linebuf[MAX_LINE_LEN];
 	char *result;
@@ -192,6 +207,18 @@ unsigned long cpufreq_get_freq_hardware(unsigned int cpu)
 unsigned long cpufreq_get_transition_latency(unsigned int cpu)
 {
 	return sysfs_cpufreq_get_one_value(cpu, CPUINFO_LATENCY);
+}
+
+char *cpufreq_get_energy_performance_preference(unsigned int cpu)
+{
+	return sysfs_cpufreq_get_one_string(cpu, ENERGY_PERFORMANCE_PREFERENCE);
+}
+
+void cpufreq_put_energy_performance_preference(char *ptr)
+{
+	if (!ptr)
+		return;
+	free(ptr);
 }
 
 int cpufreq_get_hardware_limits(unsigned int cpu,

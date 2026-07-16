@@ -94,15 +94,22 @@
 
 #include <linux/module.h>
 #include <linux/delay.h>
-
-#include "../comedi_pci.h"
-
+#include <linux/comedi/comedi_pci.h>
 #include <asm/byteorder.h>
 
 #include "ni_stc.h"
 #include "mite.h"
 
 #define PCIDMA
+
+static const struct comedi_lrange range_ni_E_ao_ext = {
+	4, {
+		BIP_RANGE(10),
+		UNI_RANGE(10),
+		RANGE_ext(-1, 1),
+		RANGE_ext(0, 1)
+	}
+};
 
 /*
  * These are not all the possible ao ranges for 628x boards.

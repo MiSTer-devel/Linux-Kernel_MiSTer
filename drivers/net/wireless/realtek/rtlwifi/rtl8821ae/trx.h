@@ -291,7 +291,7 @@ static inline int get_rx_desc_paggr(__le32 *__pdesc)
 
 static inline int get_rx_status_desc_rpt_sel(__le32 *__pdesc)
 {
-	return le32_get_bits(*(__pdesc + 1), BIT(28));
+	return le32_get_bits(*(__pdesc + 2), BIT(28));
 }
 
 static inline int get_rx_desc_rxmcs(__le32 *__pdesc)
@@ -648,6 +648,5 @@ bool rtl8821ae_is_tx_desc_closed(struct ieee80211_hw *hw,
 				 u8 hw_queue, u16 index);
 void rtl8821ae_tx_polling(struct ieee80211_hw *hw, u8 hw_queue);
 void rtl8821ae_tx_fill_cmddesc(struct ieee80211_hw *hw, u8 *pdesc,
-			       bool firstseg, bool lastseg,
 			       struct sk_buff *skb);
 #endif

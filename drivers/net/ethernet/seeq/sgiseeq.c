@@ -167,7 +167,7 @@ static int sgiseeq_set_mac_address(struct net_device *dev, void *addr)
 	struct sgiseeq_private *sp = netdev_priv(dev);
 	struct sockaddr *sa = addr;
 
-	memcpy(dev->dev_addr, sa->sa_data, dev->addr_len);
+	eth_hw_addr_set(dev, sa->sa_data);
 
 	spin_lock_irq(&sp->tx_lock);
 	__sgiseeq_set_mac_address(dev);
@@ -764,7 +764,7 @@ static int sgiseeq_probe(struct platform_device *pdev)
 	setup_rx_ring(dev, sp->rx_desc, SEEQ_RX_BUFFERS);
 	setup_tx_ring(dev, sp->tx_desc, SEEQ_TX_BUFFERS);
 
-	memcpy(dev->dev_addr, pd->mac, ETH_ALEN);
+	eth_hw_addr_set(dev, pd->mac);
 
 #ifdef DEBUG
 	gpriv = sp;
@@ -819,7 +819,7 @@ err_out:
 	return err;
 }
 
-static int sgiseeq_remove(struct platform_device *pdev)
+static void sgiseeq_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct sgiseeq_private *sp = netdev_priv(dev);
@@ -828,13 +828,11 @@ static int sgiseeq_remove(struct platform_device *pdev)
 	dma_free_noncoherent(&pdev->dev, sizeof(*sp->srings), sp->srings,
 		       sp->srings_dma, DMA_BIDIRECTIONAL);
 	free_netdev(dev);
-
-	return 0;
 }
 
 static struct platform_driver sgiseeq_driver = {
 	.probe	= sgiseeq_probe,
-	.remove	= sgiseeq_remove,
+	.remove = sgiseeq_remove,
 	.driver = {
 		.name	= "sgiseeq",
 	}

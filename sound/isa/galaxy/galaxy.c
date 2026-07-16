@@ -478,7 +478,7 @@ static void snd_galaxy_free(struct snd_card *card)
 		galaxy_set_config(galaxy, galaxy->config);
 }
 
-static int snd_galaxy_probe(struct device *dev, unsigned int n)
+static int __snd_galaxy_probe(struct device *dev, unsigned int n)
 {
 	struct snd_galaxy *galaxy;
 	struct snd_wss *chip;
@@ -542,8 +542,8 @@ static int snd_galaxy_probe(struct device *dev, unsigned int n)
 		return err;
 	}
 
-	strcpy(card->driver, DRV_NAME);
-	strcpy(card->shortname, DRV_NAME);
+	strscpy(card->driver, DRV_NAME);
+	strscpy(card->shortname, DRV_NAME);
 	sprintf(card->longname, "%s at %#lx/%#lx, irq %d, dma %d/%d",
 		card->shortname, port[n], wss_port[n], irq[n], dma1[n],
 		dma2[n]);
@@ -596,6 +596,11 @@ static int snd_galaxy_probe(struct device *dev, unsigned int n)
 
 	dev_set_drvdata(dev, card);
 	return 0;
+}
+
+static int snd_galaxy_probe(struct device *dev, unsigned int n)
+{
+	return snd_card_free_on_error(dev, __snd_galaxy_probe(dev, n));
 }
 
 static struct isa_driver snd_galaxy_driver = {

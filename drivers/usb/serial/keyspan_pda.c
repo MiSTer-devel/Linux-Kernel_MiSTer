@@ -77,36 +77,27 @@ static int keyspan_pda_get_write_room(struct keyspan_pda_private *priv)
 {
 	struct usb_serial_port *port = priv->port;
 	struct usb_serial *serial = port->serial;
-	u8 *room;
+	u8 room;
 	int rc;
 
-	room = kmalloc(1, GFP_KERNEL);
-	if (!room)
-		return -ENOMEM;
-
-	rc = usb_control_msg(serial->dev,
-			     usb_rcvctrlpipe(serial->dev, 0),
-			     6, /* write_room */
-			     USB_TYPE_VENDOR | USB_RECIP_INTERFACE
-			     | USB_DIR_IN,
-			     0, /* value: 0 means "remaining room" */
-			     0, /* index */
-			     room,
-			     1,
-			     2000);
-	if (rc != 1) {
-		if (rc >= 0)
-			rc = -EIO;
+	rc = usb_control_msg_recv(serial->dev,
+				  0,
+				  6, /* write_room */
+				  USB_TYPE_VENDOR | USB_RECIP_INTERFACE | USB_DIR_IN,
+				  0, /* value: 0 means "remaining room" */
+				  0, /* index */
+				  &room,
+				  1,
+				  2000,
+				  GFP_KERNEL);
+	if (rc) {
 		dev_dbg(&port->dev, "roomquery failed: %d\n", rc);
-		goto out_free;
+		return rc;
 	}
 
-	dev_dbg(&port->dev, "roomquery says %d\n", *room);
-	rc = *room;
-out_free:
-	kfree(room);
+	dev_dbg(&port->dev, "roomquery says %d\n", room);
 
-	return rc;
+	return room;
 }
 
 static void keyspan_pda_request_unthrottle(struct work_struct *work)
@@ -308,7 +299,7 @@ static speed_t keyspan_pda_setbaud(struct usb_serial *serial, speed_t baud)
 	return baud;
 }
 
-static void keyspan_pda_break_ctl(struct tty_struct *tty, int break_state)
+static int keyspan_pda_break_ctl(struct tty_struct *tty, int break_state)
 {
 	struct usb_serial_port *port = tty->driver_data;
 	struct usb_serial *serial = port->serial;
@@ -324,13 +315,18 @@ static void keyspan_pda_break_ctl(struct tty_struct *tty, int break_state)
 			4, /* set break */
 			USB_TYPE_VENDOR | USB_RECIP_INTERFACE | USB_DIR_OUT,
 			value, 0, NULL, 0, 2000);
-	if (result < 0)
+	if (result < 0) {
 		dev_dbg(&port->dev, "%s - error %d from usb_control_msg\n",
 			__func__, result);
+		return result;
+	}
+
+	return 0;
 }
 
 static void keyspan_pda_set_termios(struct tty_struct *tty,
-		struct usb_serial_port *port, struct ktermios *old_termios)
+				    struct usb_serial_port *port,
+				    const struct ktermios *old_termios)
 {
 	struct usb_serial *serial = port->serial;
 	speed_t speed;
@@ -381,22 +377,20 @@ static int keyspan_pda_get_modem_info(struct usb_serial *serial,
 				      unsigned char *value)
 {
 	int rc;
-	u8 *data;
+	u8 data;
 
-	data = kmalloc(1, GFP_KERNEL);
-	if (!data)
-		return -ENOMEM;
+	rc = usb_control_msg_recv(serial->dev, 0,
+				  3, /* get pins */
+				  USB_TYPE_VENDOR | USB_RECIP_INTERFACE | USB_DIR_IN,
+				  0,
+				  0,
+				  &data,
+				  1,
+				  2000,
+				  GFP_KERNEL);
+	if (rc == 0)
+		*value = data;
 
-	rc = usb_control_msg(serial->dev, usb_rcvctrlpipe(serial->dev, 0),
-			     3, /* get pins */
-			     USB_TYPE_VENDOR|USB_RECIP_INTERFACE|USB_DIR_IN,
-			     0, 0, data, 1, 2000);
-	if (rc == 1)
-		*value = *data;
-	else if (rc >= 0)
-		rc = -EIO;
-
-	kfree(data);
 	return rc;
 }
 
@@ -682,7 +676,6 @@ static void keyspan_pda_port_remove(struct usb_serial_port *port)
 
 static struct usb_serial_driver keyspan_pda_fake_device = {
 	.driver = {
-		.owner =	THIS_MODULE,
 		.name =		"keyspan_pda_pre",
 	},
 	.description =		"Keyspan PDA - (prerenumeration)",
@@ -693,7 +686,6 @@ static struct usb_serial_driver keyspan_pda_fake_device = {
 
 static struct usb_serial_driver keyspan_pda_device = {
 	.driver = {
-		.owner =	THIS_MODULE,
 		.name =		"keyspan_pda",
 	},
 	.description =		"Keyspan PDA",

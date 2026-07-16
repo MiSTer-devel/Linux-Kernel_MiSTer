@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Clk driver for NXP LPC18xx/LPC43xx Clock Control Unit (CCU)
  *
  * Copyright (C) 2015 Joachim Eastwood <manabian@gmail.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/clk.h>
@@ -151,7 +148,7 @@ static int lpc18xx_ccu_gate_endisable(struct clk_hw *hw, bool enable)
 		val |= LPC18XX_CCU_RUN;
 	} else {
 		/*
-		 * To safely disable a branch clock a squence of two separate
+		 * To safely disable a branch clock a sequence of two separate
 		 * writes must be used. First write should set the AUTO bit
 		 * and the next write should clear the RUN bit.
 		 */

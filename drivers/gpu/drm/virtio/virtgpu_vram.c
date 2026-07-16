@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "virtgpu_drv.h"
 
+#include <linux/dma-mapping.h>
+
 static void virtio_gpu_vram_free(struct drm_gem_object *obj)
 {
 	struct virtio_gpu_object *bo = gem_to_virtio_gpu_obj(obj);
@@ -35,6 +37,7 @@ static int virtio_gpu_vram_mmap(struct drm_gem_object *obj,
 	struct virtio_gpu_object *bo = gem_to_virtio_gpu_obj(obj);
 	struct virtio_gpu_object_vram *vram = to_virtio_gpu_vram(bo);
 	unsigned long vm_size = vma->vm_end - vma->vm_start;
+	unsigned long vm_end;
 
 	if (!(bo->blob_flags & VIRTGPU_BLOB_FLAG_USE_MAPPABLE))
 		return -EINVAL;
@@ -44,7 +47,7 @@ static int virtio_gpu_vram_mmap(struct drm_gem_object *obj,
 		return -EINVAL;
 
 	vma->vm_pgoff -= drm_vma_node_start(&obj->vma_node);
-	vma->vm_flags |= VM_MIXEDMAP | VM_DONTEXPAND;
+	vm_flags_set(vma, VM_MIXEDMAP | VM_DONTEXPAND);
 	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
 	vma->vm_page_prot = pgprot_decrypted(vma->vm_page_prot);
 	vma->vm_ops = &virtio_gpu_vram_vm_ops;
@@ -54,14 +57,75 @@ static int virtio_gpu_vram_mmap(struct drm_gem_object *obj,
 	else if (vram->map_info == VIRTIO_GPU_MAP_CACHE_UNCACHED)
 		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
-	/* Partial mappings of GEM buffers don't happen much in practice. */
-	if (vm_size != vram->vram_node.size)
+	if (check_add_overflow(vma->vm_pgoff << PAGE_SHIFT, vm_size, &vm_end))
+		return -EINVAL;
+
+	if (vm_end > vram->vram_node.size)
 		return -EINVAL;
 
 	ret = io_remap_pfn_range(vma, vma->vm_start,
-				 vram->vram_node.start >> PAGE_SHIFT,
+				 (vram->vram_node.start >> PAGE_SHIFT) + vma->vm_pgoff,
 				 vm_size, vma->vm_page_prot);
 	return ret;
+}
+
+struct sg_table *virtio_gpu_vram_map_dma_buf(struct virtio_gpu_object *bo,
+					     struct device *dev,
+					     enum dma_data_direction dir)
+{
+	struct virtio_gpu_device *vgdev = bo->base.base.dev->dev_private;
+	struct virtio_gpu_object_vram *vram = to_virtio_gpu_vram(bo);
+	struct sg_table *sgt;
+	dma_addr_t addr;
+	int ret;
+
+	sgt = kzalloc(sizeof(*sgt), GFP_KERNEL);
+	if (!sgt)
+		return ERR_PTR(-ENOMEM);
+
+	if (!(bo->blob_flags & VIRTGPU_BLOB_FLAG_USE_MAPPABLE)) {
+		// Virtio devices can access the dma-buf via its UUID. Return a stub
+		// sg_table so the dma-buf API still works.
+		if (!is_virtio_device(dev) || !vgdev->has_resource_assign_uuid) {
+			ret = -EIO;
+			goto out;
+		}
+		return sgt;
+	}
+
+	ret = sg_alloc_table(sgt, 1, GFP_KERNEL);
+	if (ret)
+		goto out;
+
+	addr = dma_map_resource(dev, vram->vram_node.start,
+				vram->vram_node.size, dir,
+				DMA_ATTR_SKIP_CPU_SYNC);
+	ret = dma_mapping_error(dev, addr);
+	if (ret)
+		goto out;
+
+	sg_set_page(sgt->sgl, NULL, vram->vram_node.size, 0);
+	sg_dma_address(sgt->sgl) = addr;
+	sg_dma_len(sgt->sgl) = vram->vram_node.size;
+
+	return sgt;
+out:
+	sg_free_table(sgt);
+	kfree(sgt);
+	return ERR_PTR(ret);
+}
+
+void virtio_gpu_vram_unmap_dma_buf(struct device *dev,
+				   struct sg_table *sgt,
+				   enum dma_data_direction dir)
+{
+	if (sgt->nents) {
+		dma_unmap_resource(dev, sg_dma_address(sgt->sgl),
+				   sg_dma_len(sgt->sgl), dir,
+				   DMA_ATTR_SKIP_CPU_SYNC);
+	}
+	sg_free_table(sgt);
+	kfree(sgt);
 }
 
 static const struct drm_gem_object_funcs virtio_gpu_vram_funcs = {

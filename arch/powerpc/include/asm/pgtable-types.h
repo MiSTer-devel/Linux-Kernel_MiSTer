@@ -2,17 +2,33 @@
 #ifndef _ASM_POWERPC_PGTABLE_TYPES_H
 #define _ASM_POWERPC_PGTABLE_TYPES_H
 
+#if defined(__CHECKER__) || !defined(CONFIG_PPC32)
+#define STRICT_MM_TYPECHECKS
+#endif
+
 /* PTE level */
 #if defined(CONFIG_PPC_8xx) && defined(CONFIG_PPC_16K_PAGES)
 typedef struct { pte_basic_t pte, pte1, pte2, pte3; } pte_t;
-#else
+#elif defined(STRICT_MM_TYPECHECKS)
 typedef struct { pte_basic_t pte; } pte_t;
+#else
+typedef pte_basic_t pte_t;
 #endif
+
+#if defined(STRICT_MM_TYPECHECKS) || \
+    (defined(CONFIG_PPC_8xx) && defined(CONFIG_PPC_16K_PAGES))
 #define __pte(x)	((pte_t) { (x) })
 static inline pte_basic_t pte_val(pte_t x)
 {
 	return x.pte;
 }
+#else
+#define __pte(x)	((pte_t)(x))
+static inline pte_basic_t pte_val(pte_t x)
+{
+	return x;
+}
+#endif
 
 /* PMD level */
 #ifdef CONFIG_PPC64
@@ -33,12 +49,22 @@ static inline unsigned long pud_val(pud_t x)
 #endif /* CONFIG_PPC64 */
 
 /* PGD level */
+#if defined(CONFIG_PPC_85xx) && defined(CONFIG_PTE_64BIT)
+typedef struct { unsigned long long pgd; } pgd_t;
+
+static inline unsigned long long pgd_val(pgd_t x)
+{
+	return x.pgd;
+}
+#else
 typedef struct { unsigned long pgd; } pgd_t;
-#define __pgd(x)	((pgd_t) { (x) })
+
 static inline unsigned long pgd_val(pgd_t x)
 {
 	return x.pgd;
 }
+#endif
+#define __pgd(x)	((pgd_t) { (x) })
 
 /* Page protection bits */
 typedef struct { unsigned long pgprot; } pgprot_t;
@@ -66,12 +92,5 @@ static inline bool pte_xchg(pte_t *ptep, pte_t old, pte_t new)
 	return pte_val(old) == __cmpxchg_u64(p, pte_val(old), pte_val(new));
 }
 #endif
-
-typedef struct { unsigned long pd; } hugepd_t;
-#define __hugepd(x) ((hugepd_t) { (x) })
-static inline unsigned long hpd_val(hugepd_t x)
-{
-	return x.pd;
-}
 
 #endif /* _ASM_POWERPC_PGTABLE_TYPES_H */

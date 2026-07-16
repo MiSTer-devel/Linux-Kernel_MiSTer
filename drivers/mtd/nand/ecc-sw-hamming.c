@@ -364,9 +364,9 @@ int nand_ecc_sw_hamming_calculate(struct nand_device *nand,
 {
 	struct nand_ecc_sw_hamming_conf *engine_conf = nand->ecc.ctx.priv;
 	unsigned int step_size = nand->ecc.ctx.conf.step_size;
+	bool sm_order = engine_conf ? engine_conf->sm_order : false;
 
-	return ecc_sw_hamming_calculate(buf, step_size, code,
-					engine_conf->sm_order);
+	return ecc_sw_hamming_calculate(buf, step_size, code, sm_order);
 }
 EXPORT_SYMBOL(nand_ecc_sw_hamming_calculate);
 
@@ -457,9 +457,10 @@ int nand_ecc_sw_hamming_correct(struct nand_device *nand, unsigned char *buf,
 {
 	struct nand_ecc_sw_hamming_conf *engine_conf = nand->ecc.ctx.priv;
 	unsigned int step_size = nand->ecc.ctx.conf.step_size;
+	bool sm_order = engine_conf ? engine_conf->sm_order : false;
 
 	return ecc_sw_hamming_correct(buf, read_ecc, calc_ecc, step_size,
-				      engine_conf->sm_order);
+				      sm_order);
 }
 EXPORT_SYMBOL(nand_ecc_sw_hamming_correct);
 
@@ -637,7 +638,7 @@ static int nand_ecc_sw_hamming_finish_io_req(struct nand_device *nand,
 	return max_bitflips;
 }
 
-static struct nand_ecc_engine_ops nand_ecc_sw_hamming_engine_ops = {
+static const struct nand_ecc_engine_ops nand_ecc_sw_hamming_engine_ops = {
 	.init_ctx = nand_ecc_sw_hamming_init_ctx,
 	.cleanup_ctx = nand_ecc_sw_hamming_cleanup_ctx,
 	.prepare_io_req = nand_ecc_sw_hamming_prepare_io_req,

@@ -22,6 +22,7 @@
 #include "core.h"
 #include "head.h"
 
+#include <nvif/class.h>
 #include <nvif/pushc37b.h>
 
 #include <nvhw/class/clc57d.h>
@@ -29,7 +30,7 @@
 static int
 corec57d_init(struct nv50_core *core)
 {
-	struct nvif_push *push = core->chan.push;
+	struct nvif_push *push = &core->chan.push;
 	const u32 windows = 8; /*XXX*/
 	int ret, i;
 
@@ -63,13 +64,14 @@ corec57d = {
 	.init = corec57d_init,
 	.ntfy_init = corec37d_ntfy_init,
 	.caps_init = corec37d_caps_init,
+	.caps_class = GV100_DISP_CAPS,
 	.ntfy_wait_done = corec37d_ntfy_wait_done,
 	.update = corec37d_update,
 	.wndw.owner = corec37d_wndw_owner,
 	.head = &headc57d,
 	.sor = &sorc37d,
 #if IS_ENABLED(CONFIG_DEBUG_FS)
-	.crc = &crcc37d,
+	.crc = &crcc57d,
 #endif
 };
 

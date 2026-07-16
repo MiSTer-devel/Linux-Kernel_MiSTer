@@ -22,7 +22,7 @@ static int regmap_slimbus_read(void *context, const void *reg, size_t reg_size,
 	return slim_read(sdev, *(u16 *)reg, val_size, val);
 }
 
-static struct regmap_bus regmap_slimbus_bus = {
+static const struct regmap_bus regmap_slimbus_bus = {
 	.write = regmap_slimbus_write,
 	.read = regmap_slimbus_read,
 	.reg_format_endian_default = REGMAP_ENDIAN_LITTLE,
@@ -48,8 +48,7 @@ struct regmap *__regmap_init_slimbus(struct slim_device *slimbus,
 	if (IS_ERR(bus))
 		return ERR_CAST(bus);
 
-	return __regmap_init(&slimbus->dev, bus, &slimbus->dev, config,
-			     lock_key, lock_name);
+	return __regmap_init(&slimbus->dev, bus, slimbus, config, lock_key, lock_name);
 }
 EXPORT_SYMBOL_GPL(__regmap_init_slimbus);
 
@@ -63,9 +62,9 @@ struct regmap *__devm_regmap_init_slimbus(struct slim_device *slimbus,
 	if (IS_ERR(bus))
 		return ERR_CAST(bus);
 
-	return __devm_regmap_init(&slimbus->dev, bus, &slimbus, config,
-				  lock_key, lock_name);
+	return __devm_regmap_init(&slimbus->dev, bus, slimbus, config, lock_key, lock_name);
 }
 EXPORT_SYMBOL_GPL(__devm_regmap_init_slimbus);
 
+MODULE_DESCRIPTION("Register map access API - SLIMbus support");
 MODULE_LICENSE("GPL v2");

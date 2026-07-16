@@ -867,22 +867,22 @@ static int wm8900_set_dai_fmt(struct snd_soc_dai *codec_dai,
 
 	/* set master/slave audio interface */
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		clocking1 &= ~WM8900_REG_CLOCKING1_BCLK_DIR;
 		aif3 &= ~WM8900_REG_AUDIO3_ADCLRC_DIR;
 		aif4 &= ~WM8900_REG_AUDIO4_DACLRC_DIR;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFM:
+	case SND_SOC_DAIFMT_CBC_CFP:
 		clocking1 &= ~WM8900_REG_CLOCKING1_BCLK_DIR;
 		aif3 |= WM8900_REG_AUDIO3_ADCLRC_DIR;
 		aif4 |= WM8900_REG_AUDIO4_DACLRC_DIR;
 		break;
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		clocking1 |= WM8900_REG_CLOCKING1_BCLK_DIR;
 		aif3 |= WM8900_REG_AUDIO3_ADCLRC_DIR;
 		aif4 |= WM8900_REG_AUDIO4_DACLRC_DIR;
 		break;
-	case SND_SOC_DAIFMT_CBM_CFS:
+	case SND_SOC_DAIFMT_CBP_CFC:
 		clocking1 |= WM8900_REG_CLOCKING1_BCLK_DIR;
 		aif3 &= ~WM8900_REG_AUDIO3_ADCLRC_DIR;
 		aif4 &= ~WM8900_REG_AUDIO4_DACLRC_DIR;
@@ -1214,7 +1214,6 @@ static const struct snd_soc_component_driver soc_component_dev_wm8900 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config wm8900_regmap = {
@@ -1224,7 +1223,7 @@ static const struct regmap_config wm8900_regmap = {
 
 	.reg_defaults = wm8900_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8900_reg_defaults),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 
 	.volatile_reg = wm8900_volatile_register,
 };
@@ -1252,23 +1251,16 @@ static int wm8900_spi_probe(struct spi_device *spi)
 	return ret;
 }
 
-static int wm8900_spi_remove(struct spi_device *spi)
-{
-	return 0;
-}
-
 static struct spi_driver wm8900_spi_driver = {
 	.driver = {
 		.name	= "wm8900",
 	},
 	.probe		= wm8900_spi_probe,
-	.remove		= wm8900_spi_remove,
 };
 #endif /* CONFIG_SPI_MASTER */
 
 #if IS_ENABLED(CONFIG_I2C)
-static int wm8900_i2c_probe(struct i2c_client *i2c,
-			    const struct i2c_device_id *id)
+static int wm8900_i2c_probe(struct i2c_client *i2c)
 {
 	struct wm8900_priv *wm8900;
 	int ret;
@@ -1290,13 +1282,11 @@ static int wm8900_i2c_probe(struct i2c_client *i2c,
 	return ret;
 }
 
-static int wm8900_i2c_remove(struct i2c_client *client)
-{
-	return 0;
-}
+static void wm8900_i2c_remove(struct i2c_client *client)
+{}
 
 static const struct i2c_device_id wm8900_i2c_id[] = {
-	{ "wm8900", 0 },
+	{ "wm8900" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm8900_i2c_id);

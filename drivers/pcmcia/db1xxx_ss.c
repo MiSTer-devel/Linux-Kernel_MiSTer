@@ -356,6 +356,7 @@ static int db1x_pcmcia_get_status(struct pcmcia_socket *skt,
 	case 0:
 	case 2:
 		status |= SS_3VCARD;	/* 3V card */
+		break;
 	case 3:
 		break;			/* 5V card: set nothing */
 	default:
@@ -576,7 +577,7 @@ out0:
 	return ret;
 }
 
-static int db1x_pcmcia_socket_remove(struct platform_device *pdev)
+static void db1x_pcmcia_socket_remove(struct platform_device *pdev)
 {
 	struct db1x_pcmcia_sock *sock = platform_get_drvdata(pdev);
 
@@ -584,8 +585,6 @@ static int db1x_pcmcia_socket_remove(struct platform_device *pdev)
 	pcmcia_unregister_socket(&sock->socket);
 	iounmap((void *)(sock->virt_io + (u32)mips_io_port_base));
 	kfree(sock);
-
-	return 0;
 }
 
 static struct platform_driver db1x_pcmcia_socket_driver = {

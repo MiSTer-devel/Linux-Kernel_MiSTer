@@ -335,7 +335,7 @@ static void ks8842_reset_hw(struct ks8842_adapter *adapter)
 		/* When running in DMA Mode the RX interrupt is not enabled in
 		   timberdale because RX data is received by DMA callbacks
 		   it must still be enabled in the KS8842 because it indicates
-		   to timberdale when there is RX data for it's DMA FIFOs */
+		   to timberdale when there is RX data for its DMA FIFOs */
 		iowrite16(ENABLED_IRQS_DMA_IP, adapter->hw_addr + REG_TIMB_IER);
 		ks8842_write16(adapter, 18, ENABLED_IRQS_DMA, REG_IER);
 	} else {
@@ -348,13 +348,15 @@ static void ks8842_reset_hw(struct ks8842_adapter *adapter)
 	ks8842_write16(adapter, 32, 0x1, REG_SW_ID_AND_ENABLE);
 }
 
-static void ks8842_read_mac_addr(struct ks8842_adapter *adapter, u8 *dest)
+static void ks8842_init_mac_addr(struct ks8842_adapter *adapter)
 {
+	u8 addr[ETH_ALEN];
 	int i;
 	u16 mac;
 
 	for (i = 0; i < ETH_ALEN; i++)
-		dest[ETH_ALEN - i - 1] = ks8842_read8(adapter, 2, REG_MARL + i);
+		addr[ETH_ALEN - i - 1] = ks8842_read8(adapter, 2, REG_MARL + i);
+	eth_hw_addr_set(adapter->netdev, addr);
 
 	if (adapter->conf_flags & MICREL_KS884X) {
 		/*
@@ -380,7 +382,7 @@ static void ks8842_read_mac_addr(struct ks8842_adapter *adapter, u8 *dest)
 	}
 }
 
-static void ks8842_write_mac_addr(struct ks8842_adapter *adapter, u8 *mac)
+static void ks8842_write_mac_addr(struct ks8842_adapter *adapter, const u8 *mac)
 {
 	unsigned long flags;
 	unsigned i;
@@ -1064,7 +1066,7 @@ static int ks8842_set_mac(struct net_device *netdev, void *p)
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 
-	memcpy(netdev->dev_addr, mac, netdev->addr_len);
+	eth_hw_addr_set(netdev, mac);
 
 	ks8842_write_mac_addr(adapter, mac);
 	return 0;
@@ -1191,12 +1193,11 @@ static int ks8842_probe(struct platform_device *pdev)
 
 		if (i < netdev->addr_len)
 			/* an address was passed, use it */
-			memcpy(netdev->dev_addr, pdata->macaddr,
-				netdev->addr_len);
+			eth_hw_addr_set(netdev, pdata->macaddr);
 	}
 
 	if (i == netdev->addr_len) {
-		ks8842_read_mac_addr(adapter, netdev->dev_addr);
+		ks8842_init_mac_addr(adapter);
 
 		if (!is_valid_ether_addr(netdev->dev_addr))
 			eth_hw_addr_random(netdev);
@@ -1227,7 +1228,7 @@ err_mem_region:
 	return err;
 }
 
-static int ks8842_remove(struct platform_device *pdev)
+static void ks8842_remove(struct platform_device *pdev)
 {
 	struct net_device *netdev = platform_get_drvdata(pdev);
 	struct ks8842_adapter *adapter = netdev_priv(netdev);
@@ -1238,7 +1239,6 @@ static int ks8842_remove(struct platform_device *pdev)
 	iounmap(adapter->hw_addr);
 	free_netdev(netdev);
 	release_mem_region(iomem->start, resource_size(iomem));
-	return 0;
 }
 
 

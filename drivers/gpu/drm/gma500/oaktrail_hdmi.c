@@ -27,6 +27,9 @@
 #include <linux/delay.h>
 
 #include <drm/drm.h>
+#include <drm/drm_crtc_helper.h>
+#include <drm/drm_edid.h>
+#include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_simple_kms_helper.h>
 
 #include "psb_drv.h"
@@ -130,7 +133,7 @@ static const struct oaktrail_hdmi_limit oaktrail_hdmi_limit = {
 
 static void oaktrail_hdmi_audio_enable(struct drm_device *dev)
 {
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	struct oaktrail_hdmi_dev *hdmi_dev = dev_priv->hdmi_priv;
 
 	HDMI_WRITE(HDMI_HCR, 0x67);
@@ -145,7 +148,7 @@ static void oaktrail_hdmi_audio_enable(struct drm_device *dev)
 
 static void oaktrail_hdmi_audio_disable(struct drm_device *dev)
 {
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	struct oaktrail_hdmi_dev *hdmi_dev = dev_priv->hdmi_priv;
 
 	HDMI_WRITE(0x51a8, 0x0);
@@ -264,7 +267,7 @@ int oaktrail_crtc_hdmi_mode_set(struct drm_crtc *crtc,
 			    struct drm_framebuffer *old_fb)
 {
 	struct drm_device *dev = crtc->dev;
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	struct oaktrail_hdmi_dev *hdmi_dev = dev_priv->hdmi_priv;
 	int pipe = 1;
 	int htot_reg = (pipe == 0) ? HTOTAL_A : HTOTAL_B;
@@ -494,7 +497,7 @@ static void oaktrail_hdmi_dpms(struct drm_encoder *encoder, int mode)
 	static int dpms_mode = -1;
 
 	struct drm_device *dev = encoder->dev;
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	struct oaktrail_hdmi_dev *hdmi_dev = dev_priv->hdmi_priv;
 	u32 temp;
 
@@ -511,7 +514,7 @@ static void oaktrail_hdmi_dpms(struct drm_encoder *encoder, int mode)
 }
 
 static enum drm_mode_status oaktrail_hdmi_mode_valid(struct drm_connector *connector,
-				struct drm_display_mode *mode)
+				const struct drm_display_mode *mode)
 {
 	if (mode->clock > 165000)
 		return MODE_CLOCK_HIGH;
@@ -529,7 +532,7 @@ oaktrail_hdmi_detect(struct drm_connector *connector, bool force)
 {
 	enum drm_connector_status status;
 	struct drm_device *dev = connector->dev;
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	struct oaktrail_hdmi_dev *hdmi_dev = dev_priv->hdmi_priv;
 	u32 temp;
 
@@ -576,6 +579,7 @@ static int oaktrail_hdmi_get_modes(struct drm_connector *connector)
 	} else {
 		edid = (struct edid *)raw_edid;
 		/* FIXME ? edid = drm_get_edid(connector, i2c_adap); */
+		i2c_put_adapter(i2c_adap);
 	}
 
 	if (edid) {
@@ -654,7 +658,6 @@ void oaktrail_hdmi_init(struct drm_device *dev,
 	connector->display_info.subpixel_order = SubPixelHorizontalRGB;
 	connector->interlace_allowed = false;
 	connector->doublescan_allowed = false;
-	drm_connector_register(connector);
 	dev_info(dev->dev, "HDMI initialised.\n");
 
 	return;
@@ -665,7 +668,7 @@ failed_connector:
 
 void oaktrail_hdmi_setup(struct drm_device *dev)
 {
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	struct pci_dev *pdev;
 	struct oaktrail_hdmi_dev *hdmi_dev;
 	int ret;
@@ -718,14 +721,14 @@ out:
 
 void oaktrail_hdmi_teardown(struct drm_device *dev)
 {
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	struct oaktrail_hdmi_dev *hdmi_dev = dev_priv->hdmi_priv;
 	struct pci_dev *pdev;
 
 	if (hdmi_dev) {
 		pdev = hdmi_dev->dev;
-		pci_set_drvdata(pdev, NULL);
 		oaktrail_hdmi_i2c_exit(pdev);
+		pci_set_drvdata(pdev, NULL);
 		iounmap(hdmi_dev->regs);
 		kfree(hdmi_dev);
 		pci_dev_put(pdev);
@@ -735,7 +738,7 @@ void oaktrail_hdmi_teardown(struct drm_device *dev)
 /* save HDMI register state */
 void oaktrail_hdmi_save(struct drm_device *dev)
 {
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	struct oaktrail_hdmi_dev *hdmi_dev = dev_priv->hdmi_priv;
 	struct psb_state *regs = &dev_priv->regs.psb;
 	struct psb_pipe *pipeb = &dev_priv->regs.pipe[1];
@@ -788,7 +791,7 @@ void oaktrail_hdmi_save(struct drm_device *dev)
 /* restore HDMI register state */
 void oaktrail_hdmi_restore(struct drm_device *dev)
 {
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 	struct oaktrail_hdmi_dev *hdmi_dev = dev_priv->hdmi_priv;
 	struct psb_state *regs = &dev_priv->regs.psb;
 	struct psb_pipe *pipeb = &dev_priv->regs.pipe[1];

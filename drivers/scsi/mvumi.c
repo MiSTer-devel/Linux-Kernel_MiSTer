@@ -1302,7 +1302,7 @@ static void mvumi_complete_cmd(struct mvumi_hba *mhba, struct mvumi_cmd *cmd,
 {
 	struct scsi_cmnd *scmd = cmd->scmd;
 
-	cmd->scmd->SCp.ptr = NULL;
+	mvumi_priv(cmd->scmd)->cmd_priv = NULL;
 	scmd->result = ob_frame->req_status;
 
 	switch (ob_frame->req_status) {
@@ -1328,7 +1328,7 @@ static void mvumi_complete_cmd(struct mvumi_hba *mhba, struct mvumi_cmd *cmd,
 		dma_unmap_sg(&mhba->pdev->dev, scsi_sglist(scmd),
 			     scsi_sg_count(scmd),
 			     scmd->sc_data_direction);
-	cmd->scmd->scsi_done(scmd);
+	scsi_done(scmd);
 	mvumi_return_cmd(mhba, cmd);
 }
 
@@ -1500,7 +1500,7 @@ static void mvumi_rescan_devices(struct mvumi_hba *mhba, int id)
 
 	sdev = scsi_device_lookup(mhba->shost, 0, id, 0);
 	if (sdev) {
-		scsi_rescan_device(&sdev->sdev_gendev);
+		scsi_rescan_device(sdev);
 		scsi_device_put(sdev);
 	}
 }
@@ -1841,7 +1841,7 @@ static enum mvumi_qc_result mvumi_send_command(struct mvumi_hba *mhba,
 	cmd->frame->request_id = mhba->io_seq++;
 	cmd->request_id = cmd->frame->request_id;
 	mhba->tag_cmd[cmd->frame->tag] = cmd;
-	frame_len = sizeof(*ib_frame) - 4 +
+	frame_len = sizeof(*ib_frame) +
 				ib_frame->sg_counts * sizeof(struct mvumi_sgl);
 	if (mhba->hba_capability & HS_CAPABILITY_SUPPORT_DYN_SRC) {
 		struct mvumi_dyn_list_entry *dle;
@@ -2000,7 +2000,8 @@ static struct mvumi_instance_template mvumi_instance_9580 = {
 	.reset_host = mvumi_reset_host_9580,
 };
 
-static int mvumi_slave_configure(struct scsi_device *sdev)
+static int mvumi_sdev_configure(struct scsi_device *sdev,
+				struct queue_limits *lim)
 {
 	struct mvumi_hba *mhba;
 	unsigned char bitcount = sizeof(unsigned char) * 8;
@@ -2097,21 +2098,21 @@ static int mvumi_queue_command(struct Scsi_Host *shost,
 		goto out_return_cmd;
 
 	cmd->scmd = scmd;
-	scmd->SCp.ptr = (char *) cmd;
+	mvumi_priv(scmd)->cmd_priv = cmd;
 	mhba->instancet->fire_cmd(mhba, cmd);
 	spin_unlock_irqrestore(shost->host_lock, irq_flags);
 	return 0;
 
 out_return_cmd:
 	mvumi_return_cmd(mhba, cmd);
-	scmd->scsi_done(scmd);
+	scsi_done(scmd);
 	spin_unlock_irqrestore(shost->host_lock, irq_flags);
 	return 0;
 }
 
-static enum blk_eh_timer_return mvumi_timed_out(struct scsi_cmnd *scmd)
+static enum scsi_timeout_action mvumi_timed_out(struct scsi_cmnd *scmd)
 {
-	struct mvumi_cmd *cmd = (struct mvumi_cmd *) scmd->SCp.ptr;
+	struct mvumi_cmd *cmd = mvumi_priv(scmd)->cmd_priv;
 	struct Scsi_Host *host = scmd->device->host;
 	struct mvumi_hba *mhba = shost_priv(host);
 	unsigned long flags;
@@ -2128,7 +2129,7 @@ static enum blk_eh_timer_return mvumi_timed_out(struct scsi_cmnd *scmd)
 		atomic_dec(&mhba->fw_outstanding);
 
 	scmd->result = (DID_ABORT << 16);
-	scmd->SCp.ptr = NULL;
+	mvumi_priv(scmd)->cmd_priv = NULL;
 	if (scsi_bufflen(scmd)) {
 		dma_unmap_sg(&mhba->pdev->dev, scsi_sglist(scmd),
 			     scsi_sg_count(scmd),
@@ -2137,11 +2138,11 @@ static enum blk_eh_timer_return mvumi_timed_out(struct scsi_cmnd *scmd)
 	mvumi_return_cmd(mhba, cmd);
 	spin_unlock_irqrestore(mhba->shost->host_lock, flags);
 
-	return BLK_EH_DONE;
+	return SCSI_EH_NOT_HANDLED;
 }
 
 static int
-mvumi_bios_param(struct scsi_device *sdev, struct block_device *bdev,
+mvumi_bios_param(struct scsi_device *sdev, struct gendisk *unused,
 			sector_t capacity, int geom[])
 {
 	int heads, sectors;
@@ -2168,17 +2169,18 @@ mvumi_bios_param(struct scsi_device *sdev, struct block_device *bdev,
 	return 0;
 }
 
-static struct scsi_host_template mvumi_template = {
+static const struct scsi_host_template mvumi_template = {
 
 	.module = THIS_MODULE,
 	.name = "Marvell Storage Controller",
-	.slave_configure = mvumi_slave_configure,
+	.sdev_configure = mvumi_sdev_configure,
 	.queuecommand = mvumi_queue_command,
 	.eh_timed_out = mvumi_timed_out,
 	.eh_host_reset_handler = mvumi_host_reset,
 	.bios_param = mvumi_bios_param,
 	.dma_boundary = PAGE_SIZE - 1,
 	.this_id = -1,
+	.cmd_size = sizeof(struct mvumi_cmd_priv),
 };
 
 static int mvumi_cfg_hw_reg(struct mvumi_hba *mhba)
@@ -2386,7 +2388,7 @@ static int mvumi_io_attach(struct mvumi_hba *mhba)
 	struct Scsi_Host *host = mhba->shost;
 	struct scsi_device *sdev = NULL;
 	int ret;
-	unsigned int max_sg = (mhba->ib_max_size + 4 -
+	unsigned int max_sg = (mhba->ib_max_size -
 		sizeof(struct mvumi_msg_frame)) / sizeof(struct mvumi_sgl);
 
 	host->irq = mhba->pdev->irq;
@@ -2489,7 +2491,7 @@ static int mvumi_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	mhba->pdev = pdev;
 	mhba->shost = host;
-	mhba->unique_id = pdev->bus->number << 8 | pdev->devfn;
+	mhba->unique_id = pci_dev_id(pdev);
 
 	ret = mvumi_init_fw(mhba);
 	if (ret)

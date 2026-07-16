@@ -90,6 +90,17 @@ struct hv_vss_check_dm_info {
 	__u32 flags;
 } __attribute__((packed));
 
+/*
+ * struct hv_vss_msg encodes the fields that the Linux VSS
+ * driver accesses. However, FREEZE messages from Hyper-V contain
+ * additional LUN information that Linux doesn't use and are not
+ * represented in struct hv_vss_msg. A received FREEZE message may
+ * be as large as 6,260 bytes, so the driver must allocate at least
+ * that much space, not sizeof(struct hv_vss_msg). Other messages
+ * such as AUTO_RECOVER may be as large as 12,500 bytes. However,
+ * because the Linux VSS driver responds that it doesn't support
+ * auto-recovery, it should not receive such messages.
+ */
 struct hv_vss_msg {
 	union {
 		struct hv_vss_hdr vss_hdr;
@@ -351,7 +362,7 @@ struct hv_kvp_exchg_msg_value {
 		__u8 value[HV_KVP_EXCHANGE_MAX_VALUE_SIZE];
 		__u32 value_u32;
 		__u64 value_u64;
-	};
+	} __attribute__((packed));
 } __attribute__((packed));
 
 struct hv_kvp_msg_enumerate {

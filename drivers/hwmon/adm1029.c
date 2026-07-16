@@ -99,7 +99,7 @@ static const u8 ADM1029_REG_FAN_DIV[] = {
 struct adm1029_data {
 	struct i2c_client *client;
 	struct mutex update_lock; /* protect register access */
-	char valid;		/* zero until following fields are valid */
+	bool valid;		/* false until following fields are valid */
 	unsigned long last_updated;	/* in jiffies */
 
 	/* registers values, signed for temperature, unsigned for other stuff */
@@ -143,7 +143,7 @@ static struct adm1029_data *adm1029_update_device(struct device *dev)
 		}
 
 		data->last_updated = jiffies;
-		data->valid = 1;
+		data->valid = true;
 	}
 
 	mutex_unlock(&data->update_lock);
@@ -329,7 +329,7 @@ static int adm1029_detect(struct i2c_client *client,
 		return -ENODEV;
 	}
 
-	strlcpy(info->type, "adm1029", I2C_NAME_SIZE);
+	strscpy(info->type, "adm1029", I2C_NAME_SIZE);
 
 	return 0;
 }
@@ -379,7 +379,7 @@ static int adm1029_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id adm1029_id[] = {
-	{ "adm1029", 0 },
+	{ "adm1029" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adm1029_id);
@@ -389,7 +389,7 @@ static struct i2c_driver adm1029_driver = {
 	.driver = {
 		.name = "adm1029",
 	},
-	.probe_new	= adm1029_probe,
+	.probe		= adm1029_probe,
 	.id_table	= adm1029_id,
 	.detect		= adm1029_detect,
 	.address_list	= normal_i2c,

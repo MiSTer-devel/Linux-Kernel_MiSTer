@@ -15,12 +15,14 @@
 
 #include <linux/extable.h>
 #include <linux/module.h>	/* print_modules */
+
+#include <asm/ftrace.h>
 #include <asm/unwinder.h>
 #include <asm/traps.h>
 
 static DEFINE_SPINLOCK(die_lock);
 
-void die(const char *str, struct pt_regs *regs, long err)
+void __noreturn die(const char *str, struct pt_regs *regs, long err)
 {
 	static int die_counter;
 
@@ -57,7 +59,7 @@ void die(const char *str, struct pt_regs *regs, long err)
 	if (panic_on_oops)
 		panic("Fatal exception");
 
-	do_exit(SIGSEGV);
+	make_task_dead(SIGSEGV);
 }
 
 void die_if_kernel(const char *str, struct pt_regs *regs, long err)
@@ -169,14 +171,6 @@ BUILD_TRAP_HANDLER(bug)
 
 	force_sig(SIGTRAP);
 }
-
-#ifdef CONFIG_DYNAMIC_FTRACE
-extern void arch_ftrace_nmi_enter(void);
-extern void arch_ftrace_nmi_exit(void);
-#else
-static inline void arch_ftrace_nmi_enter(void) { }
-static inline void arch_ftrace_nmi_exit(void) { }
-#endif
 
 BUILD_TRAP_HANDLER(nmi)
 {

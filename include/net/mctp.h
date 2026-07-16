@@ -11,6 +11,7 @@
 
 #include <linux/bits.h>
 #include <linux/mctp.h>
+#include <linux/netdevice.h>
 #include <net/net_namespace.h>
 #include <net/sock.h>
 
@@ -25,6 +26,9 @@ struct mctp_hdr {
 #define MCTP_VER_MIN	1
 #define MCTP_VER_MAX	1
 
+/* Definitions for ver field */
+#define MCTP_HDR_VER_MASK	GENMASK(3, 0)
+
 /* Definitions for flags_seq_tag field */
 #define MCTP_HDR_FLAG_SOM	BIT(7)
 #define MCTP_HDR_FLAG_EOM	BIT(6)
@@ -35,13 +39,26 @@ struct mctp_hdr {
 #define MCTP_HDR_TAG_SHIFT	0
 #define MCTP_HDR_TAG_MASK	GENMASK(2, 0)
 
-#define MCTP_HEADER_MAXLEN	4
-
 #define MCTP_INITIAL_DEFAULT_NET	1
 
-static inline bool mctp_address_ok(mctp_eid_t eid)
+static inline bool mctp_address_unicast(mctp_eid_t eid)
 {
 	return eid >= 8 && eid < 255;
+}
+
+static inline bool mctp_address_broadcast(mctp_eid_t eid)
+{
+	return eid == 255;
+}
+
+static inline bool mctp_address_null(mctp_eid_t eid)
+{
+	return eid == 0;
+}
+
+static inline bool mctp_address_matches(mctp_eid_t match, mctp_eid_t eid)
+{
+	return match == eid || match == MCTP_ADDR_ANY;
 }
 
 static inline struct mctp_hdr *mctp_hdr(struct sk_buff *skb)
@@ -55,42 +72,59 @@ struct mctp_sock {
 
 	/* bind() params */
 	unsigned int	bind_net;
-	mctp_eid_t	bind_addr;
+	mctp_eid_t	bind_local_addr;
+	mctp_eid_t	bind_peer_addr;
+	unsigned int	bind_peer_net;
+	bool		bind_peer_set;
 	__u8		bind_type;
+
+	/* sendmsg()/recvmsg() uses struct sockaddr_mctp_ext */
+	bool		addr_ext;
 
 	/* list of mctp_sk_key, for incoming tag lookup. updates protected
 	 * by sk->net->keys_lock
 	 */
 	struct hlist_head keys;
+
+	/* mechanism for expiring allocated keys; will release an allocated
+	 * tag, and any netdev state for a request/response pairing
+	 */
+	struct timer_list key_expiry;
 };
 
 /* Key for matching incoming packets to sockets or reassembly contexts.
- * Packets are matched on (src,dest,tag).
+ * Packets are matched on (peer EID, local EID, tag).
  *
- * Lifetime requirements:
+ * Lifetime / locking requirements:
  *
- *  - keys are free()ed via RCU
+ *  - individual key data (ie, the struct itself) is protected by key->lock;
+ *    changes must be made with that lock held.
+ *
+ *  - the lookup fields: peer_addr, local_addr and tag are set before the
+ *    key is added to lookup lists, and never updated.
+ *
+ *  - A ref to the key must be held (throuh key->refs) if a pointer to the
+ *    key is to be accessed after key->lock is released.
  *
  *  - a mctp_sk_key contains a reference to a struct sock; this is valid
  *    for the life of the key. On sock destruction (through unhash), the key is
- *    removed from lists (see below), and will not be observable after a RCU
- *    grace period.
- *
- *    any RX occurring within that grace period may still queue to the socket,
- *    but will hit the SOCK_DEAD case before the socket is freed.
+ *    removed from lists (see below), and marked invalid.
  *
  * - these mctp_sk_keys appear on two lists:
  *     1) the struct mctp_sock->keys list
  *     2) the struct netns_mctp->keys list
  *
- *        updates to either list are performed under the netns_mctp->keys
- *        lock.
+ *   presences on these lists requires a (single) refcount to be held; both
+ *   lists are updated as a single operation.
+ *
+ *   Updates and lookups in either list are performed under the
+ *   netns_mctp->keys lock. Lookup functions will need to lock the key and
+ *   take a reference before unlocking the keys_lock. Consequently, the list's
+ *   keys_lock *cannot* be acquired with the individual key->lock held.
  *
  * - a key may have a sk_buff attached as part of an in-progress message
- *   reassembly (->reasm_head). The reassembly context is protected by
- *   reasm_lock, which may be acquired with the keys lock (above) held, if
- *   necessary. Consequently, keys lock *cannot* be acquired with the
- *   reasm_lock held.
+ *   reassembly (->reasm_head). The reasm data is protected by the individual
+ *   key->lock.
  *
  * - there are two destruction paths for a mctp_sk_key:
  *
@@ -101,10 +135,13 @@ struct mctp_sock {
  *      the (complete) reply, or during reassembly errors. Here, we clean up
  *      the reassembly context (marking reasm_dead, to prevent another from
  *      starting), and remove the socket from the netns & socket lists.
+ *
+ *    - through an expiry timeout, on a per-socket timer
  */
 struct mctp_sk_key {
+	unsigned int	net;
 	mctp_eid_t	peer_addr;
-	mctp_eid_t	local_addr;
+	mctp_eid_t	local_addr; /* MCTP_ADDR_ANY for local owned tags */
 	__u8		tag; /* incoming tag match; invert TO for local */
 
 	/* we hold a ref to sk when set */
@@ -116,20 +153,46 @@ struct mctp_sk_key {
 	/* per-socket list */
 	struct hlist_node sklist;
 
+	/* lock protects against concurrent updates to the reassembly and
+	 * expiry data below.
+	 */
+	spinlock_t	lock;
+
+	/* Keys are referenced during the output path, which may sleep */
+	refcount_t	refs;
+
 	/* incoming fragment reassembly context */
-	spinlock_t	reasm_lock;
 	struct sk_buff	*reasm_head;
 	struct sk_buff	**reasm_tailp;
 	bool		reasm_dead;
 	u8		last_seq;
 
-	struct rcu_head	rcu;
+	/* key validity */
+	bool		valid;
+
+	/* expiry timeout; valid (above) cleared on expiry */
+	unsigned long	expiry;
+
+	/* free to use for device flow state tracking. Initialised to
+	 * zero on initial key creation
+	 */
+	unsigned long	dev_flow_state;
+	struct mctp_dev	*dev;
+
+	/* a tag allocated with SIOCMCTPALLOCTAG ioctl will not expire
+	 * automatically on timeout or response, instead SIOCMCTPDROPTAG
+	 * is used.
+	 */
+	bool		manual_alloc;
 };
 
 struct mctp_skb_cb {
 	unsigned int	magic;
 	unsigned int	net;
-	mctp_eid_t	src;
+	/* fields below provide extended addressing for ingress to recvmsg() */
+	int		ifindex;
+	unsigned char	halen;
+	unsigned char	haddr[MAX_ADDR_LEN];
 };
 
 /* skb control-block accessors with a little extra debugging for initial
@@ -153,9 +216,19 @@ static inline struct mctp_skb_cb *mctp_cb(struct sk_buff *skb)
 {
 	struct mctp_skb_cb *cb = (void *)skb->cb;
 
+	BUILD_BUG_ON(sizeof(struct mctp_skb_cb) > sizeof(skb->cb));
 	WARN_ON(cb->magic != 0x4d435450);
-	return (void *)(skb->cb);
+	return cb;
 }
+
+/* If CONFIG_MCTP_FLOWS, we may add one of these as a SKB extension,
+ * indicating the flow to the device driver.
+ */
+struct mctp_flow {
+	struct mctp_sk_key *key;
+};
+
+struct mctp_dst;
 
 /* Route definition.
  *
@@ -164,17 +237,25 @@ static inline struct mctp_skb_cb *mctp_cb(struct sk_buff *skb)
  * dropped on NETDEV_UNREGISTER events.
  *
  * Updates to the route table are performed under rtnl; all reads under RCU,
- * so routes cannot be referenced over a RCU grace period. Specifically: A
- * caller cannot block between mctp_route_lookup and passing the route to
- * mctp_do_route.
+ * so routes cannot be referenced over a RCU grace period.
  */
 struct mctp_route {
 	mctp_eid_t		min, max;
 
-	struct mctp_dev		*dev;
-	unsigned int		mtu;
 	unsigned char		type;
-	int			(*output)(struct mctp_route *route,
+
+	unsigned int		mtu;
+
+	enum {
+		MCTP_ROUTE_DIRECT,
+		MCTP_ROUTE_GATEWAY,
+	} dst_type;
+	union {
+		struct mctp_dev	*dev;
+		struct mctp_fq_addr gateway;
+	};
+
+	int			(*output)(struct mctp_dst *dst,
 					  struct sk_buff *skb);
 
 	struct list_head	list;
@@ -182,14 +263,42 @@ struct mctp_route {
 	struct rcu_head		rcu;
 };
 
+/* Route lookup result: dst. Represents the results of a routing decision,
+ * but is only held over the individual routing operation.
+ *
+ * Will typically be stored on the caller stack, and must be released after
+ * usage.
+ */
+struct mctp_dst {
+	struct mctp_dev *dev;
+	unsigned int mtu;
+	mctp_eid_t nexthop;
+
+	/* set for direct addressing */
+	unsigned char halen;
+	unsigned char haddr[MAX_ADDR_LEN];
+
+	int (*output)(struct mctp_dst *dst, struct sk_buff *skb);
+};
+
+int mctp_dst_from_extaddr(struct mctp_dst *dst, struct net *net, int ifindex,
+			  unsigned char halen, const unsigned char *haddr);
+
 /* route interfaces */
-struct mctp_route *mctp_route_lookup(struct net *net, unsigned int dnet,
-				     mctp_eid_t daddr);
+int mctp_route_lookup(struct net *net, unsigned int dnet,
+		      mctp_eid_t daddr, struct mctp_dst *dst);
 
-int mctp_do_route(struct mctp_route *rt, struct sk_buff *skb);
+void mctp_dst_release(struct mctp_dst *dst);
 
-int mctp_local_output(struct sock *sk, struct mctp_route *rt,
+/* always takes ownership of skb */
+int mctp_local_output(struct sock *sk, struct mctp_dst *dst,
 		      struct sk_buff *skb, mctp_eid_t daddr, u8 req_tag);
+
+void mctp_key_unref(struct mctp_sk_key *key);
+struct mctp_sk_key *mctp_alloc_local_tag(struct mctp_sock *msk,
+					 unsigned int netid,
+					 mctp_eid_t local, mctp_eid_t peer,
+					 bool manual, u8 *tagp);
 
 /* routing <--> device interface */
 unsigned int mctp_default_net(struct net *net);
@@ -226,7 +335,25 @@ void mctp_neigh_remove_dev(struct mctp_dev *mdev);
 int mctp_routes_init(void);
 void mctp_routes_exit(void);
 
-void mctp_device_init(void);
+int mctp_device_init(void);
 void mctp_device_exit(void);
+
+/* MCTP IDs and Codes from DMTF specification
+ * "DSP0239 Management Component Transport Protocol (MCTP) IDs and Codes"
+ * https://www.dmtf.org/sites/default/files/standards/documents/DSP0239_1.11.1.pdf
+ */
+enum mctp_phys_binding {
+	MCTP_PHYS_BINDING_UNSPEC	= 0x00,
+	MCTP_PHYS_BINDING_SMBUS		= 0x01,
+	MCTP_PHYS_BINDING_PCIE_VDM	= 0x02,
+	MCTP_PHYS_BINDING_USB		= 0x03,
+	MCTP_PHYS_BINDING_KCS		= 0x04,
+	MCTP_PHYS_BINDING_SERIAL	= 0x05,
+	MCTP_PHYS_BINDING_I3C		= 0x06,
+	MCTP_PHYS_BINDING_MMBI		= 0x07,
+	MCTP_PHYS_BINDING_PCC		= 0x08,
+	MCTP_PHYS_BINDING_UCIE		= 0x09,
+	MCTP_PHYS_BINDING_VENDOR	= 0xFF,
+};
 
 #endif /* __NET_MCTP_H */

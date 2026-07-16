@@ -15,16 +15,17 @@
 
 #include <linux/acpi.h>
 #include <linux/hid.h>
+#include <linux/input/vivaldi-fmap.h>
 #include <linux/leds.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_data/cros_ec_commands.h>
 #include <linux/platform_data/cros_ec_proto.h>
 #include <linux/platform_device.h>
-#include <linux/pm_wakeup.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "hid-ids.h"
+#include "hid-vivaldi-common.h"
 
 /*
  * C(hrome)B(ase)A(ttached)S(witch) - switch exported by Chrome EC and reporting
@@ -58,7 +59,7 @@ static int cbas_ec_query_base(struct cros_ec_device *ec_dev, bool get_state,
 	struct cros_ec_command *msg;
 	int ret;
 
-	msg = kzalloc(sizeof(*msg) + max(sizeof(u32), sizeof(*params)),
+	msg = kzalloc(struct_size(msg, data, max(sizeof(u32), sizeof(*params))),
 		      GFP_KERNEL);
 	if (!msg)
 		return -ENOMEM;
@@ -253,7 +254,7 @@ out:
 	return retval;
 }
 
-static int cbas_ec_remove(struct platform_device *pdev)
+static void cbas_ec_remove(struct platform_device *pdev)
 {
 	struct cros_ec_device *ec = dev_get_drvdata(pdev->dev.parent);
 
@@ -264,14 +265,15 @@ static int cbas_ec_remove(struct platform_device *pdev)
 	cbas_ec_set_input(NULL);
 
 	mutex_unlock(&cbas_ec_reglock);
-	return 0;
 }
 
+#ifdef CONFIG_ACPI
 static const struct acpi_device_id cbas_ec_acpi_ids[] = {
 	{ "GOOG000B", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, cbas_ec_acpi_ids);
+#endif
 
 #ifdef CONFIG_OF
 static const struct of_device_id cbas_ec_of_match[] = {
@@ -340,9 +342,9 @@ static int hammer_kbd_brightness_set_blocking(struct led_classdev *cdev,
 static int hammer_register_leds(struct hid_device *hdev)
 {
 	struct hammer_kbd_leds *kbd_backlight;
-	int error;
 
-	kbd_backlight = kzalloc(sizeof(*kbd_backlight), GFP_KERNEL);
+	kbd_backlight = devm_kzalloc(&hdev->dev, sizeof(*kbd_backlight),
+				     GFP_KERNEL);
 	if (!kbd_backlight)
 		return -ENOMEM;
 
@@ -356,26 +358,7 @@ static int hammer_register_leds(struct hid_device *hdev)
 	/* Set backlight to 0% initially. */
 	hammer_kbd_brightness_set_blocking(&kbd_backlight->cdev, 0);
 
-	error = led_classdev_register(&hdev->dev, &kbd_backlight->cdev);
-	if (error)
-		goto err_free_mem;
-
-	hid_set_drvdata(hdev, kbd_backlight);
-	return 0;
-
-err_free_mem:
-	kfree(kbd_backlight);
-	return error;
-}
-
-static void hammer_unregister_leds(struct hid_device *hdev)
-{
-	struct hammer_kbd_leds *kbd_backlight = hid_get_drvdata(hdev);
-
-	if (kbd_backlight) {
-		led_classdev_unregister(&kbd_backlight->cdev);
-		kfree(kbd_backlight);
-	}
+	return devm_led_classdev_register(&hdev->dev, &kbd_backlight->cdev);
 }
 
 #define HID_UP_GOOGLEVENDOR	0xffd10000
@@ -436,38 +419,15 @@ static int hammer_event(struct hid_device *hid, struct hid_field *field,
 	return 0;
 }
 
-static bool hammer_has_usage(struct hid_device *hdev, unsigned int report_type,
-			unsigned application, unsigned usage)
-{
-	struct hid_report_enum *re = &hdev->report_enum[report_type];
-	struct hid_report *report;
-	int i, j;
-
-	list_for_each_entry(report, &re->report_list, list) {
-		if (report->application != application)
-			continue;
-
-		for (i = 0; i < report->maxfield; i++) {
-			struct hid_field *field = report->field[i];
-
-			for (j = 0; j < field->maxusage; j++)
-				if (field->usage[j].hid == usage)
-					return true;
-		}
-	}
-
-	return false;
-}
-
 static bool hammer_has_folded_event(struct hid_device *hdev)
 {
-	return hammer_has_usage(hdev, HID_INPUT_REPORT,
+	return !!hid_find_field(hdev, HID_INPUT_REPORT,
 				HID_GD_KEYBOARD, HID_USAGE_KBD_FOLDED);
 }
 
 static bool hammer_has_backlight_control(struct hid_device *hdev)
 {
-	return hammer_has_usage(hdev, HID_OUTPUT_REPORT,
+	return !!hid_find_field(hdev, HID_OUTPUT_REPORT,
 				HID_GD_KEYBOARD, HID_AD_BRIGHTNESS);
 }
 
@@ -512,16 +472,32 @@ out:
 	kfree(buf);
 }
 
+static void hammer_stop(void *hdev)
+{
+	hid_hw_stop(hdev);
+}
+
 static int hammer_probe(struct hid_device *hdev,
 			const struct hid_device_id *id)
 {
+	struct vivaldi_data *vdata;
 	int error;
+
+	vdata = devm_kzalloc(&hdev->dev, sizeof(*vdata), GFP_KERNEL);
+	if (!vdata)
+		return -ENOMEM;
+
+	hid_set_drvdata(hdev, vdata);
 
 	error = hid_parse(hdev);
 	if (error)
 		return error;
 
 	error = hid_hw_start(hdev, HID_CONNECT_DEFAULT);
+	if (error)
+		return error;
+
+	error = devm_add_action(&hdev->dev, hammer_stop, hdev);
 	if (error)
 		return error;
 
@@ -577,16 +553,18 @@ static void hammer_remove(struct hid_device *hdev)
 		spin_unlock_irqrestore(&cbas_ec_lock, flags);
 	}
 
-	hammer_unregister_leds(hdev);
-
-	hid_hw_stop(hdev);
+	/* Unregistering LEDs and stopping the hardware is done via devm */
 }
 
 static const struct hid_device_id hammer_devices[] = {
 	{ HID_DEVICE(BUS_USB, HID_GROUP_GENERIC,
 		     USB_VENDOR_ID_GOOGLE, USB_DEVICE_ID_GOOGLE_DON) },
+	{ HID_DEVICE(BUS_USB, HID_GROUP_VIVALDI,
+		     USB_VENDOR_ID_GOOGLE, USB_DEVICE_ID_GOOGLE_EEL) },
 	{ HID_DEVICE(BUS_USB, HID_GROUP_GENERIC,
 		     USB_VENDOR_ID_GOOGLE, USB_DEVICE_ID_GOOGLE_HAMMER) },
+	{ HID_DEVICE(BUS_USB, HID_GROUP_GENERIC,
+		     USB_VENDOR_ID_GOOGLE, USB_DEVICE_ID_GOOGLE_JEWEL) },
 	{ HID_DEVICE(BUS_USB, HID_GROUP_GENERIC,
 		     USB_VENDOR_ID_GOOGLE, USB_DEVICE_ID_GOOGLE_MAGNEMITE) },
 	{ HID_DEVICE(BUS_USB, HID_GROUP_GENERIC,
@@ -608,8 +586,12 @@ static struct hid_driver hammer_driver = {
 	.id_table = hammer_devices,
 	.probe = hammer_probe,
 	.remove = hammer_remove,
+	.feature_mapping = vivaldi_feature_mapping,
 	.input_mapping = hammer_input_mapping,
 	.event = hammer_event,
+	.driver = {
+		.dev_groups = vivaldi_attribute_groups,
+	},
 };
 
 static int __init hammer_init(void)
@@ -637,4 +619,5 @@ static void __exit hammer_exit(void)
 }
 module_exit(hammer_exit);
 
+MODULE_DESCRIPTION("HID driver for Google Hammer device.");
 MODULE_LICENSE("GPL");

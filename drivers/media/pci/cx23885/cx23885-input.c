@@ -55,7 +55,7 @@ static void cx23885_input_process_measurements(struct cx23885_dev *dev,
 	} while (num != 0);
 
 	if (overrun)
-		ir_raw_event_reset(kernel_ir->rc);
+		ir_raw_event_overflow(kernel_ir->rc);
 	else if (handle)
 		ir_raw_event_handle(kernel_ir->rc);
 }
@@ -402,6 +402,7 @@ void cx23885_input_fini(struct cx23885_dev *dev)
 	if (dev->kernel_ir == NULL)
 		return;
 	rc_unregister_device(dev->kernel_ir->rc);
+	rc_free_device(dev->kernel_ir->rc);
 	kfree(dev->kernel_ir->phys);
 	kfree(dev->kernel_ir->name);
 	kfree(dev->kernel_ir);

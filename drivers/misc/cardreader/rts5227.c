@@ -72,72 +72,35 @@ static void rts5227_fetch_vendor_settings(struct rtsx_pcr *pcr)
 
 	pci_read_config_dword(pdev, PCR_SETTING_REG2, &reg);
 	pcr_dbg(pcr, "Cfg 0x%x: 0x%x\n", PCR_SETTING_REG2, reg);
+	if (CHK_PCI_PID(pcr, 0x522A))
+		pcr->rtd3_en = rtsx_reg_to_rtd3(reg);
 	if (rtsx_check_mmc_support(reg))
 		pcr->extra_caps |= EXTRA_CAPS_NO_MMC;
 	pcr->sd30_drive_sel_3v3 = rtsx_reg_to_sd30_drive_sel_3v3(reg);
 	if (rtsx_reg_check_reverse_socket(reg))
 		pcr->flags |= PCR_REVERSE_SOCKET;
+	if (rtsx_reg_check_cd_reverse(reg))
+		pcr->option.sd_cd_reverse_en = 1;
+	if (rtsx_reg_check_wp_reverse(reg))
+		pcr->option.sd_wp_reverse_en = 1;
 }
 
 static void rts5227_init_from_cfg(struct rtsx_pcr *pcr)
 {
-	struct pci_dev *pdev = pcr->pci;
-	int l1ss;
-	u32 lval;
 	struct rtsx_cr_option *option = &pcr->option;
 
-	l1ss = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_L1SS);
-	if (!l1ss)
-		return;
-
-	pci_read_config_dword(pdev, l1ss + PCI_L1SS_CTL1, &lval);
-
 	if (CHK_PCI_PID(pcr, 0x522A)) {
-		if (0 == (lval & 0x0F))
-			rtsx_pci_enable_oobs_polling(pcr);
-		else
+		if (rtsx_check_dev_flag(pcr, ASPM_L1_1_EN | ASPM_L1_2_EN
+				| PM_L1_1_EN | PM_L1_2_EN))
 			rtsx_pci_disable_oobs_polling(pcr);
+		else
+			rtsx_pci_enable_oobs_polling(pcr);
 	}
-
-	if (lval & PCI_L1SS_CTL1_ASPM_L1_1)
-		rtsx_set_dev_flag(pcr, ASPM_L1_1_EN);
-	else
-		rtsx_clear_dev_flag(pcr, ASPM_L1_1_EN);
-
-	if (lval & PCI_L1SS_CTL1_ASPM_L1_2)
-		rtsx_set_dev_flag(pcr, ASPM_L1_2_EN);
-	else
-		rtsx_clear_dev_flag(pcr, ASPM_L1_2_EN);
-
-	if (lval & PCI_L1SS_CTL1_PCIPM_L1_1)
-		rtsx_set_dev_flag(pcr, PM_L1_1_EN);
-	else
-		rtsx_clear_dev_flag(pcr, PM_L1_1_EN);
-
-	if (lval & PCI_L1SS_CTL1_PCIPM_L1_2)
-		rtsx_set_dev_flag(pcr, PM_L1_2_EN);
-	else
-		rtsx_clear_dev_flag(pcr, PM_L1_2_EN);
 
 	if (option->ltr_en) {
-		u16 val;
-
-		pcie_capability_read_word(pcr->pci, PCI_EXP_DEVCTL2, &val);
-		if (val & PCI_EXP_DEVCTL2_LTR_EN) {
-			option->ltr_enabled = true;
-			option->ltr_active = true;
+		if (option->ltr_enabled)
 			rtsx_set_ltr_latency(pcr, option->ltr_active_latency);
-		} else {
-			option->ltr_enabled = false;
-		}
 	}
-
-	if (rtsx_check_dev_flag(pcr, ASPM_L1_1_EN | ASPM_L1_2_EN
-				| PM_L1_1_EN | PM_L1_2_EN))
-		option->force_clkreq_0 = false;
-	else
-		option->force_clkreq_0 = true;
-
 }
 
 static int rts5227_extra_init_hw(struct rtsx_pcr *pcr)
@@ -168,8 +131,32 @@ static int rts5227_extra_init_hw(struct rtsx_pcr *pcr)
 	/* Configure force_clock_req */
 	if (pcr->flags & PCR_REVERSE_SOCKET)
 		rtsx_pci_add_cmd(pcr, WRITE_REG_CMD, PETXCFG, 0x30, 0x30);
-	else
-		rtsx_pci_add_cmd(pcr, WRITE_REG_CMD, PETXCFG, 0x30, 0x00);
+	else {
+		rtsx_pci_add_cmd(pcr, WRITE_REG_CMD, PETXCFG, 0x20, option->sd_cd_reverse_en << 5);
+		rtsx_pci_add_cmd(pcr, WRITE_REG_CMD, PETXCFG, 0x10, option->sd_wp_reverse_en << 4);
+	}
+
+	if (CHK_PCI_PID(pcr, 0x522A))
+		rtsx_pci_add_cmd(pcr, WRITE_REG_CMD, RTS522A_AUTOLOAD_CFG1,
+			CD_RESUME_EN_MASK, CD_RESUME_EN_MASK);
+
+	if (pcr->rtd3_en) {
+		if (CHK_PCI_PID(pcr, 0x522A)) {
+			rtsx_pci_add_cmd(pcr, WRITE_REG_CMD, RTS522A_PM_CTRL3, 0x01, 0x01);
+			rtsx_pci_add_cmd(pcr, WRITE_REG_CMD, RTS522A_PME_FORCE_CTL, 0x30, 0x30);
+		} else {
+			rtsx_pci_add_cmd(pcr, WRITE_REG_CMD, PM_CTRL3, 0x01, 0x01);
+			rtsx_pci_add_cmd(pcr, WRITE_REG_CMD, PME_FORCE_CTL, 0xFF, 0x33);
+		}
+	} else {
+		if (CHK_PCI_PID(pcr, 0x522A)) {
+			rtsx_pci_add_cmd(pcr, WRITE_REG_CMD, RTS522A_PM_CTRL3, 0x01, 0x00);
+			rtsx_pci_add_cmd(pcr, WRITE_REG_CMD, RTS522A_PME_FORCE_CTL, 0x30, 0x20);
+		} else {
+			rtsx_pci_add_cmd(pcr, WRITE_REG_CMD, PME_FORCE_CTL, 0xFF, 0x30);
+			rtsx_pci_add_cmd(pcr, WRITE_REG_CMD, PM_CTRL3, 0x01, 0x00);
+		}
+	}
 
 	if (option->force_clkreq_0)
 		rtsx_pci_add_cmd(pcr, WRITE_REG_CMD, PETXCFG,
@@ -369,6 +356,8 @@ void rts5227_init_params(struct rtsx_pcr *pcr)
 	pcr->ms_pull_ctl_disable_tbl = rts5227_ms_pull_ctl_disable_tbl;
 
 	pcr->reg_pm_ctrl3 = PM_CTRL3;
+	pcr->option.sd_cd_reverse_en = 0;
+	pcr->option.sd_wp_reverse_en = 0;
 }
 
 static int rts522a_optimize_phy(struct rtsx_pcr *pcr)
@@ -438,6 +427,28 @@ static int rts522a_switch_output_voltage(struct rtsx_pcr *pcr, u8 voltage)
 	return rtsx_pci_send_cmd(pcr, 100);
 }
 
+static void rts522a_force_power_down(struct rtsx_pcr *pcr, u8 pm_state, bool runtime)
+{
+	/* Set relink_time to 0 */
+	rtsx_pci_write_register(pcr, AUTOLOAD_CFG_BASE + 1, MASK_8_BIT_DEF, 0);
+	rtsx_pci_write_register(pcr, AUTOLOAD_CFG_BASE + 2, MASK_8_BIT_DEF, 0);
+	rtsx_pci_write_register(pcr, AUTOLOAD_CFG_BASE + 3,
+				RELINK_TIME_MASK, 0);
+
+	rtsx_pci_write_register(pcr, RTS522A_PM_CTRL3,
+			D3_DELINK_MODE_EN, D3_DELINK_MODE_EN);
+
+	if (!runtime) {
+		rtsx_pci_write_register(pcr, RTS522A_AUTOLOAD_CFG1,
+				CD_RESUME_EN_MASK, 0);
+		rtsx_pci_write_register(pcr, RTS522A_PM_CTRL3, 0x01, 0x00);
+		rtsx_pci_write_register(pcr, RTS522A_PME_FORCE_CTL, 0x30, 0x20);
+	}
+
+	rtsx_pci_write_register(pcr, FPDCTL, ALL_POWER_DOWN, ALL_POWER_DOWN);
+}
+
+
 static void rts522a_set_l1off_cfg_sub_d0(struct rtsx_pcr *pcr, int active)
 {
 	struct rtsx_cr_option *option = &pcr->option;
@@ -473,6 +484,7 @@ static const struct pcr_ops rts522a_pcr_ops = {
 	.card_power_on = rts5227_card_power_on,
 	.card_power_off = rts5227_card_power_off,
 	.switch_output_voltage = rts522a_switch_output_voltage,
+	.force_power_down = rts522a_force_power_down,
 	.cd_deglitch = NULL,
 	.conv_clk_and_div_n = NULL,
 	.set_l1off_cfg_sub_d0 = rts522a_set_l1off_cfg_sub_d0,
@@ -504,5 +516,4 @@ void rts522a_init_params(struct rtsx_pcr *pcr)
 		pcr->hw_param.interrupt_en |= SD_OC_INT_EN;
 	pcr->hw_param.ocp_glitch = SD_OCP_GLITCH_10M;
 	pcr->option.sd_800mA_ocp_thd = RTS522A_OCP_THD_800;
-
 }

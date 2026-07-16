@@ -65,9 +65,9 @@ netxen_nic_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *drvinfo)
 	u32 fw_minor = 0;
 	u32 fw_build = 0;
 
-	strlcpy(drvinfo->driver, netxen_nic_driver_name,
+	strscpy(drvinfo->driver, netxen_nic_driver_name,
 		sizeof(drvinfo->driver));
-	strlcpy(drvinfo->version, NETXEN_NIC_LINUX_VERSIONID,
+	strscpy(drvinfo->version, NETXEN_NIC_LINUX_VERSIONID,
 		sizeof(drvinfo->version));
 	fw_major = NXRD32(adapter, NETXEN_FW_VERSION_MAJOR);
 	fw_minor = NXRD32(adapter, NETXEN_FW_VERSION_MINOR);
@@ -75,7 +75,7 @@ netxen_nic_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *drvinfo)
 	snprintf(drvinfo->fw_version, sizeof(drvinfo->fw_version),
 		"%d.%d.%d", fw_major, fw_minor, fw_build);
 
-	strlcpy(drvinfo->bus_info, pci_name(adapter->pdev),
+	strscpy(drvinfo->bus_info, pci_name(adapter->pdev),
 		sizeof(drvinfo->bus_info));
 }
 
@@ -392,7 +392,9 @@ netxen_nic_get_eeprom(struct net_device *dev, struct ethtool_eeprom *eeprom,
 
 static void
 netxen_nic_get_ringparam(struct net_device *dev,
-		struct ethtool_ringparam *ring)
+			 struct ethtool_ringparam *ring,
+			 struct kernel_ethtool_ringparam *kernel_ring,
+			 struct netlink_ext_ack *extack)
 {
 	struct netxen_adapter *adapter = netdev_priv(dev);
 
@@ -430,7 +432,9 @@ netxen_validate_ringparam(u32 val, u32 min, u32 max, char *r_name)
 
 static int
 netxen_nic_set_ringparam(struct net_device *dev,
-		struct ethtool_ringparam *ring)
+			 struct ethtool_ringparam *ring,
+			 struct kernel_ethtool_ringparam *kernel_ring,
+			 struct netlink_ext_ack *extack)
 {
 	struct netxen_adapter *adapter = netdev_priv(dev);
 	u16 max_rcv_desc = MAX_RCV_DESCRIPTORS_10G;
@@ -644,18 +648,18 @@ netxen_nic_diag_test(struct net_device *dev, struct ethtool_test *eth_test,
 static void
 netxen_nic_get_strings(struct net_device *dev, u32 stringset, u8 *data)
 {
-	int index;
+	const char *str;
+	int i;
 
 	switch (stringset) {
 	case ETH_SS_TEST:
-		memcpy(data, *netxen_nic_gstrings_test,
-		       NETXEN_NIC_TEST_LEN * ETH_GSTRING_LEN);
+		for (i = 0; i < NETXEN_NIC_TEST_LEN; i++)
+			ethtool_puts(&data, netxen_nic_gstrings_test[i]);
 		break;
 	case ETH_SS_STATS:
-		for (index = 0; index < NETXEN_NIC_STATS_LEN; index++) {
-			memcpy(data + index * ETH_GSTRING_LEN,
-			       netxen_nic_gstrings_stats[index].stat_string,
-			       ETH_GSTRING_LEN);
+		for (i = 0; i < NETXEN_NIC_STATS_LEN; i++) {
+			str = netxen_nic_gstrings_stats[i].stat_string;
+			ethtool_puts(&data, str);
 		}
 		break;
 	}

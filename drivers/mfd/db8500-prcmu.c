@@ -36,7 +36,6 @@
 #include <linux/mfd/abx500/ab8500.h>
 #include <linux/regulator/db8500-prcmu.h>
 #include <linux/regulator/machine.h>
-#include <linux/platform_data/ux500_wdt.h>
 #include "db8500-prcmu-regs.h"
 
 /* Index of different voltages to be used when accessing AVSData */
@@ -799,7 +798,7 @@ void db8500_prcmu_get_abb_event_buffer(void __iomem **buf)
  * @opp: The new ARM operating point to which transition is to be made
  * Returns: 0 on success, non-zero on failure
  *
- * This function sets the the operating point of the ARM.
+ * This function sets the operating point of the ARM.
  */
 int db8500_prcmu_set_arm_opp(u8 opp)
 {
@@ -2608,9 +2607,9 @@ static int db8500_irq_init(struct device_node *np)
 {
 	int i;
 
-	db8500_irq_domain = irq_domain_add_simple(
-		np, NUM_PRCMU_WAKEUPS, 0,
-		&db8500_irq_ops, NULL);
+	db8500_irq_domain = irq_domain_create_simple(of_fwnode_handle(np),
+						     NUM_PRCMU_WAKEUPS, 0,
+						     &db8500_irq_ops, NULL);
 
 	if (!db8500_irq_domain) {
 		pr_err("Failed to create irqdomain\n");
@@ -2640,9 +2639,9 @@ static void dbx500_fw_version_init(struct device_node *np)
 	fw_info.version.api_version = (version >> 8) & 0xFF;
 	fw_info.version.func_version = (version >> 16) & 0xFF;
 	fw_info.version.errata = (version >> 24) & 0xFF;
-	strncpy(fw_info.version.project_name,
+	strscpy(fw_info.version.project_name,
 		fw_project_name(fw_info.version.project),
-		PRCMU_FW_PROJECT_NAME_LEN);
+		sizeof(fw_info.version.project_name));
 	fw_info.valid = true;
 	pr_info("PRCMU firmware: %s(%d), version %d.%d.%d\n",
 		fw_info.version.project_name,
@@ -2939,18 +2938,8 @@ static struct regulator_init_data db8500_regulators[DB8500_NUM_REGULATORS] = {
 	},
 };
 
-static struct ux500_wdt_data db8500_wdt_pdata = {
-	.timeout = 600, /* 10 minutes */
-	.has_28_bits_resolution = true,
-};
-
 static const struct mfd_cell common_prcmu_devs[] = {
-	{
-		.name = "ux500_wdt",
-		.platform_data = &db8500_wdt_pdata,
-		.pdata_size = sizeof(db8500_wdt_pdata),
-		.id = -1,
-	},
+	MFD_CELL_NAME("db8500_wdt"),
 	MFD_CELL_NAME("db8500-cpuidle"),
 };
 

@@ -12,6 +12,8 @@
 #ifndef __HI655X_PMIC_H
 #define __HI655X_PMIC_H
 
+#include <linux/gpio/consumer.h>
+
 /* Hi655x registers are mapped to memory bus in 4 bytes stride */
 #define HI655X_STRIDE                   4
 #define HI655X_BUS_ADDR(x)              ((x) << 2)
@@ -50,10 +52,9 @@
 #define OTMP_D1R_INT_MASK               BIT(OTMP_D1R_INT)
 
 struct hi655x_pmic {
-	struct resource *res;
 	struct device *dev;
 	struct regmap *regmap;
-	int gpio;
+	struct gpio_desc *gpio;
 	unsigned int ver;
 	struct regmap_irq_chip_data *irq_data;
 };

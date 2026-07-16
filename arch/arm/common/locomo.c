@@ -23,7 +23,6 @@
 #include <linux/spinlock.h>
 #include <linux/io.h>
 
-#include <mach/hardware.h>
 #include <asm/irq.h>
 #include <asm/mach/irq.h>
 
@@ -68,6 +67,8 @@ struct locomo {
 	void *saved_state;
 #endif
 };
+
+static const struct bus_type locomo_bus_type;
 
 struct locomo_dev_info {
 	unsigned long	offset;
@@ -351,19 +352,6 @@ static int locomo_resume(struct platform_device *dev)
 }
 #endif
 
-
-/**
- *	locomo_probe - probe for a single LoCoMo chip.
- *	@phys_addr: physical address of device.
- *
- *	Probe for a LoCoMo chip.  This must be called
- *	before any other locomo-specific code.
- *
- *	Returns:
- *	%-ENODEV	device not found.
- *	%-EBUSY		physical address already marked in-use.
- *	%0		successful.
- */
 static int
 __locomo_probe(struct device *me, struct resource *mem, int irq)
 {
@@ -480,6 +468,21 @@ static void __locomo_remove(struct locomo *lchip)
 	kfree(lchip);
 }
 
+/**
+ *	locomo_probe - probe for a single LoCoMo chip.
+ *	@dev: platform device
+ *
+ *	Probe for a LoCoMo chip.  This must be called
+ *	before any other locomo-specific code.
+ *
+ *	Returns:
+ *	* %-EINVAL	- device's IORESOURCE_MEM not found
+ *	* %-ENXIO	- could not allocate an IRQ for the device
+ *	* %-ENODEV	- device not found.
+ *	* %-EBUSY	- physical address already marked in-use.
+ *	* %-ENOMEM	- could not allocate or iomap memory.
+ *	* %0		- successful.
+ */
 static int locomo_probe(struct platform_device *dev)
 {
 	struct resource *mem;
@@ -495,7 +498,7 @@ static int locomo_probe(struct platform_device *dev)
 	return __locomo_probe(&dev->dev, mem, irq);
 }
 
-static int locomo_remove(struct platform_device *dev)
+static void locomo_remove(struct platform_device *dev)
 {
 	struct locomo *lchip = platform_get_drvdata(dev);
 
@@ -503,8 +506,6 @@ static int locomo_remove(struct platform_device *dev)
 		__locomo_remove(lchip);
 		platform_set_drvdata(dev, NULL);
 	}
-
-	return 0;
 }
 
 /*
@@ -815,10 +816,10 @@ EXPORT_SYMBOL(locomo_frontlight_set);
  *	We model this as a regular bus type, and hang devices directly
  *	off this.
  */
-static int locomo_match(struct device *_dev, struct device_driver *_drv)
+static int locomo_match(struct device *_dev, const struct device_driver *_drv)
 {
 	struct locomo_dev *dev = LOCOMO_DEV(_dev);
-	struct locomo_driver *drv = LOCOMO_DRV(_drv);
+	const struct locomo_driver *drv = LOCOMO_DRV(_drv);
 
 	return dev->devid == drv->devid;
 }
@@ -843,7 +844,7 @@ static void locomo_bus_remove(struct device *dev)
 		drv->remove(ldev);
 }
 
-struct bus_type locomo_bus_type = {
+static const struct bus_type locomo_bus_type = {
 	.name		= "locomo-bus",
 	.match		= locomo_match,
 	.probe		= locomo_bus_probe,

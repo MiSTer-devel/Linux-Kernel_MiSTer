@@ -1916,7 +1916,7 @@ static int hw_card_start(struct hw *hw)
 
 	}
 
-	/* Switch to X-Fi mode from UAA mode if neeeded */
+	/* Switch to X-Fi mode from UAA mode if needed */
 	if (hw->model == CTUAA) {
 		err = uaa_to_xfi(pci);
 		if (err)
@@ -2091,57 +2091,30 @@ static int hw_resume(struct hw *hw, struct card_conf *info)
 
 static u32 hw_read_20kx(struct hw *hw, u32 reg)
 {
-	u32 value;
-	unsigned long flags;
-
-	spin_lock_irqsave(
-		&container_of(hw, struct hw20k1, hw)->reg_20k1_lock, flags);
+	guard(spinlock_irqsave)(&container_of(hw, struct hw20k1, hw)->reg_20k1_lock);
 	outl(reg, hw->io_base + 0x0);
-	value = inl(hw->io_base + 0x4);
-	spin_unlock_irqrestore(
-		&container_of(hw, struct hw20k1, hw)->reg_20k1_lock, flags);
-
-	return value;
+	return inl(hw->io_base + 0x4);
 }
 
 static void hw_write_20kx(struct hw *hw, u32 reg, u32 data)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(
-		&container_of(hw, struct hw20k1, hw)->reg_20k1_lock, flags);
+	guard(spinlock_irqsave)(&container_of(hw, struct hw20k1, hw)->reg_20k1_lock);
 	outl(reg, hw->io_base + 0x0);
 	outl(data, hw->io_base + 0x4);
-	spin_unlock_irqrestore(
-		&container_of(hw, struct hw20k1, hw)->reg_20k1_lock, flags);
-
 }
 
 static u32 hw_read_pci(struct hw *hw, u32 reg)
 {
-	u32 value;
-	unsigned long flags;
-
-	spin_lock_irqsave(
-		&container_of(hw, struct hw20k1, hw)->reg_pci_lock, flags);
+	guard(spinlock_irqsave)(&container_of(hw, struct hw20k1, hw)->reg_pci_lock);
 	outl(reg, hw->io_base + 0x10);
-	value = inl(hw->io_base + 0x14);
-	spin_unlock_irqrestore(
-		&container_of(hw, struct hw20k1, hw)->reg_pci_lock, flags);
-
-	return value;
+	return inl(hw->io_base + 0x14);
 }
 
 static void hw_write_pci(struct hw *hw, u32 reg, u32 data)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(
-		&container_of(hw, struct hw20k1, hw)->reg_pci_lock, flags);
+	guard(spinlock_irqsave)(&container_of(hw, struct hw20k1, hw)->reg_pci_lock);
 	outl(reg, hw->io_base + 0x10);
 	outl(data, hw->io_base + 0x14);
-	spin_unlock_irqrestore(
-		&container_of(hw, struct hw20k1, hw)->reg_pci_lock, flags);
 }
 
 static const struct hw ct20k1_preset = {

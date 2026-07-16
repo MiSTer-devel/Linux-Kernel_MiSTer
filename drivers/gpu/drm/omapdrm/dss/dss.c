@@ -22,12 +22,13 @@
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/gfp.h>
 #include <linux/sizes.h>
 #include <linux/mfd/syscon.h>
 #include <linux/regmap.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/of_platform.h>
 #include <linux/of_graph.h>
 #include <linux/regulator/consumer.h>
 #include <linux/suspend.h>
@@ -1176,6 +1177,7 @@ static void __dss_uninit_ports(struct dss_device *dss, unsigned int num_ports)
 		default:
 			break;
 		}
+		of_node_put(port);
 	}
 }
 
@@ -1208,11 +1210,13 @@ static int dss_init_ports(struct dss_device *dss)
 		default:
 			break;
 		}
+		of_node_put(port);
 	}
 
 	return 0;
 
 error:
+	of_node_put(port);
 	__dss_uninit_ports(dss, i);
 	return r;
 }
@@ -1232,20 +1236,14 @@ static int dss_video_pll_probe(struct dss_device *dss)
 	if (!np)
 		return 0;
 
-	if (of_property_read_bool(np, "syscon-pll-ctrl")) {
-		dss->syscon_pll_ctrl = syscon_regmap_lookup_by_phandle(np,
-			"syscon-pll-ctrl");
+	if (of_property_present(np, "syscon-pll-ctrl")) {
+		dss->syscon_pll_ctrl =
+			syscon_regmap_lookup_by_phandle_args(np, "syscon-pll-ctrl",
+							     1, &dss->syscon_pll_ctrl_offset);
 		if (IS_ERR(dss->syscon_pll_ctrl)) {
 			dev_err(&pdev->dev,
 				"failed to get syscon-pll-ctrl regmap\n");
 			return PTR_ERR(dss->syscon_pll_ctrl);
-		}
-
-		if (of_property_read_u32_index(np, "syscon-pll-ctrl", 1,
-				&dss->syscon_pll_ctrl_offset)) {
-			dev_err(&pdev->dev,
-				"failed to get syscon-pll-ctrl offset\n");
-			return -EINVAL;
 		}
 	}
 
@@ -1344,12 +1342,6 @@ static const struct component_master_ops dss_component_ops = {
 	.unbind = dss_unbind,
 };
 
-static int dss_component_compare(struct device *dev, void *data)
-{
-	struct device *child = data;
-	return dev == child;
-}
-
 struct dss_component_match_data {
 	struct device *dev;
 	struct component_match **match;
@@ -1379,7 +1371,7 @@ static int dss_add_child_component(struct device *dev, void *data)
 		return device_for_each_child(dev, cmatch,
 					     dss_add_child_component);
 
-	component_match_add(cmatch->dev, match, dss_component_compare, dev);
+	component_match_add(cmatch->dev, match, component_compare_dev, dev);
 
 	return 0;
 }
@@ -1424,7 +1416,6 @@ static int dss_probe(struct platform_device *pdev)
 	const struct soc_device_attribute *soc;
 	struct dss_component_match_data cmatch;
 	struct component_match *match = NULL;
-	struct resource *dss_mem;
 	struct dss_device *dss;
 	int r;
 
@@ -1449,11 +1440,10 @@ static int dss_probe(struct platform_device *pdev)
 	if (soc)
 		dss->feat = soc->data;
 	else
-		dss->feat = of_match_device(dss_of_match, &pdev->dev)->data;
+		dss->feat = device_get_match_data(&pdev->dev);
 
 	/* Map I/O registers, get and setup clocks. */
-	dss_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	dss->base = devm_ioremap_resource(&pdev->dev, dss_mem);
+	dss->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(dss->base)) {
 		r = PTR_ERR(dss->base);
 		goto err_free_dss;
@@ -1537,7 +1527,7 @@ err_free_dss:
 	return r;
 }
 
-static int dss_remove(struct platform_device *pdev)
+static void dss_remove(struct platform_device *pdev)
 {
 	struct dss_device *dss = platform_get_drvdata(pdev);
 
@@ -1562,8 +1552,6 @@ static int dss_remove(struct platform_device *pdev)
 	dss_put_clocks(dss);
 
 	kfree(dss);
-
-	return 0;
 }
 
 static void dss_shutdown(struct platform_device *pdev)
@@ -1571,7 +1559,7 @@ static void dss_shutdown(struct platform_device *pdev)
 	DSSDBG("shutdown\n");
 }
 
-static int dss_runtime_suspend(struct device *dev)
+static __maybe_unused int dss_runtime_suspend(struct device *dev)
 {
 	struct dss_device *dss = dev_get_drvdata(dev);
 
@@ -1583,7 +1571,7 @@ static int dss_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int dss_runtime_resume(struct device *dev)
+static __maybe_unused int dss_runtime_resume(struct device *dev)
 {
 	struct dss_device *dss = dev_get_drvdata(dev);
 	int r;
@@ -1606,8 +1594,7 @@ static int dss_runtime_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops dss_pm_ops = {
-	.runtime_suspend = dss_runtime_suspend,
-	.runtime_resume = dss_runtime_resume,
+	SET_RUNTIME_PM_OPS(dss_runtime_suspend, dss_runtime_resume, NULL)
 	SET_LATE_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 };
 

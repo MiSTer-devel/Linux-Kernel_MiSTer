@@ -68,6 +68,24 @@
 #define ADIN1300_EEE_CAP_REG			0x8000
 #define ADIN1300_EEE_ADV_REG			0x8001
 #define ADIN1300_EEE_LPABLE_REG			0x8002
+
+#define ADIN1300_FLD_EN_REG			0x8E27
+#define   ADIN1300_FLD_PCS_ERR_100_EN		BIT(7)
+#define   ADIN1300_FLD_PCS_ERR_1000_EN		BIT(6)
+#define   ADIN1300_FLD_SLCR_OUT_STUCK_100_EN	BIT(5)
+#define   ADIN1300_FLD_SLCR_OUT_STUCK_1000_EN	BIT(4)
+#define   ADIN1300_FLD_SLCR_IN_ZDET_100_EN	BIT(3)
+#define   ADIN1300_FLD_SLCR_IN_ZDET_1000_EN	BIT(2)
+#define   ADIN1300_FLD_SLCR_IN_INVLD_100_EN	BIT(1)
+#define   ADIN1300_FLD_SLCR_IN_INVLD_1000_EN	BIT(0)
+/* These bits are the ones which are enabled by default. */
+#define ADIN1300_FLD_EN_ON	\
+	(ADIN1300_FLD_SLCR_OUT_STUCK_100_EN | \
+	 ADIN1300_FLD_SLCR_OUT_STUCK_1000_EN | \
+	 ADIN1300_FLD_SLCR_IN_ZDET_100_EN | \
+	 ADIN1300_FLD_SLCR_IN_ZDET_1000_EN | \
+	 ADIN1300_FLD_SLCR_IN_INVLD_1000_EN)
+
 #define ADIN1300_CLOCK_STOP_REG			0x9400
 #define ADIN1300_LPI_WAKE_ERR_CNT_REG		0xa000
 
@@ -98,6 +116,15 @@
 
 #define ADIN1300_GE_SOFT_RESET_REG		0xff0c
 #define   ADIN1300_GE_SOFT_RESET		BIT(0)
+
+#define ADIN1300_GE_CLK_CFG_REG			0xff1f
+#define   ADIN1300_GE_CLK_CFG_MASK		GENMASK(5, 0)
+#define   ADIN1300_GE_CLK_CFG_RCVR_125		BIT(5)
+#define   ADIN1300_GE_CLK_CFG_FREE_125		BIT(4)
+#define   ADIN1300_GE_CLK_CFG_REF_EN		BIT(3)
+#define   ADIN1300_GE_CLK_CFG_HRT_RCVR		BIT(2)
+#define   ADIN1300_GE_CLK_CFG_HRT_FREE		BIT(1)
+#define   ADIN1300_GE_CLK_CFG_25		BIT(0)
 
 #define ADIN1300_GE_RGMII_CFG_REG		0xff23
 #define   ADIN1300_GE_RGMII_RX_MSK		GENMASK(8, 6)
@@ -407,6 +434,37 @@ static int adin_set_edpd(struct phy_device *phydev, u16 tx_interval)
 			  val);
 }
 
+static int adin_get_fast_down(struct phy_device *phydev, u8 *msecs)
+{
+	int reg;
+
+	reg = phy_read_mmd(phydev, MDIO_MMD_VEND1, ADIN1300_FLD_EN_REG);
+	if (reg < 0)
+		return reg;
+
+	if (reg & ADIN1300_FLD_EN_ON)
+		*msecs = ETHTOOL_PHY_FAST_LINK_DOWN_ON;
+	else
+		*msecs = ETHTOOL_PHY_FAST_LINK_DOWN_OFF;
+
+	return 0;
+}
+
+static int adin_set_fast_down(struct phy_device *phydev, const u8 *msecs)
+{
+	if (*msecs == ETHTOOL_PHY_FAST_LINK_DOWN_ON)
+		return phy_set_bits_mmd(phydev, MDIO_MMD_VEND1,
+					ADIN1300_FLD_EN_REG,
+					ADIN1300_FLD_EN_ON);
+
+	if (*msecs == ETHTOOL_PHY_FAST_LINK_DOWN_OFF)
+		return phy_clear_bits_mmd(phydev, MDIO_MMD_VEND1,
+					  ADIN1300_FLD_EN_REG,
+					  ADIN1300_FLD_EN_ON);
+
+	return -EINVAL;
+}
+
 static int adin_get_tunable(struct phy_device *phydev,
 			    struct ethtool_tunable *tuna, void *data)
 {
@@ -415,6 +473,8 @@ static int adin_get_tunable(struct phy_device *phydev,
 		return adin_get_downshift(phydev, data);
 	case ETHTOOL_PHY_EDPD:
 		return adin_get_edpd(phydev, data);
+	case ETHTOOL_PHY_FAST_LINK_DOWN:
+		return adin_get_fast_down(phydev, data);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -428,9 +488,38 @@ static int adin_set_tunable(struct phy_device *phydev,
 		return adin_set_downshift(phydev, *(const u8 *)data);
 	case ETHTOOL_PHY_EDPD:
 		return adin_set_edpd(phydev, *(const u16 *)data);
+	case ETHTOOL_PHY_FAST_LINK_DOWN:
+		return adin_set_fast_down(phydev, data);
 	default:
 		return -EOPNOTSUPP;
 	}
+}
+
+static int adin_config_clk_out(struct phy_device *phydev)
+{
+	struct device *dev = &phydev->mdio.dev;
+	const char *val = NULL;
+	u8 sel = 0;
+
+	device_property_read_string(dev, "adi,phy-output-clock", &val);
+	if (!val) {
+		/* property not present, do not enable GP_CLK pin */
+	} else if (strcmp(val, "25mhz-reference") == 0) {
+		sel |= ADIN1300_GE_CLK_CFG_25;
+	} else if (strcmp(val, "125mhz-free-running") == 0) {
+		sel |= ADIN1300_GE_CLK_CFG_FREE_125;
+	} else if (strcmp(val, "adaptive-free-running") == 0) {
+		sel |= ADIN1300_GE_CLK_CFG_HRT_FREE;
+	} else {
+		phydev_err(phydev, "invalid adi,phy-output-clock\n");
+		return -EINVAL;
+	}
+
+	if (device_property_read_bool(dev, "adi,phy-output-reference-clock"))
+		sel |= ADIN1300_GE_CLK_CFG_REF_EN;
+
+	return phy_modify_mmd(phydev, MDIO_MMD_VEND1, ADIN1300_GE_CLK_CFG_REG,
+			      ADIN1300_GE_CLK_CFG_MASK, sel);
 }
 
 static int adin_config_init(struct phy_device *phydev)
@@ -452,6 +541,10 @@ static int adin_config_init(struct phy_device *phydev)
 		return rc;
 
 	rc = adin_set_edpd(phydev, ETHTOOL_PHY_EDPD_DFLT_TX_MSECS);
+	if (rc < 0)
+		return rc;
+
+	rc = adin_config_clk_out(phydev);
 	if (rc < 0)
 		return rc;
 
@@ -708,10 +801,8 @@ static void adin_get_strings(struct phy_device *phydev, u8 *data)
 {
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(adin_hw_stats); i++) {
-		strlcpy(&data[i * ETH_GSTRING_LEN],
-			adin_hw_stats[i].string, ETH_GSTRING_LEN);
-	}
+	for (i = 0; i < ARRAY_SIZE(adin_hw_stats); i++)
+		ethtool_puts(&data, adin_hw_stats[i].string);
 }
 
 static int adin_read_mmd_stat_regs(struct phy_device *phydev,
@@ -947,7 +1038,7 @@ static struct phy_driver adin_driver[] = {
 
 module_phy_driver(adin_driver);
 
-static struct mdio_device_id __maybe_unused adin_tbl[] = {
+static const struct mdio_device_id __maybe_unused adin_tbl[] = {
 	{ PHY_ID_MATCH_MODEL(PHY_ID_ADIN1200) },
 	{ PHY_ID_MATCH_MODEL(PHY_ID_ADIN1300) },
 	{ }

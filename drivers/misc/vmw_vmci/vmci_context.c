@@ -251,6 +251,8 @@ static int ctx_fire_notification(u32 context_id, u32 priv_flags)
 		ev.msg.hdr.src = vmci_make_handle(VMCI_HYPERVISOR_CONTEXT_ID,
 						  VMCI_CONTEXT_RESOURCE_ID);
 		ev.msg.hdr.payload_size = sizeof(ev) - sizeof(ev.msg.hdr);
+		memset((char*)&ev + sizeof(ev.msg.hdr), 0,
+			ev.msg.hdr.payload_size);
 		ev.msg.event_data.event = VMCI_EVENT_CTX_REMOVED;
 		ev.payload.context_id = context_id;
 
@@ -264,28 +266,6 @@ static int ctx_fire_notification(u32 context_id, u32 priv_flags)
 		}
 	}
 	vmci_handle_arr_destroy(subscriber_array);
-
-	return VMCI_SUCCESS;
-}
-
-/*
- * Returns the current number of pending datagrams. The call may
- * also serve as a synchronization point for the datagram queue,
- * as no enqueue operations can occur concurrently.
- */
-int vmci_ctx_pending_datagrams(u32 cid, u32 *pending)
-{
-	struct vmci_ctx *context;
-
-	context = vmci_ctx_get(cid);
-	if (context == NULL)
-		return VMCI_ERROR_INVALID_ARGS;
-
-	spin_lock(&context->lock);
-	if (pending)
-		*pending = context->pending_datagrams;
-	spin_unlock(&context->lock);
-	vmci_ctx_put(context);
 
 	return VMCI_SUCCESS;
 }
@@ -665,9 +645,8 @@ int vmci_ctx_add_notification(u32 context_id, u32 remote_cid)
 int vmci_ctx_remove_notification(u32 context_id, u32 remote_cid)
 {
 	struct vmci_ctx *context;
-	struct vmci_handle_list *notifier, *tmp;
+	struct vmci_handle_list *notifier = NULL, *iter, *tmp;
 	struct vmci_handle handle;
-	bool found = false;
 
 	context = vmci_ctx_get(context_id);
 	if (!context)
@@ -676,25 +655,23 @@ int vmci_ctx_remove_notification(u32 context_id, u32 remote_cid)
 	handle = vmci_make_handle(remote_cid, VMCI_EVENT_HANDLER);
 
 	spin_lock(&context->lock);
-	list_for_each_entry_safe(notifier, tmp,
+	list_for_each_entry_safe(iter, tmp,
 				 &context->notifier_list, node) {
-		if (vmci_handle_is_equal(notifier->handle, handle)) {
-			list_del_rcu(&notifier->node);
+		if (vmci_handle_is_equal(iter->handle, handle)) {
+			list_del_rcu(&iter->node);
 			context->n_notifiers--;
-			found = true;
+			notifier = iter;
 			break;
 		}
 	}
 	spin_unlock(&context->lock);
 
-	if (found) {
-		synchronize_rcu();
-		kfree(notifier);
-	}
+	if (notifier)
+		kvfree_rcu_mightsleep(notifier);
 
 	vmci_ctx_put(context);
 
-	return found ? VMCI_SUCCESS : VMCI_ERROR_NOT_FOUND;
+	return notifier ? VMCI_SUCCESS : VMCI_ERROR_NOT_FOUND;
 }
 
 static int vmci_ctx_get_chkpt_notifiers(struct vmci_ctx *context,
@@ -992,38 +969,6 @@ int vmci_ctx_dbell_destroy(u32 context_id, struct vmci_handle handle)
 
 	return vmci_handle_is_invalid(removed_handle) ?
 	    VMCI_ERROR_NOT_FOUND : VMCI_SUCCESS;
-}
-
-/*
- * Unregisters all doorbell handles that were previously
- * registered with vmci_ctx_dbell_create.
- */
-int vmci_ctx_dbell_destroy_all(u32 context_id)
-{
-	struct vmci_ctx *context;
-	struct vmci_handle handle;
-
-	if (context_id == VMCI_INVALID_ID)
-		return VMCI_ERROR_INVALID_ARGS;
-
-	context = vmci_ctx_get(context_id);
-	if (context == NULL)
-		return VMCI_ERROR_NOT_FOUND;
-
-	spin_lock(&context->lock);
-	do {
-		struct vmci_handle_arr *arr = context->doorbell_array;
-		handle = vmci_handle_arr_remove_tail(arr);
-	} while (!vmci_handle_is_invalid(handle));
-	do {
-		struct vmci_handle_arr *arr = context->pending_doorbell_array;
-		handle = vmci_handle_arr_remove_tail(arr);
-	} while (!vmci_handle_is_invalid(handle));
-	spin_unlock(&context->lock);
-
-	vmci_ctx_put(context);
-
-	return VMCI_SUCCESS;
 }
 
 /*

@@ -17,6 +17,10 @@
 #ifndef _UAPI_VM_SOCKETS_H
 #define _UAPI_VM_SOCKETS_H
 
+#ifndef __KERNEL__
+#include <sys/socket.h>        /* for struct sockaddr and sa_family_t */
+#endif
+
 #include <linux/socket.h>
 #include <linux/types.h>
 
@@ -64,7 +68,7 @@
  * timeout for a STREAM socket.
  */
 
-#define SO_VM_SOCKETS_CONNECT_TIMEOUT 6
+#define SO_VM_SOCKETS_CONNECT_TIMEOUT_OLD 6
 
 /* Option name for using non-blocking send/receive.  Use as the option name
  * for setsockopt(3) or getsockopt(3) to set or get the non-blocking
@@ -80,6 +84,17 @@
  */
 
 #define SO_VM_SOCKETS_NONBLOCK_TXRX 7
+
+#define SO_VM_SOCKETS_CONNECT_TIMEOUT_NEW 8
+
+#if !defined(__KERNEL__)
+#if __BITS_PER_LONG == 64 || (defined(__x86_64__) && defined(__ILP32__))
+#define SO_VM_SOCKETS_CONNECT_TIMEOUT SO_VM_SOCKETS_CONNECT_TIMEOUT_OLD
+#else
+#define SO_VM_SOCKETS_CONNECT_TIMEOUT \
+	(sizeof(time_t) == sizeof(__kernel_long_t) ? SO_VM_SOCKETS_CONNECT_TIMEOUT_OLD : SO_VM_SOCKETS_CONNECT_TIMEOUT_NEW)
+#endif
+#endif
 
 /* The vSocket equivalent of INADDR_ANY.  This works for the svm_cid field of
  * sockaddr_vm and indicates the context ID of the current endpoint.
@@ -179,5 +194,22 @@ struct sockaddr_vm {
 };
 
 #define IOCTL_VM_SOCKETS_GET_LOCAL_CID		_IO(7, 0xb9)
+
+/* MSG_ZEROCOPY notifications are encoded in the standard error format,
+ * sock_extended_err. See Documentation/networking/msg_zerocopy.rst in
+ * kernel source tree for more details.
+ */
+
+/* 'cmsg_level' field value of 'struct cmsghdr' for notification parsing
+ * when MSG_ZEROCOPY flag is used on transmissions.
+ */
+
+#define SOL_VSOCK	287
+
+/* 'cmsg_type' field value of 'struct cmsghdr' for notification parsing
+ * when MSG_ZEROCOPY flag is used on transmissions.
+ */
+
+#define VSOCK_RECVERR	1
 
 #endif /* _UAPI_VM_SOCKETS_H */

@@ -193,7 +193,7 @@ static struct timecounter xilinx_tc = {
 	.cc = NULL,
 };
 
-static u64 xilinx_cc_read(const struct cyclecounter *cc)
+static u64 xilinx_cc_read(struct cyclecounter *cc)
 {
 	return xilinx_read(NULL);
 }
@@ -250,6 +250,10 @@ static int __init xilinx_timer_init(struct device_node *timer)
 	u32 irq;
 	u32 timer_num = 1;
 	int ret;
+
+	/* If this property is present, the device is a PWM and not a timer */
+	if (of_property_present(timer, "#pwm-cells"))
+		return 0;
 
 	if (initialized)
 		return -EINVAL;

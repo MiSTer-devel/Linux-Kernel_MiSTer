@@ -13,7 +13,6 @@
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand-ecc-sw-hamming.h>
 #include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
 #include <linux/io.h>
@@ -194,8 +193,8 @@ static int txx9ndfmc_correct_data(struct nand_chip *chip, unsigned char *buf,
 	int stat;
 
 	for (eccsize = chip->ecc.size; eccsize > 0; eccsize -= 256) {
-		stat = ecc_sw_hamming_correct(buf, read_ecc, calc_ecc,
-					      chip->ecc.size, false);
+		stat = rawnand_sw_hamming_correct(chip, buf, read_ecc,
+						  calc_ecc);
 		if (stat < 0)
 			return stat;
 		corrected += stat;
@@ -277,20 +276,18 @@ static const struct nand_controller_ops txx9ndfmc_controller_ops = {
 	.attach_chip = txx9ndfmc_attach_chip,
 };
 
-static int __init txx9ndfmc_probe(struct platform_device *dev)
+static int txx9ndfmc_probe(struct platform_device *dev)
 {
 	struct txx9ndfmc_platform_data *plat = dev_get_platdata(&dev->dev);
 	int hold, spw;
 	int i;
 	struct txx9ndfmc_drvdata *drvdata;
 	unsigned long gbusclk = plat->gbus_clock;
-	struct resource *res;
 
 	drvdata = devm_kzalloc(&dev->dev, sizeof(*drvdata), GFP_KERNEL);
 	if (!drvdata)
 		return -ENOMEM;
-	res = platform_get_resource(dev, IORESOURCE_MEM, 0);
-	drvdata->base = devm_ioremap_resource(&dev->dev, res);
+	drvdata->base = devm_platform_ioremap_resource(dev, 0);
 	if (IS_ERR(drvdata->base))
 		return PTR_ERR(drvdata->base);
 
@@ -372,13 +369,11 @@ static int __init txx9ndfmc_probe(struct platform_device *dev)
 	return 0;
 }
 
-static int __exit txx9ndfmc_remove(struct platform_device *dev)
+static void txx9ndfmc_remove(struct platform_device *dev)
 {
 	struct txx9ndfmc_drvdata *drvdata = platform_get_drvdata(dev);
 	int ret, i;
 
-	if (!drvdata)
-		return 0;
 	for (i = 0; i < MAX_TXX9NDFMC_DEV; i++) {
 		struct mtd_info *mtd = drvdata->mtds[i];
 		struct nand_chip *chip;
@@ -395,7 +390,6 @@ static int __exit txx9ndfmc_remove(struct platform_device *dev)
 		kfree(txx9_priv->mtdname);
 		kfree(txx9_priv);
 	}
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -410,14 +404,14 @@ static int txx9ndfmc_resume(struct platform_device *dev)
 #endif
 
 static struct platform_driver txx9ndfmc_driver = {
-	.remove		= __exit_p(txx9ndfmc_remove),
+	.probe		= txx9ndfmc_probe,
+	.remove		= txx9ndfmc_remove,
 	.resume		= txx9ndfmc_resume,
 	.driver		= {
 		.name	= "txx9ndfmc",
 	},
 };
-
-module_platform_driver_probe(txx9ndfmc_driver, txx9ndfmc_probe);
+module_platform_driver(txx9ndfmc_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("TXx9 SoC NAND flash controller driver");

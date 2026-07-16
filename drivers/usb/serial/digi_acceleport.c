@@ -215,8 +215,9 @@ static int digi_transmit_idle(struct usb_serial_port *port,
 static void digi_rx_throttle(struct tty_struct *tty);
 static void digi_rx_unthrottle(struct tty_struct *tty);
 static void digi_set_termios(struct tty_struct *tty,
-		struct usb_serial_port *port, struct ktermios *old_termios);
-static void digi_break_ctl(struct tty_struct *tty, int break_state);
+			     struct usb_serial_port *port,
+			     const struct ktermios *old_termios);
+static int digi_break_ctl(struct tty_struct *tty, int break_state);
 static int digi_tiocmget(struct tty_struct *tty);
 static int digi_tiocmset(struct tty_struct *tty, unsigned int set,
 		unsigned int clear);
@@ -261,7 +262,6 @@ MODULE_DEVICE_TABLE(usb, id_table_combined);
 
 static struct usb_serial_driver digi_acceleport_2_device = {
 	.driver = {
-		.owner =		THIS_MODULE,
 		.name =			"digi_2",
 	},
 	.description =			"Digi 2 port USB adapter",
@@ -292,7 +292,6 @@ static struct usb_serial_driver digi_acceleport_2_device = {
 
 static struct usb_serial_driver digi_acceleport_4_device = {
 	.driver = {
-		.owner =		THIS_MODULE,
 		.name =			"digi_4",
 	},
 	.description =			"Digi 4 port USB adapter",
@@ -649,7 +648,8 @@ static void digi_rx_unthrottle(struct tty_struct *tty)
 
 
 static void digi_set_termios(struct tty_struct *tty,
-		struct usb_serial_port *port, struct ktermios *old_termios)
+			     struct usb_serial_port *port,
+			     const struct ktermios *old_termios)
 {
 	struct digi_port *priv = usb_get_serial_port_data(port);
 	struct device *dev = &port->dev;
@@ -837,7 +837,7 @@ static void digi_set_termios(struct tty_struct *tty,
 }
 
 
-static void digi_break_ctl(struct tty_struct *tty, int break_state)
+static int digi_break_ctl(struct tty_struct *tty, int break_state)
 {
 	struct usb_serial_port *port = tty->driver_data;
 	unsigned char buf[4];
@@ -846,7 +846,8 @@ static void digi_break_ctl(struct tty_struct *tty, int break_state)
 	buf[1] = 2;				/* length */
 	buf[2] = break_state ? 1 : 0;
 	buf[3] = 0;				/* pad */
-	digi_write_inb_command(port, buf, 4, 0);
+
+	return digi_write_inb_command(port, buf, 4, 0);
 }
 
 
@@ -1228,15 +1229,34 @@ static int digi_port_init(struct usb_serial_port *port, unsigned port_num)
 static int digi_startup(struct usb_serial *serial)
 {
 	struct digi_serial *serial_priv;
+	int oob_port_num;
 	int ret;
+	int i;
+
+	/*
+	 * The port bulk-out buffers must be large enough for header and
+	 * buffered data.
+	 */
+	for (i = 0; i < serial->type->num_ports; i++) {
+		if (serial->port[i]->bulk_out_size < DIGI_OUT_BUF_SIZE + 2)
+			return -EINVAL;
+	}
+
+	/*
+	 * The OOB port bulk-out buffer must be large enough for the two
+	 * commands in digi_set_modem_signals().
+	 */
+	oob_port_num = serial->type->num_ports;
+	if (serial->port[oob_port_num]->bulk_out_size < 8)
+		return -EINVAL;
 
 	serial_priv = kzalloc(sizeof(*serial_priv), GFP_KERNEL);
 	if (!serial_priv)
 		return -ENOMEM;
 
 	spin_lock_init(&serial_priv->ds_serial_lock);
-	serial_priv->ds_oob_port_num = serial->type->num_ports;
-	serial_priv->ds_oob_port = serial->port[serial_priv->ds_oob_port_num];
+	serial_priv->ds_oob_port_num = oob_port_num;
+	serial_priv->ds_oob_port = serial->port[oob_port_num];
 
 	ret = digi_port_init(serial_priv->ds_oob_port,
 						serial_priv->ds_oob_port_num);

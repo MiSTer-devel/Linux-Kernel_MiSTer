@@ -78,7 +78,7 @@ static void bch_stats_release(struct kobject *k)
 {
 }
 
-static struct attribute *bch_stats_files[] = {
+static struct attribute *bch_stats_attrs[] = {
 	&sysfs_cache_hits,
 	&sysfs_cache_misses,
 	&sysfs_cache_bypass_hits,
@@ -88,6 +88,7 @@ static struct attribute *bch_stats_files[] = {
 	&sysfs_bypassed,
 	NULL
 };
+ATTRIBUTE_GROUPS(bch_stats);
 static KTYPE(bch_stats);
 
 int bch_cache_accounting_add_kobjs(struct cache_accounting *acc,
@@ -122,7 +123,7 @@ void bch_cache_accounting_destroy(struct cache_accounting *acc)
 	kobject_put(&acc->day.kobj);
 
 	atomic_set(&acc->closing, 1);
-	if (del_timer_sync(&acc->timer))
+	if (timer_delete_sync(&acc->timer))
 		closure_return(&acc->cl);
 }
 
@@ -148,7 +149,7 @@ static void scale_stats(struct cache_stats *stats, unsigned long rescale_at)
 
 static void scale_accounting(struct timer_list *t)
 {
-	struct cache_accounting *acc = from_timer(acc, t, timer);
+	struct cache_accounting *acc = timer_container_of(acc, t, timer);
 
 #define move_stat(name) do {						\
 	unsigned int t = atomic_xchg(&acc->collector.name, 0);		\

@@ -32,6 +32,7 @@ struct regmap_format {
 	size_t reg_bytes;
 	size_t pad_bytes;
 	size_t val_bytes;
+	s8 reg_shift;
 	void (*format_write)(struct regmap *map,
 			     unsigned int reg, unsigned int val);
 	void (*format_reg)(void *buf, unsigned int reg, unsigned int shift);
@@ -58,10 +59,12 @@ struct regmap {
 			unsigned long raw_spinlock_flags;
 		};
 	};
+	struct lock_class_key *lock_key;
 	regmap_lock lock;
 	regmap_unlock unlock;
 	void *lock_arg; /* This is passed to lock/unlock functions */
 	gfp_t alloc_flags;
+	unsigned int reg_base;
 
 	struct device *dev; /* Device we do I/O on */
 	void *work_buf;     /* Scratch buffer used to format I/O */
@@ -70,12 +73,12 @@ struct regmap {
 	void *bus_context;
 	const char *name;
 
-	bool async;
 	spinlock_t async_lock;
 	wait_queue_head_t async_waitq;
 	struct list_head async_list;
 	struct list_head async_free;
 	int async_ret;
+	bool async;
 
 #ifdef CONFIG_DEBUG_FS
 	bool debugfs_disable;
@@ -91,6 +94,7 @@ struct regmap {
 #endif
 
 	unsigned int max_register;
+	bool max_register_is_set;
 	bool (*writeable_reg)(struct device *dev, unsigned int reg);
 	bool (*readable_reg)(struct device *dev, unsigned int reg);
 	bool (*volatile_reg)(struct device *dev, unsigned int reg);
@@ -108,8 +112,10 @@ struct regmap {
 	int (*reg_write)(void *context, unsigned int reg, unsigned int val);
 	int (*reg_update_bits)(void *context, unsigned int reg,
 			       unsigned int mask, unsigned int val);
-
-	bool defer_caching;
+	/* Bulk read/write */
+	int (*read)(void *context, const void *reg_buf, size_t reg_size,
+		    void *val_buf, size_t val_size);
+	int (*write)(void *context, const void *data, size_t count);
 
 	unsigned long read_flag_mask;
 	unsigned long write_flag_mask;
@@ -118,6 +124,11 @@ struct regmap {
 	int reg_shift;
 	int reg_stride;
 	int reg_stride_order;
+
+	bool defer_caching;
+
+	/* If set, will always write field to HW. */
+	bool force_write_field;
 
 	/* regcache specific members */
 	const struct regcache_ops *cache_ops;
@@ -150,6 +161,9 @@ struct regmap {
 	struct reg_sequence *patch;
 	int patch_regs;
 
+	/* if set, the regmap core can sleep */
+	bool can_sleep;
+
 	/* if set, converts bulk read to single read */
 	bool use_single_read;
 	/* if set, converts bulk write to single write */
@@ -165,9 +179,6 @@ struct regmap {
 	void *selector_work_buf;	/* Scratch buffer used for selector */
 
 	struct hwspinlock *hwlock;
-
-	/* if set, the regmap core can sleep */
-	bool can_sleep;
 };
 
 struct regcache_ops {
@@ -251,6 +262,8 @@ int regcache_sync_block(struct regmap *map, void *block,
 			unsigned long *cache_present,
 			unsigned int block_base, unsigned int start,
 			unsigned int end);
+bool regcache_reg_needs_sync(struct regmap *map, unsigned int reg,
+			     unsigned int val);
 
 static inline const void *regcache_get_val_addr(struct regmap *map,
 						const void *base,
@@ -261,9 +274,10 @@ static inline const void *regcache_get_val_addr(struct regmap *map,
 
 unsigned int regcache_get_val(struct regmap *map, const void *base,
 			      unsigned int idx);
-bool regcache_set_val(struct regmap *map, void *base, unsigned int idx,
+void regcache_set_val(struct regmap *map, void *base, unsigned int idx,
 		      unsigned int val);
 int regcache_lookup_reg(struct regmap *map, unsigned int reg);
+int regcache_sync_val(struct regmap *map, unsigned int reg, unsigned int val);
 
 int _regmap_raw_write(struct regmap *map, unsigned int reg,
 		      const void *val, size_t val_len, bool noinc);
@@ -275,7 +289,7 @@ enum regmap_endian regmap_get_val_endian(struct device *dev,
 					 const struct regmap_config *config);
 
 extern struct regcache_ops regcache_rbtree_ops;
-extern struct regcache_ops regcache_lzo_ops;
+extern struct regcache_ops regcache_maple_ops;
 extern struct regcache_ops regcache_flat_ops;
 
 static inline const char *regmap_name(const struct regmap *map)
@@ -300,5 +314,35 @@ static inline unsigned int regcache_get_index_by_order(const struct regmap *map,
 {
 	return reg >> map->reg_stride_order;
 }
+
+struct regmap_ram_data {
+	unsigned int *vals;  /* Allocatd by caller */
+	bool *read;
+	bool *written;
+	enum regmap_endian reg_endian;
+	bool (*noinc_reg)(struct regmap_ram_data *data, unsigned int reg);
+};
+
+/*
+ * Create a test register map with data stored in RAM, not intended
+ * for practical use.
+ */
+struct regmap *__regmap_init_ram(struct device *dev,
+				 const struct regmap_config *config,
+				 struct regmap_ram_data *data,
+				 struct lock_class_key *lock_key,
+				 const char *lock_name);
+
+#define regmap_init_ram(dev, config, data)					\
+	__regmap_lockdep_wrapper(__regmap_init_ram, #dev, dev, config, data)
+
+struct regmap *__regmap_init_raw_ram(struct device *dev,
+				     const struct regmap_config *config,
+				     struct regmap_ram_data *data,
+				     struct lock_class_key *lock_key,
+				     const char *lock_name);
+
+#define regmap_init_raw_ram(dev, config, data)				\
+	__regmap_lockdep_wrapper(__regmap_init_raw_ram, #dev, dev, config, data)
 
 #endif

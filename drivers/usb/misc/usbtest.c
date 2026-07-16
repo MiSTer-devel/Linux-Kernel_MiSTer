@@ -592,7 +592,7 @@ struct sg_timeout {
 
 static void sg_timeout(struct timer_list *t)
 {
-	struct sg_timeout *timeout = from_timer(timeout, t, timer);
+	struct sg_timeout *timeout = timer_container_of(timeout, t, timer);
 
 	usb_sg_cancel(timeout->req);
 }
@@ -626,11 +626,11 @@ static int perform_sglist(
 		mod_timer(&timeout.timer, jiffies +
 				msecs_to_jiffies(SIMPLE_IO_TIMEOUT));
 		usb_sg_wait(req);
-		if (!del_timer_sync(&timeout.timer))
+		if (!timer_delete_sync(&timeout.timer))
 			retval = -ETIMEDOUT;
 		else
 			retval = req->status;
-		destroy_timer_on_stack(&timeout.timer);
+		timer_destroy_on_stack(&timeout.timer);
 
 		/* FIXME check resulting data pattern */
 
@@ -705,7 +705,7 @@ static int is_good_config(struct usbtest_dev *tdev, int len)
 {
 	struct usb_config_descriptor	*config;
 
-	if (len < sizeof(*config))
+	if (len < (int)sizeof(*config))
 		return 0;
 	config = (struct usb_config_descriptor *) tdev->buf;
 
@@ -2021,7 +2021,8 @@ static struct urb *iso_alloc_urb(
 
 	for (i = 0; i < packets; i++) {
 		/* here, only the last packet will be short */
-		urb->iso_frame_desc[i].length = min((unsigned) bytes, maxp);
+		urb->iso_frame_desc[i].length = min_t(unsigned int,
+							bytes, maxp);
 		bytes -= urb->iso_frame_desc[i].length;
 
 		urb->iso_frame_desc[i].offset = maxp * i;
@@ -2638,7 +2639,7 @@ usbtest_do_ioctl(struct usb_interface *intf, struct usbtest_param_32 *param)
  * different busses) to use when testing, and allocate one thread per
  * test.  So discovery is simplified, and we have no device naming issues.
  *
- * Don't use these only as stress/load tests.  Use them along with with
+ * Don't use these only as stress/load tests.  Use them along with
  * other USB bus activity:  plugging, unplugging, mousing, mp3 playback,
  * video capture, and so on.  Run different tests at different times, in
  * different sequences.  Nothing here should interact with other devices,

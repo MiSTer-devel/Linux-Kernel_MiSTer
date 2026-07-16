@@ -1,7 +1,7 @@
 .. SPDX-License-Identifier: GPL-2.0
 
 ======
-timers
+Timers
 ======
 
 .. toctree::
@@ -12,7 +12,7 @@ timers
     hrtimers
     no_hz
     timekeeping
-    timers-howto
+    delay_sleep_functions
 
 .. only::  subproject and html
 

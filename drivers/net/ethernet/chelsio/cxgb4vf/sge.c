@@ -1167,10 +1167,7 @@ netdev_tx_t t4vf_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct cpl_tx_pkt_core *cpl;
 	const struct skb_shared_info *ssi;
 	dma_addr_t addr[MAX_SKB_FRAGS + 1];
-	const size_t fw_hdr_copy_len = (sizeof(wr->ethmacdst) +
-					sizeof(wr->ethmacsrc) +
-					sizeof(wr->ethtype) +
-					sizeof(wr->vlantci));
+	const size_t fw_hdr_copy_len = sizeof(wr->firmware);
 
 	/*
 	 * The chip minimum packet length is 10 octets but the firmware
@@ -1267,7 +1264,7 @@ netdev_tx_t t4vf_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 	wr->equiq_to_len16 = cpu_to_be32(wr_mid);
 	wr->r3[0] = cpu_to_be32(0);
 	wr->r3[1] = cpu_to_be32(0);
-	skb_copy_from_linear_data(skb, (void *)wr->ethmacdst, fw_hdr_copy_len);
+	skb_copy_from_linear_data(skb, &wr->firmware, fw_hdr_copy_len);
 	end = (u64 *)wr + flits;
 
 	/*
@@ -2065,7 +2062,7 @@ irq_handler_t t4vf_intr_handler(struct adapter *adapter)
  */
 static void sge_rx_timer_cb(struct timer_list *t)
 {
-	struct adapter *adapter = from_timer(adapter, t, sge.rx_timer);
+	struct adapter *adapter = timer_container_of(adapter, t, sge.rx_timer);
 	struct sge *s = &adapter->sge;
 	unsigned int i;
 
@@ -2097,7 +2094,7 @@ static void sge_rx_timer_cb(struct timer_list *t)
 				struct sge_eth_rxq *rxq;
 
 				rxq = container_of(fl, struct sge_eth_rxq, fl);
-				if (napi_reschedule(&rxq->rspq.napi))
+				if (napi_schedule(&rxq->rspq.napi))
 					fl->starving++;
 				else
 					set_bit(id, s->starving_fl);
@@ -2124,7 +2121,7 @@ static void sge_rx_timer_cb(struct timer_list *t)
  */
 static void sge_tx_timer_cb(struct timer_list *t)
 {
-	struct adapter *adapter = from_timer(adapter, t, sge.tx_timer);
+	struct adapter *adapter = timer_container_of(adapter, t, sge.tx_timer);
 	struct sge *s = &adapter->sge;
 	unsigned int i, budget;
 
@@ -2194,7 +2191,7 @@ static void __iomem *bar2_address(struct adapter *adapter,
 /**
  *	t4vf_sge_alloc_rxq - allocate an SGE RX Queue
  *	@adapter: the adapter
- *	@rspq: pointer to to the new rxq's Response Queue to be filled in
+ *	@rspq: pointer to the new rxq's Response Queue to be filled in
  *	@iqasynch: if 0, a normal rspq; if 1, an asynchronous event queue
  *	@dev: the network device associated with the new rspq
  *	@intr_dest: MSI-X vector index (overriden in MSI mode)
@@ -2339,7 +2336,7 @@ int t4vf_sge_alloc_rxq(struct adapter *adapter, struct sge_rspq *rspq,
 	if (ret)
 		goto err;
 
-	netif_napi_add(dev, &rspq->napi, napi_rx_handler, 64);
+	netif_napi_add(dev, &rspq->napi, napi_rx_handler);
 	rspq->cur_desc = rspq->desc;
 	rspq->cidx = 0;
 	rspq->gen = 1;
@@ -2612,9 +2609,9 @@ void t4vf_sge_stop(struct adapter *adapter)
 	struct sge *s = &adapter->sge;
 
 	if (s->rx_timer.function)
-		del_timer_sync(&s->rx_timer);
+		timer_delete_sync(&s->rx_timer);
 	if (s->tx_timer.function)
-		del_timer_sync(&s->tx_timer);
+		timer_delete_sync(&s->tx_timer);
 }
 
 /**

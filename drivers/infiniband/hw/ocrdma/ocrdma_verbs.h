@@ -59,7 +59,6 @@ int ocrdma_query_port(struct ib_device *ibdev, u32 port,
 enum rdma_protocol_type
 ocrdma_query_protocol(struct ib_device *device, u32 port_num);
 
-void ocrdma_get_guid(struct ocrdma_dev *, u8 *guid);
 int ocrdma_query_pkey(struct ib_device *ibdev, u32 port, u16 index, u16 *pkey);
 
 int ocrdma_alloc_ucontext(struct ib_ucontext *uctx, struct ib_udata *udata);
@@ -71,7 +70,7 @@ int ocrdma_alloc_pd(struct ib_pd *pd, struct ib_udata *udata);
 int ocrdma_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata);
 
 int ocrdma_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
-		     struct ib_udata *udata);
+		     struct uverbs_attr_bundle *attrs);
 int ocrdma_resize_cq(struct ib_cq *, int cqe, struct ib_udata *);
 int ocrdma_destroy_cq(struct ib_cq *ibcq, struct ib_udata *udata);
 
@@ -99,7 +98,8 @@ int ocrdma_post_srq_recv(struct ib_srq *, const struct ib_recv_wr *,
 int ocrdma_dereg_mr(struct ib_mr *ib_mr, struct ib_udata *udata);
 struct ib_mr *ocrdma_get_dma_mr(struct ib_pd *, int acc);
 struct ib_mr *ocrdma_reg_user_mr(struct ib_pd *, u64 start, u64 length,
-				 u64 virt, int acc, struct ib_udata *);
+				 u64 virt, int acc, struct ib_dmah *dmah,
+				 struct ib_udata *);
 struct ib_mr *ocrdma_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_type,
 			      u32 max_num_sg);
 int ocrdma_map_mr_sg(struct ib_mr *ibmr, struct scatterlist *sg, int sg_nents,

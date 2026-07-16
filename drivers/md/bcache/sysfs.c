@@ -271,7 +271,7 @@ SHOW(__bch_cached_dev)
 	}
 
 	if (attr == &sysfs_backing_dev_name) {
-		snprintf(buf, BDEVNAME_SIZE + 1, "%s", dc->backing_dev_name);
+		snprintf(buf, BDEVNAME_SIZE + 1, "%pg", dc->bdev);
 		strcat(buf, "\n");
 		return strlen(buf);
 	}
@@ -500,7 +500,7 @@ STORE(bch_cached_dev)
 	return size;
 }
 
-static struct attribute *bch_cached_dev_files[] = {
+static struct attribute *bch_cached_dev_attrs[] = {
 	&sysfs_attach,
 	&sysfs_detach,
 	&sysfs_stop,
@@ -543,6 +543,7 @@ static struct attribute *bch_cached_dev_files[] = {
 	&sysfs_backing_dev_uuid,
 	NULL
 };
+ATTRIBUTE_GROUPS(bch_cached_dev);
 KTYPE(bch_cached_dev);
 
 SHOW(bch_flash_dev)
@@ -600,7 +601,7 @@ STORE(__bch_flash_dev)
 }
 STORE_LOCKED(bch_flash_dev)
 
-static struct attribute *bch_flash_dev_files[] = {
+static struct attribute *bch_flash_dev_attrs[] = {
 	&sysfs_unregister,
 #if 0
 	&sysfs_data_csum,
@@ -609,6 +610,7 @@ static struct attribute *bch_flash_dev_files[] = {
 	&sysfs_size,
 	NULL
 };
+ATTRIBUTE_GROUPS(bch_flash_dev);
 KTYPE(bch_flash_dev);
 
 struct bset_stats_op {
@@ -658,7 +660,7 @@ static unsigned int bch_root_usage(struct cache_set *c)
 	unsigned int bytes = 0;
 	struct bkey *k;
 	struct btree *b;
-	struct btree_iter iter;
+	struct btree_iter_stack iter;
 
 	goto lock_root;
 
@@ -700,13 +702,7 @@ static unsigned int bch_cache_max_chain(struct cache_set *c)
 	for (h = c->bucket_hash;
 	     h < c->bucket_hash + (1 << BUCKET_HASH_BITS);
 	     h++) {
-		unsigned int i = 0;
-		struct hlist_node *p;
-
-		hlist_for_each(p, h)
-			i++;
-
-		ret = max(ret, i);
+		ret = max(ret, hlist_count_nodes(h));
 	}
 
 	mutex_unlock(&c->bucket_lock);
@@ -864,7 +860,8 @@ STORE(__bch_cache_set)
 
 		sc.gfp_mask = GFP_KERNEL;
 		sc.nr_to_scan = strtoul_or_return(buf);
-		c->shrink.scan_objects(&c->shrink, &sc);
+		if (c->shrink)
+			c->shrink->scan_objects(c->shrink, &sc);
 	}
 
 	sysfs_strtoul_clamp(congested_read_threshold_us,
@@ -955,7 +952,7 @@ static void bch_cache_set_internal_release(struct kobject *k)
 {
 }
 
-static struct attribute *bch_cache_set_files[] = {
+static struct attribute *bch_cache_set_attrs[] = {
 	&sysfs_unregister,
 	&sysfs_stop,
 	&sysfs_synchronous,
@@ -980,9 +977,10 @@ static struct attribute *bch_cache_set_files[] = {
 	&sysfs_clear_stats,
 	NULL
 };
+ATTRIBUTE_GROUPS(bch_cache_set);
 KTYPE(bch_cache_set);
 
-static struct attribute *bch_cache_set_internal_files[] = {
+static struct attribute *bch_cache_set_internal_attrs[] = {
 	&sysfs_active_journal_entries,
 
 	sysfs_time_stats_attribute_list(btree_gc, sec, ms)
@@ -1022,6 +1020,7 @@ static struct attribute *bch_cache_set_internal_files[] = {
 	&sysfs_feature_incompat,
 	NULL
 };
+ATTRIBUTE_GROUPS(bch_cache_set_internal);
 KTYPE(bch_cache_set_internal);
 
 static int __bch_cache_cmp(const void *l, const void *r)
@@ -1099,7 +1098,7 @@ SHOW(__bch_cache)
 			sum += INITIAL_PRIO - cached[i];
 
 		if (n)
-			do_div(sum, n);
+			sum = div64_u64(sum, n);
 
 		for (i = 0; i < ARRAY_SIZE(q); i++)
 			q[i] = INITIAL_PRIO - cached[n * (i + 1) /
@@ -1107,26 +1106,25 @@ SHOW(__bch_cache)
 
 		vfree(p);
 
-		ret = scnprintf(buf, PAGE_SIZE,
-				"Unused:		%zu%%\n"
-				"Clean:		%zu%%\n"
-				"Dirty:		%zu%%\n"
-				"Metadata:	%zu%%\n"
-				"Average:	%llu\n"
-				"Sectors per Q:	%zu\n"
-				"Quantiles:	[",
-				unused * 100 / (size_t) ca->sb.nbuckets,
-				available * 100 / (size_t) ca->sb.nbuckets,
-				dirty * 100 / (size_t) ca->sb.nbuckets,
-				meta * 100 / (size_t) ca->sb.nbuckets, sum,
-				n * ca->sb.bucket_size / (ARRAY_SIZE(q) + 1));
+		ret = sysfs_emit(buf,
+				 "Unused:		%zu%%\n"
+				 "Clean:		%zu%%\n"
+				 "Dirty:		%zu%%\n"
+				 "Metadata:	%zu%%\n"
+				 "Average:	%llu\n"
+				 "Sectors per Q:	%zu\n"
+				 "Quantiles:	[",
+				 unused * 100 / (size_t) ca->sb.nbuckets,
+				 available * 100 / (size_t) ca->sb.nbuckets,
+				 dirty * 100 / (size_t) ca->sb.nbuckets,
+				 meta * 100 / (size_t) ca->sb.nbuckets, sum,
+				 n * ca->sb.bucket_size / (ARRAY_SIZE(q) + 1));
 
 		for (i = 0; i < ARRAY_SIZE(q); i++)
-			ret += scnprintf(buf + ret, PAGE_SIZE - ret,
-					 "%u ", q[i]);
+			ret += sysfs_emit_at(buf, ret, "%u ", q[i]);
 		ret--;
 
-		ret += scnprintf(buf + ret, PAGE_SIZE - ret, "]\n");
+		ret += sysfs_emit_at(buf, ret, "]\n");
 
 		return ret;
 	}
@@ -1147,7 +1145,7 @@ STORE(__bch_cache)
 	if (attr == &sysfs_discard) {
 		bool v = strtoul_or_return(buf);
 
-		if (blk_queue_discard(bdev_get_queue(ca->bdev)))
+		if (bdev_max_discard_sectors(ca->bdev))
 			ca->discard = v;
 
 		if (v != CACHE_DISCARD(&ca->sb)) {
@@ -1182,7 +1180,7 @@ STORE(__bch_cache)
 }
 STORE_LOCKED(bch_cache)
 
-static struct attribute *bch_cache_files[] = {
+static struct attribute *bch_cache_attrs[] = {
 	&sysfs_bucket_size,
 	&sysfs_block_size,
 	&sysfs_nbuckets,
@@ -1196,4 +1194,5 @@ static struct attribute *bch_cache_files[] = {
 	&sysfs_cache_replacement_policy,
 	NULL
 };
+ATTRIBUTE_GROUPS(bch_cache);
 KTYPE(bch_cache);

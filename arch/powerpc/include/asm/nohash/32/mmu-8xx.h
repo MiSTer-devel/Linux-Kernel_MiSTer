@@ -39,12 +39,10 @@
  * 0 => Kernel => 11 (all accesses performed according as user iaw page definition)
  * 1 => Kernel+Accessed => 01 (all accesses performed according to page definition)
  * 2 => User => 11 (all accesses performed according as user iaw page definition)
- * 3 => User+Accessed => 00 (all accesses performed as supervisor iaw page definition) for INIT
- *                    => 10 (all accesses performed according to swaped page definition) for KUEP
+ * 3 => User+Accessed => 10 (all accesses performed according to swaped page definition) for KUEP
  * 4-15 => Not Used
  */
-#define MI_APG_INIT	0xdc000000
-#define MI_APG_KUEP	0xde000000
+#define MI_APG_INIT	0xde000000
 
 /* The effective page number register.  When read, contains the information
  * about the last instruction TLB miss.  When MI_RPN is written, bits in
@@ -172,10 +170,11 @@
 
 #define mmu_linear_psize	MMU_PAGE_8M
 
-#define MODULES_VADDR	(PAGE_OFFSET - SZ_256M)
 #define MODULES_END	PAGE_OFFSET
+#define MODULES_SIZE	(CONFIG_MODULES_SIZE * SZ_1M)
+#define MODULES_VADDR	(MODULES_END - MODULES_SIZE)
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #include <linux/mmdebug.h>
 #include <linux/sizes.h>
@@ -190,21 +189,15 @@ typedef struct {
 } mm_context_t;
 
 #define PHYS_IMMR_BASE (mfspr(SPRN_IMMR) & 0xfff80000)
-#define VIRT_IMMR_BASE (__fix_to_virt(FIX_IMMR_BASE))
 
-/* Page size definitions, common between 32 and 64-bit
+/*
+ * Page size definitions for 8xx
  *
  *    shift : is the "PAGE_SHIFT" value for that page size
- *    penc  : is the pte encoding mask
  *
  */
 struct mmu_psize_def {
 	unsigned int	shift;	/* number of bits */
-	unsigned int	enc;	/* PTE encoding */
-	unsigned int    ind;    /* Corresponding indirect page size shift */
-	unsigned int	flags;
-#define MMU_PAGE_SIZE_DIRECT	0x1	/* Supported as a direct size */
-#define MMU_PAGE_SIZE_INDIRECT	0x2	/* Supported as an indirect size */
 };
 
 extern struct mmu_psize_def mmu_psize_defs[MMU_PAGE_COUNT];
@@ -272,6 +265,6 @@ static inline int arch_vmap_pte_supported_shift(unsigned long size)
 extern s32 patch__itlbmiss_exit_1, patch__dtlbmiss_exit_1;
 extern s32 patch__itlbmiss_perf, patch__dtlbmiss_perf;
 
-#endif /* !__ASSEMBLY__ */
+#endif /* !__ASSEMBLER__ */
 
 #endif /* _ASM_POWERPC_MMU_8XX_H_ */

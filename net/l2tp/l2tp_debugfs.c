@@ -32,9 +32,10 @@
 static struct dentry *rootdir;
 
 struct l2tp_dfs_seq_data {
-	struct net *net;
-	int tunnel_idx;			/* current tunnel */
-	int session_idx;		/* index of session within current tunnel */
+	struct net	*net;
+	netns_tracker	ns_tracker;
+	unsigned long tkey;		/* lookup key of current tunnel */
+	unsigned long skey;		/* lookup key of current session */
 	struct l2tp_tunnel *tunnel;
 	struct l2tp_session *session;	/* NULL means get next tunnel */
 };
@@ -43,23 +44,25 @@ static void l2tp_dfs_next_tunnel(struct l2tp_dfs_seq_data *pd)
 {
 	/* Drop reference taken during previous invocation */
 	if (pd->tunnel)
-		l2tp_tunnel_dec_refcount(pd->tunnel);
+		l2tp_tunnel_put(pd->tunnel);
 
-	pd->tunnel = l2tp_tunnel_get_nth(pd->net, pd->tunnel_idx);
-	pd->tunnel_idx++;
+	pd->tunnel = l2tp_tunnel_get_next(pd->net, &pd->tkey);
+	pd->tkey++;
 }
 
 static void l2tp_dfs_next_session(struct l2tp_dfs_seq_data *pd)
 {
 	/* Drop reference taken during previous invocation */
 	if (pd->session)
-		l2tp_session_dec_refcount(pd->session);
+		l2tp_session_put(pd->session);
 
-	pd->session = l2tp_session_get_nth(pd->tunnel, pd->session_idx);
-	pd->session_idx++;
+	pd->session = l2tp_session_get_next(pd->net, pd->tunnel->sock,
+					    pd->tunnel->version,
+					    pd->tunnel->tunnel_id, &pd->skey);
+	pd->skey++;
 
 	if (!pd->session) {
-		pd->session_idx = 0;
+		pd->skey = 0;
 		l2tp_dfs_next_tunnel(pd);
 	}
 }
@@ -108,11 +111,11 @@ static void l2tp_dfs_seq_stop(struct seq_file *p, void *v)
 	 * or l2tp_dfs_next_tunnel().
 	 */
 	if (pd->session) {
-		l2tp_session_dec_refcount(pd->session);
+		l2tp_session_put(pd->session);
 		pd->session = NULL;
 	}
 	if (pd->tunnel) {
-		l2tp_tunnel_dec_refcount(pd->tunnel);
+		l2tp_tunnel_put(pd->tunnel);
 		pd->tunnel = NULL;
 	}
 }
@@ -120,24 +123,18 @@ static void l2tp_dfs_seq_stop(struct seq_file *p, void *v)
 static void l2tp_dfs_seq_tunnel_show(struct seq_file *m, void *v)
 {
 	struct l2tp_tunnel *tunnel = v;
+	struct l2tp_session *session;
 	int session_count = 0;
-	int hash;
-	struct hlist_node *walk;
-	struct hlist_node *tmp;
 
-	read_lock_bh(&tunnel->hlist_lock);
-	for (hash = 0; hash < L2TP_HASH_SIZE; hash++) {
-		hlist_for_each_safe(walk, tmp, &tunnel->session_hlist[hash]) {
-			struct l2tp_session *session;
+	rcu_read_lock_bh();
+	list_for_each_entry_rcu(session, &tunnel->session_list, list) {
+		/* Session ID of zero is a dummy/reserved value used by pppol2tp */
+		if (session->session_id == 0)
+			continue;
 
-			session = hlist_entry(walk, struct l2tp_session, hlist);
-			if (session->session_id == 0)
-				continue;
-
-			session_count++;
-		}
+		session_count++;
 	}
-	read_unlock_bh(&tunnel->hlist_lock);
+	rcu_read_unlock_bh();
 
 	seq_printf(m, "\nTUNNEL %u peer %u", tunnel->tunnel_id, tunnel->peer_tunnel_id);
 	if (tunnel->sock) {
@@ -186,7 +183,7 @@ static void l2tp_dfs_seq_session_show(struct seq_file *m, void *v)
 		   session->pwtype == L2TP_PWTYPE_PPP ? "PPP" :
 		   "");
 	if (session->send_seq || session->recv_seq)
-		seq_printf(m, "   nr %hu, ns %hu\n", session->nr, session->ns);
+		seq_printf(m, "   nr %u, ns %u\n", session->nr, session->ns);
 	seq_printf(m, "   refcnt %d\n", refcount_read(&session->ref_count));
 	seq_printf(m, "   config 0/0/%c/%c/-/%s %08x %u\n",
 		   session->recv_seq ? 'R' : '-',
@@ -194,7 +191,7 @@ static void l2tp_dfs_seq_session_show(struct seq_file *m, void *v)
 		   session->lns_mode ? "LNS" : "LAC",
 		   0,
 		   jiffies_to_msecs(session->reorder_timeout));
-	seq_printf(m, "   offset 0 l2specific %hu/%hu\n",
+	seq_printf(m, "   offset 0 l2specific %hu/%d\n",
 		   session->l2specific_type, l2tp_get_l2specific_len(session));
 	if (session->cookie_len) {
 		seq_printf(m, "   cookie %02x%02x%02x%02x",
@@ -217,7 +214,7 @@ static void l2tp_dfs_seq_session_show(struct seq_file *m, void *v)
 		seq_puts(m, "\n");
 	}
 
-	seq_printf(m, "   %hu/%hu tx %ld/%ld/%ld rx %ld/%ld/%ld\n",
+	seq_printf(m, "   %u/%u tx %ld/%ld/%ld rx %ld/%ld/%ld\n",
 		   session->nr, session->ns,
 		   atomic_long_read(&session->stats.tx_packets),
 		   atomic_long_read(&session->stats.tx_bytes),
@@ -284,7 +281,7 @@ static int l2tp_dfs_seq_open(struct inode *inode, struct file *file)
 		rc = PTR_ERR(pd->net);
 		goto err_free_pd;
 	}
-
+	netns_tracker_alloc(pd->net, &pd->ns_tracker, GFP_KERNEL);
 	rc = seq_open(file, &l2tp_dfs_seq_ops);
 	if (rc)
 		goto err_free_net;
@@ -296,7 +293,7 @@ out:
 	return rc;
 
 err_free_net:
-	put_net(pd->net);
+	put_net_track(pd->net, &pd->ns_tracker);
 err_free_pd:
 	kfree(pd);
 	goto out;
@@ -310,7 +307,7 @@ static int l2tp_dfs_seq_release(struct inode *inode, struct file *file)
 	seq = file->private_data;
 	pd = seq->private;
 	if (pd->net)
-		put_net(pd->net);
+		put_net_track(pd->net, &pd->ns_tracker);
 	kfree(pd);
 	seq_release(inode, file);
 

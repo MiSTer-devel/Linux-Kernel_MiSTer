@@ -335,20 +335,20 @@ static unsigned qla82xx_crb_hub_agt[64] = {
 };
 
 /* Device states */
-static char *q_dev_state[] = {
-	 "Unknown",
-	"Cold",
-	"Initializing",
-	"Ready",
-	"Need Reset",
-	"Need Quiescent",
-	"Failed",
-	"Quiescent",
+static const char *const q_dev_state[] = {
+	[QLA8XXX_DEV_UNKNOWN]		= "Unknown",
+	[QLA8XXX_DEV_COLD]		= "Cold/Re-init",
+	[QLA8XXX_DEV_INITIALIZING]	= "Initializing",
+	[QLA8XXX_DEV_READY]		= "Ready",
+	[QLA8XXX_DEV_NEED_RESET]	= "Need Reset",
+	[QLA8XXX_DEV_NEED_QUIESCENT]	= "Need Quiescent",
+	[QLA8XXX_DEV_FAILED]		= "Failed",
+	[QLA8XXX_DEV_QUIESCENT]		= "Quiescent",
 };
 
-char *qdev_state(uint32_t dev_state)
+const char *qdev_state(uint32_t dev_state)
 {
-	return q_dev_state[dev_state];
+	return (dev_state < MAX_STATES) ? q_dev_state[dev_state] : "Unknown";
 }
 
 /*
@@ -1099,11 +1099,6 @@ qla82xx_pinit_from_rom(scsi_qla_host_t *vha)
 	unsigned offset, n;
 	struct qla_hw_data *ha = vha->hw;
 
-	struct crb_addr_pair {
-		long addr;
-		long data;
-	};
-
 	/* Halt all the individual PEGs and other blocks of the ISP */
 	qla82xx_rom_lock(ha);
 
@@ -1594,25 +1589,6 @@ qla82xx_get_fw_offs(struct qla_hw_data *ha)
 
 	return (u8 *)&ha->hablob->fw->data[offset];
 }
-
-/* PCI related functions */
-int qla82xx_pci_region_offset(struct pci_dev *pdev, int region)
-{
-	unsigned long val = 0;
-	u32 control;
-
-	switch (region) {
-	case 0:
-		val = 0;
-		break;
-	case 1:
-		pci_read_config_dword(pdev, QLA82XX_PCI_REG_MSIX_TBL, &control);
-		val = control + QLA82XX_MSIX_TBL_SPACE;
-		break;
-	}
-	return val;
-}
-
 
 int
 qla82xx_iospace_config(struct qla_hw_data *ha)
@@ -2934,32 +2910,6 @@ qla82xx_need_qsnt_handler(scsi_qla_host_t *vha)
 	}
 }
 
-/*
-* qla82xx_wait_for_state_change
-*    Wait for device state to change from given current state
-*
-* Note:
-*     IDC lock must not be held upon entry
-*
-* Return:
-*    Changed device state.
-*/
-uint32_t
-qla82xx_wait_for_state_change(scsi_qla_host_t *vha, uint32_t curr_state)
-{
-	struct qla_hw_data *ha = vha->hw;
-	uint32_t dev_state;
-
-	do {
-		msleep(1000);
-		qla82xx_idc_lock(ha);
-		dev_state = qla82xx_rd_32(ha, QLA82XX_CRB_DEV_STATE);
-		qla82xx_idc_unlock(ha);
-	} while (dev_state == curr_state);
-
-	return dev_state;
-}
-
 void
 qla8xxx_dev_failed_handler(scsi_qla_host_t *vha)
 {
@@ -3061,8 +3011,7 @@ qla82xx_need_reset_handler(scsi_qla_host_t *vha)
 
 	ql_log(ql_log_info, vha, 0x00b6,
 	    "Device state is 0x%x = %s.\n",
-	    dev_state,
-	    dev_state < MAX_STATES ? qdev_state(dev_state) : "Unknown");
+	    dev_state, qdev_state(dev_state));
 
 	/* Force to DEV_COLD unless someone else is starting a reset */
 	if (dev_state != QLA8XXX_DEV_INITIALIZING &&
@@ -3185,8 +3134,7 @@ qla82xx_device_state_handler(scsi_qla_host_t *vha)
 	old_dev_state = dev_state;
 	ql_log(ql_log_info, vha, 0x009b,
 	    "Device state is 0x%x = %s.\n",
-	    dev_state,
-	    dev_state < MAX_STATES ? qdev_state(dev_state) : "Unknown");
+	    dev_state, qdev_state(dev_state));
 
 	/* wait for 30 seconds for device to go ready */
 	dev_init_timeout = jiffies + (ha->fcoe_dev_init_timeout * HZ);
@@ -3207,9 +3155,7 @@ qla82xx_device_state_handler(scsi_qla_host_t *vha)
 		if (loopcount < 5) {
 			ql_log(ql_log_info, vha, 0x009d,
 			    "Device state is 0x%x = %s.\n",
-			    dev_state,
-			    dev_state < MAX_STATES ? qdev_state(dev_state) :
-			    "Unknown");
+			    dev_state, qdev_state(dev_state));
 		}
 
 		switch (dev_state) {
@@ -3439,8 +3385,7 @@ qla82xx_set_reset_owner(scsi_qla_host_t *vha)
 	} else
 		ql_log(ql_log_info, vha, 0xb031,
 		    "Device state is 0x%x = %s.\n",
-		    dev_state,
-		    dev_state < MAX_STATES ? qdev_state(dev_state) : "Unknown");
+		    dev_state, qdev_state(dev_state));
 }
 
 /*

@@ -9,6 +9,7 @@
 #include <linux/backlight.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/regulator/consumer.h>
 
@@ -60,6 +61,9 @@
 #define MCS_CMD2_ENA1	0xFF00	/* Enable Access Command2 "CMD2" */
 #define MCS_CMD2_ENA2	0xFF80	/* Enable Access Orise Command2 */
 
+#define OTM8009A_HDISPLAY	480
+#define OTM8009A_VDISPLAY	800
+
 struct otm8009a {
 	struct device *dev;
 	struct drm_panel panel;
@@ -67,22 +71,37 @@ struct otm8009a {
 	struct gpio_desc *reset_gpio;
 	struct regulator *supply;
 	bool prepared;
-	bool enabled;
 };
 
-static const struct drm_display_mode default_mode = {
-	.clock = 29700,
-	.hdisplay = 480,
-	.hsync_start = 480 + 98,
-	.hsync_end = 480 + 98 + 32,
-	.htotal = 480 + 98 + 32 + 98,
-	.vdisplay = 800,
-	.vsync_start = 800 + 15,
-	.vsync_end = 800 + 15 + 10,
-	.vtotal = 800 + 15 + 10 + 14,
-	.flags = 0,
-	.width_mm = 52,
-	.height_mm = 86,
+static const struct drm_display_mode modes[] = {
+	{ /* 50 Hz, preferred */
+		.clock = 29700,
+		.hdisplay = 480,
+		.hsync_start = 480 + 98,
+		.hsync_end = 480 + 98 + 32,
+		.htotal = 480 + 98 + 32 + 98,
+		.vdisplay = 800,
+		.vsync_start = 800 + 15,
+		.vsync_end = 800 + 15 + 10,
+		.vtotal = 800 + 15 + 10 + 14,
+		.flags = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,
+		.width_mm = 52,
+		.height_mm = 86,
+	},
+	{ /* 60 Hz */
+		.clock = 33000,
+		.hdisplay = 480,
+		.hsync_start = 480 + 70,
+		.hsync_end = 480 + 70 + 32,
+		.htotal = 480 + 70 + 32 + 72,
+		.vdisplay = 800,
+		.vsync_start = 800 + 15,
+		.vsync_end = 800 + 15 + 10,
+		.vtotal = 800 + 15 + 10 + 16,
+		.flags = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,
+		.width_mm = 52,
+		.height_mm = 86,
+	},
 };
 
 static inline struct otm8009a *panel_to_otm8009a(struct drm_panel *panel)
@@ -208,12 +227,11 @@ static int otm8009a_init_sequence(struct otm8009a *ctx)
 	/* Default portrait 480x800 rgb24 */
 	dcs_write_seq(ctx, MIPI_DCS_SET_ADDRESS_MODE, 0x00);
 
-	ret = mipi_dsi_dcs_set_column_address(dsi, 0,
-					      default_mode.hdisplay - 1);
+	ret = mipi_dsi_dcs_set_column_address(dsi, 0, OTM8009A_HDISPLAY - 1);
 	if (ret)
 		return ret;
 
-	ret = mipi_dsi_dcs_set_page_address(dsi, 0, default_mode.vdisplay - 1);
+	ret = mipi_dsi_dcs_set_page_address(dsi, 0, OTM8009A_VDISPLAY - 1);
 	if (ret)
 		return ret;
 
@@ -249,9 +267,6 @@ static int otm8009a_disable(struct drm_panel *panel)
 	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
 	int ret;
 
-	if (!ctx->enabled)
-		return 0; /* This is not an issue so we return 0 here */
-
 	backlight_disable(ctx->bl_dev);
 
 	ret = mipi_dsi_dcs_set_display_off(dsi);
@@ -264,17 +279,12 @@ static int otm8009a_disable(struct drm_panel *panel)
 
 	msleep(120);
 
-	ctx->enabled = false;
-
 	return 0;
 }
 
 static int otm8009a_unprepare(struct drm_panel *panel)
 {
 	struct otm8009a *ctx = panel_to_otm8009a(panel);
-
-	if (!ctx->prepared)
-		return 0;
 
 	if (ctx->reset_gpio) {
 		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
@@ -292,9 +302,6 @@ static int otm8009a_prepare(struct drm_panel *panel)
 {
 	struct otm8009a *ctx = panel_to_otm8009a(panel);
 	int ret;
-
-	if (ctx->prepared)
-		return 0;
 
 	ret = regulator_enable(ctx->supply);
 	if (ret < 0) {
@@ -323,12 +330,7 @@ static int otm8009a_enable(struct drm_panel *panel)
 {
 	struct otm8009a *ctx = panel_to_otm8009a(panel);
 
-	if (ctx->enabled)
-		return 0;
-
 	backlight_enable(ctx->bl_dev);
-
-	ctx->enabled = true;
 
 	return 0;
 }
@@ -337,24 +339,33 @@ static int otm8009a_get_modes(struct drm_panel *panel,
 			      struct drm_connector *connector)
 {
 	struct drm_display_mode *mode;
+	unsigned int num_modes = ARRAY_SIZE(modes);
+	unsigned int i;
 
-	mode = drm_mode_duplicate(connector->dev, &default_mode);
-	if (!mode) {
-		dev_err(panel->dev, "failed to add mode %ux%u@%u\n",
-			default_mode.hdisplay, default_mode.vdisplay,
-			drm_mode_vrefresh(&default_mode));
-		return -ENOMEM;
+	for (i = 0; i < num_modes; i++) {
+		mode = drm_mode_duplicate(connector->dev, &modes[i]);
+		if (!mode) {
+			dev_err(panel->dev, "failed to add mode %ux%u@%u\n",
+				modes[i].hdisplay,
+				modes[i].vdisplay,
+				drm_mode_vrefresh(&modes[i]));
+			return -ENOMEM;
+		}
+
+		mode->type = DRM_MODE_TYPE_DRIVER;
+
+		/* Setting first mode as preferred */
+		if (!i)
+			mode->type |=  DRM_MODE_TYPE_PREFERRED;
+
+		drm_mode_set_name(mode);
+		drm_mode_probed_add(connector, mode);
 	}
-
-	drm_mode_set_name(mode);
-
-	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
-	drm_mode_probed_add(connector, mode);
 
 	connector->display_info.width_mm = mode->width_mm;
 	connector->display_info.height_mm = mode->height_mm;
 
-	return 1;
+	return num_modes;
 }
 
 static const struct drm_panel_funcs otm8009a_drm_funcs = {
@@ -379,7 +390,7 @@ static int otm8009a_backlight_update_status(struct backlight_device *bd)
 		return -ENXIO;
 	}
 
-	if (bd->props.power <= FB_BLANK_NORMAL) {
+	if (bd->props.power <= BACKLIGHT_POWER_REDUCED) {
 		/* Power on the backlight with the requested brightness
 		 * Note We can not use mipi_dsi_dcs_set_display_brightness()
 		 * as otm8009a driver support only 8-bit brightness (1 param).
@@ -413,9 +424,11 @@ static int otm8009a_probe(struct mipi_dsi_device *dsi)
 	struct otm8009a *ctx;
 	int ret;
 
-	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
-	if (!ctx)
-		return -ENOMEM;
+	ctx = devm_drm_panel_alloc(dev, struct otm8009a, panel,
+				   &otm8009a_drm_funcs,
+				   DRM_MODE_CONNECTOR_DSI);
+	if (IS_ERR(ctx))
+		return PTR_ERR(ctx);
 
 	ctx->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(ctx->reset_gpio)) {
@@ -440,11 +453,8 @@ static int otm8009a_probe(struct mipi_dsi_device *dsi)
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
 			  MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS;
 
-	drm_panel_init(&ctx->panel, dev, &otm8009a_drm_funcs,
-		       DRM_MODE_CONNECTOR_DSI);
-
 	ctx->bl_dev = devm_backlight_device_register(dev, dev_name(dev),
-						     dsi->host->dev, ctx,
+						     dev, ctx,
 						     &otm8009a_backlight_ops,
 						     NULL);
 	if (IS_ERR(ctx->bl_dev)) {
@@ -455,7 +465,7 @@ static int otm8009a_probe(struct mipi_dsi_device *dsi)
 
 	ctx->bl_dev->props.max_brightness = OTM8009A_BACKLIGHT_MAX;
 	ctx->bl_dev->props.brightness = OTM8009A_BACKLIGHT_DEFAULT;
-	ctx->bl_dev->props.power = FB_BLANK_POWERDOWN;
+	ctx->bl_dev->props.power = BACKLIGHT_POWER_OFF;
 	ctx->bl_dev->props.type = BACKLIGHT_RAW;
 
 	drm_panel_add(&ctx->panel);
@@ -470,14 +480,12 @@ static int otm8009a_probe(struct mipi_dsi_device *dsi)
 	return 0;
 }
 
-static int otm8009a_remove(struct mipi_dsi_device *dsi)
+static void otm8009a_remove(struct mipi_dsi_device *dsi)
 {
 	struct otm8009a *ctx = mipi_dsi_get_drvdata(dsi);
 
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
-
-	return 0;
 }
 
 static const struct of_device_id orisetech_otm8009a_of_match[] = {

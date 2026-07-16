@@ -1,17 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2014 Texas Instruments Incorporated
  * Authors:	Santosh Shilimkar <santosh.shilimkar@ti.com>
  *		Sandeep Nair <sandeep_n@ti.com>
  *		Cyril Chemparathy <cyril@ti.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/io.h>
@@ -410,26 +402,25 @@ static int of_channel_match_helper(struct device_node *np, const char *name,
  * @name:	slave channel name
  * @config:	dma configuration parameters
  *
- * Returns pointer to appropriate DMA channel on success or error.
+ * Return: Pointer to appropriate DMA channel on success or NULL on error.
  */
 void *knav_dma_open_channel(struct device *dev, const char *name,
 					struct knav_dma_cfg *config)
 {
-	struct knav_dma_chan *chan;
-	struct knav_dma_device *dma;
-	bool found = false;
+	struct knav_dma_device *dma = NULL, *iter1;
+	struct knav_dma_chan *chan = NULL, *iter2;
 	int chan_num = -1;
 	const char *instance;
 
 	if (!kdev) {
 		pr_err("keystone-navigator-dma driver not registered\n");
-		return (void *)-EINVAL;
+		return NULL;
 	}
 
 	chan_num = of_channel_match_helper(dev->of_node, name, &instance);
 	if (chan_num < 0) {
 		dev_err(kdev->dev, "No DMA instance with name %s\n", name);
-		return (void *)-EINVAL;
+		return NULL;
 	}
 
 	dev_dbg(kdev->dev, "initializing %s channel %d from DMA %s\n",
@@ -440,47 +431,46 @@ void *knav_dma_open_channel(struct device *dev, const char *name,
 	if (config->direction != DMA_MEM_TO_DEV &&
 	    config->direction != DMA_DEV_TO_MEM) {
 		dev_err(kdev->dev, "bad direction\n");
-		return (void *)-EINVAL;
+		return NULL;
 	}
 
 	/* Look for correct dma instance */
-	list_for_each_entry(dma, &kdev->list, list) {
-		if (!strcmp(dma->name, instance)) {
-			found = true;
+	list_for_each_entry(iter1, &kdev->list, list) {
+		if (!strcmp(iter1->name, instance)) {
+			dma = iter1;
 			break;
 		}
 	}
-	if (!found) {
+	if (!dma) {
 		dev_err(kdev->dev, "No DMA instance with name %s\n", instance);
-		return (void *)-EINVAL;
+		return NULL;
 	}
 
 	/* Look for correct dma channel from dma instance */
-	found = false;
-	list_for_each_entry(chan, &dma->chan_list, list) {
+	list_for_each_entry(iter2, &dma->chan_list, list) {
 		if (config->direction == DMA_MEM_TO_DEV) {
-			if (chan->channel == chan_num) {
-				found = true;
+			if (iter2->channel == chan_num) {
+				chan = iter2;
 				break;
 			}
 		} else {
-			if (chan->flow == chan_num) {
-				found = true;
+			if (iter2->flow == chan_num) {
+				chan = iter2;
 				break;
 			}
 		}
 	}
-	if (!found) {
+	if (!chan) {
 		dev_err(kdev->dev, "channel %d is not in DMA %s\n",
 				chan_num, instance);
-		return (void *)-EINVAL;
+		return NULL;
 	}
 
 	if (atomic_read(&chan->ref_count) >= 1) {
 		if (!check_config(chan, config)) {
 			dev_err(kdev->dev, "channel %d config miss-match\n",
 				chan_num);
-			return (void *)-EINVAL;
+			return NULL;
 		}
 	}
 
@@ -612,7 +602,7 @@ static int dma_init(struct device_node *cloud, struct device_node *dma_node)
 	unsigned max_tx_chan, max_rx_chan, max_rx_flow, max_tx_sched;
 	struct device_node *node = dma_node;
 	struct knav_dma_device *dma;
-	int ret, len, num_chan = 0;
+	int ret, num_chan = 0;
 	resource_size_t size;
 	u32 timeout;
 	u32 i;
@@ -625,59 +615,47 @@ static int dma_init(struct device_node *cloud, struct device_node *dma_node)
 	INIT_LIST_HEAD(&dma->list);
 	INIT_LIST_HEAD(&dma->chan_list);
 
-	if (!of_find_property(cloud, "ti,navigator-cloud-address", &len)) {
-		dev_err(kdev->dev, "unspecified navigator cloud addresses\n");
-		return -ENODEV;
-	}
-
-	dma->logical_queue_managers = len / sizeof(u32);
-	if (dma->logical_queue_managers > DMA_MAX_QMS) {
-		dev_warn(kdev->dev, "too many queue mgrs(>%d) rest ignored\n",
-			 dma->logical_queue_managers);
-		dma->logical_queue_managers = DMA_MAX_QMS;
-	}
-
-	ret = of_property_read_u32_array(cloud, "ti,navigator-cloud-address",
-					dma->qm_base_address,
-					dma->logical_queue_managers);
-	if (ret) {
+	ret = of_property_read_variable_u32_array(cloud, "ti,navigator-cloud-address",
+						  dma->qm_base_address, 1, DMA_MAX_QMS);
+	if (ret < 0) {
 		dev_err(kdev->dev, "invalid navigator cloud addresses\n");
 		return -ENODEV;
 	}
+	dma->logical_queue_managers = ret;
 
 	dma->reg_global	 = pktdma_get_regs(dma, node, 0, &size);
-	if (!dma->reg_global)
-		return -ENODEV;
+	if (IS_ERR(dma->reg_global))
+		return PTR_ERR(dma->reg_global);
 	if (size < sizeof(struct reg_global)) {
 		dev_err(kdev->dev, "bad size %pa for global regs\n", &size);
 		return -ENODEV;
 	}
 
 	dma->reg_tx_chan = pktdma_get_regs(dma, node, 1, &size);
-	if (!dma->reg_tx_chan)
-		return -ENODEV;
+	if (IS_ERR(dma->reg_tx_chan))
+		return PTR_ERR(dma->reg_tx_chan);
 
 	max_tx_chan = size / sizeof(struct reg_chan);
 	dma->reg_rx_chan = pktdma_get_regs(dma, node, 2, &size);
-	if (!dma->reg_rx_chan)
-		return -ENODEV;
+	if (IS_ERR(dma->reg_rx_chan))
+		return PTR_ERR(dma->reg_rx_chan);
 
 	max_rx_chan = size / sizeof(struct reg_chan);
 	dma->reg_tx_sched = pktdma_get_regs(dma, node, 3, &size);
-	if (!dma->reg_tx_sched)
-		return -ENODEV;
+	if (IS_ERR(dma->reg_tx_sched))
+		return PTR_ERR(dma->reg_tx_sched);
 
 	max_tx_sched = size / sizeof(struct reg_tx_sched);
 	dma->reg_rx_flow = pktdma_get_regs(dma, node, 4, &size);
-	if (!dma->reg_rx_flow)
-		return -ENODEV;
+	if (IS_ERR(dma->reg_rx_flow))
+		return PTR_ERR(dma->reg_rx_flow);
 
 	max_rx_flow = size / sizeof(struct reg_rx_flow);
 	dma->rx_priority = DMA_PRIO_DEFAULT;
 	dma->tx_priority = DMA_PRIO_DEFAULT;
 
-	dma->enable_all	= (of_get_property(node, "ti,enable-all", NULL) != NULL);
-	dma->loopback	= (of_get_property(node, "ti,loop-back",  NULL) != NULL);
+	dma->enable_all	= of_property_read_bool(node, "ti,enable-all");
+	dma->loopback	= of_property_read_bool(node, "ti,loop-back");
 
 	ret = of_property_read_u32(node, "ti,rx-retry-timeout", &timeout);
 	if (ret < 0) {
@@ -747,9 +725,8 @@ static int knav_dma_probe(struct platform_device *pdev)
 	INIT_LIST_HEAD(&kdev->list);
 
 	pm_runtime_enable(kdev->dev);
-	ret = pm_runtime_get_sync(kdev->dev);
+	ret = pm_runtime_resume_and_get(kdev->dev);
 	if (ret < 0) {
-		pm_runtime_put_noidle(kdev->dev);
 		dev_err(kdev->dev, "unable to enable pktdma, err %d\n", ret);
 		goto err_pm_disable;
 	}
@@ -784,7 +761,7 @@ err_pm_disable:
 	return ret;
 }
 
-static int knav_dma_remove(struct platform_device *pdev)
+static void knav_dma_remove(struct platform_device *pdev)
 {
 	struct knav_dma_device *dma;
 
@@ -795,8 +772,6 @@ static int knav_dma_remove(struct platform_device *pdev)
 
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static struct of_device_id of_match[] = {
@@ -809,7 +784,7 @@ MODULE_DEVICE_TABLE(of, of_match);
 static struct platform_driver knav_dma_driver = {
 	.probe	= knav_dma_probe,
 	.remove	= knav_dma_remove,
-	.driver = {
+	.driver	= {
 		.name		= "keystone-navigator-dma",
 		.of_match_table	= of_match,
 	},

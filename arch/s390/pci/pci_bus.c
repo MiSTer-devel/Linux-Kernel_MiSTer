@@ -13,12 +13,12 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/err.h>
-#include <linux/export.h>
 #include <linux/delay.h>
 #include <linux/seq_file.h>
 #include <linux/jump_label.h>
 #include <linux/pci.h>
 #include <linux/printk.h>
+#include <linux/dma-direct.h>
 
 #include <asm/pci_clp.h>
 #include <asm/pci_dma.h>
@@ -41,26 +41,19 @@ static int zpci_nb_devices;
  */
 static int zpci_bus_prepare_device(struct zpci_dev *zdev)
 {
-	struct resource_entry *window, *n;
-	struct resource *res;
-	int rc;
+	int rc, i;
 
 	if (!zdev_enabled(zdev)) {
 		rc = zpci_enable_device(zdev);
 		if (rc)
 			return rc;
-		rc = zpci_dma_init_device(zdev);
-		if (rc) {
-			zpci_disable_device(zdev);
-			return rc;
-		}
 	}
 
 	if (!zdev->has_resources) {
-		zpci_setup_bus_resources(zdev, &zdev->zbus->resources);
-		resource_list_for_each_entry_safe(window, n, &zdev->zbus->resources) {
-			res = window->res;
-			pci_bus_add_resource(zdev->zbus->bus, res, 0);
+		zpci_setup_bus_resources(zdev);
+		for (i = 0; i < PCI_STD_NUM_BARS; i++) {
+			if (zdev->bars[i].res)
+				pci_bus_add_resource(zdev->zbus->bus, zdev->bars[i].res);
 		}
 	}
 
@@ -87,9 +80,8 @@ int zpci_bus_scan_device(struct zpci_dev *zdev)
 	if (!pdev)
 		return -ENODEV;
 
-	pci_bus_add_device(pdev);
 	pci_lock_rescan_remove();
-	pci_bus_add_devices(zdev->zbus->bus);
+	pci_bus_add_device(pdev);
 	pci_unlock_rescan_remove();
 
 	return 0;
@@ -132,11 +124,8 @@ void zpci_bus_remove_device(struct zpci_dev *zdev, bool set_error)
  * @zbus: the zbus to be scanned
  *
  * Enables and scans all PCI functions on the bus making them available to the
- * common PCI code. If there is no function 0 on the zbus nothing is scanned. If
- * a function does not have a slot yet because it was added to the zbus before
- * function 0 the slot is created. If a PCI function fails to be initialized
- * an error will be returned but attempts will still be made for all other
- * functions on the bus.
+ * common PCI code. If a PCI function fails to be initialized an error will be
+ * returned but attempts will still be made for all other functions on the bus.
  *
  * Return: 0 on success, an error value otherwise
  */
@@ -144,9 +133,6 @@ int zpci_bus_scan_bus(struct zpci_bus *zbus)
 {
 	struct zpci_dev *zdev;
 	int devfn, rc, ret = 0;
-
-	if (!zbus->function[0])
-		return 0;
 
 	for (devfn = 0; devfn < ZPCI_FUNCTIONS_PER_BUS; devfn++) {
 		zdev = zbus->function[devfn];
@@ -182,28 +168,34 @@ void zpci_bus_scan_busses(void)
 	mutex_unlock(&zbus_list_lock);
 }
 
+static bool zpci_bus_is_multifunction_root(struct zpci_dev *zdev)
+{
+	return !s390_pci_no_rid && zdev->rid_available &&
+		!zdev->vfn;
+}
+
 /* zpci_bus_create_pci_bus - Create the PCI bus associated with this zbus
  * @zbus: the zbus holding the zdevices
- * @f0: function 0 of the bus
+ * @fr: PCI root function that will determine the bus's domain, and bus speed
  * @ops: the pci operations
  *
- * Function zero is taken as a parameter as this is used to determine the
- * domain, multifunction property and maximum bus speed of the entire bus.
+ * The PCI function @fr determines the domain (its UID), multifunction property
+ * and maximum bus speed of the entire bus.
  *
  * Return: 0 on success, an error code otherwise
  */
-static int zpci_bus_create_pci_bus(struct zpci_bus *zbus, struct zpci_dev *f0, struct pci_ops *ops)
+static int zpci_bus_create_pci_bus(struct zpci_bus *zbus, struct zpci_dev *fr, struct pci_ops *ops)
 {
 	struct pci_bus *bus;
 	int domain;
 
-	domain = zpci_alloc_domain((u16)f0->uid);
+	domain = zpci_alloc_domain((u16)fr->uid);
 	if (domain < 0)
 		return domain;
 
 	zbus->domain_nr = domain;
-	zbus->multifunction = f0->rid_available;
-	zbus->max_bus_speed = f0->max_bus_speed;
+	zbus->multifunction = zpci_bus_is_multifunction_root(fr);
+	zbus->max_bus_speed = fr->max_bus_speed;
 
 	/*
 	 * Note that the zbus->resources are taken over and zbus->resources
@@ -216,7 +208,6 @@ static int zpci_bus_create_pci_bus(struct zpci_bus *zbus, struct zpci_dev *f0, s
 	}
 
 	zbus->bus = bus;
-	pci_bus_add_devices(bus);
 
 	return 0;
 }
@@ -247,13 +238,15 @@ static void zpci_bus_put(struct zpci_bus *zbus)
 	kref_put(&zbus->kref, zpci_bus_release);
 }
 
-static struct zpci_bus *zpci_bus_get(int pchid)
+static struct zpci_bus *zpci_bus_get(int topo, bool topo_is_tid)
 {
 	struct zpci_bus *zbus;
 
 	mutex_lock(&zbus_list_lock);
 	list_for_each_entry(zbus, &zbus_list, bus_next) {
-		if (pchid == zbus->pchid) {
+		if (!zbus->multifunction)
+			continue;
+		if (topo_is_tid == zbus->topo_is_tid && topo == zbus->topo) {
 			kref_get(&zbus->kref);
 			goto out_unlock;
 		}
@@ -264,7 +257,7 @@ out_unlock:
 	return zbus;
 }
 
-static struct zpci_bus *zpci_bus_alloc(int pchid)
+static struct zpci_bus *zpci_bus_alloc(int topo, bool topo_is_tid)
 {
 	struct zpci_bus *zbus;
 
@@ -272,7 +265,8 @@ static struct zpci_bus *zpci_bus_alloc(int pchid)
 	if (!zbus)
 		return NULL;
 
-	zbus->pchid = pchid;
+	zbus->topo = topo;
+	zbus->topo_is_tid = topo_is_tid;
 	INIT_LIST_HEAD(&zbus->bus_next);
 	mutex_lock(&zbus_list_lock);
 	list_add_tail(&zbus->bus_next, &zbus_list);
@@ -289,9 +283,31 @@ static struct zpci_bus *zpci_bus_alloc(int pchid)
 	return zbus;
 }
 
+static void pci_dma_range_setup(struct pci_dev *pdev)
+{
+	struct zpci_dev *zdev = to_zpci(pdev);
+	u64 aligned_end, size;
+	dma_addr_t dma_start;
+	int ret;
+
+	dma_start = PAGE_ALIGN(zdev->start_dma);
+	aligned_end = PAGE_ALIGN_DOWN(zdev->end_dma + 1);
+	if (aligned_end >= dma_start)
+		size = aligned_end - dma_start;
+	else
+		size = 0;
+	WARN_ON_ONCE(size == 0);
+
+	ret = dma_direct_set_offset(&pdev->dev, 0, dma_start, size);
+	if (ret)
+		pr_err("Failed to allocate DMA range map for %s\n", pci_name(pdev));
+}
+
 void pcibios_bus_add_device(struct pci_dev *pdev)
 {
 	struct zpci_dev *zdev = to_zpci(pdev);
+
+	pci_dma_range_setup(pdev);
 
 	/*
 	 * With pdev->no_vf_scan the common PCI probing code does not
@@ -303,50 +319,17 @@ void pcibios_bus_add_device(struct pci_dev *pdev)
 	}
 }
 
-/* zpci_bus_create_hotplug_slots - Add hotplug slot(s) for device added to bus
- * @zdev: the zPCI device that was newly added
- *
- * Add the hotplug slot(s) for the newly added PCI function. Normally this is
- * simply the slot for the function itself. If however we are adding the
- * function 0 on a zbus, it might be that we already registered functions on
- * that zbus but could not create their hotplug slots yet so add those now too.
- *
- * Return: 0 on success, an error code otherwise
- */
-static int zpci_bus_create_hotplug_slots(struct zpci_dev *zdev)
-{
-	struct zpci_bus *zbus = zdev->zbus;
-	int devfn, rc = 0;
-
-	rc = zpci_init_slot(zdev);
-	if (rc)
-		return rc;
-	zdev->has_hp_slot = 1;
-
-	if (zdev->devfn == 0 && zbus->multifunction) {
-		/* Now that function 0 is there we can finally create the
-		 * hotplug slots for those functions with devfn != 0 that have
-		 * been parked in zbus->function[] waiting for us to be able to
-		 * create the PCI bus.
-		 */
-		for  (devfn = 1; devfn < ZPCI_FUNCTIONS_PER_BUS; devfn++) {
-			zdev = zbus->function[devfn];
-			if (zdev && !zdev->has_hp_slot) {
-				rc = zpci_init_slot(zdev);
-				if (rc)
-					return rc;
-				zdev->has_hp_slot = 1;
-			}
-		}
-
-	}
-
-	return rc;
-}
-
 static int zpci_bus_add_device(struct zpci_bus *zbus, struct zpci_dev *zdev)
 {
 	int rc = -EINVAL;
+
+	if (zbus->multifunction) {
+		if (!zdev->rid_available) {
+			WARN_ONCE(1, "rid_available not set for multifunction\n");
+			return rc;
+		}
+		zdev->devfn = zdev->rid & ZPCI_RID_MASK_DEVFN;
+	}
 
 	if (zbus->function[zdev->devfn]) {
 		pr_err("devfn %04x is already assigned\n", zdev->devfn);
@@ -356,17 +339,10 @@ static int zpci_bus_add_device(struct zpci_bus *zbus, struct zpci_dev *zdev)
 	zbus->function[zdev->devfn] = zdev;
 	zpci_nb_devices++;
 
-	if (zbus->bus) {
-		if (zbus->multifunction && !zdev->rid_available) {
-			WARN_ONCE(1, "rid_available not set for multifunction\n");
-			goto error;
-		}
-
-		zpci_bus_create_hotplug_slots(zdev);
-	} else {
-		/* Hotplug slot will be created once function 0 appears */
-		zbus->multifunction = 1;
-	}
+	rc = zpci_init_slot(zdev);
+	if (rc)
+		goto error;
+	zdev->has_hp_slot = 1;
 
 	return 0;
 
@@ -377,10 +353,25 @@ error:
 	return rc;
 }
 
+static bool zpci_bus_is_isolated_vf(struct zpci_bus *zbus, struct zpci_dev *zdev)
+{
+	struct pci_dev *pdev;
+
+	if (!zdev->vfn)
+		return false;
+
+	pdev = zpci_iov_find_parent_pf(zbus, zdev);
+	if (!pdev)
+		return true;
+	pci_dev_put(pdev);
+	return false;
+}
+
 int zpci_bus_device_register(struct zpci_dev *zdev, struct pci_ops *ops)
 {
+	bool topo_is_tid = zdev->tid_avail;
 	struct zpci_bus *zbus = NULL;
-	int rc = -EBADF;
+	int topo, rc = -EBADF;
 
 	if (zpci_nb_devices == ZPCI_NR_DEVICES) {
 		pr_warn("Adding PCI function %08x failed because the configured limit of %d is reached\n",
@@ -388,19 +379,28 @@ int zpci_bus_device_register(struct zpci_dev *zdev, struct pci_ops *ops)
 		return -ENOSPC;
 	}
 
-	if (zdev->devfn >= ZPCI_FUNCTIONS_PER_BUS)
-		return -EINVAL;
-
-	if (!s390_pci_no_rid && zdev->rid_available)
-		zbus = zpci_bus_get(zdev->pchid);
+	topo = topo_is_tid ? zdev->tid : zdev->pchid;
+	zbus = zpci_bus_get(topo, topo_is_tid);
+	/*
+	 * An isolated VF gets its own domain/bus even if there exists
+	 * a matching domain/bus already
+	 */
+	if (zbus && zpci_bus_is_isolated_vf(zbus, zdev)) {
+		zpci_bus_put(zbus);
+		zbus = NULL;
+	}
 
 	if (!zbus) {
-		zbus = zpci_bus_alloc(zdev->pchid);
+		zbus = zpci_bus_alloc(topo, topo_is_tid);
 		if (!zbus)
 			return -ENOMEM;
 	}
 
-	if (zdev->devfn == 0) {
+	if (!zbus->bus) {
+		/* The UID of the first PCI function registered with a zpci_bus
+		 * is used as the domain number for that bus. Currently there
+		 * is exactly one zpci_bus per domain.
+		 */
 		rc = zpci_bus_create_pci_bus(zbus, zdev, ops);
 		if (rc)
 			goto error;

@@ -14,7 +14,7 @@
 #include <asm/entry.h>
 #include <asm/current.h>
 
-# ifndef __ASSEMBLY__
+# ifndef __ASSEMBLER__
 /* from kernel/cpu/mb.c */
 extern const struct seq_operations cpuinfo_op;
 
@@ -29,7 +29,7 @@ void start_thread(struct pt_regs *regs, unsigned long pc, unsigned long usp);
 extern void ret_from_fork(void);
 extern void ret_from_kernel_thread(void);
 
-# endif /* __ASSEMBLY__ */
+# endif /* __ASSEMBLER__ */
 
 /*
  * This is used to define STACK_TOP, and with MMU it must be below
@@ -45,7 +45,7 @@ extern void ret_from_kernel_thread(void);
 
 # define THREAD_KSP	0
 
-#  ifndef __ASSEMBLY__
+#  ifndef __ASSEMBLER__
 
 /* If you change this, you must change the associated assembly-languages
  * constants defined below, THREAD_*.
@@ -63,12 +63,7 @@ struct thread_struct {
 	.pgdir = swapper_pg_dir, \
 }
 
-/* Free all resources held by a thread. */
-static inline void release_thread(struct task_struct *dead_task)
-{
-}
-
-unsigned long get_wchan(struct task_struct *p);
+unsigned long __get_wchan(struct task_struct *p);
 
 /* The size allocated for kernel stacks. This _must_ be a power of two! */
 # define KERNEL_STACK_SIZE	0x2000
@@ -93,5 +88,5 @@ unsigned long get_wchan(struct task_struct *p);
 extern struct dentry *of_debugfs_root;
 #endif
 
-#  endif /* __ASSEMBLY__ */
+#  endif /* __ASSEMBLER__ */
 #endif /* _ASM_MICROBLAZE_PROCESSOR_H */

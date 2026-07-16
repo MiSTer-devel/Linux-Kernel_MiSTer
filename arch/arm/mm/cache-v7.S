@@ -9,12 +9,15 @@
  */
 #include <linux/linkage.h>
 #include <linux/init.h>
+#include <linux/cfi_types.h>
 #include <asm/assembler.h>
 #include <asm/errno.h>
 #include <asm/unwind.h>
 #include <asm/hardware/cache-b15-rac.h>
 
 #include "proc-macros.S"
+
+.arch armv7-a
 
 #ifdef CONFIG_CPU_ICACHE_MISMATCH_WORKAROUND
 .globl icache_size
@@ -78,19 +81,19 @@ ENDPROC(v7_invalidate_l1)
  *	Registers:
  *	r0 - set to 0
  */
-ENTRY(v7_flush_icache_all)
+SYM_TYPED_FUNC_START(v7_flush_icache_all)
 	mov	r0, #0
 	ALT_SMP(mcr	p15, 0, r0, c7, c1, 0)		@ invalidate I-cache inner shareable
 	ALT_UP(mcr	p15, 0, r0, c7, c5, 0)		@ I+BTB cache invalidate
 	ret	lr
-ENDPROC(v7_flush_icache_all)
+SYM_FUNC_END(v7_flush_icache_all)
 
  /*
  *     v7_flush_dcache_louis()
  *
  *     Flush the D-cache up to the Level of Unification Inner Shareable
  *
- *     Corrupted registers: r0-r7, r9-r11 (r6 only in Thumb mode)
+ *     Corrupted registers: r0-r6, r9-r10
  */
 
 ENTRY(v7_flush_dcache_louis)
@@ -117,7 +120,7 @@ ENDPROC(v7_flush_dcache_louis)
  *
  *	Flush the whole D-cache.
  *
- *	Corrupted registers: r0-r7, r9-r11 (r6 only in Thumb mode)
+ *	Corrupted registers: r0-r6, r9-r10
  *
  *	- mm    - mm_struct describing address space
  */
@@ -149,22 +152,22 @@ flush_levels:
 	movw	r4, #0x3ff
 	ands	r4, r4, r1, lsr #3		@ find maximum number on the way size
 	clz	r5, r4				@ find bit position of way size increment
-	movw	r7, #0x7fff
-	ands	r7, r7, r1, lsr #13		@ extract max number of the index size
+	movw	r6, #0x7fff
+	and	r1, r6, r1, lsr #13		@ extract max number of the index size
+	mov	r6, #1
+	movne	r4, r4, lsl r5			@ # of ways shifted into bits [31:...]
+	movne	r6, r6, lsl r5			@ 1 shifted left by same amount
 loop1:
-	mov	r9, r7				@ create working copy of max index
+	mov	r9, r1				@ create working copy of max index
 loop2:
- ARM(	orr	r11, r10, r4, lsl r5	)	@ factor way and cache number into r11
- THUMB(	lsl	r6, r4, r5		)
- THUMB(	orr	r11, r10, r6		)	@ factor way and cache number into r11
- ARM(	orr	r11, r11, r9, lsl r2	)	@ factor index number into r11
- THUMB(	lsl	r6, r9, r2		)
- THUMB(	orr	r11, r11, r6		)	@ factor index number into r11
-	mcr	p15, 0, r11, c7, c14, 2		@ clean & invalidate by set/way
+	mov	r5, r9, lsl r2			@ factor set number into r5
+	orr	r5, r5, r4			@ factor way number into r5
+	orr	r5, r5, r10			@ factor cache level into r5
+	mcr	p15, 0, r5, c7, c14, 2		@ clean & invalidate by set/way
 	subs	r9, r9, #1			@ decrement the index
 	bge	loop2
-	subs	r4, r4, #1			@ decrement the way
-	bge	loop1
+	subs	r4, r4, r6			@ decrement the way
+	bcs	loop1
 skip:
 	add	r10, r10, #2			@ increment cache number
 	cmp	r3, r10
@@ -191,17 +194,15 @@ ENDPROC(v7_flush_dcache_all)
  *  unification in a single instruction.
  *
  */
-ENTRY(v7_flush_kern_cache_all)
- ARM(	stmfd	sp!, {r4-r5, r7, r9-r11, lr}	)
- THUMB(	stmfd	sp!, {r4-r7, r9-r11, lr}	)
+SYM_TYPED_FUNC_START(v7_flush_kern_cache_all)
+	stmfd	sp!, {r4-r6, r9-r10, lr}
 	bl	v7_flush_dcache_all
 	mov	r0, #0
 	ALT_SMP(mcr	p15, 0, r0, c7, c1, 0)	@ invalidate I-cache inner shareable
 	ALT_UP(mcr	p15, 0, r0, c7, c5, 0)	@ I+BTB cache invalidate
- ARM(	ldmfd	sp!, {r4-r5, r7, r9-r11, lr}	)
- THUMB(	ldmfd	sp!, {r4-r7, r9-r11, lr}	)
+	ldmfd	sp!, {r4-r6, r9-r10, lr}
 	ret	lr
-ENDPROC(v7_flush_kern_cache_all)
+SYM_FUNC_END(v7_flush_kern_cache_all)
 
  /*
  *     v7_flush_kern_cache_louis(void)
@@ -209,17 +210,15 @@ ENDPROC(v7_flush_kern_cache_all)
  *     Flush the data cache up to Level of Unification Inner Shareable.
  *     Invalidate the I-cache to the point of unification.
  */
-ENTRY(v7_flush_kern_cache_louis)
- ARM(	stmfd	sp!, {r4-r5, r7, r9-r11, lr}	)
- THUMB(	stmfd	sp!, {r4-r7, r9-r11, lr}	)
+SYM_TYPED_FUNC_START(v7_flush_kern_cache_louis)
+	stmfd	sp!, {r4-r6, r9-r10, lr}
 	bl	v7_flush_dcache_louis
 	mov	r0, #0
 	ALT_SMP(mcr	p15, 0, r0, c7, c1, 0)	@ invalidate I-cache inner shareable
 	ALT_UP(mcr	p15, 0, r0, c7, c5, 0)	@ I+BTB cache invalidate
- ARM(	ldmfd	sp!, {r4-r5, r7, r9-r11, lr}	)
- THUMB(	ldmfd	sp!, {r4-r7, r9-r11, lr}	)
+	ldmfd	sp!, {r4-r6, r9-r10, lr}
 	ret	lr
-ENDPROC(v7_flush_kern_cache_louis)
+SYM_FUNC_END(v7_flush_kern_cache_louis)
 
 /*
  *	v7_flush_cache_all()
@@ -228,8 +227,9 @@ ENDPROC(v7_flush_kern_cache_louis)
  *
  *	- mm    - mm_struct describing address space
  */
-ENTRY(v7_flush_user_cache_all)
-	/*FALLTHROUGH*/
+SYM_TYPED_FUNC_START(v7_flush_user_cache_all)
+	ret	lr
+SYM_FUNC_END(v7_flush_user_cache_all)
 
 /*
  *	v7_flush_cache_range(start, end, flags)
@@ -243,10 +243,9 @@ ENTRY(v7_flush_user_cache_all)
  *	It is assumed that:
  *	- we have a VIPT cache.
  */
-ENTRY(v7_flush_user_cache_range)
+SYM_TYPED_FUNC_START(v7_flush_user_cache_range)
 	ret	lr
-ENDPROC(v7_flush_user_cache_all)
-ENDPROC(v7_flush_user_cache_range)
+SYM_FUNC_END(v7_flush_user_cache_range)
 
 /*
  *	v7_coherent_kern_range(start,end)
@@ -261,8 +260,11 @@ ENDPROC(v7_flush_user_cache_range)
  *	It is assumed that:
  *	- the Icache does not read data from the write buffer
  */
-ENTRY(v7_coherent_kern_range)
-	/* FALLTHROUGH */
+SYM_TYPED_FUNC_START(v7_coherent_kern_range)
+#ifdef CONFIG_CFI /* Fallthrough if !CFI */
+	b	v7_coherent_user_range
+#endif
+SYM_FUNC_END(v7_coherent_kern_range)
 
 /*
  *	v7_coherent_user_range(start,end)
@@ -277,7 +279,7 @@ ENTRY(v7_coherent_kern_range)
  *	It is assumed that:
  *	- the Icache does not read data from the write buffer
  */
-ENTRY(v7_coherent_user_range)
+SYM_TYPED_FUNC_START(v7_coherent_user_range)
  UNWIND(.fnstart		)
 	dcache_line_size r2, r3
 	sub	r3, r2, #1
@@ -323,8 +325,7 @@ ENTRY(v7_coherent_user_range)
 	mov	r0, #-EFAULT
 	ret	lr
  UNWIND(.fnend		)
-ENDPROC(v7_coherent_kern_range)
-ENDPROC(v7_coherent_user_range)
+SYM_FUNC_END(v7_coherent_user_range)
 
 /*
  *	v7_flush_kern_dcache_area(void *addr, size_t size)
@@ -335,7 +336,7 @@ ENDPROC(v7_coherent_user_range)
  *	- addr	- kernel address
  *	- size	- region size
  */
-ENTRY(v7_flush_kern_dcache_area)
+SYM_TYPED_FUNC_START(v7_flush_kern_dcache_area)
 	dcache_line_size r2, r3
 	add	r1, r0, r1
 	sub	r3, r2, #1
@@ -351,7 +352,7 @@ ENTRY(v7_flush_kern_dcache_area)
 	blo	1b
 	dsb	st
 	ret	lr
-ENDPROC(v7_flush_kern_dcache_area)
+SYM_FUNC_END(v7_flush_kern_dcache_area)
 
 /*
  *	v7_dma_inv_range(start,end)
@@ -415,7 +416,7 @@ ENDPROC(v7_dma_clean_range)
  *	- start   - virtual start address of region
  *	- end     - virtual end address of region
  */
-ENTRY(v7_dma_flush_range)
+SYM_TYPED_FUNC_START(v7_dma_flush_range)
 	dcache_line_size r2, r3
 	sub	r3, r2, #1
 	bic	r0, r0, r3
@@ -430,7 +431,7 @@ ENTRY(v7_dma_flush_range)
 	blo	1b
 	dsb	st
 	ret	lr
-ENDPROC(v7_dma_flush_range)
+SYM_FUNC_END(v7_dma_flush_range)
 
 /*
  *	dma_map_area(start, size, dir)
@@ -438,12 +439,12 @@ ENDPROC(v7_dma_flush_range)
  *	- size	- size of region
  *	- dir	- DMA direction
  */
-ENTRY(v7_dma_map_area)
+SYM_TYPED_FUNC_START(v7_dma_map_area)
 	add	r1, r1, r0
 	teq	r2, #DMA_FROM_DEVICE
 	beq	v7_dma_inv_range
 	b	v7_dma_clean_range
-ENDPROC(v7_dma_map_area)
+SYM_FUNC_END(v7_dma_map_area)
 
 /*
  *	dma_unmap_area(start, size, dir)
@@ -451,34 +452,9 @@ ENDPROC(v7_dma_map_area)
  *	- size	- size of region
  *	- dir	- DMA direction
  */
-ENTRY(v7_dma_unmap_area)
+SYM_TYPED_FUNC_START(v7_dma_unmap_area)
 	add	r1, r1, r0
 	teq	r2, #DMA_TO_DEVICE
 	bne	v7_dma_inv_range
 	ret	lr
-ENDPROC(v7_dma_unmap_area)
-
-	__INITDATA
-
-	@ define struct cpu_cache_fns (see <asm/cacheflush.h> and proc-macros.S)
-	define_cache_functions v7
-
-	/* The Broadcom Brahma-B15 read-ahead cache requires some modifications
-	 * to the v7_cache_fns, we only override the ones we need
-	 */
-#ifndef CONFIG_CACHE_B15_RAC
-	globl_equ	b15_flush_kern_cache_all,	v7_flush_kern_cache_all
-#endif
-	globl_equ	b15_flush_icache_all,		v7_flush_icache_all
-	globl_equ	b15_flush_kern_cache_louis,	v7_flush_kern_cache_louis
-	globl_equ	b15_flush_user_cache_all,	v7_flush_user_cache_all
-	globl_equ	b15_flush_user_cache_range,	v7_flush_user_cache_range
-	globl_equ	b15_coherent_kern_range,	v7_coherent_kern_range
-	globl_equ	b15_coherent_user_range,	v7_coherent_user_range
-	globl_equ	b15_flush_kern_dcache_area,	v7_flush_kern_dcache_area
-
-	globl_equ	b15_dma_map_area,		v7_dma_map_area
-	globl_equ	b15_dma_unmap_area,		v7_dma_unmap_area
-	globl_equ	b15_dma_flush_range,		v7_dma_flush_range
-
-	define_cache_functions b15
+SYM_FUNC_END(v7_dma_unmap_area)

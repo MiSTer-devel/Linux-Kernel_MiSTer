@@ -8,7 +8,41 @@
 #ifndef _ASM_RISCV_UACCESS_H
 #define _ASM_RISCV_UACCESS_H
 
+#include <asm/asm-extable.h>
+#include <asm/cpufeature.h>
 #include <asm/pgtable.h>		/* for TASK_SIZE */
+
+#ifdef CONFIG_RISCV_ISA_SUPM
+static inline unsigned long __untagged_addr_remote(struct mm_struct *mm, unsigned long addr)
+{
+	if (riscv_has_extension_unlikely(RISCV_ISA_EXT_SUPM)) {
+		u8 pmlen = mm->context.pmlen;
+
+		/* Virtual addresses are sign-extended; physical addresses are zero-extended. */
+		if (IS_ENABLED(CONFIG_MMU))
+			return (long)(addr << pmlen) >> pmlen;
+		else
+			return (addr << pmlen) >> pmlen;
+	}
+
+	return addr;
+}
+
+#define untagged_addr(addr) ({							\
+	unsigned long __addr = (__force unsigned long)(addr);			\
+	(__force __typeof__(addr))__untagged_addr_remote(current->mm, __addr);	\
+})
+
+#define untagged_addr_remote(mm, addr) ({					\
+	unsigned long __addr = (__force unsigned long)(addr);			\
+	mmap_assert_locked(mm);							\
+	(__force __typeof__(addr))__untagged_addr_remote(mm, __addr);		\
+})
+
+#define access_ok(addr, size) likely(__access_ok(untagged_addr(addr), size))
+#else
+#define untagged_addr(addr) (addr)
+#endif
 
 /*
  * User space memory access functions
@@ -20,41 +54,25 @@
 #include <asm/byteorder.h>
 #include <asm/extable.h>
 #include <asm/asm.h>
+#include <asm-generic/access_ok.h>
 
 #define __enable_user_access()							\
 	__asm__ __volatile__ ("csrs sstatus, %0" : : "r" (SR_SUM) : "memory")
 #define __disable_user_access()							\
 	__asm__ __volatile__ ("csrc sstatus, %0" : : "r" (SR_SUM) : "memory")
 
-/**
- * access_ok: - Checks if a user space pointer is valid
- * @addr: User space pointer to start of block to check
- * @size: Size of block to check
- *
- * Context: User context only.  This function may sleep.
- *
- * Checks if a pointer to a block of memory in user space is valid.
- *
- * Returns true (nonzero) if the memory block may be valid, false (zero)
- * if it is definitely invalid.
- *
- * Note that, depending on architecture, this function probably just
- * checks that the pointer is in the user space range - after calling
- * this function, memory access functions may still return -EFAULT.
- */
-#define access_ok(addr, size) ({					\
-	__chk_user_ptr(addr);						\
-	likely(__access_ok((unsigned long __force)(addr), (size)));	\
-})
-
 /*
- * Ensure that the range [addr, addr+size) is within the process's
- * address space
+ * This is the smallest unsigned integer type that can fit a value
+ * (up to 'long long')
  */
-static inline int __access_ok(unsigned long addr, unsigned long size)
-{
-	return size <= TASK_SIZE && addr <= TASK_SIZE - size;
-}
+#define __inttype(x) __typeof__(		\
+	__typefits(x, char,			\
+	  __typefits(x, short,			\
+	    __typefits(x, int,			\
+	      __typefits(x, long, 0ULL)))))
+
+#define __typefits(x, type, not) \
+	__builtin_choose_expr(sizeof(x) <= sizeof(type), (unsigned type)0, not)
 
 /*
  * The exception table consists of pairs of addresses: the first is the
@@ -78,85 +96,131 @@ static inline int __access_ok(unsigned long addr, unsigned long size)
  * call.
  */
 
-#define __get_user_asm(insn, x, ptr, err)			\
+#ifdef CONFIG_CC_HAS_ASM_GOTO_OUTPUT
+/*
+ * Use a temporary variable for the output of the asm goto to avoid a
+ * triggering an LLVM assertion due to sign extending the output when
+ * it is used in later function calls:
+ * https://github.com/llvm/llvm-project/issues/143795
+ */
+#define __get_user_asm(insn, x, ptr, label)			\
 do {								\
-	uintptr_t __tmp;					\
-	__typeof__(x) __x;					\
+	u64 __tmp;						\
+	asm_goto_output(					\
+		"1:\n"						\
+		"	" insn " %0, %1\n"			\
+		_ASM_EXTABLE_UACCESS_ERR(1b, %l2, %0)		\
+		: "=&r" (__tmp)					\
+		: "m" (*(ptr)) : : label);			\
+	(x) = (__typeof__(x))(unsigned long)__tmp;		\
+} while (0)
+#else /* !CONFIG_CC_HAS_ASM_GOTO_OUTPUT */
+#define __get_user_asm(insn, x, ptr, label)			\
+do {								\
+	long __gua_err = 0;					\
 	__asm__ __volatile__ (					\
 		"1:\n"						\
-		"	" insn " %1, %3\n"			\
+		"	" insn " %1, %2\n"			\
 		"2:\n"						\
-		"	.section .fixup,\"ax\"\n"		\
-		"	.balign 4\n"				\
-		"3:\n"						\
-		"	li %0, %4\n"				\
-		"	li %1, 0\n"				\
-		"	jump 2b, %2\n"				\
-		"	.previous\n"				\
-		"	.section __ex_table,\"a\"\n"		\
-		"	.balign " RISCV_SZPTR "\n"			\
-		"	" RISCV_PTR " 1b, 3b\n"			\
-		"	.previous"				\
-		: "+r" (err), "=&r" (__x), "=r" (__tmp)		\
-		: "m" (*(ptr)), "i" (-EFAULT));			\
-	(x) = __x;						\
+		_ASM_EXTABLE_UACCESS_ERR_ZERO(1b, 2b, %0, %1)	\
+		: "+r" (__gua_err), "=&r" (x)			\
+		: "m" (*(ptr)));				\
+	if (__gua_err)						\
+		goto label;					\
 } while (0)
+#endif /* CONFIG_CC_HAS_ASM_GOTO_OUTPUT */
 
 #ifdef CONFIG_64BIT
-#define __get_user_8(x, ptr, err) \
-	__get_user_asm("ld", x, ptr, err)
+#define __get_user_8(x, ptr, label) \
+	__get_user_asm("ld", x, ptr, label)
 #else /* !CONFIG_64BIT */
-#define __get_user_8(x, ptr, err)				\
+
+#ifdef CONFIG_CC_HAS_ASM_GOTO_OUTPUT
+#define __get_user_8(x, ptr, label)				\
 do {								\
 	u32 __user *__ptr = (u32 __user *)(ptr);		\
 	u32 __lo, __hi;						\
-	uintptr_t __tmp;					\
-	__asm__ __volatile__ (					\
+	asm_goto_output(					\
 		"1:\n"						\
-		"	lw %1, %4\n"				\
+		"	lw %0, %2\n"				\
 		"2:\n"						\
-		"	lw %2, %5\n"				\
-		"3:\n"						\
-		"	.section .fixup,\"ax\"\n"		\
-		"	.balign 4\n"				\
-		"4:\n"						\
-		"	li %0, %6\n"				\
-		"	li %1, 0\n"				\
-		"	li %2, 0\n"				\
-		"	jump 3b, %3\n"				\
-		"	.previous\n"				\
-		"	.section __ex_table,\"a\"\n"		\
-		"	.balign " RISCV_SZPTR "\n"			\
-		"	" RISCV_PTR " 1b, 4b\n"			\
-		"	" RISCV_PTR " 2b, 4b\n"			\
-		"	.previous"				\
-		: "+r" (err), "=&r" (__lo), "=r" (__hi),	\
-			"=r" (__tmp)				\
-		: "m" (__ptr[__LSW]), "m" (__ptr[__MSW]),	\
-			"i" (-EFAULT));				\
-	(x) = (__typeof__(x))((__typeof__((x)-(x)))(		\
+		"	lw %1, %3\n"				\
+		_ASM_EXTABLE_UACCESS_ERR(1b, %l4, %0)		\
+		_ASM_EXTABLE_UACCESS_ERR(2b, %l4, %0)		\
+		: "=&r" (__lo), "=r" (__hi)			\
+		: "m" (__ptr[__LSW]), "m" (__ptr[__MSW])	\
+		: : label);                                     \
+	(x) = (__typeof__(x))((__typeof__((x) - (x)))(		\
 		(((u64)__hi << 32) | __lo)));			\
 } while (0)
+#else /* !CONFIG_CC_HAS_ASM_GOTO_OUTPUT */
+#define __get_user_8(x, ptr, label)				\
+do {								\
+	u32 __user *__ptr = (u32 __user *)(ptr);		\
+	u32 __lo, __hi;						\
+	long __gu8_err = 0;					\
+	__asm__ __volatile__ (					\
+		"1:\n"						\
+		"	lw %1, %3\n"				\
+		"2:\n"						\
+		"	lw %2, %4\n"				\
+		"3:\n"						\
+		_ASM_EXTABLE_UACCESS_ERR_ZERO(1b, 3b, %0, %1)	\
+		_ASM_EXTABLE_UACCESS_ERR_ZERO(2b, 3b, %0, %1)	\
+		: "+r" (__gu8_err), "=&r" (__lo), "=r" (__hi)	\
+		: "m" (__ptr[__LSW]), "m" (__ptr[__MSW]));	\
+	if (__gu8_err) {					\
+		__hi = 0;					\
+		goto label;					\
+	}							\
+	(x) = (__typeof__(x))((__typeof__((x) - (x)))(		\
+		(((u64)__hi << 32) | __lo)));			\
+} while (0)
+#endif /* CONFIG_CC_HAS_ASM_GOTO_OUTPUT */
+
 #endif /* CONFIG_64BIT */
 
-#define __get_user_nocheck(x, __gu_ptr, __gu_err)		\
+unsigned long __must_check __asm_copy_to_user_sum_enabled(void __user *to,
+	const void *from, unsigned long n);
+unsigned long __must_check __asm_copy_from_user_sum_enabled(void *to,
+	const void __user *from, unsigned long n);
+
+#define __get_user_nocheck(x, __gu_ptr, label)			\
 do {								\
+	if (!IS_ENABLED(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS) &&	\
+	    !IS_ALIGNED((uintptr_t)__gu_ptr, sizeof(*__gu_ptr))) {	\
+		if (__asm_copy_from_user_sum_enabled(&(x), __gu_ptr, sizeof(*__gu_ptr))) \
+			goto label;				\
+		break;						\
+	}							\
 	switch (sizeof(*__gu_ptr)) {				\
 	case 1:							\
-		__get_user_asm("lb", (x), __gu_ptr, __gu_err);	\
+		__get_user_asm("lb", (x), __gu_ptr, label);	\
 		break;						\
 	case 2:							\
-		__get_user_asm("lh", (x), __gu_ptr, __gu_err);	\
+		__get_user_asm("lh", (x), __gu_ptr, label);	\
 		break;						\
 	case 4:							\
-		__get_user_asm("lw", (x), __gu_ptr, __gu_err);	\
+		__get_user_asm("lw", (x), __gu_ptr, label);	\
 		break;						\
 	case 8:							\
-		__get_user_8((x), __gu_ptr, __gu_err);	\
+		__get_user_8((x), __gu_ptr, label);		\
 		break;						\
 	default:						\
 		BUILD_BUG();					\
 	}							\
+} while (0)
+
+#define __get_user_error(x, ptr, err)					\
+do {									\
+	__label__ __gu_failed;						\
+									\
+	__get_user_nocheck(x, ptr, __gu_failed);			\
+		err = 0;						\
+		break;							\
+__gu_failed:								\
+		x = (__typeof__(x))0;					\
+		err = -EFAULT;						\
 } while (0)
 
 /**
@@ -181,14 +245,17 @@ do {								\
  */
 #define __get_user(x, ptr)					\
 ({								\
-	const __typeof__(*(ptr)) __user *__gu_ptr = (ptr);	\
+	const __typeof__(*(ptr)) __user *__gu_ptr = untagged_addr(ptr); \
 	long __gu_err = 0;					\
+	__typeof__(x) __gu_val;					\
 								\
 	__chk_user_ptr(__gu_ptr);				\
 								\
 	__enable_user_access();					\
-	__get_user_nocheck(x, __gu_ptr, __gu_err);		\
+	__get_user_error(__gu_val, __gu_ptr, __gu_err);		\
 	__disable_user_access();				\
+								\
+	(x) = __gu_val;						\
 								\
 	__gu_err;						\
 })
@@ -216,82 +283,74 @@ do {								\
 	might_fault();						\
 	access_ok(__p, sizeof(*__p)) ?		\
 		__get_user((x), __p) :				\
-		((x) = 0, -EFAULT);				\
+		((x) = (__force __typeof__(x))0, -EFAULT);	\
 })
 
-#define __put_user_asm(insn, x, ptr, err)			\
+#define __put_user_asm(insn, x, ptr, label)			\
 do {								\
-	uintptr_t __tmp;					\
 	__typeof__(*(ptr)) __x = x;				\
-	__asm__ __volatile__ (					\
+	asm goto(						\
 		"1:\n"						\
-		"	" insn " %z3, %2\n"			\
-		"2:\n"						\
-		"	.section .fixup,\"ax\"\n"		\
-		"	.balign 4\n"				\
-		"3:\n"						\
-		"	li %0, %4\n"				\
-		"	jump 2b, %1\n"				\
-		"	.previous\n"				\
-		"	.section __ex_table,\"a\"\n"		\
-		"	.balign " RISCV_SZPTR "\n"			\
-		"	" RISCV_PTR " 1b, 3b\n"			\
-		"	.previous"				\
-		: "+r" (err), "=r" (__tmp), "=m" (*(ptr))	\
-		: "rJ" (__x), "i" (-EFAULT));			\
+		"	" insn " %z0, %1\n"			\
+		_ASM_EXTABLE(1b, %l2)				\
+		: : "rJ" (__x), "m"(*(ptr)) : : label);		\
 } while (0)
 
 #ifdef CONFIG_64BIT
-#define __put_user_8(x, ptr, err) \
-	__put_user_asm("sd", x, ptr, err)
+#define __put_user_8(x, ptr, label) \
+	__put_user_asm("sd", x, ptr, label)
 #else /* !CONFIG_64BIT */
-#define __put_user_8(x, ptr, err)				\
+#define __put_user_8(x, ptr, label)				\
 do {								\
 	u32 __user *__ptr = (u32 __user *)(ptr);		\
 	u64 __x = (__typeof__((x)-(x)))(x);			\
-	uintptr_t __tmp;					\
-	__asm__ __volatile__ (					\
+	asm goto(						\
 		"1:\n"						\
-		"	sw %z4, %2\n"				\
+		"	sw %z0, %2\n"				\
 		"2:\n"						\
-		"	sw %z5, %3\n"				\
-		"3:\n"						\
-		"	.section .fixup,\"ax\"\n"		\
-		"	.balign 4\n"				\
-		"4:\n"						\
-		"	li %0, %6\n"				\
-		"	jump 3b, %1\n"				\
-		"	.previous\n"				\
-		"	.section __ex_table,\"a\"\n"		\
-		"	.balign " RISCV_SZPTR "\n"			\
-		"	" RISCV_PTR " 1b, 4b\n"			\
-		"	" RISCV_PTR " 2b, 4b\n"			\
-		"	.previous"				\
-		: "+r" (err), "=r" (__tmp),			\
-			"=m" (__ptr[__LSW]),			\
-			"=m" (__ptr[__MSW])			\
-		: "rJ" (__x), "rJ" (__x >> 32), "i" (-EFAULT));	\
+		"	sw %z1, %3\n"				\
+		_ASM_EXTABLE(1b, %l4)				\
+		_ASM_EXTABLE(2b, %l4)				\
+		: : "rJ" (__x), "rJ" (__x >> 32),		\
+			"m" (__ptr[__LSW]),			\
+			"m" (__ptr[__MSW]) : : label);		\
 } while (0)
 #endif /* CONFIG_64BIT */
 
-#define __put_user_nocheck(x, __gu_ptr, __pu_err)					\
+#define __put_user_nocheck(x, __gu_ptr, label)			\
 do {								\
+	if (!IS_ENABLED(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS) &&	\
+	    !IS_ALIGNED((uintptr_t)__gu_ptr, sizeof(*__gu_ptr))) {	\
+		__typeof__(*(__gu_ptr)) ___val = (x);		\
+		if (__asm_copy_to_user_sum_enabled(__gu_ptr, &(___val), sizeof(*__gu_ptr))) \
+			goto label;				\
+		break;						\
+	}							\
 	switch (sizeof(*__gu_ptr)) {				\
 	case 1:							\
-		__put_user_asm("sb", (x), __gu_ptr, __pu_err);	\
+		__put_user_asm("sb", (x), __gu_ptr, label);	\
 		break;						\
 	case 2:							\
-		__put_user_asm("sh", (x), __gu_ptr, __pu_err);	\
+		__put_user_asm("sh", (x), __gu_ptr, label);	\
 		break;						\
 	case 4:							\
-		__put_user_asm("sw", (x), __gu_ptr, __pu_err);	\
+		__put_user_asm("sw", (x), __gu_ptr, label);	\
 		break;						\
 	case 8:							\
-		__put_user_8((x), __gu_ptr, __pu_err);	\
+		__put_user_8((x), __gu_ptr, label);		\
 		break;						\
 	default:						\
 		BUILD_BUG();					\
 	}							\
+} while (0)
+
+#define __put_user_error(x, ptr, err)				\
+do {								\
+	__label__ err_label;					\
+	__put_user_nocheck(x, ptr, err_label);			\
+	break;							\
+err_label:							\
+	(err) = -EFAULT;					\
 } while (0)
 
 /**
@@ -317,14 +376,14 @@ do {								\
  */
 #define __put_user(x, ptr)					\
 ({								\
-	__typeof__(*(ptr)) __user *__gu_ptr = (ptr);		\
+	__typeof__(*(ptr)) __user *__gu_ptr = untagged_addr(ptr); \
 	__typeof__(*__gu_ptr) __val = (x);			\
 	long __pu_err = 0;					\
 								\
 	__chk_user_ptr(__gu_ptr);				\
 								\
 	__enable_user_access();					\
-	__put_user_nocheck(__val, __gu_ptr, __pu_err);		\
+	__put_user_error(__val, __gu_ptr, __pu_err);		\
 	__disable_user_access();				\
 								\
 	__pu_err;						\
@@ -364,13 +423,13 @@ unsigned long __must_check __asm_copy_from_user(void *to,
 static inline unsigned long
 raw_copy_from_user(void *to, const void __user *from, unsigned long n)
 {
-	return __asm_copy_from_user(to, from, n);
+	return __asm_copy_from_user(to, untagged_addr(from), n);
 }
 
 static inline unsigned long
 raw_copy_to_user(void __user *to, const void *from, unsigned long n)
 {
-	return __asm_copy_to_user(to, from, n);
+	return __asm_copy_to_user(untagged_addr(to), from, n);
 }
 
 extern long strncpy_from_user(char *dest, const char __user *src, long count);
@@ -385,103 +444,48 @@ unsigned long __must_check clear_user(void __user *to, unsigned long n)
 {
 	might_fault();
 	return access_ok(to, n) ?
-		__clear_user(to, n) : n;
+		__clear_user(untagged_addr(to), n) : n;
 }
 
-/*
- * Atomic compare-and-exchange, but with a fixup for userspace faults.  Faults
- * will set "err" to -EFAULT, while successful accesses return the previous
- * value.
- */
-#define __cmpxchg_user(ptr, old, new, err, size, lrb, scb)	\
-({								\
-	__typeof__(ptr) __ptr = (ptr);				\
-	__typeof__(*(ptr)) __old = (old);			\
-	__typeof__(*(ptr)) __new = (new);			\
-	__typeof__(*(ptr)) __ret;				\
-	__typeof__(err) __err = 0;				\
-	register unsigned int __rc;				\
-	__enable_user_access();					\
-	switch (size) {						\
-	case 4:							\
-		__asm__ __volatile__ (				\
-		"0:\n"						\
-		"	lr.w" #scb " %[ret], %[ptr]\n"		\
-		"	bne          %[ret], %z[old], 1f\n"	\
-		"	sc.w" #lrb " %[rc], %z[new], %[ptr]\n"	\
-		"	bnez         %[rc], 0b\n"		\
-		"1:\n"						\
-		".section .fixup,\"ax\"\n"			\
-		".balign 4\n"					\
-		"2:\n"						\
-		"	li %[err], %[efault]\n"			\
-		"	jump 1b, %[rc]\n"			\
-		".previous\n"					\
-		".section __ex_table,\"a\"\n"			\
-		".balign " RISCV_SZPTR "\n"			\
-		"	" RISCV_PTR " 1b, 2b\n"			\
-		".previous\n"					\
-			: [ret] "=&r" (__ret),			\
-			  [rc]  "=&r" (__rc),			\
-			  [ptr] "+A" (*__ptr),			\
-			  [err] "=&r" (__err)			\
-			: [old] "rJ" (__old),			\
-			  [new] "rJ" (__new),			\
-			  [efault] "i" (-EFAULT));		\
-		break;						\
-	case 8:							\
-		__asm__ __volatile__ (				\
-		"0:\n"						\
-		"	lr.d" #scb " %[ret], %[ptr]\n"		\
-		"	bne          %[ret], %z[old], 1f\n"	\
-		"	sc.d" #lrb " %[rc], %z[new], %[ptr]\n"	\
-		"	bnez         %[rc], 0b\n"		\
-		"1:\n"						\
-		".section .fixup,\"ax\"\n"			\
-		".balign 4\n"					\
-		"2:\n"						\
-		"	li %[err], %[efault]\n"			\
-		"	jump 1b, %[rc]\n"			\
-		".previous\n"					\
-		".section __ex_table,\"a\"\n"			\
-		".balign " RISCV_SZPTR "\n"			\
-		"	" RISCV_PTR " 1b, 2b\n"			\
-		".previous\n"					\
-			: [ret] "=&r" (__ret),			\
-			  [rc]  "=&r" (__rc),			\
-			  [ptr] "+A" (*__ptr),			\
-			  [err] "=&r" (__err)			\
-			: [old] "rJ" (__old),			\
-			  [new] "rJ" (__new),			\
-			  [efault] "i" (-EFAULT));		\
-		break;						\
-	default:						\
-		BUILD_BUG();					\
-	}							\
-	__disable_user_access();				\
-	(err) = __err;						\
-	__ret;							\
-})
-
-#define HAVE_GET_KERNEL_NOFAULT
-
 #define __get_kernel_nofault(dst, src, type, err_label)			\
-do {									\
-	long __kr_err;							\
-									\
-	__get_user_nocheck(*((type *)(dst)), (type *)(src), __kr_err);	\
-	if (unlikely(__kr_err))						\
-		goto err_label;						\
-} while (0)
+	__get_user_nocheck(*((type *)(dst)), (__force __user type *)(src), err_label)
 
 #define __put_kernel_nofault(dst, src, type, err_label)			\
-do {									\
-	long __kr_err;							\
-									\
-	__put_user_nocheck(*((type *)(src)), (type *)(dst), __kr_err);	\
-	if (unlikely(__kr_err))						\
-		goto err_label;						\
+	__put_user_nocheck(*((type *)(src)), (__force __user type *)(dst), err_label)
+
+static __must_check __always_inline bool user_access_begin(const void __user *ptr, size_t len)
+{
+	if (unlikely(!access_ok(ptr, len)))
+		return 0;
+	__enable_user_access();
+	return 1;
+}
+#define user_access_begin user_access_begin
+#define user_access_end __disable_user_access
+
+static inline unsigned long user_access_save(void) { return 0UL; }
+static inline void user_access_restore(unsigned long enabled) { }
+
+/*
+ * We want the unsafe accessors to always be inlined and use
+ * the error labels - thus the macro games.
+ */
+#define unsafe_put_user(x, ptr, label)					\
+	__put_user_nocheck(x, (ptr), label)
+
+#define unsafe_get_user(x, ptr, label)	do {				\
+	__inttype(*(ptr)) __gu_val;					\
+	__get_user_nocheck(__gu_val, (ptr), label);			\
+	(x) = (__force __typeof__(*(ptr)))__gu_val;			\
 } while (0)
+
+#define unsafe_copy_to_user(_dst, _src, _len, label)			\
+	if (__asm_copy_to_user_sum_enabled(_dst, _src, _len))		\
+		goto label;
+
+#define unsafe_copy_from_user(_dst, _src, _len, label)			\
+	if (__asm_copy_from_user_sum_enabled(_dst, _src, _len))		\
+		goto label;
 
 #else /* CONFIG_MMU */
 #include <asm-generic/uaccess.h>

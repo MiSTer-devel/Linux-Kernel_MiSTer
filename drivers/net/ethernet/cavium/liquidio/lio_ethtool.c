@@ -442,10 +442,11 @@ lio_get_drvinfo(struct net_device *netdev, struct ethtool_drvinfo *drvinfo)
 	oct = lio->oct_dev;
 
 	memset(drvinfo, 0, sizeof(struct ethtool_drvinfo));
-	strcpy(drvinfo->driver, "liquidio");
-	strncpy(drvinfo->fw_version, oct->fw_info.liquidio_firmware_version,
-		ETHTOOL_FWVERS_LEN);
-	strncpy(drvinfo->bus_info, pci_name(oct->pci_dev), 32);
+	strscpy(drvinfo->driver, "liquidio", sizeof(drvinfo->driver));
+	strscpy(drvinfo->fw_version, oct->fw_info.liquidio_firmware_version,
+		sizeof(drvinfo->fw_version));
+	strscpy(drvinfo->bus_info, pci_name(oct->pci_dev),
+		sizeof(drvinfo->bus_info));
 }
 
 static void
@@ -458,10 +459,11 @@ lio_get_vf_drvinfo(struct net_device *netdev, struct ethtool_drvinfo *drvinfo)
 	oct = lio->oct_dev;
 
 	memset(drvinfo, 0, sizeof(struct ethtool_drvinfo));
-	strcpy(drvinfo->driver, "liquidio_vf");
-	strncpy(drvinfo->fw_version, oct->fw_info.liquidio_firmware_version,
-		ETHTOOL_FWVERS_LEN);
-	strncpy(drvinfo->bus_info, pci_name(oct->pci_dev), 32);
+	strscpy(drvinfo->driver, "liquidio_vf", sizeof(drvinfo->driver));
+	strscpy(drvinfo->fw_version, oct->fw_info.liquidio_firmware_version,
+		sizeof(drvinfo->fw_version));
+	strscpy(drvinfo->bus_info, pci_name(oct->pci_dev),
+		sizeof(drvinfo->bus_info));
 }
 
 static int
@@ -947,7 +949,9 @@ static int lio_set_phys_id(struct net_device *netdev,
 
 static void
 lio_ethtool_get_ringparam(struct net_device *netdev,
-			  struct ethtool_ringparam *ering)
+			  struct ethtool_ringparam *ering,
+			  struct kernel_ethtool_ringparam *kernel_ering,
+			  struct netlink_ext_ack *extack)
 {
 	struct lio *lio = GET_LIO(netdev);
 	struct octeon_device *oct = lio->oct_dev;
@@ -1252,8 +1256,11 @@ static int lio_reset_queues(struct net_device *netdev, uint32_t num_qs)
 	return 0;
 }
 
-static int lio_ethtool_set_ringparam(struct net_device *netdev,
-				     struct ethtool_ringparam *ering)
+static int
+lio_ethtool_set_ringparam(struct net_device *netdev,
+			  struct ethtool_ringparam *ering,
+			  struct kernel_ethtool_ringparam *kernel_ering,
+			  struct netlink_ext_ack *extack)
 {
 	u32 rx_count, tx_count, rx_count_old, tx_count_old;
 	struct lio *lio = GET_LIO(netdev);
@@ -2489,37 +2496,31 @@ ret_intrmod:
 	return ret;
 }
 
+#ifdef PTP_HARDWARE_TIMESTAMPING
 static int lio_get_ts_info(struct net_device *netdev,
-			   struct ethtool_ts_info *info)
+			   struct kernel_ethtool_ts_info *info)
 {
 	struct lio *lio = GET_LIO(netdev);
 
 	info->so_timestamping =
-#ifdef PTP_HARDWARE_TIMESTAMPING
 		SOF_TIMESTAMPING_TX_HARDWARE |
 		SOF_TIMESTAMPING_RX_HARDWARE |
 		SOF_TIMESTAMPING_RAW_HARDWARE |
-		SOF_TIMESTAMPING_TX_SOFTWARE |
-#endif
-		SOF_TIMESTAMPING_RX_SOFTWARE |
-		SOF_TIMESTAMPING_SOFTWARE;
+		SOF_TIMESTAMPING_TX_SOFTWARE;
 
 	if (lio->ptp_clock)
 		info->phc_index = ptp_clock_index(lio->ptp_clock);
-	else
-		info->phc_index = -1;
 
-#ifdef PTP_HARDWARE_TIMESTAMPING
 	info->tx_types = (1 << HWTSTAMP_TX_OFF) | (1 << HWTSTAMP_TX_ON);
 
 	info->rx_filters = (1 << HWTSTAMP_FILTER_NONE) |
 			   (1 << HWTSTAMP_FILTER_PTP_V1_L4_EVENT) |
 			   (1 << HWTSTAMP_FILTER_PTP_V2_L2_EVENT) |
 			   (1 << HWTSTAMP_FILTER_PTP_V2_L4_EVENT);
-#endif
 
 	return 0;
 }
+#endif
 
 /* Return register dump len. */
 static int lio_get_regs_len(struct net_device *dev)
@@ -3139,7 +3140,9 @@ static const struct ethtool_ops lio_ethtool_ops = {
 	.set_coalesce		= lio_set_intr_coalesce,
 	.get_priv_flags		= lio_get_priv_flags,
 	.set_priv_flags		= lio_set_priv_flags,
+#ifdef PTP_HARDWARE_TIMESTAMPING
 	.get_ts_info		= lio_get_ts_info,
+#endif
 };
 
 static const struct ethtool_ops lio_vf_ethtool_ops = {
@@ -3162,7 +3165,9 @@ static const struct ethtool_ops lio_vf_ethtool_ops = {
 	.set_coalesce		= lio_set_intr_coalesce,
 	.get_priv_flags		= lio_get_priv_flags,
 	.set_priv_flags		= lio_set_priv_flags,
+#ifdef PTP_HARDWARE_TIMESTAMPING
 	.get_ts_info		= lio_get_ts_info,
+#endif
 };
 
 void liquidio_set_ethtool_ops(struct net_device *netdev)
@@ -3175,3 +3180,4 @@ void liquidio_set_ethtool_ops(struct net_device *netdev)
 	else
 		netdev->ethtool_ops = &lio_ethtool_ops;
 }
+EXPORT_SYMBOL_GPL(liquidio_set_ethtool_ops);

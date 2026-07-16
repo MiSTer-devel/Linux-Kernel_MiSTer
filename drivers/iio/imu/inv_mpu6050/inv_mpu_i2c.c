@@ -3,14 +3,14 @@
 * Copyright (C) 2012 Invensense, Inc.
 */
 
-#include <linux/acpi.h>
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/i2c.h>
 #include <linux/iio/iio.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/property.h>
+
 #include "inv_mpu_iio.h"
 
 static const struct regmap_config inv_mpu_regmap_config = {
@@ -29,9 +29,12 @@ static bool inv_mpu_i2c_aux_bus(struct device *dev)
 
 	switch (st->chip_type) {
 	case INV_ICM20608:
+	case INV_ICM20608D:
 	case INV_ICM20609:
 	case INV_ICM20689:
+	case INV_ICM20600:
 	case INV_ICM20602:
+	case INV_IAM20380:
 	case INV_IAM20680:
 		/* no i2c auxiliary bus on the chip */
 		return false;
@@ -51,7 +54,7 @@ static int inv_mpu_i2c_aux_setup(struct iio_dev *indio_dev)
 {
 	struct inv_mpu6050_state *st = iio_priv(indio_dev);
 	struct device *dev = indio_dev->dev.parent;
-	struct device_node *mux_node;
+	struct fwnode_handle *mux_node;
 	int ret;
 
 	/*
@@ -65,12 +68,12 @@ static int inv_mpu_i2c_aux_setup(struct iio_dev *indio_dev)
 	case INV_MPU9150:
 	case INV_MPU9250:
 	case INV_MPU9255:
-		mux_node = of_get_child_by_name(dev->of_node, "i2c-gate");
+		mux_node = device_get_named_child_node(dev, "i2c-gate");
 		if (mux_node != NULL) {
 			st->magn_disabled = true;
 			dev_warn(dev, "disable internal use of magnetometer\n");
 		}
-		of_node_put(mux_node);
+		fwnode_handle_put(mux_node);
 		break;
 	default:
 		break;
@@ -90,13 +93,12 @@ static int inv_mpu_i2c_aux_setup(struct iio_dev *indio_dev)
 /**
  *  inv_mpu_probe() - probe function.
  *  @client:          i2c client.
- *  @id:              i2c device id.
  *
  *  Returns 0 on success, a negative error code otherwise.
  */
-static int inv_mpu_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int inv_mpu_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	const void *match;
 	struct inv_mpu6050_state *st;
 	int result;
@@ -110,7 +112,7 @@ static int inv_mpu_probe(struct i2c_client *client,
 
 	match = device_get_match_data(&client->dev);
 	if (match) {
-		chip_type = (enum inv_devices)match;
+		chip_type = (uintptr_t)match;
 		name = client->name;
 	} else if (id) {
 		chip_type = (enum inv_devices)
@@ -141,7 +143,7 @@ static int inv_mpu_probe(struct i2c_client *client,
 		if (!st->muxc)
 			return -ENOMEM;
 		st->muxc->priv = dev_get_drvdata(&client->dev);
-		result = i2c_mux_add_adapter(st->muxc, 0, 0, 0);
+		result = i2c_mux_add_adapter(st->muxc, 0, 0);
 		if (result)
 			return result;
 		result = inv_mpu_acpi_create_mux_client(client);
@@ -156,7 +158,7 @@ out_del_mux:
 	return result;
 }
 
-static int inv_mpu_remove(struct i2c_client *client)
+static void inv_mpu_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct inv_mpu6050_state *st = iio_priv(indio_dev);
@@ -165,8 +167,6 @@ static int inv_mpu_remove(struct i2c_client *client)
 		inv_mpu_acpi_delete_mux_client(client);
 		i2c_mux_del_adapters(st->muxc);
 	}
-
-	return 0;
 }
 
 /*
@@ -182,12 +182,17 @@ static const struct i2c_device_id inv_mpu_id[] = {
 	{"mpu9250", INV_MPU9250},
 	{"mpu9255", INV_MPU9255},
 	{"icm20608", INV_ICM20608},
+	{"icm20608d", INV_ICM20608D},
 	{"icm20609", INV_ICM20609},
 	{"icm20689", INV_ICM20689},
+	{"icm20600", INV_ICM20600},
 	{"icm20602", INV_ICM20602},
 	{"icm20690", INV_ICM20690},
+	{"iam20380", INV_IAM20380},
 	{"iam20680", INV_IAM20680},
-	{}
+	{"iam20680hp", INV_IAM20680HP},
+	{"iam20680ht", INV_IAM20680HT},
+	{ }
 };
 
 MODULE_DEVICE_TABLE(i2c, inv_mpu_id);
@@ -226,12 +231,20 @@ static const struct of_device_id inv_of_match[] = {
 		.data = (void *)INV_ICM20608
 	},
 	{
+		.compatible = "invensense,icm20608d",
+		.data = (void *)INV_ICM20608D
+	},
+	{
 		.compatible = "invensense,icm20609",
 		.data = (void *)INV_ICM20609
 	},
 	{
 		.compatible = "invensense,icm20689",
 		.data = (void *)INV_ICM20689
+	},
+	{
+		.compatible = "invensense,icm20600",
+		.data = (void *)INV_ICM20600
 	},
 	{
 		.compatible = "invensense,icm20602",
@@ -242,8 +255,20 @@ static const struct of_device_id inv_of_match[] = {
 		.data = (void *)INV_ICM20690
 	},
 	{
+		.compatible = "invensense,iam20380",
+		.data = (void *)INV_IAM20380
+	},
+	{
 		.compatible = "invensense,iam20680",
 		.data = (void *)INV_IAM20680
+	},
+	{
+		.compatible = "invensense,iam20680hp",
+		.data = (void *)INV_IAM20680HP
+	},
+	{
+		.compatible = "invensense,iam20680ht",
+		.data = (void *)INV_IAM20680HT
 	},
 	{ }
 };
@@ -251,9 +276,8 @@ MODULE_DEVICE_TABLE(of, inv_of_match);
 
 static const struct acpi_device_id inv_acpi_match[] = {
 	{"INVN6500", INV_MPU6500},
-	{ },
+	{ }
 };
-
 MODULE_DEVICE_TABLE(acpi, inv_acpi_match);
 
 static struct i2c_driver inv_mpu_driver = {
@@ -262,9 +286,9 @@ static struct i2c_driver inv_mpu_driver = {
 	.id_table	=	inv_mpu_id,
 	.driver = {
 		.of_match_table = inv_of_match,
-		.acpi_match_table = ACPI_PTR(inv_acpi_match),
+		.acpi_match_table = inv_acpi_match,
 		.name	=	"inv-mpu6050-i2c",
-		.pm     =       &inv_mpu_pmops,
+		.pm     =       pm_ptr(&inv_mpu_pmops),
 	},
 };
 
@@ -273,3 +297,4 @@ module_i2c_driver(inv_mpu_driver);
 MODULE_AUTHOR("Invensense Corporation");
 MODULE_DESCRIPTION("Invensense device MPU6050 driver");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS("IIO_MPU6050");

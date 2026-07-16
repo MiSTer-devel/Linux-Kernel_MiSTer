@@ -416,15 +416,14 @@ static int ec_bhf_open(struct net_device *net_dev)
 
 	netif_start_queue(net_dev);
 
-	hrtimer_init(&priv->hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	priv->hrtimer.function = ec_bhf_timer_fun;
+	hrtimer_setup(&priv->hrtimer, ec_bhf_timer_fun, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	hrtimer_start(&priv->hrtimer, polling_frequency, HRTIMER_MODE_REL);
 
 	return 0;
 
 error_rx_free:
 	dma_free_coherent(dev, priv->rx_buf.alloc_len, priv->rx_buf.alloc,
-			  priv->rx_buf.alloc_len);
+			  priv->rx_buf.alloc_phys);
 out:
 	return err;
 }
@@ -479,6 +478,7 @@ static int ec_bhf_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	struct net_device *net_dev;
 	struct ec_bhf_priv *priv;
 	void __iomem *dma_io;
+	u8 addr[ETH_ALEN];
 	void __iomem *io;
 	int err = 0;
 
@@ -539,7 +539,8 @@ static int ec_bhf_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	if (err < 0)
 		goto err_free_net_dev;
 
-	memcpy_fromio(net_dev->dev_addr, priv->mii_io + MII_MAC_ADDR, 6);
+	memcpy_fromio(addr, priv->mii_io + MII_MAC_ADDR, ETH_ALEN);
+	eth_hw_addr_set(net_dev, addr);
 
 	err = register_netdev(net_dev);
 	if (err < 0)
@@ -556,7 +557,6 @@ err_unmap:
 err_release_regions:
 	pci_release_regions(dev);
 err_disable_dev:
-	pci_clear_master(dev);
 	pci_disable_device(dev);
 
 	return err;
@@ -575,7 +575,6 @@ static void ec_bhf_remove(struct pci_dev *dev)
 	free_netdev(net_dev);
 
 	pci_release_regions(dev);
-	pci_clear_master(dev);
 	pci_disable_device(dev);
 }
 
@@ -590,5 +589,6 @@ module_pci_driver(pci_driver);
 module_param(polling_frequency, long, 0444);
 MODULE_PARM_DESC(polling_frequency, "Polling timer frequency in ns");
 
+MODULE_DESCRIPTION("Beckhoff CX5020 EtherCAT Ethernet driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Dariusz Marcinkiewicz <reksio@newterm.pl>");

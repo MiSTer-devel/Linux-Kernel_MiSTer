@@ -10,6 +10,7 @@
 #include <linux/cdev.h>
 #include <linux/delay.h>
 #include <linux/fs.h>
+#include <linux/mod_devicetable.h>
 #include <linux/uaccess.h>
 #include <linux/slab.h>
 #include <linux/list.h>
@@ -145,7 +146,7 @@ static int put_indirect_scom_form0(struct scom_device *scom, uint64_t value,
 				   uint64_t addr, uint32_t *status)
 {
 	uint64_t ind_data, ind_addr;
-	int rc, retries, err = 0;
+	int rc, err;
 
 	if (value & ~XSCOM_DATA_IND_DATA)
 		return -EINVAL;
@@ -156,19 +157,14 @@ static int put_indirect_scom_form0(struct scom_device *scom, uint64_t value,
 	if (rc || (*status & SCOM_STATUS_ANY_ERR))
 		return rc;
 
-	for (retries = 0; retries < SCOM_MAX_IND_RETRIES; retries++) {
-		rc = __get_scom(scom, &ind_data, addr, status);
-		if (rc || (*status & SCOM_STATUS_ANY_ERR))
-			return rc;
+	rc = __get_scom(scom, &ind_data, addr, status);
+	if (rc || (*status & SCOM_STATUS_ANY_ERR))
+		return rc;
 
-		err = (ind_data & XSCOM_DATA_IND_ERR_MASK) >> XSCOM_DATA_IND_ERR_SHIFT;
-		*status = err << SCOM_STATUS_PIB_RESP_SHIFT;
-		if ((ind_data & XSCOM_DATA_IND_COMPLETE) || (err != SCOM_PIB_BLOCKED))
-			return 0;
+	err = (ind_data & XSCOM_DATA_IND_ERR_MASK) >> XSCOM_DATA_IND_ERR_SHIFT;
+	*status = err << SCOM_STATUS_PIB_RESP_SHIFT;
 
-		msleep(1);
-	}
-	return rc;
+	return 0;
 }
 
 static int put_indirect_scom_form1(struct scom_device *scom, uint64_t value,
@@ -188,7 +184,7 @@ static int get_indirect_scom_form0(struct scom_device *scom, uint64_t *value,
 				   uint64_t addr, uint32_t *status)
 {
 	uint64_t ind_data, ind_addr;
-	int rc, retries, err = 0;
+	int rc, err;
 
 	ind_addr = addr & XSCOM_ADDR_DIRECT_PART;
 	ind_data = (addr & XSCOM_ADDR_INDIRECT_PART) | XSCOM_DATA_IND_READ;
@@ -196,21 +192,15 @@ static int get_indirect_scom_form0(struct scom_device *scom, uint64_t *value,
 	if (rc || (*status & SCOM_STATUS_ANY_ERR))
 		return rc;
 
-	for (retries = 0; retries < SCOM_MAX_IND_RETRIES; retries++) {
-		rc = __get_scom(scom, &ind_data, addr, status);
-		if (rc || (*status & SCOM_STATUS_ANY_ERR))
-			return rc;
+	rc = __get_scom(scom, &ind_data, addr, status);
+	if (rc || (*status & SCOM_STATUS_ANY_ERR))
+		return rc;
 
-		err = (ind_data & XSCOM_DATA_IND_ERR_MASK) >> XSCOM_DATA_IND_ERR_SHIFT;
-		*status = err << SCOM_STATUS_PIB_RESP_SHIFT;
-		*value = ind_data & XSCOM_DATA_IND_DATA;
+	err = (ind_data & XSCOM_DATA_IND_ERR_MASK) >> XSCOM_DATA_IND_ERR_SHIFT;
+	*status = err << SCOM_STATUS_PIB_RESP_SHIFT;
+	*value = ind_data & XSCOM_DATA_IND_DATA;
 
-		if ((ind_data & XSCOM_DATA_IND_COMPLETE) || (err != SCOM_PIB_BLOCKED))
-			return 0;
-
-		msleep(1);
-	}
-	return rc;
+	return 0;
 }
 
 static int raw_put_scom(struct scom_device *scom, uint64_t value,
@@ -289,7 +279,7 @@ static int put_scom(struct scom_device *scom, uint64_t value,
 	int rc;
 
 	rc = raw_put_scom(scom, value, addr, &status);
-	if (rc == -ENODEV)
+	if (rc)
 		return rc;
 
 	rc = handle_fsi2pib_status(scom, status);
@@ -308,7 +298,7 @@ static int get_scom(struct scom_device *scom, uint64_t *value,
 	int rc;
 
 	rc = raw_get_scom(scom, value, addr, &status);
-	if (rc == -ENODEV)
+	if (rc)
 		return rc;
 
 	rc = handle_fsi2pib_status(scom, status);
@@ -598,6 +588,12 @@ static int scom_remove(struct device *dev)
 	return 0;
 }
 
+static const struct of_device_id scom_of_ids[] = {
+	{ .compatible = "ibm,fsi2pib" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, scom_of_ids);
+
 static const struct fsi_device_id scom_ids[] = {
 	{
 		.engine_type = FSI_ENGID_SCOM,
@@ -611,6 +607,7 @@ static struct fsi_driver scom_drv = {
 	.drv = {
 		.name = "scom",
 		.bus = &fsi_bus_type,
+		.of_match_table = scom_of_ids,
 		.probe = scom_probe,
 		.remove = scom_remove,
 	}
@@ -628,4 +625,5 @@ static void scom_exit(void)
 
 module_init(scom_init);
 module_exit(scom_exit);
+MODULE_DESCRIPTION("SCOM FSI Client device driver");
 MODULE_LICENSE("GPL");

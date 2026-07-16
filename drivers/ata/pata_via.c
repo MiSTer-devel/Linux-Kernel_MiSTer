@@ -201,11 +201,9 @@ static int via_cable_detect(struct ata_port *ap) {
 	   two drives */
 	if (ata66 & (0x10100000 >> (16 * ap->port_no)))
 		return ATA_CBL_PATA80;
+
 	/* Check with ACPI so we can spot BIOS reported SATA bridges */
-	if (ata_acpi_init_gtm(ap) &&
-	    ata_acpi_cbl_80wire(ap, ata_acpi_init_gtm(ap)))
-		return ATA_CBL_PATA80;
-	return ATA_CBL_PATA40;
+	return ata_acpi_cbl_pata_type(ap);
 }
 
 static int via_pre_reset(struct ata_link *link, unsigned long deadline)
@@ -248,9 +246,9 @@ static void via_do_set_mode(struct ata_port *ap, struct ata_device *adev,
 	struct pci_dev *pdev = to_pci_dev(ap->host->dev);
 	struct ata_device *peer = ata_dev_pair(adev);
 	struct ata_timing t, p;
-	static int via_clock = 33333;	/* Bus clock in kHZ */
-	unsigned long T =  1000000000 / via_clock;
-	unsigned long UT = T;
+	const int via_clock = 33333;	/* Bus clock in kHz */
+	const int T = 1000000000 / via_clock;
+	int UT = T;
 	int ut;
 	int offset = 3 - (2*ap->port_no) - adev->devno;
 
@@ -352,7 +350,7 @@ static void via_set_dmamode(struct ata_port *ap, struct ata_device *adev)
  *	one breed of Transcend SSD. Return the updated mask.
  */
 
-static unsigned long via_mode_filter(struct ata_device *dev, unsigned long mask)
+static unsigned int via_mode_filter(struct ata_device *dev, unsigned int mask)
 {
 	struct ata_host *host = dev->link->ap->host;
 	const struct via_isa_bridge *config = host->private_data;
@@ -368,7 +366,8 @@ static unsigned long via_mode_filter(struct ata_device *dev, unsigned long mask)
 	}
 
 	if (dev->class == ATA_DEV_ATAPI &&
-	    dmi_check_system(no_atapi_dma_dmi_table)) {
+	    (dmi_check_system(no_atapi_dma_dmi_table) ||
+	     config->id == PCI_DEVICE_ID_VIA_6415)) {
 		ata_dev_warn(dev, "controller locks up on ATAPI DMA, forcing PIO\n");
 		mask &= ATA_MASK_PIO;
 	}
@@ -414,12 +413,6 @@ static void via_tf_load(struct ata_port *ap, const struct ata_taskfile *tf)
 		iowrite8(tf->hob_lbal, ioaddr->lbal_addr);
 		iowrite8(tf->hob_lbam, ioaddr->lbam_addr);
 		iowrite8(tf->hob_lbah, ioaddr->lbah_addr);
-		VPRINTK("hob: feat 0x%X nsect 0x%X, lba 0x%X 0x%X 0x%X\n",
-			tf->hob_feature,
-			tf->hob_nsect,
-			tf->hob_lbal,
-			tf->hob_lbam,
-			tf->hob_lbah);
 	}
 
 	if (is_addr) {
@@ -428,12 +421,6 @@ static void via_tf_load(struct ata_port *ap, const struct ata_taskfile *tf)
 		iowrite8(tf->lbal, ioaddr->lbal_addr);
 		iowrite8(tf->lbam, ioaddr->lbam_addr);
 		iowrite8(tf->lbah, ioaddr->lbah_addr);
-		VPRINTK("feat 0x%X nsect 0x%X lba 0x%X 0x%X 0x%X\n",
-			tf->feature,
-			tf->nsect,
-			tf->lbal,
-			tf->lbam,
-			tf->lbah);
 	}
 
 	ata_wait_idle(ap);
@@ -455,7 +442,7 @@ static int via_port_start(struct ata_port *ap)
 	return 0;
 }
 
-static struct scsi_host_template via_sht = {
+static const struct scsi_host_template via_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -464,7 +451,7 @@ static struct ata_port_operations via_port_ops = {
 	.cable_detect	= via_cable_detect,
 	.set_piomode	= via_set_piomode,
 	.set_dmamode	= via_set_dmamode,
-	.prereset	= via_pre_reset,
+	.reset.prereset	= via_pre_reset,
 	.sff_tf_load	= via_tf_load,
 	.port_start	= via_port_start,
 	.mode_filter	= via_mode_filter,

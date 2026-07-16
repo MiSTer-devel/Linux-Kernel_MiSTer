@@ -32,10 +32,10 @@ struct imx_hdmi_data {
 static int imx_hdmi_hw_params(struct snd_pcm_substream *substream,
 			      struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct imx_hdmi_data *data = snd_soc_card_get_drvdata(rtd->card);
 	bool tx = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
-	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct snd_soc_card *card = rtd->card;
 	struct device *dev = card->dev;
 	u32 slot_width = data->cpu_priv.slot_width;
@@ -59,7 +59,7 @@ static int imx_hdmi_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static struct snd_soc_ops imx_hdmi_ops = {
+static const struct snd_soc_ops imx_hdmi_ops = {
 	.hw_params = imx_hdmi_hw_params,
 };
 
@@ -70,7 +70,7 @@ static const struct snd_soc_dapm_widget imx_hdmi_widgets[] = {
 static int imx_hdmi_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_card *card = rtd->card;
-	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
+	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
 	struct snd_soc_component *component = codec_dai->component;
 	struct imx_hdmi_data *data = snd_soc_card_get_drvdata(card);
 	int ret;
@@ -78,8 +78,9 @@ static int imx_hdmi_init(struct snd_soc_pcm_runtime *rtd)
 	data->hdmi_jack_pin.pin = "HDMI Jack";
 	data->hdmi_jack_pin.mask = SND_JACK_LINEOUT;
 	/* enable jack detection */
-	ret = snd_soc_card_jack_new(card, "HDMI Jack", SND_JACK_LINEOUT,
-				    &data->hdmi_jack, &data->hdmi_jack_pin, 1);
+	ret = snd_soc_card_jack_new_pins(card, "HDMI Jack", SND_JACK_LINEOUT,
+					 &data->hdmi_jack,
+					 &data->hdmi_jack_pin, 1);
 	if (ret) {
 		dev_err(card->dev, "Can't new HDMI Jack %d\n", ret);
 		return ret;
@@ -100,7 +101,6 @@ static int imx_hdmi_probe(struct platform_device *pdev)
 	bool hdmi_out = of_property_read_bool(np, "hdmi-out");
 	bool hdmi_in = of_property_read_bool(np, "hdmi-in");
 	struct snd_soc_dai_link_component *dlc;
-	struct platform_device *cpu_pdev;
 	struct device_node *cpu_np;
 	struct imx_hdmi_data *data;
 	int ret;
@@ -112,13 +112,6 @@ static int imx_hdmi_probe(struct platform_device *pdev)
 	cpu_np = of_parse_phandle(np, "audio-cpu", 0);
 	if (!cpu_np) {
 		dev_err(&pdev->dev, "cpu dai phandle missing or invalid\n");
-		ret = -EINVAL;
-		goto fail;
-	}
-
-	cpu_pdev = of_find_device_by_node(cpu_np);
-	if (!cpu_pdev) {
-		dev_err(&pdev->dev, "failed to find SAI platform device\n");
 		ret = -EINVAL;
 		goto fail;
 	}
@@ -138,7 +131,7 @@ static int imx_hdmi_probe(struct platform_device *pdev)
 
 	data->dai.name = "i.MX HDMI";
 	data->dai.stream_name = "i.MX HDMI";
-	data->dai.cpus->dai_name = dev_name(&cpu_pdev->dev);
+	data->dai.cpus->of_node = cpu_np;
 	data->dai.platforms->of_node = cpu_np;
 	data->dai.ops = &imx_hdmi_ops;
 	data->dai.playback_only = true;
@@ -171,7 +164,7 @@ static int imx_hdmi_probe(struct platform_device *pdev)
 		data->dai.codecs->name = "hdmi-audio-codec.1";
 		data->dai.dai_fmt = data->dai_fmt |
 				    SND_SOC_DAIFMT_NB_NF |
-				    SND_SOC_DAIFMT_CBS_CFS;
+				    SND_SOC_DAIFMT_CBC_CFC;
 	}
 
 	if (hdmi_in) {
@@ -181,7 +174,7 @@ static int imx_hdmi_probe(struct platform_device *pdev)
 		data->dai.codecs->name = "hdmi-audio-codec.2";
 		data->dai.dai_fmt = data->dai_fmt |
 				    SND_SOC_DAIFMT_NB_NF |
-				    SND_SOC_DAIFMT_CBM_CFM;
+				    SND_SOC_DAIFMT_CBP_CFP;
 	}
 
 	data->card.dapm_widgets = imx_hdmi_widgets;
@@ -198,13 +191,12 @@ static int imx_hdmi_probe(struct platform_device *pdev)
 	snd_soc_card_set_drvdata(&data->card, data);
 	ret = devm_snd_soc_register_card(&pdev->dev, &data->card);
 	if (ret) {
-		dev_err(&pdev->dev, "snd_soc_register_card failed (%d)\n", ret);
+		dev_err_probe(&pdev->dev, ret, "snd_soc_register_card failed\n");
 		goto fail;
 	}
 
 fail:
-	if (cpu_np)
-		of_node_put(cpu_np);
+	of_node_put(cpu_np);
 
 	return ret;
 }

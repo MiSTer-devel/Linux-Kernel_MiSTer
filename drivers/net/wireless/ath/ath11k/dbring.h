@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause-Clear */
 /*
  * Copyright (c) 2019-2020 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef ATH11K_DBRING_H
@@ -13,7 +14,7 @@
 
 struct ath11k_dbring_element {
 	dma_addr_t paddr;
-	u8 payload[0];
+	u8 *payload;
 };
 
 struct ath11k_dbring_data {
@@ -76,4 +77,6 @@ int ath11k_dbring_get_cap(struct ath11k_base *ab,
 			  struct ath11k_dbring_cap *db_cap);
 void ath11k_dbring_srng_cleanup(struct ath11k *ar, struct ath11k_dbring *ring);
 void ath11k_dbring_buf_cleanup(struct ath11k *ar, struct ath11k_dbring *ring);
+int ath11k_dbring_validate_buffer(struct ath11k *ar, void *data, u32 size);
+
 #endif /* ATH11K_DBRING_H */

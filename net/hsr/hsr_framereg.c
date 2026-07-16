@@ -19,8 +19,6 @@
 #include "hsr_framereg.h"
 #include "hsr_netlink.h"
 
-/*	TODO: use hash lists for mac addresses (linux/jhash.h)?    */
-
 /* seq_nr_after(a, b) - return true if a is after (higher in sequence than) b,
  * false otherwise.
  */
@@ -37,24 +35,32 @@ static bool seq_nr_after(u16 a, u16 b)
 
 #define seq_nr_before(a, b)		seq_nr_after((b), (a))
 #define seq_nr_before_or_eq(a, b)	(!seq_nr_after((a), (b)))
+#define PRP_DROP_WINDOW_LEN 32768
+
+bool hsr_addr_is_redbox(struct hsr_priv *hsr, unsigned char *addr)
+{
+	if (!hsr->redbox || !is_valid_ether_addr(hsr->macaddress_redbox))
+		return false;
+
+	return ether_addr_equal(addr, hsr->macaddress_redbox);
+}
 
 bool hsr_addr_is_self(struct hsr_priv *hsr, unsigned char *addr)
 {
-	struct hsr_node *node;
+	struct hsr_self_node *sn;
+	bool ret = false;
 
-	node = list_first_or_null_rcu(&hsr->self_node_db, struct hsr_node,
-				      mac_list);
-	if (!node) {
-		WARN_ONCE(1, "HSR: No self node\n");
-		return false;
-	}
+	rcu_read_lock();
+	sn = rcu_dereference(hsr->self_node);
+	if (!sn)
+		goto out;
 
-	if (ether_addr_equal(addr, node->macaddress_A))
-		return true;
-	if (ether_addr_equal(addr, node->macaddress_B))
-		return true;
-
-	return false;
+	if (ether_addr_equal(addr, sn->macaddress_A) ||
+	    ether_addr_equal(addr, sn->macaddress_B))
+		ret = true;
+out:
+	rcu_read_unlock();
+	return ret;
 }
 
 /* Search for mac entry. Caller must hold rcu read lock.
@@ -72,50 +78,50 @@ static struct hsr_node *find_node_by_addr_A(struct list_head *node_db,
 	return NULL;
 }
 
-/* Helper for device init; the self_node_db is used in hsr_rcv() to recognize
+/* Check if node for a given MAC address is already present in data base
+ */
+bool hsr_is_node_in_db(struct list_head *node_db,
+		       const unsigned char addr[ETH_ALEN])
+{
+	return !!find_node_by_addr_A(node_db, addr);
+}
+
+/* Helper for device init; the self_node is used in hsr_rcv() to recognize
  * frames from self that's been looped over the HSR ring.
  */
 int hsr_create_self_node(struct hsr_priv *hsr,
-			 unsigned char addr_a[ETH_ALEN],
-			 unsigned char addr_b[ETH_ALEN])
+			 const unsigned char addr_a[ETH_ALEN],
+			 const unsigned char addr_b[ETH_ALEN])
 {
-	struct list_head *self_node_db = &hsr->self_node_db;
-	struct hsr_node *node, *oldnode;
+	struct hsr_self_node *sn, *old;
 
-	node = kmalloc(sizeof(*node), GFP_KERNEL);
-	if (!node)
+	sn = kmalloc(sizeof(*sn), GFP_KERNEL);
+	if (!sn)
 		return -ENOMEM;
 
-	ether_addr_copy(node->macaddress_A, addr_a);
-	ether_addr_copy(node->macaddress_B, addr_b);
+	ether_addr_copy(sn->macaddress_A, addr_a);
+	ether_addr_copy(sn->macaddress_B, addr_b);
 
 	spin_lock_bh(&hsr->list_lock);
-	oldnode = list_first_or_null_rcu(self_node_db,
-					 struct hsr_node, mac_list);
-	if (oldnode) {
-		list_replace_rcu(&oldnode->mac_list, &node->mac_list);
-		spin_unlock_bh(&hsr->list_lock);
-		kfree_rcu(oldnode, rcu_head);
-	} else {
-		list_add_tail_rcu(&node->mac_list, self_node_db);
-		spin_unlock_bh(&hsr->list_lock);
-	}
+	old = rcu_replace_pointer(hsr->self_node, sn,
+				  lockdep_is_held(&hsr->list_lock));
+	spin_unlock_bh(&hsr->list_lock);
 
+	if (old)
+		kfree_rcu(old, rcu_head);
 	return 0;
 }
 
 void hsr_del_self_node(struct hsr_priv *hsr)
 {
-	struct list_head *self_node_db = &hsr->self_node_db;
-	struct hsr_node *node;
+	struct hsr_self_node *old;
 
 	spin_lock_bh(&hsr->list_lock);
-	node = list_first_or_null_rcu(self_node_db, struct hsr_node, mac_list);
-	if (node) {
-		list_del_rcu(&node->mac_list);
-		kfree_rcu(node, rcu_head);
-	}
+	old = rcu_replace_pointer(hsr->self_node, NULL,
+				  lockdep_is_held(&hsr->list_lock));
 	spin_unlock_bh(&hsr->list_lock);
+	if (old)
+		kfree_rcu(old, rcu_head);
 }
 
 void hsr_del_nodes(struct list_head *node_db)
@@ -159,6 +165,7 @@ static struct hsr_node *hsr_add_node(struct hsr_priv *hsr,
 		return NULL;
 
 	ether_addr_copy(new_node->macaddress_A, addr);
+	spin_lock_init(&new_node->seq_out_lock);
 
 	/* We are only interested in time diffs here, so use current jiffies
 	 * as initialization. (0 could trigger an spurious ring error warning).
@@ -168,8 +175,11 @@ static struct hsr_node *hsr_add_node(struct hsr_priv *hsr,
 		new_node->time_in[i] = now;
 		new_node->time_out[i] = now;
 	}
-	for (i = 0; i < HSR_PT_PORTS; i++)
+	for (i = 0; i < HSR_PT_PORTS; i++) {
 		new_node->seq_out[i] = seq_out;
+		new_node->seq_expected[i] = seq_out + 1;
+		new_node->seq_start[i] = seq_out + 1;
+	}
 
 	if (san && hsr->proto_ops->handle_san_frame)
 		hsr->proto_ops->handle_san_frame(san, rx_port, new_node);
@@ -231,11 +241,24 @@ struct hsr_node *hsr_get_node(struct hsr_port *port, struct list_head *node_db,
 		}
 	}
 
+	/* Check if required node is not in proxy nodes table */
+	list_for_each_entry_rcu(node, &hsr->proxy_node_db, mac_list) {
+		if (ether_addr_equal(node->macaddress_A, ethhdr->h_source)) {
+			if (hsr->proto_ops->update_san_info)
+				hsr->proto_ops->update_san_info(node, is_sup);
+			return node;
+		}
+	}
+
 	/* Everyone may create a node entry, connected node to a HSR/PRP
 	 * device.
 	 */
 	if (ethhdr->h_proto == htons(ETH_P_PRP) ||
 	    ethhdr->h_proto == htons(ETH_P_HSR)) {
+		/* Check if skb contains hsr_ethhdr */
+		if (skb->mac_len < sizeof(struct hsr_ethhdr))
+			return NULL;
+
 		/* Use the existing sequence_nr from the tag as starting point
 		 * for filtering duplicate frames.
 		 */
@@ -265,11 +288,14 @@ void hsr_handle_sup_frame(struct hsr_frame_info *frame)
 	struct hsr_port *port_rcv = frame->port_rcv;
 	struct hsr_priv *hsr = port_rcv->hsr;
 	struct hsr_sup_payload *hsr_sp;
+	struct hsr_sup_tlv *hsr_sup_tlv;
 	struct hsr_node *node_real;
 	struct sk_buff *skb = NULL;
 	struct list_head *node_db;
 	struct ethhdr *ethhdr;
 	int i;
+	unsigned int pull_size = 0;
+	unsigned int total_pull_size = 0;
 
 	/* Here either frame->skb_hsr or frame->skb_prp should be
 	 * valid as supervision frame always will have protocol
@@ -284,18 +310,26 @@ void hsr_handle_sup_frame(struct hsr_frame_info *frame)
 	if (!skb)
 		return;
 
+	/* Leave the ethernet header. */
+	pull_size = sizeof(struct ethhdr);
+	skb_pull(skb, pull_size);
+	total_pull_size += pull_size;
+
 	ethhdr = (struct ethhdr *)skb_mac_header(skb);
 
-	/* Leave the ethernet header. */
-	skb_pull(skb, sizeof(struct ethhdr));
-
 	/* And leave the HSR tag. */
-	if (ethhdr->h_proto == htons(ETH_P_HSR))
-		skb_pull(skb, sizeof(struct hsr_tag));
+	if (ethhdr->h_proto == htons(ETH_P_HSR)) {
+		pull_size = sizeof(struct hsr_tag);
+		skb_pull(skb, pull_size);
+		total_pull_size += pull_size;
+	}
 
 	/* And leave the HSR sup tag. */
-	skb_pull(skb, sizeof(struct hsr_sup_tag));
+	pull_size = sizeof(struct hsr_sup_tag);
+	skb_pull(skb, pull_size);
+	total_pull_size += pull_size;
 
+	/* get HSR sup payload */
 	hsr_sp = (struct hsr_sup_payload *)skb->data;
 
 	/* Merge node_curr (registered on macaddress_B) into node_real */
@@ -312,7 +346,39 @@ void hsr_handle_sup_frame(struct hsr_frame_info *frame)
 		/* Node has already been merged */
 		goto done;
 
+	/* Leave the first HSR sup payload. */
+	pull_size = sizeof(struct hsr_sup_payload);
+	skb_pull(skb, pull_size);
+	total_pull_size += pull_size;
+
+	/* Get second supervision tlv */
+	hsr_sup_tlv = (struct hsr_sup_tlv *)skb->data;
+	/* And check if it is a redbox mac TLV */
+	if (hsr_sup_tlv->HSR_TLV_type == PRP_TLV_REDBOX_MAC) {
+		/* We could stop here after pushing hsr_sup_payload,
+		 * or proceed and allow macaddress_B and for redboxes.
+		 */
+		/* Sanity check length */
+		if (hsr_sup_tlv->HSR_TLV_length != 6)
+			goto done;
+
+		/* Leave the second HSR sup tlv. */
+		pull_size = sizeof(struct hsr_sup_tlv);
+		skb_pull(skb, pull_size);
+		total_pull_size += pull_size;
+
+		/* Get redbox mac address. */
+		hsr_sp = (struct hsr_sup_payload *)skb->data;
+
+		/* Check if redbox mac and node mac are equal. */
+		if (!ether_addr_equal(node_real->macaddress_A, hsr_sp->macaddress_A)) {
+			/* This is a redbox supervision frame for a VDAN! */
+			goto done;
+		}
+	}
+
 	ether_addr_copy(node_real->macaddress_B, ethhdr->h_source);
+	spin_lock_bh(&node_real->seq_out_lock);
 	for (i = 0; i < HSR_PT_PORTS; i++) {
 		if (!node_curr->time_in_stale[i] &&
 		    time_after(node_curr->time_in[i], node_real->time_in[i])) {
@@ -323,19 +389,20 @@ void hsr_handle_sup_frame(struct hsr_frame_info *frame)
 		if (seq_nr_after(node_curr->seq_out[i], node_real->seq_out[i]))
 			node_real->seq_out[i] = node_curr->seq_out[i];
 	}
+	spin_unlock_bh(&node_real->seq_out_lock);
 	node_real->addr_B_port = port_rcv->type;
 
 	spin_lock_bh(&hsr->list_lock);
-	list_del_rcu(&node_curr->mac_list);
+	if (!node_curr->removed) {
+		list_del_rcu(&node_curr->mac_list);
+		node_curr->removed = true;
+		kfree_rcu(node_curr, rcu_head);
+	}
 	spin_unlock_bh(&hsr->list_lock);
-	kfree_rcu(node_curr, rcu_head);
 
 done:
-	/* PRP uses v0 header */
-	if (ethhdr->h_proto == htons(ETH_P_HSR))
-		skb_push(skb, sizeof(struct hsrv1_ethhdr_sp));
-	else
-		skb_push(skb, sizeof(struct hsrv0_ethhdr_sp));
+	/* Push back here */
+	skb_push(skb, total_pull_size);
 }
 
 /* 'skb' is a frame meant for this host, that is to be passed to upper layers.
@@ -378,8 +445,12 @@ void hsr_addr_subst_dest(struct hsr_node *node_src, struct sk_buff *skb,
 
 	node_dst = find_node_by_addr_A(&port->hsr->node_db,
 				       eth_hdr(skb)->h_dest);
+	if (!node_dst && port->hsr->redbox)
+		node_dst = find_node_by_addr_A(&port->hsr->proxy_node_db,
+					       eth_hdr(skb)->h_dest);
+
 	if (!node_dst) {
-		if (net_ratelimit())
+		if (port->hsr->prot_version != PRP_V1 && net_ratelimit())
 			netdev_err(skb->dev, "%s: Unknown node\n", __func__);
 		return;
 	}
@@ -413,18 +484,111 @@ void hsr_register_frame_in(struct hsr_node *node, struct hsr_port *port,
  *	 0 otherwise, or
  *	 negative error code on error
  */
-int hsr_register_frame_out(struct hsr_port *port, struct hsr_node *node,
-			   u16 sequence_nr)
+int hsr_register_frame_out(struct hsr_port *port, struct hsr_frame_info *frame)
 {
+	struct hsr_node *node = frame->node_src;
+	u16 sequence_nr = frame->sequence_nr;
+
+	spin_lock_bh(&node->seq_out_lock);
 	if (seq_nr_before_or_eq(sequence_nr, node->seq_out[port->type]) &&
 	    time_is_after_jiffies(node->time_out[port->type] +
-	    msecs_to_jiffies(HSR_ENTRY_FORGET_TIME)))
+	    msecs_to_jiffies(HSR_ENTRY_FORGET_TIME))) {
+		spin_unlock_bh(&node->seq_out_lock);
 		return 1;
+	}
 
 	node->time_out[port->type] = jiffies;
 	node->seq_out[port->type] = sequence_nr;
+	spin_unlock_bh(&node->seq_out_lock);
 	return 0;
 }
+
+/* Adaptation of the PRP duplicate discard algorithm described in wireshark
+ * wiki (https://wiki.wireshark.org/PRP)
+ *
+ * A drop window is maintained for both LANs with start sequence set to the
+ * first sequence accepted on the LAN that has not been seen on the other LAN,
+ * and expected sequence set to the latest received sequence number plus one.
+ *
+ * When a frame is received on either LAN it is compared against the received
+ * frames on the other LAN. If it is outside the drop window of the other LAN
+ * the frame is accepted and the drop window is updated.
+ * The drop window for the other LAN is reset.
+ *
+ * 'port' is the outgoing interface
+ * 'frame' is the frame to be sent
+ *
+ * Return:
+ *	 1 if frame can be shown to have been sent recently on this interface,
+ *	 0 otherwise
+ */
+int prp_register_frame_out(struct hsr_port *port, struct hsr_frame_info *frame)
+{
+	enum hsr_port_type other_port;
+	enum hsr_port_type rcv_port;
+	struct hsr_node *node;
+	u16 sequence_diff;
+	u16 sequence_exp;
+	u16 sequence_nr;
+
+	/* out-going frames are always in order
+	 * and can be checked the same way as for HSR
+	 */
+	if (frame->port_rcv->type == HSR_PT_MASTER)
+		return hsr_register_frame_out(port, frame);
+
+	/* for PRP we should only forward frames from the slave ports
+	 * to the master port
+	 */
+	if (port->type != HSR_PT_MASTER)
+		return 1;
+
+	node = frame->node_src;
+	sequence_nr = frame->sequence_nr;
+	sequence_exp = sequence_nr + 1;
+	rcv_port = frame->port_rcv->type;
+	other_port = rcv_port == HSR_PT_SLAVE_A ? HSR_PT_SLAVE_B :
+				 HSR_PT_SLAVE_A;
+
+	spin_lock_bh(&node->seq_out_lock);
+	if (time_is_before_jiffies(node->time_out[port->type] +
+	    msecs_to_jiffies(HSR_ENTRY_FORGET_TIME)) ||
+	    (node->seq_start[rcv_port] == node->seq_expected[rcv_port] &&
+	     node->seq_start[other_port] == node->seq_expected[other_port])) {
+		/* the node hasn't been sending for a while
+		 * or both drop windows are empty, forward the frame
+		 */
+		node->seq_start[rcv_port] = sequence_nr;
+	} else if (seq_nr_before(sequence_nr, node->seq_expected[other_port]) &&
+		   seq_nr_before_or_eq(node->seq_start[other_port], sequence_nr)) {
+		/* drop the frame, update the drop window for the other port
+		 * and reset our drop window
+		 */
+		node->seq_start[other_port] = sequence_exp;
+		node->seq_expected[rcv_port] = sequence_exp;
+		node->seq_start[rcv_port] = node->seq_expected[rcv_port];
+		spin_unlock_bh(&node->seq_out_lock);
+		return 1;
+	}
+
+	/* update the drop window for the port where this frame was received
+	 * and clear the drop window for the other port
+	 */
+	node->seq_start[other_port] = node->seq_expected[other_port];
+	node->seq_expected[rcv_port] = sequence_exp;
+	sequence_diff = sequence_exp - node->seq_start[rcv_port];
+	if (sequence_diff > PRP_DROP_WINDOW_LEN)
+		node->seq_start[rcv_port] = sequence_exp - PRP_DROP_WINDOW_LEN;
+
+	node->time_out[port->type] = jiffies;
+	node->seq_out[port->type] = sequence_nr;
+	spin_unlock_bh(&node->seq_out_lock);
+	return 0;
+}
+
+#if IS_MODULE(CONFIG_PRP_DUP_DISCARD_KUNIT_TEST)
+EXPORT_SYMBOL(prp_register_frame_out);
+#endif
 
 static struct hsr_port *get_late_port(struct hsr_priv *hsr,
 				      struct hsr_node *node)
@@ -451,7 +615,7 @@ static struct hsr_port *get_late_port(struct hsr_priv *hsr,
  */
 void hsr_prune_nodes(struct timer_list *t)
 {
-	struct hsr_priv *hsr = from_timer(hsr, t, prune_timer);
+	struct hsr_priv *hsr = timer_container_of(hsr, t, prune_timer);
 	struct hsr_node *node;
 	struct hsr_node *tmp;
 	struct hsr_port *port;
@@ -502,9 +666,12 @@ void hsr_prune_nodes(struct timer_list *t)
 		if (time_is_before_jiffies(timestamp +
 				msecs_to_jiffies(HSR_NODE_FORGET_TIME))) {
 			hsr_nl_nodedown(hsr, node->macaddress_A);
-			list_del_rcu(&node->mac_list);
-			/* Note that we need to free this entry later: */
-			kfree_rcu(node, rcu_head);
+			if (!node->removed) {
+				list_del_rcu(&node->mac_list);
+				node->removed = true;
+				/* Note that we need to free this entry later: */
+				kfree_rcu(node, rcu_head);
+			}
 		}
 	}
 	spin_unlock_bh(&hsr->list_lock);
@@ -512,6 +679,41 @@ void hsr_prune_nodes(struct timer_list *t)
 	/* Restart timer */
 	mod_timer(&hsr->prune_timer,
 		  jiffies + msecs_to_jiffies(PRUNE_PERIOD));
+}
+
+void hsr_prune_proxy_nodes(struct timer_list *t)
+{
+	struct hsr_priv *hsr = timer_container_of(hsr, t, prune_proxy_timer);
+	unsigned long timestamp;
+	struct hsr_node *node;
+	struct hsr_node *tmp;
+
+	spin_lock_bh(&hsr->list_lock);
+	list_for_each_entry_safe(node, tmp, &hsr->proxy_node_db, mac_list) {
+		/* Don't prune RedBox node. */
+		if (hsr_addr_is_redbox(hsr, node->macaddress_A))
+			continue;
+
+		timestamp = node->time_in[HSR_PT_INTERLINK];
+
+		/* Prune old entries */
+		if (time_is_before_jiffies(timestamp +
+				msecs_to_jiffies(HSR_PROXY_NODE_FORGET_TIME))) {
+			hsr_nl_nodedown(hsr, node->macaddress_A);
+			if (!node->removed) {
+				list_del_rcu(&node->mac_list);
+				node->removed = true;
+				/* Note that we need to free this entry later: */
+				kfree_rcu(node, rcu_head);
+			}
+		}
+	}
+
+	spin_unlock_bh(&hsr->list_lock);
+
+	/* Restart timer */
+	mod_timer(&hsr->prune_proxy_timer,
+		  jiffies + msecs_to_jiffies(PRUNE_PROXY_PERIOD));
 }
 
 void *hsr_get_next_node(struct hsr_priv *hsr, void *_pos,

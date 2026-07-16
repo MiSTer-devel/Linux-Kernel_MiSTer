@@ -37,7 +37,7 @@ struct cs47l92 {
 	struct madera_fll fll[2];
 };
 
-static const struct wm_adsp_region cs47l92_dsp1_regions[] = {
+static const struct cs_dsp_region cs47l92_dsp1_regions[] = {
 	{ .type = WMFW_ADSP2_PM, .base = 0x080000 },
 	{ .type = WMFW_ADSP2_ZM, .base = 0x0e0000 },
 	{ .type = WMFW_ADSP2_XM, .base = 0x0a0000 },
@@ -119,7 +119,13 @@ static int cs47l92_put_demux(struct snd_kcontrol *kcontrol,
 end:
 	snd_soc_dapm_mutex_unlock(dapm);
 
-	return snd_soc_dapm_mux_update_power(dapm, kcontrol, mux, e, NULL);
+	ret = snd_soc_dapm_mux_update_power(dapm, kcontrol, mux, e, NULL);
+	if (ret < 0) {
+		dev_err(madera->dev, "Failed to update demux power state: %d\n", ret);
+		return ret;
+	}
+
+	return change;
 }
 
 static SOC_ENUM_SINGLE_DECL(cs47l92_outdemux_enum,
@@ -1684,6 +1690,10 @@ static int cs47l92_set_fll(struct snd_soc_component *component, int fll_id,
 	}
 }
 
+static const struct snd_soc_dai_ops cs47l92_dai_ops = {
+	.compress_new = snd_soc_new_compress,
+};
+
 static struct snd_soc_dai_driver cs47l92_dai[] = {
 	{
 		.name = "cs47l92-aif1",
@@ -1817,7 +1827,7 @@ static struct snd_soc_dai_driver cs47l92_dai[] = {
 			.rates = MADERA_RATES,
 			.formats = MADERA_FORMATS,
 		},
-		.compress_new = snd_soc_new_compress,
+		.ops = &cs47l92_dai_ops,
 	},
 	{
 		.name = "cs47l92-dsp-trace",
@@ -1840,12 +1850,12 @@ static int cs47l92_open(struct snd_soc_component *component,
 	struct madera *madera = priv->madera;
 	int n_adsp;
 
-	if (strcmp(asoc_rtd_to_codec(rtd, 0)->name, "cs47l92-dsp-trace") == 0) {
+	if (strcmp(snd_soc_rtd_to_codec(rtd, 0)->name, "cs47l92-dsp-trace") == 0) {
 		n_adsp = 0;
 	} else {
 		dev_err(madera->dev,
 			"No suitable compressed stream for DAI '%s'\n",
-			asoc_rtd_to_codec(rtd, 0)->name);
+			snd_soc_rtd_to_codec(rtd, 0)->name);
 		return -EINVAL;
 	}
 
@@ -1958,7 +1968,6 @@ static const struct snd_soc_component_driver soc_component_dev_cs47l92 = {
 	.num_dapm_routes	= ARRAY_SIZE(cs47l92_dapm_routes),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static int cs47l92_probe(struct platform_device *pdev)
@@ -2002,17 +2011,17 @@ static int cs47l92_probe(struct platform_device *pdev)
 		dev_warn(&pdev->dev, "Failed to set DSP IRQ wake: %d\n", ret);
 
 	cs47l92->core.adsp[0].part = "cs47l92";
-	cs47l92->core.adsp[0].num = 1;
-	cs47l92->core.adsp[0].type = WMFW_ADSP2;
-	cs47l92->core.adsp[0].rev = 2;
-	cs47l92->core.adsp[0].dev = madera->dev;
-	cs47l92->core.adsp[0].regmap = madera->regmap_32bit;
+	cs47l92->core.adsp[0].cs_dsp.num = 1;
+	cs47l92->core.adsp[0].cs_dsp.type = WMFW_ADSP2;
+	cs47l92->core.adsp[0].cs_dsp.rev = 2;
+	cs47l92->core.adsp[0].cs_dsp.dev = madera->dev;
+	cs47l92->core.adsp[0].cs_dsp.regmap = madera->regmap_32bit;
 
-	cs47l92->core.adsp[0].base = MADERA_DSP1_CONFIG_1;
-	cs47l92->core.adsp[0].mem = cs47l92_dsp1_regions;
-	cs47l92->core.adsp[0].num_mems = ARRAY_SIZE(cs47l92_dsp1_regions);
+	cs47l92->core.adsp[0].cs_dsp.base = MADERA_DSP1_CONFIG_1;
+	cs47l92->core.adsp[0].cs_dsp.mem = cs47l92_dsp1_regions;
+	cs47l92->core.adsp[0].cs_dsp.num_mems = ARRAY_SIZE(cs47l92_dsp1_regions);
 
-	cs47l92->core.adsp[0].lock_regions = WM_ADSP2_REGION_1_9;
+	cs47l92->core.adsp[0].cs_dsp.lock_regions = CS_ADSP2_REGION_1_9;
 
 	ret = wm_adsp2_init(&cs47l92->core.adsp[0]);
 	if (ret != 0)
@@ -2063,7 +2072,7 @@ error_core:
 	return ret;
 }
 
-static int cs47l92_remove(struct platform_device *pdev)
+static void cs47l92_remove(struct platform_device *pdev)
 {
 	struct cs47l92 *cs47l92 = platform_get_drvdata(pdev);
 
@@ -2076,8 +2085,6 @@ static int cs47l92_remove(struct platform_device *pdev)
 	madera_free_irq(cs47l92->core.madera, MADERA_IRQ_DSP_IRQ1, cs47l92);
 
 	madera_core_free(&cs47l92->core);
-
-	return 0;
 }
 
 static struct platform_driver cs47l92_codec_driver = {
@@ -2085,7 +2092,7 @@ static struct platform_driver cs47l92_codec_driver = {
 		.name = "cs47l92-codec",
 	},
 	.probe = &cs47l92_probe,
-	.remove = &cs47l92_remove,
+	.remove = cs47l92_remove,
 };
 
 module_platform_driver(cs47l92_codec_driver);

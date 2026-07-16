@@ -1,15 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Common signal handling code for both 32 and 64 bits
  *
  *    Copyright (c) 2007 Benjamin Herrenschmidt, IBM Corporation
  *    Extracted from signal_32.c and signal_64.c
- *
- * This file is subject to the terms and conditions of the GNU General
- * Public License.  See the file README.legal in the main directory of
- * this archive for more details.
  */
 
-#include <linux/tracehook.h>
+#include <linux/resume_user_mode.h>
 #include <linux/signal.h>
 #include <linux/uprobes.h>
 #include <linux/key.h>
@@ -140,6 +137,21 @@ unsigned long copy_ckvsx_from_user(struct task_struct *task,
  */
 
 int show_unhandled_signals = 1;
+
+unsigned long get_min_sigframe_size(void)
+{
+	if (IS_ENABLED(CONFIG_PPC64))
+		return get_min_sigframe_size_64();
+	else
+		return get_min_sigframe_size_32();
+}
+
+#ifdef CONFIG_COMPAT
+unsigned long get_min_sigframe_size_compat(void)
+{
+	return get_min_sigframe_size_32();
+}
+#endif
 
 /*
  * Allocate space for the signal frame
@@ -294,7 +306,7 @@ void do_notify_resume(struct pt_regs *regs, unsigned long thread_info_flags)
 	}
 
 	if (thread_info_flags & _TIF_NOTIFY_RESUME)
-		tracehook_notify_resume(regs);
+		resume_user_mode_work(regs);
 }
 
 static unsigned long get_tm_stackpointer(struct task_struct *tsk)

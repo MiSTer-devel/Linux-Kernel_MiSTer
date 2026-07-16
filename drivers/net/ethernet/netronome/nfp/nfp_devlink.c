@@ -26,12 +26,11 @@ nfp_devlink_fill_eth_port(struct nfp_port *port,
 }
 
 static int
-nfp_devlink_fill_eth_port_from_id(struct nfp_pf *pf, unsigned int port_index,
+nfp_devlink_fill_eth_port_from_id(struct nfp_pf *pf,
+				  struct devlink_port *dl_port,
 				  struct nfp_eth_table_port *copy)
 {
-	struct nfp_port *port;
-
-	port = nfp_port_from_id(pf, NFP_PORT_PHYS_PORT, port_index);
+	struct nfp_port *port = container_of(dl_port, struct nfp_port, dl_port);
 
 	return nfp_devlink_fill_eth_port(port, copy);
 }
@@ -62,7 +61,7 @@ nfp_devlink_set_lanes(struct nfp_pf *pf, unsigned int idx, unsigned int lanes)
 }
 
 static int
-nfp_devlink_port_split(struct devlink *devlink, unsigned int port_index,
+nfp_devlink_port_split(struct devlink *devlink, struct devlink_port *port,
 		       unsigned int count, struct netlink_ext_ack *extack)
 {
 	struct nfp_pf *pf = devlink_priv(devlink);
@@ -70,17 +69,15 @@ nfp_devlink_port_split(struct devlink *devlink, unsigned int port_index,
 	unsigned int lanes;
 	int ret;
 
-	mutex_lock(&pf->lock);
-
 	rtnl_lock();
-	ret = nfp_devlink_fill_eth_port_from_id(pf, port_index, &eth_port);
+	ret = nfp_devlink_fill_eth_port_from_id(pf, port, &eth_port);
 	rtnl_unlock();
 	if (ret)
-		goto out;
+		return ret;
 
 	if (eth_port.port_lanes % count) {
-		ret = -EINVAL;
-		goto out;
+		NL_SET_ERR_MSG_MOD(extack, "invalid count");
+		return -EINVAL;
 	}
 
 	/* Special case the 100G CXP -> 2x40G split */
@@ -88,15 +85,11 @@ nfp_devlink_port_split(struct devlink *devlink, unsigned int port_index,
 	if (eth_port.lanes == 10 && count == 2)
 		lanes = 8 / count;
 
-	ret = nfp_devlink_set_lanes(pf, eth_port.index, lanes);
-out:
-	mutex_unlock(&pf->lock);
-
-	return ret;
+	return nfp_devlink_set_lanes(pf, eth_port.index, lanes);
 }
 
 static int
-nfp_devlink_port_unsplit(struct devlink *devlink, unsigned int port_index,
+nfp_devlink_port_unsplit(struct devlink *devlink, struct devlink_port *port,
 			 struct netlink_ext_ack *extack)
 {
 	struct nfp_pf *pf = devlink_priv(devlink);
@@ -104,17 +97,15 @@ nfp_devlink_port_unsplit(struct devlink *devlink, unsigned int port_index,
 	unsigned int lanes;
 	int ret;
 
-	mutex_lock(&pf->lock);
-
 	rtnl_lock();
-	ret = nfp_devlink_fill_eth_port_from_id(pf, port_index, &eth_port);
+	ret = nfp_devlink_fill_eth_port_from_id(pf, port, &eth_port);
 	rtnl_unlock();
 	if (ret)
-		goto out;
+		return ret;
 
 	if (!eth_port.is_split) {
-		ret = -EINVAL;
-		goto out;
+		NL_SET_ERR_MSG_MOD(extack, "port is not split");
+		return -EINVAL;
 	}
 
 	/* Special case the 100G CXP -> 2x40G unsplit */
@@ -122,11 +113,7 @@ nfp_devlink_port_unsplit(struct devlink *devlink, unsigned int port_index,
 	if (eth_port.port_lanes == 8)
 		lanes = 10;
 
-	ret = nfp_devlink_set_lanes(pf, eth_port.index, lanes);
-out:
-	mutex_unlock(&pf->lock);
-
-	return ret;
+	return nfp_devlink_set_lanes(pf, eth_port.index, lanes);
 }
 
 static int
@@ -161,13 +148,8 @@ static int nfp_devlink_eswitch_mode_set(struct devlink *devlink, u16 mode,
 					struct netlink_ext_ack *extack)
 {
 	struct nfp_pf *pf = devlink_priv(devlink);
-	int ret;
 
-	mutex_lock(&pf->lock);
-	ret = nfp_app_eswitch_mode_set(pf->app, mode);
-	mutex_unlock(&pf->lock);
-
-	return ret;
+	return nfp_app_eswitch_mode_set(pf->app, mode);
 }
 
 static const struct nfp_devlink_versions_simple {
@@ -178,6 +160,7 @@ static const struct nfp_devlink_versions_simple {
 	{ DEVLINK_INFO_VERSION_GENERIC_BOARD_REV,	"assembly.revision", },
 	{ DEVLINK_INFO_VERSION_GENERIC_BOARD_MANUFACTURE, "assembly.vendor", },
 	{ "board.model", /* code name */		"assembly.model", },
+	{ DEVLINK_INFO_VERSION_GENERIC_BOARD_PART_NUMBER, "pn", },
 };
 
 static int
@@ -261,10 +244,6 @@ nfp_devlink_info_get(struct devlink *devlink, struct devlink_info_req *req,
 	char *buf = NULL;
 	int err;
 
-	err = devlink_info_driver_name_put(req, "nfp");
-	if (err)
-		return err;
-
 	vendor = nfp_hwinfo_lookup(pf->hwinfo, "assembly.vendor");
 	part = nfp_hwinfo_lookup(pf->hwinfo, "assembly.partno");
 	sn = nfp_hwinfo_lookup(pf->hwinfo, "assembly.serial");
@@ -337,14 +316,17 @@ nfp_devlink_flash_update(struct devlink *devlink,
 }
 
 const struct devlink_ops nfp_devlink_ops = {
-	.port_split		= nfp_devlink_port_split,
-	.port_unsplit		= nfp_devlink_port_unsplit,
 	.sb_pool_get		= nfp_devlink_sb_pool_get,
 	.sb_pool_set		= nfp_devlink_sb_pool_set,
 	.eswitch_mode_get	= nfp_devlink_eswitch_mode_get,
 	.eswitch_mode_set	= nfp_devlink_eswitch_mode_set,
 	.info_get		= nfp_devlink_info_get,
 	.flash_update		= nfp_devlink_flash_update,
+};
+
+static const struct devlink_port_ops nfp_devlink_port_ops = {
+	.port_split		= nfp_devlink_port_split,
+	.port_unsplit		= nfp_devlink_port_unsplit,
 };
 
 int nfp_devlink_port_register(struct nfp_app *app, struct nfp_port *port)
@@ -356,6 +338,8 @@ int nfp_devlink_port_register(struct nfp_app *app, struct nfp_port *port)
 	int serial_len;
 	int ret;
 
+	SET_NETDEV_DEVLINK_PORT(port->netdev, &port->dl_port);
+
 	rtnl_lock();
 	ret = nfp_devlink_fill_eth_port(port, &eth_port);
 	rtnl_unlock();
@@ -363,7 +347,7 @@ int nfp_devlink_port_register(struct nfp_app *app, struct nfp_port *port)
 		return ret;
 
 	attrs.split = eth_port.is_split;
-	attrs.splittable = !attrs.split;
+	attrs.splittable = eth_port.port_lanes > 1 && !attrs.split;
 	attrs.lanes = eth_port.port_lanes;
 	attrs.flavour = DEVLINK_PORT_FLAVOUR_PHYSICAL;
 	attrs.phys.port_number = eth_port.label_port;
@@ -375,31 +359,11 @@ int nfp_devlink_port_register(struct nfp_app *app, struct nfp_port *port)
 
 	devlink = priv_to_devlink(app->pf);
 
-	return devlink_port_register(devlink, &port->dl_port, port->eth_id);
+	return devl_port_register_with_ops(devlink, &port->dl_port,
+					   port->eth_id, &nfp_devlink_port_ops);
 }
 
 void nfp_devlink_port_unregister(struct nfp_port *port)
 {
-	devlink_port_unregister(&port->dl_port);
-}
-
-void nfp_devlink_port_type_eth_set(struct nfp_port *port)
-{
-	devlink_port_type_eth_set(&port->dl_port, port->netdev);
-}
-
-void nfp_devlink_port_type_clear(struct nfp_port *port)
-{
-	devlink_port_type_clear(&port->dl_port);
-}
-
-struct devlink_port *nfp_devlink_get_devlink_port(struct net_device *netdev)
-{
-	struct nfp_port *port;
-
-	port = nfp_port_from_netdev(netdev);
-	if (!port)
-		return NULL;
-
-	return &port->dl_port;
+	devl_port_unregister(&port->dl_port);
 }

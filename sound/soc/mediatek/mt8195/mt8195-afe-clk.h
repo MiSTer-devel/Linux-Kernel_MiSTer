@@ -35,6 +35,8 @@ enum {
 	MT8195_CLK_INFRA_AO_AUDIO_26M_B,
 	MT8195_CLK_SCP_ADSP_AUDIODSP,
 	MT8195_CLK_AUD_AFE,
+	MT8195_CLK_AUD_APLL1_TUNER,
+	MT8195_CLK_AUD_APLL2_TUNER,
 	MT8195_CLK_AUD_APLL,
 	MT8195_CLK_AUD_APLL2,
 	MT8195_CLK_AUD_DAC,
@@ -84,13 +86,21 @@ enum {
 	MT8195_MCK_SEL_NUM,
 };
 
+enum {
+	MT8195_AUD_PLL1,
+	MT8195_AUD_PLL2,
+	MT8195_AUD_PLL3,
+	MT8195_AUD_PLL4,
+	MT8195_AUD_PLL5,
+	MT8195_AUD_PLL_NUM,
+};
+
 struct mtk_base_afe;
 
 int mt8195_afe_get_mclk_source_clk_id(int sel);
 int mt8195_afe_get_mclk_source_rate(struct mtk_base_afe *afe, int apll);
 int mt8195_afe_get_default_mclk_source_by_rate(int rate);
 int mt8195_afe_init_clock(struct mtk_base_afe *afe);
-void mt8195_afe_deinit_clock(struct mtk_base_afe *afe);
 int mt8195_afe_enable_clk(struct mtk_base_afe *afe, struct clk *clk);
 void mt8195_afe_disable_clk(struct mtk_base_afe *afe, struct clk *clk);
 int mt8195_afe_prepare_clk(struct mtk_base_afe *afe, struct clk *clk);

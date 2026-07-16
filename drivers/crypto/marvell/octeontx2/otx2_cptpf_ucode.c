@@ -3,6 +3,7 @@
 
 #include <linux/ctype.h>
 #include <linux/firmware.h>
+#include <linux/string_choices.h>
 #include "otx2_cptpf_ucode.h"
 #include "otx2_cpt_common.h"
 #include "otx2_cptpf.h"
@@ -16,7 +17,11 @@
 #define LOADFVC_MAJOR_OP 0x01
 #define LOADFVC_MINOR_OP 0x08
 
-#define CTX_FLUSH_TIMER_CNT 0xFFFFFF
+/*
+ * Interval to flush dirty data for next CTX entry. The interval is measured
+ * in increments of 10ns(interval time = CTX_FLUSH_TIMER_COUNT * 10ns).
+ */
+#define CTX_FLUSH_TIMER_CNT 0x2FAF0
 
 struct fw_info_t {
 	struct list_head ucodes;
@@ -29,7 +34,8 @@ static struct otx2_cpt_bitmap get_cores_bmap(struct device *dev,
 	bool found = false;
 	int i;
 
-	if (eng_grp->g->engs_num > OTX2_CPT_MAX_ENGINES) {
+	if (eng_grp->g->engs_num < 0 ||
+	    eng_grp->g->engs_num > OTX2_CPT_MAX_ENGINES) {
 		dev_err(dev, "unsupported number of engines %d on octeontx2\n",
 			eng_grp->g->engs_num);
 		return bmap;
@@ -67,7 +73,7 @@ static int is_2nd_ucode_used(struct otx2_cpt_eng_grp_info *eng_grp)
 static void set_ucode_filename(struct otx2_cpt_ucode *ucode,
 			       const char *filename)
 {
-	strlcpy(ucode->filename, filename, OTX2_CPT_NAME_LENGTH);
+	strscpy(ucode->filename, filename, OTX2_CPT_NAME_LENGTH);
 }
 
 static char *get_eng_type_str(int eng_type)
@@ -116,20 +122,18 @@ static char *get_ucode_type_str(int ucode_type)
 
 static int get_ucode_type(struct device *dev,
 			  struct otx2_cpt_ucode_hdr *ucode_hdr,
-			  int *ucode_type)
+			  int *ucode_type, u16 rid)
 {
-	struct otx2_cptpf_dev *cptpf = dev_get_drvdata(dev);
 	char ver_str_prefix[OTX2_CPT_UCODE_VER_STR_SZ];
 	char tmp_ver_str[OTX2_CPT_UCODE_VER_STR_SZ];
-	struct pci_dev *pdev = cptpf->pdev;
 	int i, val = 0;
 	u8 nn;
 
-	strlcpy(tmp_ver_str, ucode_hdr->ver_str, OTX2_CPT_UCODE_VER_STR_SZ);
+	strscpy(tmp_ver_str, ucode_hdr->ver_str, OTX2_CPT_UCODE_VER_STR_SZ);
 	for (i = 0; i < strlen(tmp_ver_str); i++)
 		tmp_ver_str[i] = tolower(tmp_ver_str[i]);
 
-	sprintf(ver_str_prefix, "ocpt-%02d", pdev->revision);
+	sprintf(ver_str_prefix, "ocpt-%02d", rid);
 	if (!strnstr(tmp_ver_str, ver_str_prefix, OTX2_CPT_UCODE_VER_STR_SZ))
 		return -EINVAL;
 
@@ -172,7 +176,9 @@ static int cptx_set_ucode_base(struct otx2_cpt_eng_grp_info *eng_grp,
 	/* Set PF number for microcode fetches */
 	ret = otx2_cpt_write_af_reg(&cptpf->afpf_mbox, cptpf->pdev,
 				    CPT_AF_PF_FUNC,
-				    cptpf->pf_id << RVU_PFVF_PF_SHIFT, blkaddr);
+				    rvu_make_pcifunc(cptpf->pdev,
+						     cptpf->pf_id, 0),
+				    blkaddr);
 	if (ret)
 		return ret;
 
@@ -358,7 +364,7 @@ static int cpt_attach_and_enable_cores(struct otx2_cpt_eng_grp_info *eng_grp,
 }
 
 static int load_fw(struct device *dev, struct fw_info_t *fw_info,
-		   char *filename)
+		   char *filename, u16 rid)
 {
 	struct otx2_cpt_ucode_hdr *ucode_hdr;
 	struct otx2_cpt_uc_info_t *uc_info;
@@ -374,7 +380,7 @@ static int load_fw(struct device *dev, struct fw_info_t *fw_info,
 		goto free_uc_info;
 
 	ucode_hdr = (struct otx2_cpt_ucode_hdr *)uc_info->fw->data;
-	ret = get_ucode_type(dev, ucode_hdr, &ucode_type);
+	ret = get_ucode_type(dev, ucode_hdr, &ucode_type, rid);
 	if (ret)
 		goto release_fw;
 
@@ -388,6 +394,7 @@ static int load_fw(struct device *dev, struct fw_info_t *fw_info,
 	set_ucode_filename(&uc_info->ucode, filename);
 	memcpy(uc_info->ucode.ver_str, ucode_hdr->ver_str,
 	       OTX2_CPT_UCODE_VER_STR_SZ);
+	uc_info->ucode.ver_str[OTX2_CPT_UCODE_VER_STR_SZ] = 0;
 	uc_info->ucode.ver_num = ucode_hdr->ver_num;
 	uc_info->ucode.type = ucode_type;
 	uc_info->ucode.size = ucode_size;
@@ -447,7 +454,8 @@ static void print_uc_info(struct fw_info_t *fw_info)
 	}
 }
 
-static int cpt_ucode_load_fw(struct pci_dev *pdev, struct fw_info_t *fw_info)
+static int cpt_ucode_load_fw(struct pci_dev *pdev, struct fw_info_t *fw_info,
+			     u16 rid)
 {
 	char filename[OTX2_CPT_NAME_LENGTH];
 	char eng_type[8] = {0};
@@ -461,9 +469,9 @@ static int cpt_ucode_load_fw(struct pci_dev *pdev, struct fw_info_t *fw_info)
 			eng_type[i] = tolower(eng_type[i]);
 
 		snprintf(filename, sizeof(filename), "mrvl/cpt%02d/%s.out",
-			 pdev->revision, eng_type);
+			 rid, eng_type);
 		/* Request firmware for each engine type */
-		ret = load_fw(&pdev->dev, fw_info, filename);
+		ret = load_fw(&pdev->dev, fw_info, filename, rid);
 		if (ret)
 			goto release_fw;
 	}
@@ -475,7 +483,7 @@ release_fw:
 	return ret;
 }
 
-static struct otx2_cpt_engs_rsvd *find_engines_by_type(
+struct otx2_cpt_engs_rsvd *find_engines_by_type(
 					struct otx2_cpt_eng_grp_info *eng_grp,
 					int eng_type)
 {
@@ -1075,6 +1083,39 @@ static void delete_engine_grps(struct pci_dev *pdev,
 		delete_engine_group(&pdev->dev, &eng_grps->grp[i]);
 }
 
+#define PCI_DEVID_CN10K_RNM 0xA098
+#define RNM_ENTROPY_STATUS  0x8
+
+static void rnm_to_cpt_errata_fixup(struct device *dev)
+{
+	struct pci_dev *pdev;
+	void __iomem *base;
+	int timeout = 5000;
+
+	pdev = pci_get_device(PCI_VENDOR_ID_CAVIUM, PCI_DEVID_CN10K_RNM, NULL);
+	if (!pdev)
+		return;
+
+	base = pci_ioremap_bar(pdev, 0);
+	if (!base)
+		goto put_pdev;
+
+	while ((readq(base + RNM_ENTROPY_STATUS) & 0x7F) != 0x40) {
+		cpu_relax();
+		udelay(1);
+		timeout--;
+		if (!timeout) {
+			dev_warn(dev, "RNM is not producing entropy\n");
+			break;
+		}
+	}
+
+	iounmap(base);
+
+put_pdev:
+	pci_dev_put(pdev);
+}
+
 int otx2_cpt_get_eng_grp(struct otx2_cpt_eng_grps *eng_grps, int eng_type)
 {
 
@@ -1110,18 +1151,20 @@ int otx2_cpt_create_eng_grps(struct otx2_cptpf_dev *cptpf,
 	struct otx2_cpt_engines engs[OTX2_CPT_MAX_ETYPES_PER_GRP] = { {0} };
 	struct pci_dev *pdev = cptpf->pdev;
 	struct fw_info_t fw_info;
-	int ret;
+	u64 reg_val;
+	int ret = 0;
 
+	mutex_lock(&eng_grps->lock);
 	/*
 	 * We don't create engine groups if it was already
 	 * made (when user enabled VFs for the first time)
 	 */
 	if (eng_grps->is_grps_created)
-		return 0;
+		goto unlock;
 
-	ret = cpt_ucode_load_fw(pdev, &fw_info);
+	ret = cpt_ucode_load_fw(pdev, &fw_info, eng_grps->rid);
 	if (ret)
-		return ret;
+		goto unlock;
 
 	/*
 	 * Create engine group with SE engines for kernel
@@ -1186,14 +1229,24 @@ int otx2_cpt_create_eng_grps(struct otx2_cptpf_dev *cptpf,
 	cpt_ucode_release_fw(&fw_info);
 
 	if (is_dev_otx2(pdev))
-		return 0;
+		goto unlock;
+
+	/*
+	 * Ensure RNM_ENTROPY_STATUS[NORMAL_CNT] = 0x40 before writing
+	 * CPT_AF_CTL[RNM_REQ_EN] = 1 as a workaround for HW errata.
+	 */
+	rnm_to_cpt_errata_fixup(&pdev->dev);
+
+	otx2_cpt_read_af_reg(&cptpf->afpf_mbox, pdev, CPT_AF_CTL, &reg_val,
+			     BLKADDR_CPT0);
 	/*
 	 * Configure engine group mask to allow context prefetching
-	 * for the groups.
+	 * for the groups and enable random number request, to enable
+	 * CPT to request random numbers from RNM.
 	 */
+	reg_val |= OTX2_CPT_ALL_ENG_GRPS_MASK << 3 | BIT_ULL(16);
 	otx2_cpt_write_af_reg(&cptpf->afpf_mbox, pdev, CPT_AF_CTL,
-			      OTX2_CPT_ALL_ENG_GRPS_MASK << 3 | BIT_ULL(16),
-			      BLKADDR_CPT0);
+			      reg_val, BLKADDR_CPT0);
 	/*
 	 * Set interval to periodically flush dirty data for the next
 	 * CTX cache entry. Set the interval count to maximum supported
@@ -1201,12 +1254,29 @@ int otx2_cpt_create_eng_grps(struct otx2_cptpf_dev *cptpf,
 	 */
 	otx2_cpt_write_af_reg(&cptpf->afpf_mbox, pdev, CPT_AF_CTX_FLUSH_TIMER,
 			      CTX_FLUSH_TIMER_CNT, BLKADDR_CPT0);
+
+	/*
+	 * Set CPT_AF_DIAG[FLT_DIS], as a workaround for HW errata, when
+	 * CPT_AF_DIAG[FLT_DIS] = 0 and a CPT engine access to LLC/DRAM
+	 * encounters a fault/poison, a rare case may result in
+	 * unpredictable data being delivered to a CPT engine.
+	 */
+	if (cpt_is_errata_38550_exists(pdev)) {
+		otx2_cpt_read_af_reg(&cptpf->afpf_mbox, pdev, CPT_AF_DIAG,
+				     &reg_val, BLKADDR_CPT0);
+		otx2_cpt_write_af_reg(&cptpf->afpf_mbox, pdev, CPT_AF_DIAG,
+				      reg_val | BIT_ULL(24), BLKADDR_CPT0);
+	}
+
+	mutex_unlock(&eng_grps->lock);
 	return 0;
 
 delete_eng_grp:
 	delete_engine_grps(pdev, eng_grps);
 release_fw:
 	cpt_ucode_release_fw(&fw_info);
+unlock:
+	mutex_unlock(&eng_grps->lock);
 	return ret;
 }
 
@@ -1286,6 +1356,7 @@ void otx2_cpt_cleanup_eng_grps(struct pci_dev *pdev,
 	struct otx2_cpt_eng_grp_info *grp;
 	int i, j;
 
+	mutex_lock(&eng_grps->lock);
 	delete_engine_grps(pdev, eng_grps);
 	/* Release memory */
 	for (i = 0; i < OTX2_CPT_MAX_ENGINE_GROUPS; i++) {
@@ -1295,6 +1366,7 @@ void otx2_cpt_cleanup_eng_grps(struct pci_dev *pdev,
 			grp->engs[j].bmap = NULL;
 		}
 	}
+	mutex_unlock(&eng_grps->lock);
 }
 
 int otx2_cpt_init_eng_grps(struct pci_dev *pdev,
@@ -1303,6 +1375,7 @@ int otx2_cpt_init_eng_grps(struct pci_dev *pdev,
 	struct otx2_cpt_eng_grp_info *grp;
 	int i, j, ret;
 
+	mutex_init(&eng_grps->lock);
 	eng_grps->obj = pci_get_drvdata(pdev);
 	eng_grps->avail.se_cnt = eng_grps->avail.max_se_cnt;
 	eng_grps->avail.ie_cnt = eng_grps->avail.max_ie_cnt;
@@ -1349,11 +1422,14 @@ static int create_eng_caps_discovery_grps(struct pci_dev *pdev,
 	struct fw_info_t fw_info;
 	int ret;
 
-	ret = cpt_ucode_load_fw(pdev, &fw_info);
-	if (ret)
+	mutex_lock(&eng_grps->lock);
+	ret = cpt_ucode_load_fw(pdev, &fw_info, eng_grps->rid);
+	if (ret) {
+		mutex_unlock(&eng_grps->lock);
 		return ret;
+	}
 
-	uc_info[0] = get_ucode(&fw_info, OTX2_CPT_SE_TYPES);
+	uc_info[0] = get_ucode(&fw_info, OTX2_CPT_AE_TYPES);
 	if (uc_info[0] == NULL) {
 		dev_err(&pdev->dev, "Unable to find firmware for AE\n");
 		ret = -EINVAL;
@@ -1396,12 +1472,14 @@ static int create_eng_caps_discovery_grps(struct pci_dev *pdev,
 		goto delete_eng_grp;
 
 	cpt_ucode_release_fw(&fw_info);
+	mutex_unlock(&eng_grps->lock);
 	return 0;
 
 delete_eng_grp:
 	delete_engine_grps(pdev, eng_grps);
 release_fw:
 	cpt_ucode_release_fw(&fw_info);
+	mutex_unlock(&eng_grps->lock);
 	return ret;
 }
 
@@ -1415,11 +1493,13 @@ int otx2_cpt_discover_eng_capabilities(struct otx2_cptpf_dev *cptpf)
 	union otx2_cpt_opcode opcode;
 	union otx2_cpt_res_s *result;
 	union otx2_cpt_inst_s inst;
+	dma_addr_t result_baddr;
 	dma_addr_t rptr_baddr;
 	struct pci_dev *pdev;
-	u32 len, compl_rlen;
+	int timeout = 10000;
+	void *base, *rptr;
 	int ret, etype;
-	void *rptr;
+	u32 len;
 
 	/*
 	 * We don't get capabilities if it was already done
@@ -1437,31 +1517,33 @@ int otx2_cpt_discover_eng_capabilities(struct otx2_cptpf_dev *cptpf)
 	if (ret)
 		goto delete_grps;
 
-	lfs->pdev = pdev;
-	lfs->reg_base = cptpf->reg_base;
-	lfs->mbox = &cptpf->afpf_mbox;
-	lfs->blkaddr = BLKADDR_CPT0;
-	ret = otx2_cptlf_init(&cptpf->lfs, OTX2_CPT_ALL_ENG_GRPS_MASK,
+	ret = otx2_cptlf_init(lfs, OTX2_CPT_ALL_ENG_GRPS_MASK,
 			      OTX2_CPT_QUEUE_HI_PRIO, 1);
 	if (ret)
 		goto delete_grps;
 
-	compl_rlen = ALIGN(sizeof(union otx2_cpt_res_s), OTX2_CPT_DMA_MINALIGN);
-	len = compl_rlen + LOADFVC_RLEN;
+	/* Allocate extra memory for "rptr" and "result" pointer alignment */
+	len = LOADFVC_RLEN + ARCH_DMA_MINALIGN +
+	       sizeof(union otx2_cpt_res_s) + OTX2_CPT_RES_ADDR_ALIGN;
 
-	result = kzalloc(len, GFP_KERNEL);
-	if (!result) {
+	base = kzalloc(len, GFP_KERNEL);
+	if (!base) {
 		ret = -ENOMEM;
 		goto lf_cleanup;
 	}
-	rptr_baddr = dma_map_single(&pdev->dev, (void *)result, len,
-				    DMA_BIDIRECTIONAL);
+
+	rptr = PTR_ALIGN(base, ARCH_DMA_MINALIGN);
+	rptr_baddr = dma_map_single(&pdev->dev, rptr, len, DMA_BIDIRECTIONAL);
 	if (dma_mapping_error(&pdev->dev, rptr_baddr)) {
 		dev_err(&pdev->dev, "DMA mapping failed\n");
 		ret = -EFAULT;
-		goto free_result;
+		goto free_rptr;
 	}
-	rptr = (u8 *)result + compl_rlen;
+
+	result = (union otx2_cpt_res_s *)PTR_ALIGN(rptr + LOADFVC_RLEN,
+						   OTX2_CPT_RES_ADDR_ALIGN);
+	result_baddr = ALIGN(rptr_baddr + LOADFVC_RLEN,
+			     OTX2_CPT_RES_ADDR_ALIGN);
 
 	/* Fill in the command */
 	opcode.s.major = LOADFVC_MAJOR_OP;
@@ -1473,31 +1555,242 @@ int otx2_cpt_discover_eng_capabilities(struct otx2_cptpf_dev *cptpf)
 	/* 64-bit swap for microcode data reads, not needed for addresses */
 	cpu_to_be64s(&iq_cmd.cmd.u);
 	iq_cmd.dptr = 0;
-	iq_cmd.rptr = rptr_baddr + compl_rlen;
+	iq_cmd.rptr = rptr_baddr;
 	iq_cmd.cptr.u = 0;
 
 	for (etype = 1; etype < OTX2_CPT_MAX_ENG_TYPES; etype++) {
 		result->s.compcode = OTX2_CPT_COMPLETION_CODE_INIT;
 		iq_cmd.cptr.s.grp = otx2_cpt_get_eng_grp(&cptpf->eng_grps,
 							 etype);
-		otx2_cpt_fill_inst(&inst, &iq_cmd, rptr_baddr);
+		otx2_cpt_fill_inst(&inst, &iq_cmd, result_baddr);
 		lfs->ops->send_cmd(&inst, 1, &cptpf->lfs.lf[0]);
+		timeout = 10000;
 
 		while (lfs->ops->cpt_get_compcode(result) ==
-						OTX2_CPT_COMPLETION_CODE_INIT)
+						OTX2_CPT_COMPLETION_CODE_INIT) {
 			cpu_relax();
+			udelay(1);
+			timeout--;
+			if (!timeout) {
+				ret = -ENODEV;
+				cptpf->is_eng_caps_discovered = false;
+				dev_warn(&pdev->dev, "Timeout on CPT load_fvc completion poll\n");
+				goto error_no_response;
+			}
+		}
 
 		cptpf->eng_caps[etype].u = be64_to_cpup(rptr);
 	}
-	dma_unmap_single(&pdev->dev, rptr_baddr, len, DMA_BIDIRECTIONAL);
 	cptpf->is_eng_caps_discovered = true;
 
-free_result:
-	kfree(result);
+error_no_response:
+	dma_unmap_single(&pdev->dev, rptr_baddr, len, DMA_BIDIRECTIONAL);
+free_rptr:
+	kfree(base);
 lf_cleanup:
-	otx2_cptlf_shutdown(&cptpf->lfs);
+	otx2_cptlf_shutdown(lfs);
 delete_grps:
 	delete_engine_grps(pdev, &cptpf->eng_grps);
 
 	return ret;
+}
+
+int otx2_cpt_dl_custom_egrp_create(struct otx2_cptpf_dev *cptpf,
+				   struct devlink_param_gset_ctx *ctx)
+{
+	struct otx2_cpt_engines engs[OTX2_CPT_MAX_ETYPES_PER_GRP] = { { 0 } };
+	struct otx2_cpt_uc_info_t *uc_info[OTX2_CPT_MAX_ETYPES_PER_GRP] = {};
+	struct otx2_cpt_eng_grps *eng_grps = &cptpf->eng_grps;
+	char *ucode_filename[OTX2_CPT_MAX_ETYPES_PER_GRP];
+	char tmp_buf[OTX2_CPT_NAME_LENGTH] = { 0 };
+	struct device *dev = &cptpf->pdev->dev;
+	char *start, *val, *err_msg, *tmp;
+	int grp_idx = 0, ret = -EINVAL;
+	bool has_se, has_ie, has_ae;
+	struct fw_info_t fw_info;
+	int ucode_idx = 0;
+
+	if (!eng_grps->is_grps_created) {
+		dev_err(dev, "Not allowed before creating the default groups\n");
+		return -EINVAL;
+	}
+	err_msg = "Invalid engine group format";
+	strscpy(tmp_buf, ctx->val.vstr);
+	start = tmp_buf;
+
+	has_se = has_ie = has_ae = false;
+
+	for (;;) {
+		val = strsep(&start, ";");
+		if (!val)
+			break;
+		val = strim(val);
+		if (!*val)
+			continue;
+
+		if (!strncasecmp(val, "se", 2) && strchr(val, ':')) {
+			if (has_se || ucode_idx)
+				goto err_print;
+			tmp = strsep(&val, ":");
+			if (!tmp)
+				goto err_print;
+			tmp = strim(tmp);
+			if (!val)
+				goto err_print;
+			if (strlen(tmp) != 2)
+				goto err_print;
+			if (kstrtoint(strim(val), 10, &engs[grp_idx].count))
+				goto err_print;
+			engs[grp_idx++].type = OTX2_CPT_SE_TYPES;
+			has_se = true;
+		} else if (!strncasecmp(val, "ae", 2) && strchr(val, ':')) {
+			if (has_ae || ucode_idx)
+				goto err_print;
+			tmp = strsep(&val, ":");
+			if (!tmp)
+				goto err_print;
+			tmp = strim(tmp);
+			if (!val)
+				goto err_print;
+			if (strlen(tmp) != 2)
+				goto err_print;
+			if (kstrtoint(strim(val), 10, &engs[grp_idx].count))
+				goto err_print;
+			engs[grp_idx++].type = OTX2_CPT_AE_TYPES;
+			has_ae = true;
+		} else if (!strncasecmp(val, "ie", 2) && strchr(val, ':')) {
+			if (has_ie || ucode_idx)
+				goto err_print;
+			tmp = strsep(&val, ":");
+			if (!tmp)
+				goto err_print;
+			tmp = strim(tmp);
+			if (!val)
+				goto err_print;
+			if (strlen(tmp) != 2)
+				goto err_print;
+			if (kstrtoint(strim(val), 10, &engs[grp_idx].count))
+				goto err_print;
+			engs[grp_idx++].type = OTX2_CPT_IE_TYPES;
+			has_ie = true;
+		} else {
+			if (ucode_idx > 1)
+				goto err_print;
+			if (!strlen(val))
+				goto err_print;
+			if (strnstr(val, " ", strlen(val)))
+				goto err_print;
+			ucode_filename[ucode_idx++] = val;
+		}
+	}
+
+	/* Validate input parameters */
+	if (!(grp_idx && ucode_idx))
+		goto err_print;
+
+	if (ucode_idx > 1 && grp_idx < 2)
+		goto err_print;
+
+	if (grp_idx > OTX2_CPT_MAX_ETYPES_PER_GRP) {
+		err_msg = "Error max 2 engine types can be attached";
+		goto err_print;
+	}
+
+	if (grp_idx > 1) {
+		if ((engs[0].type + engs[1].type) !=
+		    (OTX2_CPT_SE_TYPES + OTX2_CPT_IE_TYPES)) {
+			err_msg = "Only combination of SE+IE engines is allowed";
+			goto err_print;
+		}
+		/* Keep SE engines at zero index */
+		if (engs[1].type == OTX2_CPT_SE_TYPES)
+			swap(engs[0], engs[1]);
+	}
+	mutex_lock(&eng_grps->lock);
+
+	if (cptpf->enabled_vfs) {
+		dev_err(dev, "Disable VFs before modifying engine groups\n");
+		ret = -EACCES;
+		goto err_unlock;
+	}
+	INIT_LIST_HEAD(&fw_info.ucodes);
+
+	ret = load_fw(dev, &fw_info, ucode_filename[0], eng_grps->rid);
+	if (ret) {
+		dev_err(dev, "Unable to load firmware %s\n", ucode_filename[0]);
+		goto err_unlock;
+	}
+	if (ucode_idx > 1) {
+		ret = load_fw(dev, &fw_info, ucode_filename[1], eng_grps->rid);
+		if (ret) {
+			dev_err(dev, "Unable to load firmware %s\n",
+				ucode_filename[1]);
+			goto release_fw;
+		}
+	}
+	uc_info[0] = get_ucode(&fw_info, engs[0].type);
+	if (uc_info[0] == NULL) {
+		dev_err(dev, "Unable to find firmware for %s\n",
+			get_eng_type_str(engs[0].type));
+		ret = -EINVAL;
+		goto release_fw;
+	}
+	if (ucode_idx > 1) {
+		uc_info[1] = get_ucode(&fw_info, engs[1].type);
+		if (uc_info[1] == NULL) {
+			dev_err(dev, "Unable to find firmware for %s\n",
+				get_eng_type_str(engs[1].type));
+			ret = -EINVAL;
+			goto release_fw;
+		}
+	}
+	ret = create_engine_group(dev, eng_grps, engs, grp_idx,
+				  (void **)uc_info, 1);
+
+release_fw:
+	cpt_ucode_release_fw(&fw_info);
+err_unlock:
+	mutex_unlock(&eng_grps->lock);
+	return ret;
+err_print:
+	dev_err(dev, "%s\n", err_msg);
+	return ret;
+}
+
+int otx2_cpt_dl_custom_egrp_delete(struct otx2_cptpf_dev *cptpf,
+				   struct devlink_param_gset_ctx *ctx)
+{
+	struct otx2_cpt_eng_grps *eng_grps = &cptpf->eng_grps;
+	struct device *dev = &cptpf->pdev->dev;
+	char *tmp, *err_msg;
+	int egrp;
+	int ret;
+
+	err_msg = "Invalid input string format(ex: egrp:0)";
+	if (strncasecmp(ctx->val.vstr, "egrp", 4))
+		goto err_print;
+	tmp = ctx->val.vstr;
+	strsep(&tmp, ":");
+	if (!tmp)
+		goto err_print;
+	if (kstrtoint(tmp, 10, &egrp))
+		goto err_print;
+
+	if (egrp < 0 || egrp >= OTX2_CPT_MAX_ENGINE_GROUPS) {
+		dev_err(dev, "Invalid engine group %d", egrp);
+		return -EINVAL;
+	}
+	if (!eng_grps->grp[egrp].is_enabled) {
+		dev_err(dev, "Error engine_group%d is not configured", egrp);
+		return -EINVAL;
+	}
+	mutex_lock(&eng_grps->lock);
+	ret = delete_engine_group(dev, &eng_grps->grp[egrp]);
+	mutex_unlock(&eng_grps->lock);
+
+	return ret;
+
+err_print:
+	dev_err(dev, "%s\n", err_msg);
+	return -EINVAL;
 }

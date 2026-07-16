@@ -1112,6 +1112,8 @@ DPRINTK("iovcnt = %d\n",skb_shinfo(skb)->nr_frags);
 	skb_data3 = skb->data[3];
 	paddr = dma_map_single(&eni_dev->pci_dev->dev,skb->data,skb->len,
 			       DMA_TO_DEVICE);
+	if (dma_mapping_error(&eni_dev->pci_dev->dev, paddr))
+		return enq_next;
 	ENI_PRV_PADDR(skb) = paddr;
 	/* prepare DMA queue entries */
 	j = 0;
@@ -2316,4 +2318,5 @@ static int __init eni_init(void)
 module_init(eni_init);
 /* @@@ since exit routine not defined, this module can not be unloaded */
 
+MODULE_DESCRIPTION("Efficient Networks ENI155P ATM NIC driver");
 MODULE_LICENSE("GPL");

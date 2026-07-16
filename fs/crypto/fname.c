@@ -11,12 +11,20 @@
  * This has not yet undergone a rigorous security audit.
  */
 
-#include <linux/namei.h>
-#include <linux/scatterlist.h>
-#include <crypto/hash.h>
 #include <crypto/sha2.h>
 #include <crypto/skcipher.h>
+#include <linux/export.h>
+#include <linux/namei.h>
+#include <linux/scatterlist.h>
+
 #include "fscrypt_private.h"
+
+/*
+ * The minimum message length (input and output length), in bytes, for all
+ * filenames encryption modes.  Filenames shorter than this will be zero-padded
+ * before being encrypted.
+ */
+#define FSCRYPT_FNAME_MIN_MSG_LEN 16
 
 /*
  * struct fscrypt_nokey_name - identifier for directory entry when key is absent
@@ -67,19 +75,14 @@ struct fscrypt_nokey_name {
 
 static inline bool fscrypt_is_dot_dotdot(const struct qstr *str)
 {
-	if (str->len == 1 && str->name[0] == '.')
-		return true;
-
-	if (str->len == 2 && str->name[0] == '.' && str->name[1] == '.')
-		return true;
-
-	return false;
+	return is_dot_dotdot(str->name, str->len);
 }
 
 /**
  * fscrypt_fname_encrypt() - encrypt a filename
  * @inode: inode of the parent directory (for regular filenames)
- *	   or of the symlink (for symlink targets)
+ *	   or of the symlink (for symlink targets). Key must already be
+ *	   set up.
  * @iname: the filename to encrypt
  * @out: (output) the encrypted filename
  * @olen: size of the encrypted filename.  It must be at least @iname->len.
@@ -90,46 +93,35 @@ static inline bool fscrypt_is_dot_dotdot(const struct qstr *str)
 int fscrypt_fname_encrypt(const struct inode *inode, const struct qstr *iname,
 			  u8 *out, unsigned int olen)
 {
-	struct skcipher_request *req = NULL;
-	DECLARE_CRYPTO_WAIT(wait);
-	const struct fscrypt_info *ci = inode->i_crypt_info;
-	struct crypto_skcipher *tfm = ci->ci_enc_key.tfm;
+	const struct fscrypt_inode_info *ci = fscrypt_get_inode_info_raw(inode);
+	struct crypto_sync_skcipher *tfm = ci->ci_enc_key.tfm;
+	SYNC_SKCIPHER_REQUEST_ON_STACK(req, tfm);
 	union fscrypt_iv iv;
 	struct scatterlist sg;
-	int res;
+	int err;
 
 	/*
 	 * Copy the filename to the output buffer for encrypting in-place and
 	 * pad it with the needed number of NUL bytes.
 	 */
-	if (WARN_ON(olen < iname->len))
+	if (WARN_ON_ONCE(olen < iname->len))
 		return -ENOBUFS;
 	memcpy(out, iname->name, iname->len);
 	memset(out + iname->len, 0, olen - iname->len);
 
-	/* Initialize the IV */
 	fscrypt_generate_iv(&iv, 0, ci);
 
-	/* Set up the encryption request */
-	req = skcipher_request_alloc(tfm, GFP_NOFS);
-	if (!req)
-		return -ENOMEM;
-	skcipher_request_set_callback(req,
-			CRYPTO_TFM_REQ_MAY_BACKLOG | CRYPTO_TFM_REQ_MAY_SLEEP,
-			crypto_req_done, &wait);
+	skcipher_request_set_callback(
+		req, CRYPTO_TFM_REQ_MAY_BACKLOG | CRYPTO_TFM_REQ_MAY_SLEEP,
+		NULL, NULL);
 	sg_init_one(&sg, out, olen);
 	skcipher_request_set_crypt(req, &sg, &sg, olen, &iv);
-
-	/* Do the encryption */
-	res = crypto_wait_req(crypto_skcipher_encrypt(req), &wait);
-	skcipher_request_free(req);
-	if (res < 0) {
-		fscrypt_err(inode, "Filename encryption failed: %d", res);
-		return res;
-	}
-
-	return 0;
+	err = crypto_skcipher_encrypt(req);
+	if (err)
+		fscrypt_err(inode, "Filename encryption failed: %d", err);
+	return err;
 }
+EXPORT_SYMBOL_GPL(fscrypt_fname_encrypt);
 
 /**
  * fname_decrypt() - decrypt a filename
@@ -145,34 +137,25 @@ static int fname_decrypt(const struct inode *inode,
 			 const struct fscrypt_str *iname,
 			 struct fscrypt_str *oname)
 {
-	struct skcipher_request *req = NULL;
-	DECLARE_CRYPTO_WAIT(wait);
-	struct scatterlist src_sg, dst_sg;
-	const struct fscrypt_info *ci = inode->i_crypt_info;
-	struct crypto_skcipher *tfm = ci->ci_enc_key.tfm;
+	const struct fscrypt_inode_info *ci = fscrypt_get_inode_info_raw(inode);
+	struct crypto_sync_skcipher *tfm = ci->ci_enc_key.tfm;
+	SYNC_SKCIPHER_REQUEST_ON_STACK(req, tfm);
 	union fscrypt_iv iv;
-	int res;
+	struct scatterlist src_sg, dst_sg;
+	int err;
 
-	/* Allocate request */
-	req = skcipher_request_alloc(tfm, GFP_NOFS);
-	if (!req)
-		return -ENOMEM;
-	skcipher_request_set_callback(req,
-		CRYPTO_TFM_REQ_MAY_BACKLOG | CRYPTO_TFM_REQ_MAY_SLEEP,
-		crypto_req_done, &wait);
-
-	/* Initialize IV */
 	fscrypt_generate_iv(&iv, 0, ci);
 
-	/* Create decryption request */
+	skcipher_request_set_callback(
+		req, CRYPTO_TFM_REQ_MAY_BACKLOG | CRYPTO_TFM_REQ_MAY_SLEEP,
+		NULL, NULL);
 	sg_init_one(&src_sg, iname->name, iname->len);
 	sg_init_one(&dst_sg, oname->name, oname->len);
 	skcipher_request_set_crypt(req, &src_sg, &dst_sg, iname->len, &iv);
-	res = crypto_wait_req(crypto_skcipher_decrypt(req), &wait);
-	skcipher_request_free(req);
-	if (res < 0) {
-		fscrypt_err(inode, "Filename decryption failed: %d", res);
-		return res;
+	err = crypto_skcipher_decrypt(req);
+	if (err) {
+		fscrypt_err(inode, "Filename decryption failed: %d", err);
+		return err;
 	}
 
 	oname->len = strnlen(oname->name, iname->len);
@@ -257,9 +240,9 @@ static int fscrypt_base64url_decode(const char *src, int srclen, u8 *dst)
 	return bp - dst;
 }
 
-bool fscrypt_fname_encrypted_size(const union fscrypt_policy *policy,
-				  u32 orig_len, u32 max_len,
-				  u32 *encrypted_len_ret)
+bool __fscrypt_fname_encrypted_size(const union fscrypt_policy *policy,
+				    u32 orig_len, u32 max_len,
+				    u32 *encrypted_len_ret)
 {
 	int padding = 4 << (fscrypt_policy_flags(policy) &
 			    FSCRYPT_POLICY_FLAGS_PAD_MASK);
@@ -267,11 +250,35 @@ bool fscrypt_fname_encrypted_size(const union fscrypt_policy *policy,
 
 	if (orig_len > max_len)
 		return false;
-	encrypted_len = max(orig_len, (u32)FS_CRYPTO_BLOCK_SIZE);
+	encrypted_len = max_t(u32, orig_len, FSCRYPT_FNAME_MIN_MSG_LEN);
 	encrypted_len = round_up(encrypted_len, padding);
 	*encrypted_len_ret = min(encrypted_len, max_len);
 	return true;
 }
+
+/**
+ * fscrypt_fname_encrypted_size() - calculate length of encrypted filename
+ * @inode:		parent inode of dentry name being encrypted. Key must
+ *			already be set up.
+ * @orig_len:		length of the original filename
+ * @max_len:		maximum length to return
+ * @encrypted_len_ret:	where calculated length should be returned (on success)
+ *
+ * Filenames that are shorter than the maximum length may have their lengths
+ * increased slightly by encryption, due to padding that is applied.
+ *
+ * Return: false if the orig_len is greater than max_len. Otherwise, true and
+ *	   fill out encrypted_len_ret with the length (up to max_len).
+ */
+bool fscrypt_fname_encrypted_size(const struct inode *inode, u32 orig_len,
+				  u32 max_len, u32 *encrypted_len_ret)
+{
+	const struct fscrypt_inode_info *ci = fscrypt_get_inode_info_raw(inode);
+
+	return __fscrypt_fname_encrypted_size(&ci->ci_policy, orig_len, max_len,
+					      encrypted_len_ret);
+}
+EXPORT_SYMBOL_GPL(fscrypt_fname_encrypted_size);
 
 /**
  * fscrypt_fname_alloc_buffer() - allocate a buffer for presented filenames
@@ -350,7 +357,7 @@ int fscrypt_fname_disk_to_usr(const struct inode *inode,
 		return 0;
 	}
 
-	if (iname->len < FS_CRYPTO_BLOCK_SIZE)
+	if (iname->len < FSCRYPT_FNAME_MIN_MSG_LEN)
 		return -EUCLEAN;
 
 	if (fscrypt_has_encryption_key(inode))
@@ -428,9 +435,7 @@ int fscrypt_setup_filename(struct inode *dir, const struct qstr *iname,
 		return ret;
 
 	if (fscrypt_has_encryption_key(dir)) {
-		if (!fscrypt_fname_encrypted_size(&dir->i_crypt_info->ci_policy,
-						  iname->len,
-						  dir->i_sb->s_cop->max_namelen,
+		if (!fscrypt_fname_encrypted_size(dir, iname->len, NAME_MAX,
 						  &fname->crypto_buf.len))
 			return -ENAMETOOLONG;
 		fname->crypto_buf.name = kmalloc(fname->crypto_buf.len,
@@ -538,9 +543,9 @@ EXPORT_SYMBOL_GPL(fscrypt_match_name);
  */
 u64 fscrypt_fname_siphash(const struct inode *dir, const struct qstr *name)
 {
-	const struct fscrypt_info *ci = dir->i_crypt_info;
+	const struct fscrypt_inode_info *ci = fscrypt_get_inode_info_raw(dir);
 
-	WARN_ON(!ci->ci_dirhash_key_initialized);
+	WARN_ON_ONCE(!ci->ci_dirhash_key_initialized);
 
 	return siphash(name->name, name->len, &ci->ci_dirhash_key);
 }
@@ -550,11 +555,10 @@ EXPORT_SYMBOL_GPL(fscrypt_fname_siphash);
  * Validate dentries in encrypted directories to make sure we aren't potentially
  * caching stale dentries after a key has been added.
  */
-int fscrypt_d_revalidate(struct dentry *dentry, unsigned int flags)
+int fscrypt_d_revalidate(struct inode *dir, const struct qstr *name,
+			 struct dentry *dentry, unsigned int flags)
 {
-	struct dentry *dir;
 	int err;
-	int valid;
 
 	/*
 	 * Plaintext names are always valid, since fscrypt doesn't support
@@ -567,30 +571,21 @@ int fscrypt_d_revalidate(struct dentry *dentry, unsigned int flags)
 	/*
 	 * No-key name; valid if the directory's key is still unavailable.
 	 *
-	 * Although fscrypt forbids rename() on no-key names, we still must use
-	 * dget_parent() here rather than use ->d_parent directly.  That's
-	 * because a corrupted fs image may contain directory hard links, which
-	 * the VFS handles by moving the directory's dentry tree in the dcache
-	 * each time ->lookup() finds the directory and it already has a dentry
-	 * elsewhere.  Thus ->d_parent can be changing, and we must safely grab
-	 * a reference to some ->d_parent to prevent it from being freed.
+	 * Note in RCU mode we have to bail if we get here -
+	 * fscrypt_get_encryption_info() may block.
 	 */
 
 	if (flags & LOOKUP_RCU)
 		return -ECHILD;
 
-	dir = dget_parent(dentry);
 	/*
 	 * Pass allow_unsupported=true, so that files with an unsupported
 	 * encryption policy can be deleted.
 	 */
-	err = fscrypt_get_encryption_info(d_inode(dir), true);
-	valid = !fscrypt_has_encryption_key(d_inode(dir));
-	dput(dir);
-
+	err = fscrypt_get_encryption_info(dir, true);
 	if (err < 0)
 		return err;
 
-	return valid;
+	return !fscrypt_has_encryption_key(dir);
 }
 EXPORT_SYMBOL_GPL(fscrypt_d_revalidate);

@@ -19,6 +19,7 @@
 #define SWITCHTEC_EVENT_EN_CLI   BIT(2)
 #define SWITCHTEC_EVENT_EN_IRQ   BIT(3)
 #define SWITCHTEC_EVENT_FATAL    BIT(4)
+#define SWITCHTEC_EVENT_NOT_SUPP BIT(31)
 
 #define SWITCHTEC_DMA_MRPC_EN	BIT(0)
 
@@ -40,6 +41,7 @@ enum {
 enum switchtec_gen {
 	SWITCHTEC_GEN3,
 	SWITCHTEC_GEN4,
+	SWITCHTEC_GEN5,
 };
 
 struct mrpc_regs {
@@ -336,8 +338,6 @@ enum {
 	NTB_CTRL_REQ_ID_EN = 1 << 0,
 
 	NTB_CTRL_LUT_EN = 1 << 0,
-
-	NTB_PART_CTRL_ID_PROT_DIS = 1 << 0,
 };
 
 struct ntb_ctrl_regs {
@@ -521,6 +521,6 @@ static inline struct switchtec_dev *to_stdev(struct device *dev)
 	return container_of(dev, struct switchtec_dev, dev);
 }
 
-extern struct class *switchtec_class;
+extern const struct class switchtec_class;
 
 #endif

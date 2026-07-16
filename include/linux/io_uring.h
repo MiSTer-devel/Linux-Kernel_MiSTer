@@ -4,11 +4,14 @@
 
 #include <linux/sched.h>
 #include <linux/xarray.h>
+#include <uapi/linux/io_uring.h>
 
 #if defined(CONFIG_IO_URING)
-struct sock *io_uring_get_socket(struct file *file);
 void __io_uring_cancel(bool cancel_all);
 void __io_uring_free(struct task_struct *tsk);
+void io_uring_unreg_ringfd(void);
+const char *io_uring_get_opcode(u8 opcode);
+bool io_is_uring_fops(struct file *file);
 
 static inline void io_uring_files_cancel(void)
 {
@@ -26,10 +29,6 @@ static inline void io_uring_free(struct task_struct *tsk)
 		__io_uring_free(tsk);
 }
 #else
-static inline struct sock *io_uring_get_socket(struct file *file)
-{
-	return NULL;
-}
 static inline void io_uring_task_cancel(void)
 {
 }
@@ -38,6 +37,14 @@ static inline void io_uring_files_cancel(void)
 }
 static inline void io_uring_free(struct task_struct *tsk)
 {
+}
+static inline const char *io_uring_get_opcode(u8 opcode)
+{
+	return "";
+}
+static inline bool io_is_uring_fops(struct file *file)
+{
+	return false;
 }
 #endif
 

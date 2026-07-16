@@ -3,162 +3,379 @@
  * Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
  */
 
+#include <linux/string_choices.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_atomic.h>
+#include <drm/drm_bridge.h>
+#include <drm/drm_bridge_connector.h>
 #include <drm/drm_crtc.h>
 
 #include "msm_drv.h"
 #include "msm_kms.h"
+#include "dp_audio.h"
 #include "dp_drm.h"
 
-struct dp_connector {
-	struct drm_connector base;
-	struct msm_dp *dp_display;
-};
-#define to_dp_connector(x) container_of(x, struct dp_connector, base)
-
 /**
- * dp_connector_detect - callback to determine if connector is connected
- * @conn: Pointer to drm connector structure
- * @force: Force detect setting from drm framework
- * Returns: Connector 'is connected' status
+ * msm_dp_bridge_detect - callback to determine if connector is connected
+ * @bridge: Pointer to drm bridge structure
+ * Returns: Bridge's 'is connected' status
  */
-static enum drm_connector_status dp_connector_detect(struct drm_connector *conn,
-		bool force)
+static enum drm_connector_status
+msm_dp_bridge_detect(struct drm_bridge *bridge, struct drm_connector *connector)
 {
 	struct msm_dp *dp;
 
-	dp = to_dp_connector(conn)->dp_display;
+	dp = to_dp_bridge(bridge)->msm_dp_display;
 
-	DRM_DEBUG_DP("is_connected = %s\n",
-		(dp->is_connected) ? "true" : "false");
+	drm_dbg_dp(dp->drm_dev, "link_ready = %s\n",
+		str_true_false(dp->link_ready));
 
-	return (dp->is_connected) ? connector_status_connected :
+	return (dp->link_ready) ? connector_status_connected :
 					connector_status_disconnected;
 }
 
+static int msm_dp_bridge_atomic_check(struct drm_bridge *bridge,
+			    struct drm_bridge_state *bridge_state,
+			    struct drm_crtc_state *crtc_state,
+			    struct drm_connector_state *conn_state)
+{
+	struct msm_dp *dp;
+
+	dp = to_dp_bridge(bridge)->msm_dp_display;
+
+	drm_dbg_dp(dp->drm_dev, "link_ready = %s\n",
+		str_true_false(dp->link_ready));
+
+	/*
+	 * There is no protection in the DRM framework to check if the display
+	 * pipeline has been already disabled before trying to disable it again.
+	 * Hence if the sink is unplugged, the pipeline gets disabled, but the
+	 * crtc->active is still true. Any attempt to set the mode or manually
+	 * disable this encoder will result in the crash.
+	 *
+	 * TODO: add support for telling the DRM subsystem that the pipeline is
+	 * disabled by the hardware and thus all access to it should be forbidden.
+	 * After that this piece of code can be removed.
+	 */
+	if (bridge->ops & DRM_BRIDGE_OP_HPD)
+		return (dp->link_ready) ? 0 : -ENOTCONN;
+
+	return 0;
+}
+
+
 /**
- * dp_connector_get_modes - callback to add drm modes via drm_mode_probed_add()
+ * msm_dp_bridge_get_modes - callback to add drm modes via drm_mode_probed_add()
+ * @bridge: Poiner to drm bridge
  * @connector: Pointer to drm connector structure
  * Returns: Number of modes added
  */
-static int dp_connector_get_modes(struct drm_connector *connector)
+static int msm_dp_bridge_get_modes(struct drm_bridge *bridge, struct drm_connector *connector)
 {
 	int rc = 0;
 	struct msm_dp *dp;
-	struct dp_display_mode *dp_mode = NULL;
-	struct drm_display_mode *m, drm_mode;
 
 	if (!connector)
 		return 0;
 
-	dp = to_dp_connector(connector)->dp_display;
-
-	dp_mode = kzalloc(sizeof(*dp_mode),  GFP_KERNEL);
-	if (!dp_mode)
-		return 0;
+	dp = to_dp_bridge(bridge)->msm_dp_display;
 
 	/* pluggable case assumes EDID is read when HPD */
-	if (dp->is_connected) {
-		/*
-		 *The get_modes() function might return one mode that is stored
-		 * in dp_mode when compliance test is in progress. If not, the
-		 * return value is equal to the total number of modes supported
-		 * by the sink
-		 */
-		rc = dp_display_get_modes(dp, dp_mode);
+	if (dp->link_ready) {
+		rc = msm_dp_display_get_modes(dp);
 		if (rc <= 0) {
 			DRM_ERROR("failed to get DP sink modes, rc=%d\n", rc);
-			kfree(dp_mode);
 			return rc;
 		}
-		if (dp_mode->drm_mode.clock) { /* valid DP mode */
-			memset(&drm_mode, 0x0, sizeof(drm_mode));
-			drm_mode_copy(&drm_mode, &dp_mode->drm_mode);
-			m = drm_mode_duplicate(connector->dev, &drm_mode);
-			if (!m) {
-				DRM_ERROR("failed to add mode %ux%u\n",
-				       drm_mode.hdisplay,
-				       drm_mode.vdisplay);
-				kfree(dp_mode);
-				return 0;
-			}
-			drm_mode_probed_add(connector, m);
-		}
 	} else {
-		DRM_DEBUG_DP("No sink connected\n");
+		drm_dbg_dp(connector->dev, "No sink connected\n");
 	}
-	kfree(dp_mode);
 	return rc;
 }
 
+static void msm_dp_bridge_debugfs_init(struct drm_bridge *bridge, struct dentry *root)
+{
+	struct msm_dp *dp = to_dp_bridge(bridge)->msm_dp_display;
+
+	msm_dp_display_debugfs_init(dp, root, false);
+}
+
+static const struct drm_bridge_funcs msm_dp_bridge_ops = {
+	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
+	.atomic_destroy_state   = drm_atomic_helper_bridge_destroy_state,
+	.atomic_reset           = drm_atomic_helper_bridge_reset,
+	.atomic_enable          = msm_dp_bridge_atomic_enable,
+	.atomic_disable         = msm_dp_bridge_atomic_disable,
+	.atomic_post_disable    = msm_dp_bridge_atomic_post_disable,
+	.mode_set     = msm_dp_bridge_mode_set,
+	.mode_valid   = msm_dp_bridge_mode_valid,
+	.get_modes    = msm_dp_bridge_get_modes,
+	.detect       = msm_dp_bridge_detect,
+	.atomic_check = msm_dp_bridge_atomic_check,
+	.hpd_enable   = msm_dp_bridge_hpd_enable,
+	.hpd_disable  = msm_dp_bridge_hpd_disable,
+	.hpd_notify   = msm_dp_bridge_hpd_notify,
+	.debugfs_init = msm_dp_bridge_debugfs_init,
+
+	.dp_audio_prepare = msm_dp_audio_prepare,
+	.dp_audio_shutdown = msm_dp_audio_shutdown,
+};
+
+static int msm_edp_bridge_atomic_check(struct drm_bridge *drm_bridge,
+				   struct drm_bridge_state *bridge_state,
+				   struct drm_crtc_state *crtc_state,
+				   struct drm_connector_state *conn_state)
+{
+	struct msm_dp *dp = to_dp_bridge(drm_bridge)->msm_dp_display;
+
+	if (WARN_ON(!conn_state))
+		return -ENODEV;
+
+	conn_state->self_refresh_aware = dp->psr_supported;
+
+	if (!conn_state->crtc || !crtc_state)
+		return 0;
+
+	if (crtc_state->self_refresh_active && !dp->psr_supported)
+		return -EINVAL;
+
+	return 0;
+}
+
+static void msm_edp_bridge_atomic_enable(struct drm_bridge *drm_bridge,
+					 struct drm_atomic_state *state)
+{
+	struct drm_crtc *crtc;
+	struct drm_crtc_state *old_crtc_state;
+	struct msm_dp_bridge *msm_dp_bridge = to_dp_bridge(drm_bridge);
+	struct msm_dp *dp = msm_dp_bridge->msm_dp_display;
+
+	/*
+	 * Check the old state of the crtc to determine if the panel
+	 * was put into psr state previously by the msm_edp_bridge_atomic_disable.
+	 * If the panel is in psr, just exit psr state and skip the full
+	 * bridge enable sequence.
+	 */
+	crtc = drm_atomic_get_new_crtc_for_encoder(state,
+						   drm_bridge->encoder);
+	if (!crtc)
+		return;
+
+	old_crtc_state = drm_atomic_get_old_crtc_state(state, crtc);
+
+	if (old_crtc_state && old_crtc_state->self_refresh_active) {
+		msm_dp_display_set_psr(dp, false);
+		return;
+	}
+
+	msm_dp_bridge_atomic_enable(drm_bridge, state);
+}
+
+static void msm_edp_bridge_atomic_disable(struct drm_bridge *drm_bridge,
+					  struct drm_atomic_state *atomic_state)
+{
+	struct drm_crtc *crtc;
+	struct drm_crtc_state *new_crtc_state = NULL, *old_crtc_state = NULL;
+	struct msm_dp_bridge *msm_dp_bridge = to_dp_bridge(drm_bridge);
+	struct msm_dp *dp = msm_dp_bridge->msm_dp_display;
+
+	crtc = drm_atomic_get_old_crtc_for_encoder(atomic_state,
+						   drm_bridge->encoder);
+	if (!crtc)
+		goto out;
+
+	new_crtc_state = drm_atomic_get_new_crtc_state(atomic_state, crtc);
+	if (!new_crtc_state)
+		goto out;
+
+	old_crtc_state = drm_atomic_get_old_crtc_state(atomic_state, crtc);
+	if (!old_crtc_state)
+		goto out;
+
+	/*
+	 * Set self refresh mode if current crtc state is active.
+	 *
+	 * If old crtc state is active, then this is a display disable
+	 * call while the sink is in psr state. So, exit psr here.
+	 * The eDP controller will be disabled in the
+	 * msm_edp_bridge_atomic_post_disable function.
+	 *
+	 * We observed sink is stuck in self refresh if psr exit is skipped
+	 * when display disable occurs while the sink is in psr state.
+	 */
+	if (new_crtc_state->self_refresh_active) {
+		msm_dp_display_set_psr(dp, true);
+		return;
+	} else if (old_crtc_state->self_refresh_active) {
+		msm_dp_display_set_psr(dp, false);
+		return;
+	}
+
+out:
+	msm_dp_bridge_atomic_disable(drm_bridge, atomic_state);
+}
+
+static void msm_edp_bridge_atomic_post_disable(struct drm_bridge *drm_bridge,
+					       struct drm_atomic_state *atomic_state)
+{
+	struct drm_crtc *crtc;
+	struct drm_crtc_state *new_crtc_state = NULL;
+
+	crtc = drm_atomic_get_old_crtc_for_encoder(atomic_state,
+						   drm_bridge->encoder);
+	if (!crtc)
+		return;
+
+	new_crtc_state = drm_atomic_get_new_crtc_state(atomic_state, crtc);
+	if (!new_crtc_state)
+		return;
+
+	/*
+	 * Self refresh mode is already set in msm_edp_bridge_atomic_disable.
+	 */
+	if (new_crtc_state->self_refresh_active)
+		return;
+
+	msm_dp_bridge_atomic_post_disable(drm_bridge, atomic_state);
+}
+
 /**
- * dp_connector_mode_valid - callback to determine if specified mode is valid
- * @connector: Pointer to drm connector structure
+ * msm_edp_bridge_mode_valid - callback to determine if specified mode is valid
+ * @bridge: Pointer to drm bridge structure
+ * @info: display info
  * @mode: Pointer to drm mode structure
  * Returns: Validity status for specified mode
  */
-static enum drm_mode_status dp_connector_mode_valid(
-		struct drm_connector *connector,
-		struct drm_display_mode *mode)
+static enum drm_mode_status msm_edp_bridge_mode_valid(struct drm_bridge *bridge,
+					  const struct drm_display_info *info,
+					  const struct drm_display_mode *mode)
 {
-	struct msm_dp *dp_disp;
+	struct msm_dp *dp;
+	int mode_pclk_khz = mode->clock;
 
-	dp_disp = to_dp_connector(connector)->dp_display;
+	dp = to_dp_bridge(bridge)->msm_dp_display;
 
-	if ((dp_disp->max_pclk_khz <= 0) ||
-			(dp_disp->max_pclk_khz > DP_MAX_PIXEL_CLK_KHZ) ||
-			(mode->clock > dp_disp->max_pclk_khz))
-		return MODE_BAD;
+	if (!dp || !mode_pclk_khz || !dp->connector) {
+		DRM_ERROR("invalid params\n");
+		return -EINVAL;
+	}
 
-	return dp_display_validate_mode(dp_disp, mode->clock);
-}
+	if (msm_dp_wide_bus_available(dp))
+		mode_pclk_khz /= 2;
 
-static const struct drm_connector_funcs dp_connector_funcs = {
-	.detect = dp_connector_detect,
-	.fill_modes = drm_helper_probe_single_connector_modes,
-	.destroy = drm_connector_cleanup,
-	.reset = drm_atomic_helper_connector_reset,
-	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
-	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
-};
-
-static const struct drm_connector_helper_funcs dp_connector_helper_funcs = {
-	.get_modes = dp_connector_get_modes,
-	.mode_valid = dp_connector_mode_valid,
-};
-
-/* connector initialization */
-struct drm_connector *dp_drm_connector_init(struct msm_dp *dp_display)
-{
-	struct drm_connector *connector = NULL;
-	struct dp_connector *dp_connector;
-	int ret;
-
-	dp_connector = devm_kzalloc(dp_display->drm_dev->dev,
-					sizeof(*dp_connector),
-					GFP_KERNEL);
-	if (!dp_connector)
-		return ERR_PTR(-ENOMEM);
-
-	dp_connector->dp_display = dp_display;
-
-	connector = &dp_connector->base;
-
-	ret = drm_connector_init(dp_display->drm_dev, connector,
-			&dp_connector_funcs,
-			DRM_MODE_CONNECTOR_DisplayPort);
-	if (ret)
-		return ERR_PTR(ret);
-
-	drm_connector_helper_add(connector, &dp_connector_helper_funcs);
+	if (mode_pclk_khz > DP_MAX_PIXEL_CLK_KHZ)
+		return MODE_CLOCK_HIGH;
 
 	/*
-	 * Enable HPD to let hpd event is handled when cable is connected.
+	 * The eDP controller currently does not have a reliable way of
+	 * enabling panel power to read sink capabilities. So, we rely
+	 * on the panel driver to populate only supported modes for now.
 	 */
-	connector->polled = DRM_CONNECTOR_POLL_HPD;
+	return MODE_OK;
+}
 
-	drm_connector_attach_encoder(connector, dp_display->encoder);
+static void msm_edp_bridge_debugfs_init(struct drm_bridge *bridge, struct dentry *root)
+{
+	struct msm_dp *dp = to_dp_bridge(bridge)->msm_dp_display;
+
+	msm_dp_display_debugfs_init(dp, root, true);
+}
+
+static const struct drm_bridge_funcs msm_edp_bridge_ops = {
+	.atomic_enable = msm_edp_bridge_atomic_enable,
+	.atomic_disable = msm_edp_bridge_atomic_disable,
+	.atomic_post_disable = msm_edp_bridge_atomic_post_disable,
+	.mode_set = msm_dp_bridge_mode_set,
+	.mode_valid = msm_edp_bridge_mode_valid,
+	.atomic_reset = drm_atomic_helper_bridge_reset,
+	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
+	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
+	.atomic_check = msm_edp_bridge_atomic_check,
+	.debugfs_init = msm_edp_bridge_debugfs_init,
+};
+
+int msm_dp_bridge_init(struct msm_dp *msm_dp_display, struct drm_device *dev,
+		   struct drm_encoder *encoder, bool yuv_supported)
+{
+	int rc;
+	struct msm_dp_bridge *msm_dp_bridge;
+	struct drm_bridge *bridge;
+
+	msm_dp_bridge = devm_drm_bridge_alloc(dev->dev, struct msm_dp_bridge, bridge,
+					      msm_dp_display->is_edp ? &msm_edp_bridge_ops :
+					      &msm_dp_bridge_ops);
+	if (IS_ERR(msm_dp_bridge))
+		return PTR_ERR(msm_dp_bridge);
+
+	msm_dp_bridge->msm_dp_display = msm_dp_display;
+
+	bridge = &msm_dp_bridge->bridge;
+	bridge->type = msm_dp_display->connector_type;
+	bridge->ycbcr_420_allowed = yuv_supported;
+
+	/*
+	 * Many ops only make sense for DP. Why?
+	 * - Detect/HPD are used by DRM to know if a display is _physically_
+	 *   there, not whether the display is powered on / finished initting.
+	 *   On eDP we assume the display is always there because you can't
+	 *   know until power is applied. If we don't implement the ops DRM will
+	 *   assume our display is always there.
+	 * - Currently eDP mode reading is driven by the panel driver. This
+	 *   allows the panel driver to properly power itself on to read the
+	 *   modes.
+	 */
+	if (!msm_dp_display->is_edp) {
+		bridge->ops =
+			DRM_BRIDGE_OP_DP_AUDIO |
+			DRM_BRIDGE_OP_DETECT |
+			DRM_BRIDGE_OP_HPD |
+			DRM_BRIDGE_OP_MODES;
+		bridge->hdmi_audio_dev = &msm_dp_display->pdev->dev;
+		bridge->hdmi_audio_max_i2s_playback_channels = 8;
+		bridge->hdmi_audio_dai_port = -1;
+	}
+
+	rc = devm_drm_bridge_add(dev->dev, bridge);
+	if (rc) {
+		DRM_ERROR("failed to add bridge, rc=%d\n", rc);
+
+		return rc;
+	}
+
+	rc = drm_bridge_attach(encoder, bridge, NULL, DRM_BRIDGE_ATTACH_NO_CONNECTOR);
+	if (rc) {
+		DRM_ERROR("failed to attach bridge, rc=%d\n", rc);
+
+		return rc;
+	}
+
+	if (msm_dp_display->next_bridge) {
+		rc = drm_bridge_attach(encoder,
+					msm_dp_display->next_bridge, bridge,
+					DRM_BRIDGE_ATTACH_NO_CONNECTOR);
+		if (rc < 0) {
+			DRM_ERROR("failed to attach panel bridge: %d\n", rc);
+			return rc;
+		}
+	}
+
+	return 0;
+}
+
+/* connector initialization */
+struct drm_connector *msm_dp_drm_connector_init(struct msm_dp *msm_dp_display,
+					    struct drm_encoder *encoder)
+{
+	struct drm_connector *connector = NULL;
+
+	connector = drm_bridge_connector_init(msm_dp_display->drm_dev, encoder);
+	if (IS_ERR(connector))
+		return connector;
+
+	if (!msm_dp_display->is_edp)
+		drm_connector_attach_dp_subconnector_property(connector);
+
+	drm_connector_attach_encoder(connector, encoder);
 
 	return connector;
 }

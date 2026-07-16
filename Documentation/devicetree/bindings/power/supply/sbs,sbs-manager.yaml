@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/power/supply/sbs,sbs-manager.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: SBS compliant manger
+title: SBS compliant manager
 
 maintainers:
   - Sebastian Reichel <sre@kernel.org>
@@ -46,9 +46,13 @@ additionalProperties: false
 patternProperties:
   "^i2c@[1-4]$":
     type: object
+    $ref: /schemas/i2c/i2c-controller.yaml#
+    unevaluatedProperties: false
 
-    allOf:
-      - $ref: /schemas/i2c/i2c-controller.yaml#
+    properties:
+      reg:
+        minimum: 1
+        maximum: 4
 
 examples:
   - |

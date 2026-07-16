@@ -21,17 +21,9 @@
 	mtspr	SPRN_SPRG_SCRATCH1,r11
 	mfspr	r10, SPRN_SPRG_THREAD
 	.if	\handle_dar_dsisr
-#ifdef CONFIG_40x
-	mfspr	r11, SPRN_DEAR
-#else
 	mfspr	r11, SPRN_DAR
-#endif
 	stw	r11, DAR(r10)
-#ifdef CONFIG_40x
-	mfspr	r11, SPRN_ESR
-#else
 	mfspr	r11, SPRN_DSISR
-#endif
 	stw	r11, DSISR(r10)
 	.endif
 	mfspr	r11, SPRN_SRR0
@@ -96,9 +88,7 @@
 	.endif
 	lwz	r9, SRR1(r12)
 	lwz	r12, SRR0(r12)
-#ifdef CONFIG_40x
-	rlwinm	r9,r9,0,14,12		/* clear MSR_WE (necessary?) */
-#elif defined(CONFIG_PPC_8xx)
+#ifdef CONFIG_PPC_8xx
 	mtspr	SPRN_EID, r2		/* Set MSR_RI */
 #else
 	li	r10, MSR_KERNEL		/* can take exceptions */
@@ -112,11 +102,10 @@ _ASM_NOKPROBE_SYMBOL(\name\()_virt)
 	stw	r0,GPR0(r1)
 	lis	r10,STACK_FRAME_REGS_MARKER@ha /* exception frame marker */
 	addi	r10,r10,STACK_FRAME_REGS_MARKER@l
-	stw	r10,8(r1)
+	stw	r10,STACK_INT_FRAME_MARKER(r1)
 	li	r10, \trapno
 	stw	r10,_TRAP(r1)
-	SAVE_4GPRS(3, r1)
-	SAVE_2GPRS(7, r1)
+	SAVE_GPRS(3, 8, r1)
 	SAVE_NVGPRS(r1)
 	stw	r2,GPR2(r1)
 	stw	r12,_NIP(r1)
@@ -128,7 +117,7 @@ _ASM_NOKPROBE_SYMBOL(\name\()_virt)
 	mfspr	r10,SPRN_XER
 	addi	r2, r2, -THREAD
 	stw	r10,_XER(r1)
-	addi	r3,r1,STACK_FRAME_OVERHEAD
+	addi	r3,r1,STACK_INT_FRAME_REGS
 .endm
 
 .macro prepare_transfer_to_handler
@@ -136,6 +125,12 @@ _ASM_NOKPROBE_SYMBOL(\name\()_virt)
 	andi.	r12,r9,MSR_PR
 	bne	777f
 	bl	prepare_transfer_to_handler
+#ifdef CONFIG_PPC_KUEP
+	b	778f
+777:
+	bl	__kuep_lock
+778:
+#endif
 777:
 #endif
 .endm
@@ -202,11 +197,11 @@ vmap_stack_overflow:
 	mfspr	r1, SPRN_SPRG_THREAD
 	lwz	r1, TASK_CPU - THREAD(r1)
 	slwi	r1, r1, 3
-	addis	r1, r1, emergency_ctx@ha
+	addis	r1, r1, emergency_ctx-PAGE_OFFSET@ha
 #else
-	lis	r1, emergency_ctx@ha
+	lis	r1, emergency_ctx-PAGE_OFFSET@ha
 #endif
-	lwz	r1, emergency_ctx@l(r1)
+	lwz	r1, emergency_ctx-PAGE_OFFSET@l(r1)
 	addi	r1, r1, THREAD_SIZE - INT_FRAME_SIZE
 	EXCEPTION_PROLOG_2 0 vmap_stack_overflow
 	prepare_transfer_to_handler

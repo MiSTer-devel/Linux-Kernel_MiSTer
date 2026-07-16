@@ -726,7 +726,7 @@ static int isp116x_urb_enqueue(struct usb_hcd *hcd,
 		INIT_LIST_HEAD(&ep->schedule);
 		ep->udev = udev;
 		ep->epnum = epnum;
-		ep->maxpacket = usb_maxpacket(udev, urb->pipe, is_out);
+		ep->maxpacket = usb_maxpacket(udev, urb->pipe);
 		usb_settoggle(udev, epnum, is_out, 0);
 
 		if (type == PIPE_CONTROL) {
@@ -757,8 +757,7 @@ static int isp116x_urb_enqueue(struct usb_hcd *hcd,
 			ep->load = usb_calc_bus_time(udev->speed,
 						     !is_out,
 						     (type == PIPE_ISOCHRONOUS),
-						     usb_maxpacket(udev, pipe,
-								   is_out)) /
+						     usb_maxpacket(udev, pipe)) /
 			    1000;
 		}
 		hep->hcpriv = ep;
@@ -1206,7 +1205,7 @@ static void create_debug_file(struct isp116x *isp116x)
 
 static void remove_debug_file(struct isp116x *isp116x)
 {
-	debugfs_remove(debugfs_lookup(hcd_name, usb_debug_root));
+	debugfs_lookup_and_remove(hcd_name, usb_debug_root);
 }
 
 #else
@@ -1527,27 +1526,28 @@ static const struct hc_driver isp116x_hc_driver = {
 
 /*----------------------------------------------------------------*/
 
-static int isp116x_remove(struct platform_device *pdev)
+static void isp116x_remove(struct platform_device *pdev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(pdev);
 	struct isp116x *isp116x;
 	struct resource *res;
 
 	if (!hcd)
-		return 0;
+		return;
 	isp116x = hcd_to_isp116x(hcd);
 	remove_debug_file(isp116x);
 	usb_remove_hcd(hcd);
 
 	iounmap(isp116x->data_reg);
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-	release_mem_region(res->start, 2);
+	if (res)
+		release_mem_region(res->start, 2);
 	iounmap(isp116x->addr_reg);
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	release_mem_region(res->start, 2);
+	if (res)
+		release_mem_region(res->start, 2);
 
 	usb_put_hcd(hcd);
-	return 0;
 }
 
 static int isp116x_probe(struct platform_device *pdev)

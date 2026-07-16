@@ -14,7 +14,6 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/poll.h>
 #include <linux/regmap.h>
@@ -128,11 +127,6 @@ struct aspeed_kcs_bmc {
 	} obe;
 };
 
-struct aspeed_kcs_of_ops {
-	int (*get_channel)(struct platform_device *pdev);
-	int (*get_io_address)(struct platform_device *pdev, u32 addrs[2]);
-};
-
 static inline struct aspeed_kcs_bmc *to_aspeed_kcs_bmc(struct kcs_bmc_device *kcs_bmc)
 {
 	return container_of(kcs_bmc, struct aspeed_kcs_bmc, kcs_bmc);
@@ -212,17 +206,24 @@ static void aspeed_kcs_updateb(struct kcs_bmc_device *kcs_bmc, u32 reg, u8 mask,
 }
 
 /*
- * AST_usrGuide_KCS.pdf
- * 2. Background:
- *   we note D for Data, and C for Cmd/Status, default rules are
- *     A. KCS1 / KCS2 ( D / C:X / X+4 )
- *        D / C : CA0h / CA4h
- *        D / C : CA8h / CACh
- *     B. KCS3 ( D / C:XX2h / XX3h )
- *        D / C : CA2h / CA3h
- *        D / C : CB2h / CB3h
- *     C. KCS4
- *        D / C : CA4h / CA5h
+ * We note D for Data, and C for Cmd/Status, default rules are
+ *
+ * 1. Only the D address is given:
+ *   A. KCS1/KCS2 (D/C: X/X+4)
+ *      D/C: CA0h/CA4h
+ *      D/C: CA8h/CACh
+ *   B. KCS3 (D/C: XX2/XX3h)
+ *      D/C: CA2h/CA3h
+ *   C. KCS4 (D/C: X/X+1)
+ *      D/C: CA4h/CA5h
+ *
+ * 2. Both the D/C addresses are given:
+ *   A. KCS1/KCS2/KCS4 (D/C: X/Y)
+ *      D/C: CA0h/CA1h
+ *      D/C: CA8h/CA9h
+ *      D/C: CA4h/CA5h
+ *   B. KCS3 (D/C: XX2/XX3h)
+ *      D/C: CA2h/CA3h
  */
 static int aspeed_kcs_set_address(struct kcs_bmc_device *kcs_bmc, u32 addrs[2], int nr_addrs)
 {
@@ -404,13 +405,31 @@ static void aspeed_kcs_check_obe(struct timer_list *timer)
 static void aspeed_kcs_irq_mask_update(struct kcs_bmc_device *kcs_bmc, u8 mask, u8 state)
 {
 	struct aspeed_kcs_bmc *priv = to_aspeed_kcs_bmc(kcs_bmc);
+	int rc;
+	u8 str;
 
 	/* We don't have an OBE IRQ, emulate it */
 	if (mask & KCS_BMC_EVENT_TYPE_OBE) {
-		if (KCS_BMC_EVENT_TYPE_OBE & state)
-			mod_timer(&priv->obe.timer, jiffies + OBE_POLL_PERIOD);
-		else
-			del_timer(&priv->obe.timer);
+		if (KCS_BMC_EVENT_TYPE_OBE & state) {
+			/*
+			 * Given we don't have an OBE IRQ, delay by polling briefly to see if we can
+			 * observe such an event before returning to the caller. This is not
+			 * incorrect because OBF may have already become clear before enabling the
+			 * IRQ if we had one, under which circumstance no event will be propagated
+			 * anyway.
+			 *
+			 * The onus is on the client to perform a race-free check that it hasn't
+			 * missed the event.
+			 */
+			rc = read_poll_timeout_atomic(aspeed_kcs_inb, str,
+						      !(str & KCS_BMC_STR_OBF), 1, 100, false,
+						      &priv->kcs_bmc, priv->kcs_bmc.ioreg.str);
+			/* Time for the slow path? */
+			if (rc == -ETIMEDOUT)
+				mod_timer(&priv->obe.timer, jiffies + OBE_POLL_PERIOD);
+		} else {
+			timer_delete(&priv->obe.timer);
+		}
 	}
 
 	if (mask & KCS_BMC_EVENT_TYPE_IBF) {
@@ -475,38 +494,7 @@ static const struct kcs_ioreg ast_kcs_bmc_ioregs[KCS_CHANNEL_MAX] = {
 	{ .idr = LPC_IDR4, .odr = LPC_ODR4, .str = LPC_STR4 },
 };
 
-static int aspeed_kcs_of_v1_get_channel(struct platform_device *pdev)
-{
-	struct device_node *np;
-	u32 channel;
-	int rc;
-
-	np = pdev->dev.of_node;
-
-	rc = of_property_read_u32(np, "kcs_chan", &channel);
-	if ((rc != 0) || (channel == 0 || channel > KCS_CHANNEL_MAX)) {
-		dev_err(&pdev->dev, "no valid 'kcs_chan' configured\n");
-		return -EINVAL;
-	}
-
-	return channel;
-}
-
-static int
-aspeed_kcs_of_v1_get_io_address(struct platform_device *pdev, u32 addrs[2])
-{
-	int rc;
-
-	rc = of_property_read_u32(pdev->dev.of_node, "kcs_addr", addrs);
-	if (rc || addrs[0] > 0xffff) {
-		dev_err(&pdev->dev, "no valid 'kcs_addr' configured\n");
-		return -EINVAL;
-	}
-
-	return 1;
-}
-
-static int aspeed_kcs_of_v2_get_channel(struct platform_device *pdev)
+static int aspeed_kcs_of_get_channel(struct platform_device *pdev)
 {
 	struct device_node *np;
 	struct kcs_ioreg ioreg;
@@ -535,12 +523,11 @@ static int aspeed_kcs_of_v2_get_channel(struct platform_device *pdev)
 		if (!memcmp(&ast_kcs_bmc_ioregs[i], &ioreg, sizeof(ioreg)))
 			return i + 1;
 	}
-
 	return -EINVAL;
 }
 
 static int
-aspeed_kcs_of_v2_get_io_address(struct platform_device *pdev, u32 addrs[2])
+aspeed_kcs_of_get_io_address(struct platform_device *pdev, u32 addrs[2])
 {
 	int rc;
 
@@ -567,7 +554,6 @@ aspeed_kcs_of_v2_get_io_address(struct platform_device *pdev, u32 addrs[2])
 
 static int aspeed_kcs_probe(struct platform_device *pdev)
 {
-	const struct aspeed_kcs_of_ops *ops;
 	struct kcs_bmc_device *kcs_bmc;
 	struct aspeed_kcs_bmc *priv;
 	struct device_node *np;
@@ -585,15 +571,11 @@ static int aspeed_kcs_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	ops = of_device_get_match_data(&pdev->dev);
-	if (!ops)
-		return -EINVAL;
-
-	channel = ops->get_channel(pdev);
+	channel = aspeed_kcs_of_get_channel(pdev);
 	if (channel < 0)
 		return channel;
 
-	nr_addrs = ops->get_io_address(pdev, addrs);
+	nr_addrs = aspeed_kcs_of_get_io_address(pdev, addrs);
 	if (nr_addrs < 0)
 		return nr_addrs;
 
@@ -659,7 +641,7 @@ static int aspeed_kcs_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int aspeed_kcs_remove(struct platform_device *pdev)
+static void aspeed_kcs_remove(struct platform_device *pdev)
 {
 	struct aspeed_kcs_bmc *priv = platform_get_drvdata(pdev);
 	struct kcs_bmc_device *kcs_bmc = &priv->kcs_bmc;
@@ -673,26 +655,13 @@ static int aspeed_kcs_remove(struct platform_device *pdev)
 	spin_lock_irq(&priv->obe.lock);
 	priv->obe.remove = true;
 	spin_unlock_irq(&priv->obe.lock);
-	del_timer_sync(&priv->obe.timer);
-
-	return 0;
+	timer_delete_sync(&priv->obe.timer);
 }
 
-static const struct aspeed_kcs_of_ops of_v1_ops = {
-	.get_channel = aspeed_kcs_of_v1_get_channel,
-	.get_io_address = aspeed_kcs_of_v1_get_io_address,
-};
-
-static const struct aspeed_kcs_of_ops of_v2_ops = {
-	.get_channel = aspeed_kcs_of_v2_get_channel,
-	.get_io_address = aspeed_kcs_of_v2_get_io_address,
-};
-
 static const struct of_device_id ast_kcs_bmc_match[] = {
-	{ .compatible = "aspeed,ast2400-kcs-bmc", .data = &of_v1_ops },
-	{ .compatible = "aspeed,ast2500-kcs-bmc", .data = &of_v1_ops },
-	{ .compatible = "aspeed,ast2400-kcs-bmc-v2", .data = &of_v2_ops },
-	{ .compatible = "aspeed,ast2500-kcs-bmc-v2", .data = &of_v2_ops },
+	{ .compatible = "aspeed,ast2400-kcs-bmc-v2" },
+	{ .compatible = "aspeed,ast2500-kcs-bmc-v2" },
+	{ .compatible = "aspeed,ast2600-kcs-bmc" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, ast_kcs_bmc_match);

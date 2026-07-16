@@ -4,7 +4,6 @@
 
 #include <asm/auxvec.h>
 #include <asm/hwcap.h>
-#include <asm/vdso_datapage.h>
 
 /*
  * ELF register definitions..
@@ -61,6 +60,9 @@ typedef struct user_fp elf_fpregset_t;
 #define R_ARM_MOVT_ABS		44
 #define R_ARM_MOVW_PREL_NC	45
 #define R_ARM_MOVT_PREL		46
+#define R_ARM_ALU_PC_G0_NC	57
+#define R_ARM_ALU_PC_G1_NC	59
+#define R_ARM_LDR_PC_G2		63
 
 #define R_ARM_THM_CALL		10
 #define R_ARM_THM_JUMP24	30

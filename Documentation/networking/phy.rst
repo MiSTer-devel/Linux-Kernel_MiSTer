@@ -20,7 +20,7 @@ sometimes quite different) ethernet controllers connected to the same
 management bus, it is difficult to ensure safe use of the bus.
 
 Since the PHYs are devices, and the management busses through which they are
-accessed are, in fact, busses, the PHY Abstraction Layer treats them as such.
+accessed are, in fact, busses, the PHY Abstraction Layer (PAL) treats them as such.
 In doing so, it has these goals:
 
 #. Increase code-reuse
@@ -104,7 +104,7 @@ Whenever possible, use the PHY side RGMII delay for these reasons:
 
 * PHY device drivers in PHYLIB being reusable by nature, being able to
   configure correctly a specified delay enables more designs with similar delay
-  requirements to be operate correctly
+  requirements to be operated correctly
 
 For cases where the PHY is not capable of providing this delay, but the
 Ethernet MAC driver is capable of doing so, the correct phy_interface_t value
@@ -120,7 +120,7 @@ required delays, as defined per the RGMII standard, several options may be
 available:
 
 * Some SoCs may offer a pin pad/mux/controller capable of configuring a given
-  set of pins'strength, delays, and voltage; and it may be a suitable
+  set of pins' strength, delays, and voltage; and it may be a suitable
   option to insert the expected 2ns RGMII delay.
 
 * Modifying the PCB design to include a fixed delay (e.g: using a specifically
@@ -237,6 +237,11 @@ negotiation results.
 
 Some of the interface modes are described below:
 
+``PHY_INTERFACE_MODE_SMII``
+    This is serial MII, clocked at 125MHz, supporting 100M and 10M speeds.
+    Some details can be found in
+    https://opencores.org/ocsvn/smii/smii/trunk/doc/SMII.pdf
+
 ``PHY_INTERFACE_MODE_1000BASEX``
     This defines the 1000BASE-X single-lane serdes link as defined by the
     802.3 standard section 36.  The link operates at a fixed bit rate of
@@ -302,6 +307,38 @@ Some of the interface modes are described below:
     This defines IEEE 802.3 Clause 24.  The link operates at a fixed data
     rate of 125Mpbs using a 4B/5B encoding scheme, resulting in an underlying
     data rate of 100Mpbs.
+
+``PHY_INTERFACE_MODE_QUSGMII``
+    This defines the Cisco the Quad USGMII mode, which is the Quad variant of
+    the USGMII (Universal SGMII) link. It's very similar to QSGMII, but uses
+    a Packet Control Header (PCH) instead of the 7 bytes preamble to carry not
+    only the port id, but also so-called "extensions". The only documented
+    extension so-far in the specification is the inclusion of timestamps, for
+    PTP-enabled PHYs. This mode isn't compatible with QSGMII, but offers the
+    same capabilities in terms of link speed and negotiation.
+
+``PHY_INTERFACE_MODE_1000BASEKX``
+    This is 1000BASE-X as defined by IEEE 802.3 Clause 36 with Clause 73
+    autonegotiation. Generally, it will be used with a Clause 70 PMD. To
+    contrast with the 1000BASE-X phy mode used for Clause 38 and 39 PMDs, this
+    interface mode has different autonegotiation and only supports full duplex.
+
+``PHY_INTERFACE_MODE_PSGMII``
+    This is the Penta SGMII mode, it is similar to QSGMII but it combines 5
+    SGMII lines into a single link compared to 4 on QSGMII.
+
+``PHY_INTERFACE_MODE_10G_QXGMII``
+    Represents the 10G-QXGMII PHY-MAC interface as defined by the Cisco USXGMII
+    Multiport Copper Interface document. It supports 4 ports over a 10.3125 GHz
+    SerDes lane, each port having speeds of 2.5G / 1G / 100M / 10M achieved
+    through symbol replication. The PCS expects the standard USXGMII code word.
+
+``PHY_INTERFACE_MODE_MIILITE``
+    Non-standard, simplified MII mode, without TXER, RXER, CRS and COL signals
+    as defined for the MII. The absence of COL signal makes half-duplex link
+    modes impossible but does not interfere with BroadR-Reach link modes on
+    Broadcom (and other two-wire Ethernet) PHYs, because they are full-duplex
+    only.
 
 Pause frames / flow control
 ===========================

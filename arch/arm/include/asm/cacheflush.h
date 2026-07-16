@@ -231,14 +231,15 @@ vivt_flush_cache_range(struct vm_area_struct *vma, unsigned long start, unsigned
 					vma->vm_flags);
 }
 
-static inline void
-vivt_flush_cache_page(struct vm_area_struct *vma, unsigned long user_addr, unsigned long pfn)
+static inline void vivt_flush_cache_pages(struct vm_area_struct *vma,
+		unsigned long user_addr, unsigned long pfn, unsigned int nr)
 {
 	struct mm_struct *mm = vma->vm_mm;
 
 	if (!mm || cpumask_test_cpu(smp_processor_id(), mm_cpumask(mm))) {
 		unsigned long addr = user_addr & PAGE_MASK;
-		__cpuc_flush_user_range(addr, addr + PAGE_SIZE, vma->vm_flags);
+		__cpuc_flush_user_range(addr, addr + nr * PAGE_SIZE,
+				vma->vm_flags);
 	}
 }
 
@@ -247,15 +248,17 @@ vivt_flush_cache_page(struct vm_area_struct *vma, unsigned long user_addr, unsig
 		vivt_flush_cache_mm(mm)
 #define flush_cache_range(vma,start,end) \
 		vivt_flush_cache_range(vma,start,end)
-#define flush_cache_page(vma,addr,pfn) \
-		vivt_flush_cache_page(vma,addr,pfn)
+#define flush_cache_pages(vma, addr, pfn, nr) \
+		vivt_flush_cache_pages(vma, addr, pfn, nr)
 #else
-extern void flush_cache_mm(struct mm_struct *mm);
-extern void flush_cache_range(struct vm_area_struct *vma, unsigned long start, unsigned long end);
-extern void flush_cache_page(struct vm_area_struct *vma, unsigned long user_addr, unsigned long pfn);
+void flush_cache_mm(struct mm_struct *mm);
+void flush_cache_range(struct vm_area_struct *vma, unsigned long start, unsigned long end);
+void flush_cache_pages(struct vm_area_struct *vma, unsigned long user_addr,
+		unsigned long pfn, unsigned int nr);
 #endif
 
 #define flush_cache_dup_mm(mm) flush_cache_mm(mm)
+#define flush_cache_page(vma, addr, pfn) flush_cache_pages(vma, addr, pfn, 1)
 
 /*
  * flush_icache_user_range is used when we want to ensure that the
@@ -280,7 +283,7 @@ extern void flush_cache_page(struct vm_area_struct *vma, unsigned long user_addr
  * flush_dcache_page is used when the kernel has written to the page
  * cache page at virtual address page->virtual.
  *
- * If this page isn't mapped (ie, page_mapping == NULL), or it might
+ * If this page isn't mapped (ie, folio_mapping == NULL), or it might
  * have userspace mappings, then we _must_ always clean + invalidate
  * the dcache entries associated with the kernel mapping.
  *
@@ -289,7 +292,9 @@ extern void flush_cache_page(struct vm_area_struct *vma, unsigned long user_addr
  * See update_mmu_cache for the user space part.
  */
 #define ARCH_IMPLEMENTS_FLUSH_DCACHE_PAGE 1
-extern void flush_dcache_page(struct page *);
+void flush_dcache_page(struct page *);
+void flush_dcache_folio(struct folio *folio);
+#define flush_dcache_folio flush_dcache_folio
 
 #define ARCH_IMPLEMENTS_FLUSH_KERNEL_VMAP_RANGE 1
 static inline void flush_kernel_vmap_range(void *addr, int size)
@@ -317,12 +322,6 @@ static inline void flush_anon_page(struct vm_area_struct *vma,
 #define flush_dcache_mmap_unlock(mapping)	xa_unlock_irq(&mapping->i_pages)
 
 /*
- * We don't appear to need to do anything here.  In fact, if we did, we'd
- * duplicate cache flushing elsewhere performed by flush_dcache_page().
- */
-#define flush_icache_page(vma,page)	do { } while (0)
-
-/*
  * flush_cache_vmap() is used when creating mappings (eg, via vmap,
  * vmalloc, ioremap etc) in kernel space for pages.  On non-VIPT
  * caches, since the direct-mappings of these pages may contain cached
@@ -340,6 +339,8 @@ static inline void flush_cache_vmap(unsigned long start, unsigned long end)
 		 */
 		dsb(ishst);
 }
+
+#define flush_cache_vmap_early(start, end)	do { } while (0)
 
 static inline void flush_cache_vunmap(unsigned long start, unsigned long end)
 {
@@ -445,15 +446,10 @@ static inline void __sync_cache_range_r(volatile void *p, size_t size)
  *   however some exceptions may exist.  Caveat emptor.
  *
  * - The clobber list is dictated by the call to v7_flush_dcache_*.
- *   fp is preserved to the stack explicitly prior disabling the cache
- *   since adding it to the clobber list is incompatible with having
- *   CONFIG_FRAME_POINTER=y.  ip is saved as well if ever r12-clobbering
- *   trampoline are inserted by the linker and to keep sp 64-bit aligned.
  */
 #define v7_exit_coherency_flush(level) \
 	asm volatile( \
 	".arch	armv7-a \n\t" \
-	"stmfd	sp!, {fp, ip} \n\t" \
 	"mrc	p15, 0, r0, c1, c0, 0	@ get SCTLR \n\t" \
 	"bic	r0, r0, #"__stringify(CR_C)" \n\t" \
 	"mcr	p15, 0, r0, c1, c0, 0	@ set SCTLR \n\t" \
@@ -463,10 +459,9 @@ static inline void __sync_cache_range_r(volatile void *p, size_t size)
 	"bic	r0, r0, #(1 << 6)	@ disable local coherency \n\t" \
 	"mcr	p15, 0, r0, c1, c0, 1	@ set ACTLR \n\t" \
 	"isb	\n\t" \
-	"dsb	\n\t" \
-	"ldmfd	sp!, {fp, ip}" \
-	: : : "r0","r1","r2","r3","r4","r5","r6","r7", \
-	      "r9","r10","lr","memory" )
+	"dsb" \
+	: : : "r0","r1","r2","r3","r4","r5","r6", \
+	      "r9","r10","ip","lr","memory" )
 
 void flush_uprobe_xol_access(struct page *page, unsigned long uaddr,
 			     void *kaddr, unsigned long len);

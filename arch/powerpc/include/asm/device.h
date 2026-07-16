@@ -38,9 +38,6 @@ struct dev_archdata {
 #ifdef CONFIG_FAIL_IOMMU
 	int fail_iommu;
 #endif
-#ifdef CONFIG_CXL_BASE
-	struct cxl_context	*cxl_ctx;
-#endif
 #ifdef CONFIG_PCI_IOV
 	void *iov_data;
 #endif
@@ -48,6 +45,11 @@ struct dev_archdata {
 
 struct pdev_archdata {
 	u64 dma_mask;
+	/*
+	 * Pointer to nvdimm_pmu structure, to handle the unregistering
+	 * of pmu device
+	 */
+	void *priv;
 };
 
 #endif /* _ASM_POWERPC_DEVICE_H */

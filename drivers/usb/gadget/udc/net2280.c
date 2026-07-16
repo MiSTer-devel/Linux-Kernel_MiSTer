@@ -56,7 +56,7 @@
 
 #include <asm/byteorder.h>
 #include <asm/irq.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #define	DRIVER_DESC		"PLX NET228x/USB338x USB Peripheral Controller"
 #define	DRIVER_VERSION		"2005 Sept 27/v3.0"
@@ -203,13 +203,13 @@ net2280_enable(struct usb_ep *_ep, const struct usb_endpoint_descriptor *desc)
 	}
 
 	/* erratum 0119 workaround ties up an endpoint number */
-	if ((desc->bEndpointAddress & 0x0f) == EP_DONTUSE) {
+	if (usb_endpoint_num(desc) == EP_DONTUSE) {
 		ret = -EDOM;
 		goto print_err;
 	}
 
 	if (dev->quirks & PLX_PCIE) {
-		if ((desc->bEndpointAddress & 0x0f) >= 0x0c) {
+		if (usb_endpoint_num(desc) >= 0x0c) {
 			ret = -EDOM;
 			goto print_err;
 		}
@@ -255,7 +255,7 @@ net2280_enable(struct usb_ep *_ep, const struct usb_endpoint_descriptor *desc)
 		else
 			tmp &= ~USB3380_EP_CFG_MASK_OUT;
 	}
-	type = (desc->bmAttributes & USB_ENDPOINT_XFERTYPE_MASK);
+	type = usb_endpoint_type(desc);
 	if (type == USB_ENDPOINT_XFER_INT) {
 		/* erratum 0105 workaround prevents hs NYET */
 		if (dev->chiprev == 0100 &&
@@ -932,19 +932,11 @@ static void start_dma(struct net2280_ep *ep, struct net2280_request *req)
 static inline void
 queue_dma(struct net2280_ep *ep, struct net2280_request *req, int valid)
 {
-	struct net2280_dma	*end;
-	dma_addr_t		tmp;
-
 	/* swap new dummy for old, link; fill and maybe activate */
-	end = ep->dummy;
-	ep->dummy = req->td;
-	req->td = end;
+	swap(ep->dummy, req->td);
+	swap(ep->td_dma, req->td_dma);
 
-	tmp = ep->td_dma;
-	ep->td_dma = req->td_dma;
-	req->td_dma = tmp;
-
-	end->dmadesc = cpu_to_le32 (ep->td_dma);
+	req->td->dmadesc = cpu_to_le32 (ep->td_dma);
 
 	fill_dma_desc(ep, req, valid);
 }
@@ -1240,7 +1232,8 @@ static void nuke(struct net2280_ep *ep)
 static int net2280_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 {
 	struct net2280_ep	*ep;
-	struct net2280_request	*req;
+	struct net2280_request	*req = NULL;
+	struct net2280_request	*iter;
 	unsigned long		flags;
 	u32			dmactl;
 	int			stopped;
@@ -1266,11 +1259,13 @@ static int net2280_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	}
 
 	/* make sure it's still queued on this endpoint */
-	list_for_each_entry(req, &ep->queue, queue) {
-		if (&req->req == _req)
-			break;
+	list_for_each_entry(iter, &ep->queue, queue) {
+		if (&iter->req != _req)
+			continue;
+		req = iter;
+		break;
 	}
-	if (&req->req != _req) {
+	if (!req) {
 		ep->stopped = stopped;
 		spin_unlock_irqrestore(&ep->dev->lock, flags);
 		ep_dbg(ep->dev, "%s: Request mismatch\n", __func__);
@@ -1339,7 +1334,7 @@ net2280_set_halt_and_wedge(struct usb_ep *_ep, int value, int wedged)
 		retval = -ESHUTDOWN;
 		goto print_err;
 	}
-	if (ep->desc /* not ep0 */ && (ep->desc->bmAttributes & 0x03)
+	if (ep->desc /* not ep0 */ && usb_endpoint_type(ep->desc)
 						== USB_ENDPOINT_XFER_ISOC) {
 		retval = -EINVAL;
 		goto print_err;
@@ -2428,7 +2423,6 @@ static int net2280_start(struct usb_gadget *_gadget,
 		dev->ep[i].irqs = 0;
 
 	/* hook up the driver ... */
-	driver->driver.bus = NULL;
 	dev->driver = driver;
 
 	retval = device_create_file(&dev->pdev->dev, &dev_attr_function);
@@ -3796,10 +3790,8 @@ static int net2280_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	return 0;
 
 done:
-	if (dev) {
+	if (dev)
 		net2280_remove(pdev);
-		kfree(dev);
-	}
 	return retval;
 }
 

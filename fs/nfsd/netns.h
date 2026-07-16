@@ -10,7 +10,12 @@
 
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
+#include <linux/filelock.h>
+#include <linux/nfs4.h>
 #include <linux/percpu_counter.h>
+#include <linux/percpu-refcount.h>
+#include <linux/siphash.h>
+#include <linux/sunrpc/stats.h>
 
 /* Hash tables for nfs4_clientid state */
 #define CLIENT_HASH_BITS                 4
@@ -24,10 +29,22 @@ struct nfsd4_client_tracking_ops;
 
 enum {
 	/* cache misses due only to checksum comparison failures */
-	NFSD_NET_PAYLOAD_MISSES,
+	NFSD_STATS_PAYLOAD_MISSES,
 	/* amount of memory (in bytes) currently consumed by the DRC */
-	NFSD_NET_DRC_MEM_USAGE,
-	NFSD_NET_COUNTERS_NUM
+	NFSD_STATS_DRC_MEM_USAGE,
+	NFSD_STATS_RC_HITS,		/* repcache hits */
+	NFSD_STATS_RC_MISSES,		/* repcache misses */
+	NFSD_STATS_RC_NOCACHE,		/* uncached reqs */
+	NFSD_STATS_FH_STALE,		/* FH stale error */
+	NFSD_STATS_IO_READ,		/* bytes returned to read requests */
+	NFSD_STATS_IO_WRITE,		/* bytes passed in write requests */
+#ifdef CONFIG_NFSD_V4
+	NFSD_STATS_FIRST_NFS4_OP,	/* count of individual nfsv4 operations */
+	NFSD_STATS_LAST_NFS4_OP = NFSD_STATS_FIRST_NFS4_OP + LAST_NFS4_OP,
+#define NFSD_STATS_NFS4_OP(op)	(NFSD_STATS_FIRST_NFS4_OP + (op))
+	NFSD_STATS_WDELEG_GETATTR,	/* count of getattr conflict with wdeleg */
+#endif
+	NFSD_STATS_COUNTERS_NUM
 };
 
 /*
@@ -49,6 +66,8 @@ struct nfsd_net {
 
 	struct lock_manager nfsd4_manager;
 	bool grace_ended;
+	bool grace_end_forced;
+	bool client_tracking_active;
 	time64_t boot_time;
 
 	struct dentry *nfsd_client_dir;
@@ -108,27 +127,19 @@ struct nfsd_net {
 	bool nfsd_net_up;
 	bool lockd_up;
 
-	/* Time of server startup */
-	struct timespec64 nfssvc_boot;
-	seqlock_t boot_lock;
-
-	/*
-	 * Max number of connections this nfsd container will allow. Defaults
-	 * to '0' which is means that it bases this on the number of threads.
-	 */
-	unsigned int max_connections;
+	seqlock_t writeverf_lock;
+	unsigned char writeverf[8];
 
 	u32 clientid_base;
 	u32 clientid_counter;
 	u32 clverifier_counter;
 
-	struct svc_serv *nfsd_serv;
+	struct svc_info nfsd_info;
+#define nfsd_serv nfsd_info.serv
 
-	wait_queue_head_t ntf_wq;
-	atomic_t ntf_refcnt;
-
-	/* Allow umount to wait for nfsd state cleanup */
-	struct completion nfsd_shutdown_complete;
+	struct percpu_ref nfsd_net_ref;
+	struct completion nfsd_net_confirm_done;
+	struct completion nfsd_net_free_done;
 
 	/*
 	 * clientid and stateid data for construction of net unique COPY
@@ -137,12 +148,13 @@ struct nfsd_net {
 	u32		s2s_cp_cl_id;
 	struct idr	s2s_cp_stateids;
 	spinlock_t	s2s_cp_lock;
+	atomic_t	pending_async_copies;
 
 	/*
 	 * Version information
 	 */
-	bool *nfsd_versions;
-	bool *nfsd4_minorversions;
+	bool nfsd_versions[NFSD_MAXVERS + 1];
+	bool nfsd4_minorversions[NFSD_SUPPORTED_MINOR_VERSION + 1];
 
 	/*
 	 * Duplicate reply cache
@@ -167,7 +179,10 @@ struct nfsd_net {
 	atomic_t                 num_drc_entries;
 
 	/* Per-netns stats counters */
-	struct percpu_counter    counter[NFSD_NET_COUNTERS_NUM];
+	struct percpu_counter    counter[NFSD_STATS_COUNTERS_NUM];
+
+	/* sunrpc svc stats */
+	struct svc_stat          nfsd_svcstats;
 
 	/* longest hash chain seen */
 	unsigned int             longest_chain;
@@ -175,7 +190,7 @@ struct nfsd_net {
 	/* size of cache when we saw the longest hash chain */
 	unsigned int             longest_chain_cachesize;
 
-	struct shrinker		nfsd_reply_cache_shrinker;
+	struct shrinker		*nfsd_reply_cache_shrinker;
 
 	/* tracking server-to-server copy mounts */
 	spinlock_t              nfsd_ssc_lock;
@@ -184,15 +199,37 @@ struct nfsd_net {
 
 	/* utsname taken from the process that starts the server */
 	char			nfsd_name[UNX_MAXNODENAME+1];
+
+	struct nfsd_fcache_disposal *fcache_disposal;
+
+	siphash_key_t		siphash_key;
+
+	atomic_t		nfs4_client_count;
+	int			nfs4_max_clients;
+
+	atomic_t		nfsd_courtesy_clients;
+	struct shrinker		*nfsd_client_shrinker;
+	struct work_struct	nfsd_shrinker_work;
+
+	/* last time an admin-revoke happened for NFSv4.0 */
+	time64_t		nfs40_last_revoke;
+
+#if IS_ENABLED(CONFIG_NFS_LOCALIO)
+	/* Local clients to be invalidated when net is shut down */
+	spinlock_t              local_clients_lock;
+	struct list_head	local_clients;
+#endif
 };
 
 /* Simple check to find out if a given net was properly initialized */
 #define nfsd_netns_ready(nn) ((nn)->sessionid_hashtbl)
 
-extern void nfsd_netns_free_versions(struct nfsd_net *nn);
-
+extern bool nfsd_support_version(int vers);
 extern unsigned int nfsd_net_id;
 
-void nfsd_copy_boot_verifier(__be32 verf[2], struct nfsd_net *nn);
-void nfsd_reset_boot_verifier(struct nfsd_net *nn);
+bool nfsd_net_try_get(struct net *net);
+void nfsd_net_put(struct net *net);
+
+void nfsd_copy_write_verifier(__be32 verf[2], struct nfsd_net *nn);
+void nfsd_reset_write_verifier(struct nfsd_net *nn);
 #endif /* __NFSD_NETNS_H__ */

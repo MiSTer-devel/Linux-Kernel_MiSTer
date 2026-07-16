@@ -26,6 +26,7 @@
 #include <drm/drm_print.h>
 
 #include "exynos_drm_drv.h"
+#include "exynos_drm_crtc.h"
 
 /* Sysreg registers for MIC */
 #define DSD_CFG_MUX	0x1004
@@ -100,7 +101,6 @@ struct exynos_mic {
 
 	bool i80_mode;
 	struct videomode vm;
-	struct drm_encoder *encoder;
 	struct drm_bridge bridge;
 
 	bool enabled;
@@ -228,8 +228,6 @@ static void mic_set_reg_on(struct exynos_mic *mic, bool enable)
 	writel(reg, mic->reg + MIC_OP);
 }
 
-static void mic_disable(struct drm_bridge *bridge) { }
-
 static void mic_post_disable(struct drm_bridge *bridge)
 {
 	struct exynos_mic *mic = bridge->driver_private;
@@ -296,24 +294,30 @@ unlock:
 	mutex_unlock(&mic_mutex);
 }
 
-static void mic_enable(struct drm_bridge *bridge) { }
-
 static const struct drm_bridge_funcs mic_bridge_funcs = {
-	.disable = mic_disable,
 	.post_disable = mic_post_disable,
 	.mode_set = mic_mode_set,
 	.pre_enable = mic_pre_enable,
-	.enable = mic_enable,
 };
 
 static int exynos_mic_bind(struct device *dev, struct device *master,
 			   void *data)
 {
 	struct exynos_mic *mic = dev_get_drvdata(dev);
+	struct drm_device *drm_dev = data;
+	struct exynos_drm_crtc *crtc = exynos_drm_crtc_get_by_type(drm_dev,
+						       EXYNOS_DISPLAY_TYPE_LCD);
+	struct drm_encoder *e, *encoder = NULL;
+
+	drm_for_each_encoder(e, drm_dev)
+		if (e->possible_crtcs == drm_crtc_mask(&crtc->base))
+			encoder = e;
+	if (!encoder)
+		return -ENODEV;
 
 	mic->bridge.driver_private = mic;
 
-	return 0;
+	return drm_bridge_attach(encoder, &mic->bridge, NULL, 0);
 }
 
 static void exynos_mic_unbind(struct device *dev, struct device *master,
@@ -336,7 +340,6 @@ static const struct component_ops exynos_mic_component_ops = {
 	.unbind	= exynos_mic_unbind,
 };
 
-#ifdef CONFIG_PM
 static int exynos_mic_suspend(struct device *dev)
 {
 	struct exynos_mic *mic = dev_get_drvdata(dev);
@@ -365,13 +368,9 @@ static int exynos_mic_resume(struct device *dev)
 	}
 	return 0;
 }
-#endif
 
-static const struct dev_pm_ops exynos_mic_pm_ops = {
-	SET_RUNTIME_PM_OPS(exynos_mic_suspend, exynos_mic_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
-};
+static DEFINE_RUNTIME_DEV_PM_OPS(exynos_mic_pm_ops, exynos_mic_suspend,
+				 exynos_mic_resume, NULL);
 
 static int exynos_mic_probe(struct platform_device *pdev)
 {
@@ -380,11 +379,11 @@ static int exynos_mic_probe(struct platform_device *pdev)
 	struct resource res;
 	int ret, i;
 
-	mic = devm_kzalloc(dev, sizeof(*mic), GFP_KERNEL);
-	if (!mic) {
+	mic = devm_drm_bridge_alloc(dev, struct exynos_mic, bridge, &mic_bridge_funcs);
+	if (IS_ERR(mic)) {
 		DRM_DEV_ERROR(dev,
 			      "mic: Failed to allocate memory for MIC object\n");
-		ret = -ENOMEM;
+		ret = PTR_ERR(mic);
 		goto err;
 	}
 
@@ -422,10 +421,11 @@ static int exynos_mic_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, mic);
 
-	mic->bridge.funcs = &mic_bridge_funcs;
 	mic->bridge.of_node = dev->of_node;
 
-	drm_bridge_add(&mic->bridge);
+	ret = devm_drm_bridge_add(dev, &mic->bridge);
+	if (ret)
+		goto err;
 
 	pm_runtime_enable(dev);
 
@@ -443,16 +443,10 @@ err:
 	return ret;
 }
 
-static int exynos_mic_remove(struct platform_device *pdev)
+static void exynos_mic_remove(struct platform_device *pdev)
 {
-	struct exynos_mic *mic = platform_get_drvdata(pdev);
-
 	component_del(&pdev->dev, &exynos_mic_component_ops);
 	pm_runtime_disable(&pdev->dev);
-
-	drm_bridge_remove(&mic->bridge);
-
-	return 0;
 }
 
 static const struct of_device_id exynos_mic_of_match[] = {
@@ -466,8 +460,7 @@ struct platform_driver mic_driver = {
 	.remove		= exynos_mic_remove,
 	.driver		= {
 		.name	= "exynos-mic",
-		.pm	= &exynos_mic_pm_ops,
-		.owner	= THIS_MODULE,
+		.pm	= pm_ptr(&exynos_mic_pm_ops),
 		.of_match_table = exynos_mic_of_match,
 	},
 };

@@ -28,6 +28,8 @@
 #include <linux/bitops.h>
 #include <linux/pgtable.h>
 #include <linux/printk.h>
+#include <linux/of.h>
+#include <linux/of_fdt.h>
 #include <asm/prom.h>
 #include <asm/rtas.h>
 #include <asm/page.h>
@@ -40,7 +42,7 @@
 #include <asm/iommu.h>
 #include <asm/btext.h>
 #include <asm/sections.h>
-#include <asm/machdep.h>
+#include <asm/setup.h>
 #include <asm/asm-prototypes.h>
 #include <asm/ultravisor-api.h>
 
@@ -93,12 +95,6 @@ static int of_workarounds __prombss;
 
 #define OF_WA_CLAIM	1	/* do phys/virt claim separately, then map */
 #define OF_WA_LONGTRAIL	2	/* work around longtrail bugs */
-
-#define PROM_BUG() do {						\
-        prom_printf("kernel BUG at %s line 0x%x!\n",		\
-		    __FILE__, __LINE__);			\
-	__builtin_trap();					\
-} while (0)
 
 #ifdef DEBUG_PROM
 #define prom_debug(x...)	prom_printf(x)
@@ -672,7 +668,7 @@ static inline int __init prom_getproplen(phandle node, const char *pname)
 	return call_prom("getproplen", 2, 1, node, ADDR(pname));
 }
 
-static void add_string(char **str, const char *q)
+static void __init add_string(char **str, const char *q)
 {
 	char *p = *str;
 
@@ -682,7 +678,7 @@ static void add_string(char **str, const char *q)
 	*str = p;
 }
 
-static char *tohex(unsigned int x)
+static char *__init tohex(unsigned int x)
 {
 	static const char digits[] __initconst = "0123456789abcdef";
 	static char result[9] __prombss;
@@ -728,7 +724,7 @@ static int __init prom_setprop(phandle node, const char *nodename,
 #define prom_islower(c)	('a' <= (c) && (c) <= 'z')
 #define prom_toupper(c)	(prom_islower(c) ? ((c) - 'a' + 'A') : (c))
 
-static unsigned long prom_strtoul(const char *cp, const char **endp)
+static unsigned long __init prom_strtoul(const char *cp, const char **endp)
 {
 	unsigned long result = 0, base = 10, value;
 
@@ -753,7 +749,7 @@ static unsigned long prom_strtoul(const char *cp, const char **endp)
 	return result;
 }
 
-static unsigned long prom_memparse(const char *ptr, const char **retptr)
+static unsigned long __init prom_memparse(const char *ptr, const char **retptr)
 {
 	unsigned long ret = prom_strtoul(ptr, retptr);
 	int shift = 0;
@@ -821,8 +817,8 @@ static void __init early_cmdline_parse(void)
 		opt += 4;
 		prom_memory_limit = prom_memparse(opt, (const char **)&opt);
 #ifdef CONFIG_PPC64
-		/* Align to 16 MB == size of ppc64 large page */
-		prom_memory_limit = ALIGN(prom_memory_limit, 0x1000000);
+		/* Align down to 16 MB which is large page size with hash page translation */
+		prom_memory_limit = ALIGN_DOWN(prom_memory_limit, SZ_16M);
 #endif
 	}
 
@@ -951,7 +947,7 @@ struct option_vector7 {
 } __packed;
 
 struct ibm_arch_vec {
-	struct { u32 mask, val; } pvrs[14];
+	struct { __be32 mask, val; } pvrs[16];
 
 	u8 num_vectors;
 
@@ -1012,6 +1008,14 @@ static const struct ibm_arch_vec ibm_architecture_vec_template __initconst = {
 			.val  = cpu_to_be32(0x00800000),
 		},
 		{
+			.mask = cpu_to_be32(0xffff0000), /* POWER11 */
+			.val  = cpu_to_be32(0x00820000),
+		},
+		{
+			.mask = cpu_to_be32(0xffffffff), /* P11 compliant */
+			.val  = cpu_to_be32(0x0f000007),
+		},
+		{
 			.mask = cpu_to_be32(0xffffffff), /* all 3.1-compliant */
 			.val  = cpu_to_be32(0x0f000006),
 		},
@@ -1057,7 +1061,7 @@ static const struct ibm_arch_vec ibm_architecture_vec_template __initconst = {
 		.virt_base = cpu_to_be32(0xffffffff),
 		.virt_size = cpu_to_be32(0xffffffff),
 		.load_base = cpu_to_be32(0xffffffff),
-		.min_rma = cpu_to_be32(512),		/* 512MB min RMA */
+		.min_rma = cpu_to_be32(MIN_RMA),
 		.min_load = cpu_to_be32(0xffffffff),	/* full client load */
 		.min_rma_percent = 0,	/* min RMA percentage of total RAM */
 		.max_pft_size = 48,	/* max log_2(hash table size) */
@@ -1786,7 +1790,7 @@ static void __init prom_close_stdin(void)
 }
 
 #ifdef CONFIG_PPC_SVM
-static int prom_rtas_hcall(uint64_t args)
+static int __init prom_rtas_hcall(uint64_t args)
 {
 	register uint64_t arg1 asm("r3") = H_RTAS;
 	register uint64_t arg2 asm("r4") = args;
@@ -2300,7 +2304,7 @@ static void __init prom_init_stdout(void)
 
 static int __init prom_find_machine_type(void)
 {
-	char compat[256];
+	static char compat[256] __prombss;
 	int len, i = 0;
 #ifdef CONFIG_PPC64
 	phandle rtas;
@@ -2788,91 +2792,6 @@ static void __init flatten_device_tree(void)
 		    dt_struct_start, dt_struct_end);
 }
 
-#ifdef CONFIG_PPC_MAPLE
-/* PIBS Version 1.05.0000 04/26/2005 has an incorrect /ht/isa/ranges property.
- * The values are bad, and it doesn't even have the right number of cells. */
-static void __init fixup_device_tree_maple(void)
-{
-	phandle isa;
-	u32 rloc = 0x01002000; /* IO space; PCI device = 4 */
-	u32 isa_ranges[6];
-	char *name;
-
-	name = "/ht@0/isa@4";
-	isa = call_prom("finddevice", 1, 1, ADDR(name));
-	if (!PHANDLE_VALID(isa)) {
-		name = "/ht@0/isa@6";
-		isa = call_prom("finddevice", 1, 1, ADDR(name));
-		rloc = 0x01003000; /* IO space; PCI device = 6 */
-	}
-	if (!PHANDLE_VALID(isa))
-		return;
-
-	if (prom_getproplen(isa, "ranges") != 12)
-		return;
-	if (prom_getprop(isa, "ranges", isa_ranges, sizeof(isa_ranges))
-		== PROM_ERROR)
-		return;
-
-	if (isa_ranges[0] != 0x1 ||
-		isa_ranges[1] != 0xf4000000 ||
-		isa_ranges[2] != 0x00010000)
-		return;
-
-	prom_printf("Fixing up bogus ISA range on Maple/Apache...\n");
-
-	isa_ranges[0] = 0x1;
-	isa_ranges[1] = 0x0;
-	isa_ranges[2] = rloc;
-	isa_ranges[3] = 0x0;
-	isa_ranges[4] = 0x0;
-	isa_ranges[5] = 0x00010000;
-	prom_setprop(isa, name, "ranges",
-			isa_ranges, sizeof(isa_ranges));
-}
-
-#define CPC925_MC_START		0xf8000000
-#define CPC925_MC_LENGTH	0x1000000
-/* The values for memory-controller don't have right number of cells */
-static void __init fixup_device_tree_maple_memory_controller(void)
-{
-	phandle mc;
-	u32 mc_reg[4];
-	char *name = "/hostbridge@f8000000";
-	u32 ac, sc;
-
-	mc = call_prom("finddevice", 1, 1, ADDR(name));
-	if (!PHANDLE_VALID(mc))
-		return;
-
-	if (prom_getproplen(mc, "reg") != 8)
-		return;
-
-	prom_getprop(prom.root, "#address-cells", &ac, sizeof(ac));
-	prom_getprop(prom.root, "#size-cells", &sc, sizeof(sc));
-	if ((ac != 2) || (sc != 2))
-		return;
-
-	if (prom_getprop(mc, "reg", mc_reg, sizeof(mc_reg)) == PROM_ERROR)
-		return;
-
-	if (mc_reg[0] != CPC925_MC_START || mc_reg[1] != CPC925_MC_LENGTH)
-		return;
-
-	prom_printf("Fixing up bogus hostbridge on Maple...\n");
-
-	mc_reg[0] = 0x0;
-	mc_reg[1] = CPC925_MC_START;
-	mc_reg[2] = 0x0;
-	mc_reg[3] = CPC925_MC_LENGTH;
-	prom_setprop(mc, name, "reg", mc_reg, sizeof(mc_reg));
-}
-#else
-#define fixup_device_tree_maple()
-#define fixup_device_tree_maple_memory_controller()
-#endif
-
-#ifdef CONFIG_PPC_CHRP
 /*
  * Pegasos and BriQ lacks the "ranges" property in the isa node
  * Pegasos needs decimal IRQ 14/15, not hexadecimal
@@ -2923,12 +2842,8 @@ static void __init fixup_device_tree_chrp(void)
 		}
 	}
 }
-#else
-#define fixup_device_tree_chrp()
-#endif
 
-#if defined(CONFIG_PPC64) && defined(CONFIG_PPC_PMAC)
-static void __init fixup_device_tree_pmac(void)
+static void __init fixup_device_tree_pmac64(void)
 {
 	phandle u3, i2c, mpic;
 	u32 u3_rev;
@@ -2967,11 +2882,27 @@ static void __init fixup_device_tree_pmac(void)
 	prom_setprop(i2c, "/u3@0,f8000000/i2c@f8001000", "interrupt-parent",
 		     &parent, sizeof(parent));
 }
-#else
-#define fixup_device_tree_pmac()
-#endif
 
-#ifdef CONFIG_PPC_EFIKA
+static void __init fixup_device_tree_pmac(void)
+{
+	__be32 val = 1;
+	char type[8];
+	phandle node;
+
+	// Some pmacs are missing #size-cells on escc or i2s nodes
+	for (node = 0; prom_next_node(&node); ) {
+		type[0] = '\0';
+		prom_getprop(node, "device_type", type, sizeof(type));
+		if (prom_strcmp(type, "escc") && prom_strcmp(type, "i2s"))
+			continue;
+
+		if (prom_getproplen(node, "#size-cells") != PROM_ERROR)
+			continue;
+
+		prom_setprop(node, NULL, "#size-cells", &val, sizeof(val));
+	}
+}
+
 /*
  * The MPC5200 FEC driver requires an phy-handle property to tell it how
  * to talk to the phy.  If the phy-handle property is missing, then this
@@ -2991,7 +2922,7 @@ static void __init fixup_device_tree_efika_add_phy(void)
 
 	/* Check if the phy-handle property exists - bail if it does */
 	rv = prom_getprop(node, "phy-handle", prop, sizeof(prop));
-	if (!rv)
+	if (rv <= 0)
 		return;
 
 	/*
@@ -3103,11 +3034,7 @@ static void __init fixup_device_tree_efika(void)
 	/* Make sure ethernet phy-handle property exists */
 	fixup_device_tree_efika_add_phy();
 }
-#else
-#define fixup_device_tree_efika()
-#endif
 
-#ifdef CONFIG_PPC_PASEMI_NEMO
 /*
  * CFE supplied on Nemo is broken in several ways, biggest
  * problem is that it reassigns ISA interrupts to unused mpic ints.
@@ -3183,18 +3110,23 @@ static void __init fixup_device_tree_pasemi(void)
 
 	prom_setprop(iob, name, "device_type", "isa", sizeof("isa"));
 }
-#else	/* !CONFIG_PPC_PASEMI_NEMO */
-static inline void fixup_device_tree_pasemi(void) { }
-#endif
 
 static void __init fixup_device_tree(void)
 {
-	fixup_device_tree_maple();
-	fixup_device_tree_maple_memory_controller();
-	fixup_device_tree_chrp();
-	fixup_device_tree_pmac();
-	fixup_device_tree_efika();
-	fixup_device_tree_pasemi();
+	if (IS_ENABLED(CONFIG_PPC_CHRP))
+		fixup_device_tree_chrp();
+
+	if (IS_ENABLED(CONFIG_PPC_PMAC))
+		fixup_device_tree_pmac();
+
+	if (IS_ENABLED(CONFIG_PPC_PMAC) && IS_ENABLED(CONFIG_PPC64))
+		fixup_device_tree_pmac64();
+
+	if (IS_ENABLED(CONFIG_PPC_EFIKA))
+		fixup_device_tree_efika();
+
+	if (IS_ENABLED(CONFIG_PPC_PASEMI_NEMO))
+		fixup_device_tree_pasemi();
 }
 
 static void __init prom_find_boot_cpu(void)
@@ -3248,7 +3180,7 @@ static void __init prom_check_initrd(unsigned long r3, unsigned long r4)
 /*
  * Perform the Enter Secure Mode ultracall.
  */
-static int enter_secure_mode(unsigned long kbase, unsigned long fdt)
+static int __init enter_secure_mode(unsigned long kbase, unsigned long fdt)
 {
 	register unsigned long r3 asm("r3") = UV_ESM;
 	register unsigned long r4 asm("r4") = kbase;
@@ -3416,7 +3348,7 @@ unsigned long __init prom_init(unsigned long r3, unsigned long r4,
 	 *
 	 * PowerMacs use a different mechanism to spin CPUs
 	 *
-	 * (This must be done after instanciating RTAS)
+	 * (This must be done after instantiating RTAS)
 	 */
 	if (of_platform != PLATFORM_POWERMAC)
 		prom_hold_cpus();

@@ -37,9 +37,6 @@ static int set_secret(struct ceph_crypto_key *key, void *buf)
 		return -ENOTSUPP;
 	}
 
-	if (!key->len)
-		return -EINVAL;
-
 	key->key = kmemdup(buf, key->len, GFP_NOIO);
 	if (!key->key) {
 		ret = -ENOMEM;
@@ -74,18 +71,6 @@ int ceph_crypto_key_clone(struct ceph_crypto_key *dst,
 	return set_secret(dst, src->key);
 }
 
-int ceph_crypto_key_encode(struct ceph_crypto_key *key, void **p, void *end)
-{
-	if (*p + sizeof(u16) + sizeof(key->created) +
-	    sizeof(u16) + key->len > end)
-		return -ERANGE;
-	ceph_encode_16(p, key->type);
-	ceph_encode_copy(p, &key->created, sizeof(key->created));
-	ceph_encode_16(p, key->len);
-	ceph_encode_copy(p, key->key, key->len);
-	return 0;
-}
-
 int ceph_crypto_key_decode(struct ceph_crypto_key *key, void **p, void *end)
 {
 	int ret;
@@ -95,6 +80,11 @@ int ceph_crypto_key_decode(struct ceph_crypto_key *key, void **p, void *end)
 	ceph_decode_copy(p, &key->created, sizeof(key->created));
 	key->len = ceph_decode_16(p);
 	ceph_decode_need(p, end, key->len, bad);
+	if (key->len > CEPH_MAX_KEY_LEN) {
+		pr_err("secret too big %d\n", key->len);
+		return -EINVAL;
+	}
+
 	ret = set_secret(key, *p);
 	memzero_explicit(*p, key->len);
 	*p += key->len;
@@ -147,7 +137,7 @@ void ceph_crypto_key_destroy(struct ceph_crypto_key *key)
 static const u8 *aes_iv = (u8 *)CEPH_AES_IV;
 
 /*
- * Should be used for buffers allocated with ceph_kvmalloc().
+ * Should be used for buffers allocated with kvmalloc().
  * Currently these are encrypt out-buffer (ceph_buffer) and decrypt
  * in-buffer (msg front).
  *

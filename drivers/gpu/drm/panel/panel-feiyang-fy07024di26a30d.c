@@ -11,7 +11,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/delay.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/mod_devicetable.h>
 #include <linux/regulator/consumer.h>
 
 #define FEIYANG_INIT_CMD_LEN	2
@@ -189,33 +189,28 @@ static int feiyang_dsi_probe(struct mipi_dsi_device *dsi)
 	struct feiyang *ctx;
 	int ret;
 
-	ctx = devm_kzalloc(&dsi->dev, sizeof(*ctx), GFP_KERNEL);
-	if (!ctx)
-		return -ENOMEM;
+	ctx = devm_drm_panel_alloc(&dsi->dev, struct feiyang, panel,
+				   &feiyang_funcs, DRM_MODE_CONNECTOR_DSI);
+	if (IS_ERR(ctx))
+		return PTR_ERR(ctx);
 
 	mipi_dsi_set_drvdata(dsi, ctx);
 	ctx->dsi = dsi;
 
-	drm_panel_init(&ctx->panel, &dsi->dev, &feiyang_funcs,
-		       DRM_MODE_CONNECTOR_DSI);
-
 	ctx->dvdd = devm_regulator_get(&dsi->dev, "dvdd");
-	if (IS_ERR(ctx->dvdd)) {
-		dev_err(&dsi->dev, "Couldn't get dvdd regulator\n");
-		return PTR_ERR(ctx->dvdd);
-	}
+	if (IS_ERR(ctx->dvdd))
+		return dev_err_probe(&dsi->dev, PTR_ERR(ctx->dvdd),
+				     "Couldn't get dvdd regulator\n");
 
 	ctx->avdd = devm_regulator_get(&dsi->dev, "avdd");
-	if (IS_ERR(ctx->avdd)) {
-		dev_err(&dsi->dev, "Couldn't get avdd regulator\n");
-		return PTR_ERR(ctx->avdd);
-	}
+	if (IS_ERR(ctx->avdd))
+		return dev_err_probe(&dsi->dev, PTR_ERR(ctx->avdd),
+				     "Couldn't get avdd regulator\n");
 
-	ctx->reset = devm_gpiod_get(&dsi->dev, "reset", GPIOD_OUT_LOW);
-	if (IS_ERR(ctx->reset)) {
-		dev_err(&dsi->dev, "Couldn't get our reset GPIO\n");
-		return PTR_ERR(ctx->reset);
-	}
+	ctx->reset = devm_gpiod_get_optional(&dsi->dev, "reset", GPIOD_OUT_LOW);
+	if (IS_ERR(ctx->reset))
+		return dev_err_probe(&dsi->dev, PTR_ERR(ctx->reset),
+				     "Couldn't get our reset GPIO\n");
 
 	ret = drm_panel_of_backlight(&ctx->panel);
 	if (ret)
@@ -227,17 +222,21 @@ static int feiyang_dsi_probe(struct mipi_dsi_device *dsi)
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->lanes = 4;
 
-	return mipi_dsi_attach(dsi);
+	ret = mipi_dsi_attach(dsi);
+	if (ret < 0) {
+		drm_panel_remove(&ctx->panel);
+		return ret;
+	}
+
+	return 0;
 }
 
-static int feiyang_dsi_remove(struct mipi_dsi_device *dsi)
+static void feiyang_dsi_remove(struct mipi_dsi_device *dsi)
 {
 	struct feiyang *ctx = mipi_dsi_get_drvdata(dsi);
 
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
-
-	return 0;
 }
 
 static const struct of_device_id feiyang_of_match[] = {

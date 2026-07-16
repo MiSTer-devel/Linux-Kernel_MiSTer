@@ -2,8 +2,10 @@
 config NFS_FS
 	tristate "NFS client support"
 	depends on INET && FILE_LOCKING && MULTIUSER
+	select CRC32
 	select LOCKD
 	select SUNRPC
+	select NFS_COMMON
 	select NFS_ACL_SUPPORT if NFS_V3_ACL
 	help
 	  Choose Y here if you want to access files residing on other
@@ -33,12 +35,12 @@ config NFS_FS
 config NFS_V2
 	tristate "NFS client support for NFS version 2"
 	depends on NFS_FS
-	default y
+	default n
 	help
 	  This option enables support for version 2 of the NFS protocol
 	  (RFC 1094) in the kernel's NFS client.
 
-	  If unsure, say Y.
+	  If unsure, say N.
 
 config NFS_V3
 	tristate "NFS client support for NFS version 3"
@@ -75,7 +77,6 @@ config NFS_V3_ACL
 config NFS_V4
 	tristate "NFS client support for NFS version 4"
 	depends on NFS_FS
-	select SUNRPC_GSS
 	select KEYS
 	help
 	  This option enables support for version 4 of the NFS protocol
@@ -126,7 +127,7 @@ config PNFS_BLOCK
 
 config PNFS_FLEXFILE_LAYOUT
 	tristate
-	depends on NFS_V4_1 && NFS_V3
+	depends on NFS_V4_1
 	default NFS_V4
 
 config NFS_V4_1_IMPLEMENTATION_ID_DOMAIN
@@ -170,7 +171,9 @@ config ROOT_NFS
 
 config NFS_FSCACHE
 	bool "Provide NFS client caching support"
-	depends on NFS_FS=m && FSCACHE || NFS_FS=y && FSCACHE=y
+	depends on NFS_FS
+	select NETFS_SUPPORT
+	select FSCACHE
 	help
 	  Say Y here if you want NFS data to be cached locally on disc through
 	  the general filesystem cache manager
@@ -194,7 +197,6 @@ config NFS_USE_KERNEL_DNS
 config NFS_DEBUG
 	bool
 	depends on NFS_FS && SUNRPC_DEBUG
-	select CRC32
 	default y
 
 config NFS_DISABLE_UDP_SUPPORT
@@ -209,8 +211,6 @@ config NFS_DISABLE_UDP_SUPPORT
 config NFS_V4_2_READ_PLUS
 	bool "NFS: Enable support for the NFSv4.2 READ_PLUS operation"
 	depends on NFS_V4_2
-	default n
+	default y
 	help
-	 This is intended for developers only. The READ_PLUS operation has
-	 been shown to have issues under specific conditions and should not
-	 be used in production.
+	 Choose Y here to enable use of the NFS v4.2 READ_PLUS operation.

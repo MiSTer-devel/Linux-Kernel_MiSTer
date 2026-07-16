@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include <linux/string.h> /* for memcpy() */
@@ -56,8 +47,8 @@ static struct firmware_header *firmware_header;
  * which will be replaced with the actual RELEASE_VERSION
  * during package generation. Please do not modify
  */
-static const char *isp2400_release_version = STR(irci_stable_candrpv_0415_20150521_0458);
-static const char *isp2401_release_version = STR(irci_ecr - master_20150911_0724);
+static const char *release_version_2401 = STR(irci_stable_candrpv_0415_20150521_0458);
+static const char *release_version_2400 = STR(irci_stable_candrpv_0415_20150423_1753);
 
 #define MAX_FW_REL_VER_NAME	300
 static char FW_rel_ver_name[MAX_FW_REL_VER_NAME] = "---";
@@ -188,14 +179,13 @@ sh_css_load_blob_info(const char *fw, const struct ia_css_fw_info *bi,
 bool
 sh_css_check_firmware_version(struct device *dev, const char *fw_data)
 {
+	const char *release_version;
 	struct sh_css_fw_bi_file_h *file_header;
 
-	const char *release_version;
-
-	if (!IS_ISP2401)
-		release_version = isp2400_release_version;
+	if (IS_ISP2401)
+		release_version = release_version_2401;
 	else
-		release_version = isp2401_release_version;
+		release_version = release_version_2400;
 
 	firmware_header = (struct firmware_header *)fw_data;
 	file_header = &firmware_header->file_header;
@@ -229,21 +219,28 @@ sh_css_load_firmware(struct device *dev, const char *fw_data,
 		     unsigned int fw_size)
 {
 	unsigned int i;
+	const char *release_version;
 	struct ia_css_fw_info *binaries;
 	struct sh_css_fw_bi_file_h *file_header;
 	int ret;
-	const char *release_version;
 
-	if (!IS_ISP2401)
-		release_version = isp2400_release_version;
-	else
-		release_version = isp2401_release_version;
+	/* some sanity checks */
+	if (!fw_data || fw_size < sizeof(struct sh_css_fw_bi_file_h))
+		return -EINVAL;
 
 	firmware_header = (struct firmware_header *)fw_data;
 	file_header = &firmware_header->file_header;
+
+	if (file_header->h_size != sizeof(struct sh_css_fw_bi_file_h))
+		return -EINVAL;
+
 	binaries = &firmware_header->binary_header;
 	strscpy(FW_rel_ver_name, file_header->version,
 		min(sizeof(FW_rel_ver_name), sizeof(file_header->version)));
+	if (IS_ISP2401)
+		release_version = release_version_2401;
+	else
+		release_version = release_version_2400;
 	ret = sh_css_check_firmware_version(dev, fw_data);
 	if (ret) {
 		IA_CSS_ERROR("CSS code version (%s) and firmware version (%s) mismatch!",
@@ -252,13 +249,6 @@ sh_css_load_firmware(struct device *dev, const char *fw_data,
 	} else {
 		IA_CSS_LOG("successfully load firmware version %s", release_version);
 	}
-
-	/* some sanity checks */
-	if (!fw_data || fw_size < sizeof(struct sh_css_fw_bi_file_h))
-		return -EINVAL;
-
-	if (file_header->h_size != sizeof(struct sh_css_fw_bi_file_h))
-		return -EINVAL;
 
 	sh_css_num_binaries = file_header->binary_nr;
 	/* Only allocate memory for ISP blob info */
@@ -379,7 +369,7 @@ void sh_css_unload_firmware(void)
 ia_css_ptr
 sh_css_load_blob(const unsigned char *blob, unsigned int size)
 {
-	ia_css_ptr target_addr = hmm_alloc(size, HMM_BO_PRIVATE, 0, NULL, 0);
+	ia_css_ptr target_addr = hmm_alloc(size);
 	/*
 	 * this will allocate memory aligned to a DDR word boundary which
 	 * is required for the CSS DMA to read the instructions.

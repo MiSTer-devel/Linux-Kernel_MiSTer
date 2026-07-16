@@ -10,9 +10,10 @@
 
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/of_dma.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/interrupt.h>
 #include <linux/remoteproc.h>
 #include <linux/slab.h>
@@ -739,18 +740,11 @@ static void st_fdma_free(struct st_fdma_dev *fdev)
 static int st_fdma_probe(struct platform_device *pdev)
 {
 	struct st_fdma_dev *fdev;
-	const struct of_device_id *match;
 	struct device_node *np = pdev->dev.of_node;
 	const struct st_fdma_driverdata *drvdata;
 	int ret, i;
 
-	match = of_match_device((st_fdma_match), &pdev->dev);
-	if (!match || !match->data) {
-		dev_err(&pdev->dev, "No device match found\n");
-		return -ENODEV;
-	}
-
-	drvdata = match->data;
+	drvdata = device_get_match_data(&pdev->dev);
 
 	fdev = devm_kzalloc(&pdev->dev, sizeof(*fdev), GFP_KERNEL);
 	if (!fdev)
@@ -849,15 +843,13 @@ err:
 	return ret;
 }
 
-static int st_fdma_remove(struct platform_device *pdev)
+static void st_fdma_remove(struct platform_device *pdev)
 {
 	struct st_fdma_dev *fdev = platform_get_drvdata(pdev);
 
 	devm_free_irq(&pdev->dev, fdev->irq, fdev);
 	st_slim_rproc_put(fdev->slim_rproc);
 	of_dma_controller_free(pdev->dev.of_node);
-
-	return 0;
 }
 
 static struct platform_driver st_fdma_platform_driver = {
@@ -874,4 +866,4 @@ MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("STMicroelectronics FDMA engine driver");
 MODULE_AUTHOR("Ludovic.barre <Ludovic.barre@st.com>");
 MODULE_AUTHOR("Peter Griffin <peter.griffin@linaro.org>");
-MODULE_ALIAS("platform: " DRIVER_NAME);
+MODULE_ALIAS("platform:" DRIVER_NAME);

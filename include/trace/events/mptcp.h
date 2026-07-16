@@ -34,7 +34,7 @@ TRACE_EVENT(mptcp_subflow_get_send,
 		struct sock *ssk;
 
 		__entry->active = mptcp_subflow_active(subflow);
-		__entry->backup = subflow->backup;
+		__entry->backup = subflow->backup || subflow->request_bkup;
 
 		if (subflow->tcp_sock && sk_fullsock(subflow->tcp_sock))
 			__entry->free = sk_stream_memory_free(subflow->tcp_sock);
@@ -44,7 +44,7 @@ TRACE_EVENT(mptcp_subflow_get_send,
 		ssk = mptcp_subflow_tcp_sock(subflow);
 		if (ssk && sk_fullsock(ssk)) {
 			__entry->snd_wnd = tcp_sk(ssk)->snd_wnd;
-			__entry->pace = ssk->sk_pacing_rate;
+			__entry->pace = READ_ONCE(ssk->sk_pacing_rate);
 		} else {
 			__entry->snd_wnd = 0;
 			__entry->pace = 0;
@@ -84,6 +84,7 @@ DECLARE_EVENT_CLASS(mptcp_dump_mpext,
 		__field(u8, reset_transient)
 		__field(u8, reset_reason)
 		__field(u8, csum_reqd)
+		__field(u8, infinite_map)
 	),
 
 	TP_fast_assign(
@@ -102,9 +103,10 @@ DECLARE_EVENT_CLASS(mptcp_dump_mpext,
 		__entry->reset_transient = mpext->reset_transient;
 		__entry->reset_reason = mpext->reset_reason;
 		__entry->csum_reqd = mpext->csum_reqd;
+		__entry->infinite_map = mpext->infinite_map;
 	),
 
-	TP_printk("data_ack=%llu data_seq=%llu subflow_seq=%u data_len=%u csum=%x use_map=%u dsn64=%u data_fin=%u use_ack=%u ack64=%u mpc_map=%u frozen=%u reset_transient=%u reset_reason=%u csum_reqd=%u",
+	TP_printk("data_ack=%llu data_seq=%llu subflow_seq=%u data_len=%u csum=%x use_map=%u dsn64=%u data_fin=%u use_ack=%u ack64=%u mpc_map=%u frozen=%u reset_transient=%u reset_reason=%u csum_reqd=%u infinite_map=%u",
 		  __entry->data_ack, __entry->data_seq,
 		  __entry->subflow_seq, __entry->data_len,
 		  __entry->csum, __entry->use_map,
@@ -112,8 +114,12 @@ DECLARE_EVENT_CLASS(mptcp_dump_mpext,
 		  __entry->use_ack, __entry->ack64,
 		  __entry->mpc_map, __entry->frozen,
 		  __entry->reset_transient, __entry->reset_reason,
-		  __entry->csum_reqd)
+		  __entry->csum_reqd, __entry->infinite_map)
 );
+
+DEFINE_EVENT(mptcp_dump_mpext, mptcp_sendmsg_frag,
+	TP_PROTO(struct mptcp_ext *mpext),
+	TP_ARGS(mpext));
 
 DEFINE_EVENT(mptcp_dump_mpext, get_mapping_status,
 	TP_PROTO(struct mptcp_ext *mpext),

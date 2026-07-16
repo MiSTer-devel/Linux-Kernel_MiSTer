@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,8 +21,6 @@
 
 #include "../../kselftest.h"
 #include "rdvl.h"
-
-#define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
 
 #define ARCH_MIN_VL SVE_VL_MIN
 
@@ -41,9 +40,11 @@ struct vec_data {
 	int max_vl;
 };
 
+#define VEC_SVE 0
+#define VEC_SME 1
 
 static struct vec_data vec_data[] = {
-	{
+	[VEC_SVE] = {
 		.name = "SVE",
 		.hwcap_type = AT_HWCAP,
 		.hwcap = HWCAP_SVE,
@@ -53,7 +54,22 @@ static struct vec_data vec_data[] = {
 		.prctl_set = PR_SVE_SET_VL,
 		.default_vl_file = "/proc/sys/abi/sve_default_vector_length",
 	},
+	[VEC_SME] = {
+		.name = "SME",
+		.hwcap_type = AT_HWCAP2,
+		.hwcap = HWCAP2_SME,
+		.rdvl = rdvl_sme,
+		.rdvl_binary = "./rdvl-sme",
+		.prctl_get = PR_SME_GET_VL,
+		.prctl_set = PR_SME_SET_VL,
+		.default_vl_file = "/proc/sys/abi/sme_default_vector_length",
+	},
 };
+
+static bool vec_type_supported(struct vec_data *data)
+{
+	return getauxval(data->hwcap_type) & data->hwcap;
+}
 
 static int stdio_read_integer(FILE *f, const char *what, int *val)
 {
@@ -109,7 +125,7 @@ static int get_child_rdvl(struct vec_data *data)
 
 		/* exec() a new binary which puts the VL on stdout */
 		ret = execl(data->rdvl_binary, data->rdvl_binary, NULL);
-		fprintf(stderr, "execl(%s) failed: %d\n",
+		fprintf(stderr, "execl(%s) failed: %d (%s)\n",
 			data->rdvl_binary, errno, strerror(errno));
 
 		exit(EXIT_FAILURE);
@@ -180,7 +196,6 @@ static int file_read_integer(const char *name, int *val)
 static int file_write_integer(const char *name, int val)
 {
 	FILE *f;
-	int ret;
 
 	f = fopen(name, "w");
 	if (!f) {
@@ -192,11 +207,6 @@ static int file_write_integer(const char *name, int val)
 
 	fprintf(f, "%d", val);
 	fclose(f);
-	if (ret < 0) {
-		ksft_test_result_fail("Error writing %d to %s\n",
-				      val, name);
-		return -1;
-	}
 
 	return 0;
 }
@@ -335,12 +345,9 @@ static void prctl_set_same(struct vec_data *data)
 		return;
 	}
 
-	if (cur_vl != data->rdvl())
-		ksft_test_result_pass("%s current VL is %d\n",
-				      data->name, ret);
-	else
-		ksft_test_result_fail("%s prctl() VL %d but RDVL is %d\n",
-				      data->name, ret, data->rdvl());
+	ksft_test_result(cur_vl == data->rdvl(),
+			 "%s set VL %d and have VL %d\n",
+			 data->name, cur_vl, data->rdvl());
 }
 
 /* Can we set a new VL for this process? */
@@ -549,6 +556,105 @@ static void prctl_set_onexec(struct vec_data *data)
 	file_write_integer(data->default_vl_file, data->default_vl);
 }
 
+/* For each VQ verify that setting via prctl() does the right thing */
+static void prctl_set_all_vqs(struct vec_data *data)
+{
+	int ret, vq, vl, new_vl, i;
+	int orig_vls[ARRAY_SIZE(vec_data)];
+	int errors = 0;
+
+	if (!data->min_vl || !data->max_vl) {
+		ksft_test_result_skip("%s Failed to enumerate VLs, not testing VL setting\n",
+				      data->name);
+		return;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(vec_data); i++) {
+		if (!vec_type_supported(&vec_data[i]))
+			continue;
+		orig_vls[i] = vec_data[i].rdvl();
+	}
+
+	for (vq = SVE_VQ_MIN; vq <= SVE_VQ_MAX; vq++) {
+		vl = sve_vl_from_vq(vq);
+
+		/* Attempt to set the VL */
+		ret = prctl(data->prctl_set, vl);
+		if (ret < 0) {
+			errors++;
+			ksft_print_msg("%s prctl set failed for %d: %d (%s)\n",
+				       data->name, vl,
+				       errno, strerror(errno));
+			continue;
+		}
+
+		new_vl = ret & PR_SVE_VL_LEN_MASK;
+
+		/* Check that we actually have the reported new VL */
+		if (data->rdvl() != new_vl) {
+			ksft_print_msg("Set %s VL %d but RDVL reports %d\n",
+				       data->name, new_vl, data->rdvl());
+			errors++;
+		}
+
+		/* Did any other VLs change? */
+		for (i = 0; i < ARRAY_SIZE(vec_data); i++) {
+			if (&vec_data[i] == data)
+				continue;
+
+			if (!vec_type_supported(&vec_data[i]))
+				continue;
+
+			if (vec_data[i].rdvl() != orig_vls[i]) {
+				ksft_print_msg("%s VL changed from %d to %d\n",
+					       vec_data[i].name, orig_vls[i],
+					       vec_data[i].rdvl());
+				errors++;
+			}
+		}
+
+		/* Was that the VL we asked for? */
+		if (new_vl == vl)
+			continue;
+
+		/* Should round up to the minimum VL if below it */
+		if (vl < data->min_vl) {
+			if (new_vl != data->min_vl) {
+				ksft_print_msg("%s VL %d returned %d not minimum %d\n",
+					       data->name, vl, new_vl,
+					       data->min_vl);
+				errors++;
+			}
+
+			continue;
+		}
+
+		/* Should round down to maximum VL if above it */
+		if (vl > data->max_vl) {
+			if (new_vl != data->max_vl) {
+				ksft_print_msg("%s VL %d returned %d not maximum %d\n",
+					       data->name, vl, new_vl,
+					       data->max_vl);
+				errors++;
+			}
+
+			continue;
+		}
+
+		/* Otherwise we should've rounded down */
+		if (!(new_vl < vl)) {
+			ksft_print_msg("%s VL %d returned %d, did not round down\n",
+				       data->name, vl, new_vl);
+			errors++;
+
+			continue;
+		}
+	}
+
+	ksft_test_result(errors == 0, "%s prctl() set all VLs, %d errors\n",
+			 data->name, errors);
+}
+
 typedef void (*test_type)(struct vec_data *);
 
 static const test_type tests[] = {
@@ -561,24 +667,114 @@ static const test_type tests[] = {
 	proc_write_max,
 
 	prctl_get,
+	prctl_set_same,
 	prctl_set,
 	prctl_set_no_child,
 	prctl_set_for_child,
 	prctl_set_onexec,
+	prctl_set_all_vqs,
+};
+
+static inline void smstart(void)
+{
+	asm volatile("msr S0_3_C4_C7_3, xzr");
+}
+
+static inline void smstart_sm(void)
+{
+	asm volatile("msr S0_3_C4_C3_3, xzr");
+}
+
+static inline void smstop(void)
+{
+	asm volatile("msr S0_3_C4_C6_3, xzr");
+}
+
+/*
+ * Verify we can change the SVE vector length while SME is active and
+ * continue to use SME afterwards.
+ */
+static void change_sve_with_za(void)
+{
+	struct vec_data *sve_data = &vec_data[VEC_SVE];
+	bool pass = true;
+	int ret, i;
+
+	if (sve_data->min_vl == sve_data->max_vl) {
+		ksft_print_msg("Only one SVE VL supported, can't change\n");
+		ksft_test_result_skip("change_sve_while_sme\n");
+		return;
+	}
+
+	/* Ensure we will trigger a change when we set the maximum */
+	ret = prctl(sve_data->prctl_set, sve_data->min_vl);
+	if (ret != sve_data->min_vl) {
+		ksft_print_msg("Failed to set SVE VL %d: %d\n",
+			       sve_data->min_vl, ret);
+		pass = false;
+	}
+
+	/* Enable SM and ZA */
+	smstart();
+
+	/* Trigger another VL change */
+	ret = prctl(sve_data->prctl_set, sve_data->max_vl);
+	if (ret != sve_data->max_vl) {
+		ksft_print_msg("Failed to set SVE VL %d: %d\n",
+			       sve_data->max_vl, ret);
+		pass = false;
+	}
+
+	/*
+	 * Spin for a bit with SM enabled to try to trigger another
+	 * save/restore.  We can't use syscalls without exiting
+	 * streaming mode.
+	 */
+	for (i = 0; i < 100000000; i++)
+		smstart_sm();
+
+	/*
+	 * TODO: Verify that ZA was preserved over the VL change and
+	 * spin.
+	 */
+
+	/* Clean up after ourselves */
+	smstop();
+	ret = prctl(sve_data->prctl_set, sve_data->default_vl);
+	if (ret != sve_data->default_vl) {
+	        ksft_print_msg("Failed to restore SVE VL %d: %d\n",
+			       sve_data->default_vl, ret);
+		pass = false;
+	}
+
+	ksft_test_result(pass, "change_sve_with_za\n");
+}
+
+typedef void (*test_all_type)(void);
+
+static const struct {
+	const char *name;
+	test_all_type test;
+}  all_types_tests[] = {
+	{ "change_sve_with_za", change_sve_with_za },
 };
 
 int main(void)
 {
+	bool all_supported = true;
 	int i, j;
 
 	ksft_print_header();
-	ksft_set_plan(ARRAY_SIZE(tests) * ARRAY_SIZE(vec_data));
+	ksft_set_plan(ARRAY_SIZE(tests) * ARRAY_SIZE(vec_data) +
+		      ARRAY_SIZE(all_types_tests));
 
 	for (i = 0; i < ARRAY_SIZE(vec_data); i++) {
 		struct vec_data *data = &vec_data[i];
 		unsigned long supported;
 
-		supported = getauxval(data->hwcap_type) & data->hwcap;
+		supported = vec_type_supported(data);
+		if (!supported)
+			all_supported = false;
 
 		for (j = 0; j < ARRAY_SIZE(tests); j++) {
 			if (supported)
@@ -587,6 +783,13 @@ int main(void)
 				ksft_test_result_skip("%s not supported\n",
 						      data->name);
 		}
+	}
+
+	for (i = 0; i < ARRAY_SIZE(all_types_tests); i++) {
+		if (all_supported)
+			all_types_tests[i].test();
+		else
+			ksft_test_result_skip("%s\n", all_types_tests[i].name);
 	}
 
 	ksft_exit_pass();

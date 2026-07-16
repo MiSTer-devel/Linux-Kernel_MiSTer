@@ -7,25 +7,29 @@
  * Copied from arch/tile/kernel/ptrace.c
  */
 
+#include <asm/vector.h>
 #include <asm/ptrace.h>
 #include <asm/syscall.h>
 #include <asm/thread_info.h>
 #include <asm/switch_to.h>
 #include <linux/audit.h>
+#include <linux/compat.h>
 #include <linux/ptrace.h>
 #include <linux/elf.h>
 #include <linux/regset.h>
 #include <linux/sched.h>
 #include <linux/sched/task_stack.h>
-#include <linux/tracehook.h>
-
-#define CREATE_TRACE_POINTS
-#include <trace/events/syscalls.h>
 
 enum riscv_regset {
 	REGSET_X,
 #ifdef CONFIG_FPU
 	REGSET_F,
+#endif
+#ifdef CONFIG_RISCV_ISA_V
+	REGSET_V,
+#endif
+#ifdef CONFIG_RISCV_ISA_SUPM
+	REGSET_TAGGED_ADDR_CTRL,
 #endif
 };
 
@@ -42,12 +46,10 @@ static int riscv_gpr_set(struct task_struct *target,
 			 unsigned int pos, unsigned int count,
 			 const void *kbuf, const void __user *ubuf)
 {
-	int ret;
 	struct pt_regs *regs;
 
 	regs = task_pt_regs(target);
-	ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf, regs, 0, -1);
-	return ret;
+	return user_regset_copyin(&pos, &count, &kbuf, &ubuf, regs, 0, -1);
 }
 
 #ifdef CONFIG_FPU
@@ -85,9 +87,106 @@ static int riscv_fpr_set(struct task_struct *target,
 }
 #endif
 
+#ifdef CONFIG_RISCV_ISA_V
+static int riscv_vr_get(struct task_struct *target,
+			const struct user_regset *regset,
+			struct membuf to)
+{
+	struct __riscv_v_ext_state *vstate = &target->thread.vstate;
+	struct __riscv_v_regset_state ptrace_vstate;
+
+	if (!riscv_v_vstate_query(task_pt_regs(target)))
+		return -EINVAL;
+
+	/*
+	 * Ensure the vector registers have been saved to the memory before
+	 * copying them to membuf.
+	 */
+	if (target == current) {
+		get_cpu_vector_context();
+		riscv_v_vstate_save(&current->thread.vstate, task_pt_regs(current));
+		put_cpu_vector_context();
+	}
+
+	ptrace_vstate.vstart = vstate->vstart;
+	ptrace_vstate.vl = vstate->vl;
+	ptrace_vstate.vtype = vstate->vtype;
+	ptrace_vstate.vcsr = vstate->vcsr;
+	ptrace_vstate.vlenb = vstate->vlenb;
+
+	/* Copy vector header from vstate. */
+	membuf_write(&to, &ptrace_vstate, sizeof(struct __riscv_v_regset_state));
+
+	/* Copy all the vector registers from vstate. */
+	return membuf_write(&to, vstate->datap, riscv_v_vsize);
+}
+
+static int riscv_vr_set(struct task_struct *target,
+			const struct user_regset *regset,
+			unsigned int pos, unsigned int count,
+			const void *kbuf, const void __user *ubuf)
+{
+	int ret;
+	struct __riscv_v_ext_state *vstate = &target->thread.vstate;
+	struct __riscv_v_regset_state ptrace_vstate;
+
+	if (!riscv_v_vstate_query(task_pt_regs(target)))
+		return -EINVAL;
+
+	/* Copy rest of the vstate except datap */
+	ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf, &ptrace_vstate, 0,
+				 sizeof(struct __riscv_v_regset_state));
+	if (unlikely(ret))
+		return ret;
+
+	if (vstate->vlenb != ptrace_vstate.vlenb)
+		return -EINVAL;
+
+	vstate->vstart = ptrace_vstate.vstart;
+	vstate->vl = ptrace_vstate.vl;
+	vstate->vtype = ptrace_vstate.vtype;
+	vstate->vcsr = ptrace_vstate.vcsr;
+
+	/* Copy all the vector registers. */
+	pos = 0;
+	ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf, vstate->datap,
+				 0, riscv_v_vsize);
+	return ret;
+}
+#endif
+
+#ifdef CONFIG_RISCV_ISA_SUPM
+static int tagged_addr_ctrl_get(struct task_struct *target,
+				const struct user_regset *regset,
+				struct membuf to)
+{
+	long ctrl = get_tagged_addr_ctrl(target);
+
+	if (IS_ERR_VALUE(ctrl))
+		return ctrl;
+
+	return membuf_write(&to, &ctrl, sizeof(ctrl));
+}
+
+static int tagged_addr_ctrl_set(struct task_struct *target,
+				const struct user_regset *regset,
+				unsigned int pos, unsigned int count,
+				const void *kbuf, const void __user *ubuf)
+{
+	int ret;
+	long ctrl;
+
+	ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf, &ctrl, 0, -1);
+	if (ret)
+		return ret;
+
+	return set_tagged_addr_ctrl(target, ctrl);
+}
+#endif
+
 static const struct user_regset riscv_user_regset[] = {
 	[REGSET_X] = {
-		.core_note_type = NT_PRSTATUS,
+		USER_REGSET_NOTE_TYPE(PRSTATUS),
 		.n = ELF_NGREG,
 		.size = sizeof(elf_greg_t),
 		.align = sizeof(elf_greg_t),
@@ -96,12 +195,33 @@ static const struct user_regset riscv_user_regset[] = {
 	},
 #ifdef CONFIG_FPU
 	[REGSET_F] = {
-		.core_note_type = NT_PRFPREG,
+		USER_REGSET_NOTE_TYPE(PRFPREG),
 		.n = ELF_NFPREG,
 		.size = sizeof(elf_fpreg_t),
 		.align = sizeof(elf_fpreg_t),
 		.regset_get = riscv_fpr_get,
 		.set = riscv_fpr_set,
+	},
+#endif
+#ifdef CONFIG_RISCV_ISA_V
+	[REGSET_V] = {
+		USER_REGSET_NOTE_TYPE(RISCV_VECTOR),
+		.align = 16,
+		.n = ((32 * RISCV_MAX_VLENB) +
+		      sizeof(struct __riscv_v_regset_state)) / sizeof(__u32),
+		.size = sizeof(__u32),
+		.regset_get = riscv_vr_get,
+		.set = riscv_vr_set,
+	},
+#endif
+#ifdef CONFIG_RISCV_ISA_SUPM
+	[REGSET_TAGGED_ADDR_CTRL] = {
+		USER_REGSET_NOTE_TYPE(RISCV_TAGGED_ADDR_CTRL),
+		.n = 1,
+		.size = sizeof(long),
+		.align = sizeof(long),
+		.regset_get = tagged_addr_ctrl_get,
+		.set = tagged_addr_ctrl_set,
 	},
 #endif
 };
@@ -112,11 +232,6 @@ static const struct user_regset_view riscv_user_native_view = {
 	.regsets = riscv_user_regset,
 	.n = ARRAY_SIZE(riscv_user_regset),
 };
-
-const struct user_regset_view *task_user_regset_view(struct task_struct *task)
-{
-	return &riscv_user_native_view;
-}
 
 struct pt_regs_offset {
 	const char *name;
@@ -219,7 +334,6 @@ unsigned long regs_get_kernel_stack_nth(struct pt_regs *regs, unsigned int n)
 
 void ptrace_disable(struct task_struct *child)
 {
-	clear_tsk_thread_flag(child, TIF_SYSCALL_TRACE);
 }
 
 long arch_ptrace(struct task_struct *child, long request,
@@ -236,42 +350,83 @@ long arch_ptrace(struct task_struct *child, long request,
 	return ret;
 }
 
-/*
- * Allows PTRACE_SYSCALL to work.  These are called from entry.S in
- * {handle,ret_from}_syscall.
- */
-__visible int do_syscall_trace_enter(struct pt_regs *regs)
+#ifdef CONFIG_COMPAT
+static int compat_riscv_gpr_get(struct task_struct *target,
+				const struct user_regset *regset,
+				struct membuf to)
 {
-	if (test_thread_flag(TIF_SYSCALL_TRACE))
-		if (tracehook_report_syscall_entry(regs))
-			return -1;
+	struct compat_user_regs_struct cregs;
 
-	/*
-	 * Do the secure computing after ptrace; failures should be fast.
-	 * If this fails we might have return value in a0 from seccomp
-	 * (via SECCOMP_RET_ERRNO/TRACE).
-	 */
-	if (secure_computing() == -1)
-		return -1;
+	regs_to_cregs(&cregs, task_pt_regs(target));
 
-#ifdef CONFIG_HAVE_SYSCALL_TRACEPOINTS
-	if (test_thread_flag(TIF_SYSCALL_TRACEPOINT))
-		trace_sys_enter(regs, syscall_get_nr(current, regs));
-#endif
-
-	audit_syscall_entry(regs->a7, regs->a0, regs->a1, regs->a2, regs->a3);
-	return 0;
+	return membuf_write(&to, &cregs,
+			    sizeof(struct compat_user_regs_struct));
 }
 
-__visible void do_syscall_trace_exit(struct pt_regs *regs)
+static int compat_riscv_gpr_set(struct task_struct *target,
+				const struct user_regset *regset,
+				unsigned int pos, unsigned int count,
+				const void *kbuf, const void __user *ubuf)
 {
-	audit_syscall_exit(regs);
+	int ret;
+	struct compat_user_regs_struct cregs;
 
-	if (test_thread_flag(TIF_SYSCALL_TRACE))
-		tracehook_report_syscall_exit(regs, 0);
+	ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf, &cregs, 0, -1);
 
-#ifdef CONFIG_HAVE_SYSCALL_TRACEPOINTS
-	if (test_thread_flag(TIF_SYSCALL_TRACEPOINT))
-		trace_sys_exit(regs, regs_return_value(regs));
+	cregs_to_regs(&cregs, task_pt_regs(target));
+
+	return ret;
+}
+
+static const struct user_regset compat_riscv_user_regset[] = {
+	[REGSET_X] = {
+		USER_REGSET_NOTE_TYPE(PRSTATUS),
+		.n = ELF_NGREG,
+		.size = sizeof(compat_elf_greg_t),
+		.align = sizeof(compat_elf_greg_t),
+		.regset_get = compat_riscv_gpr_get,
+		.set = compat_riscv_gpr_set,
+	},
+#ifdef CONFIG_FPU
+	[REGSET_F] = {
+		USER_REGSET_NOTE_TYPE(PRFPREG),
+		.n = ELF_NFPREG,
+		.size = sizeof(elf_fpreg_t),
+		.align = sizeof(elf_fpreg_t),
+		.regset_get = riscv_fpr_get,
+		.set = riscv_fpr_set,
+	},
 #endif
+};
+
+static const struct user_regset_view compat_riscv_user_native_view = {
+	.name = "riscv",
+	.e_machine = EM_RISCV,
+	.regsets = compat_riscv_user_regset,
+	.n = ARRAY_SIZE(compat_riscv_user_regset),
+};
+
+long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
+			compat_ulong_t caddr, compat_ulong_t cdata)
+{
+	long ret = -EIO;
+
+	switch (request) {
+	default:
+		ret = compat_ptrace_request(child, request, caddr, cdata);
+		break;
+	}
+
+	return ret;
+}
+#else
+static const struct user_regset_view compat_riscv_user_native_view = {};
+#endif /* CONFIG_COMPAT */
+
+const struct user_regset_view *task_user_regset_view(struct task_struct *task)
+{
+	if (is_compat_thread(&task->thread_info))
+		return &compat_riscv_user_native_view;
+	else
+		return &riscv_user_native_view;
 }

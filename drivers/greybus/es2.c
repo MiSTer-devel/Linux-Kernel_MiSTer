@@ -12,7 +12,7 @@
 #include <linux/debugfs.h>
 #include <linux/list.h>
 #include <linux/greybus.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "arpc.h"
 #include "greybus_trace.h"
@@ -78,7 +78,7 @@ struct es2_cport_in {
  * @hd: pointer to our gb_host_device structure
  *
  * @cport_in: endpoint, urbs and buffer for cport in messages
- * @cport_out_endpoint: endpoint for for cport out messages
+ * @cport_out_endpoint: endpoint for cport out messages
  * @cport_out_urb: array of urbs for the CPort out messages
  * @cport_out_urb_busy: array of flags to see if the @cport_out_urb is busy or
  *			not.
@@ -513,16 +513,16 @@ static int es2_cport_allocate(struct gb_host_device *hd, int cport_id,
 
 	if (cport_id < 0) {
 		ida_start = 0;
-		ida_end = hd->num_cports;
+		ida_end = hd->num_cports - 1;
 	} else if (cport_id < hd->num_cports) {
 		ida_start = cport_id;
-		ida_end = cport_id + 1;
+		ida_end = cport_id;
 	} else {
 		dev_err(&hd->dev, "cport %d not available\n", cport_id);
 		return -EINVAL;
 	}
 
-	return ida_simple_get(id_map, ida_start, ida_end, GFP_KERNEL);
+	return ida_alloc_range(id_map, ida_start, ida_end, GFP_KERNEL);
 }
 
 static void es2_cport_release(struct gb_host_device *hd, u16 cport_id)
@@ -535,7 +535,7 @@ static void es2_cport_release(struct gb_host_device *hd, u16 cport_id)
 		return;
 	}
 
-	ida_simple_remove(&hd->cport_id_map, cport_id);
+	ida_free(&hd->cport_id_map, cport_id);
 }
 
 static int cport_enable(struct gb_host_device *hd, u16 cport_id,
@@ -1456,5 +1456,6 @@ static struct usb_driver es2_ap_driver = {
 
 module_usb_driver(es2_ap_driver);
 
+MODULE_DESCRIPTION("Greybus AP USB driver for ES2 controller chips");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Greg Kroah-Hartman <gregkh@linuxfoundation.org>");

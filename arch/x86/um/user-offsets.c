@@ -8,19 +8,18 @@
 #define __FRAME_OFFSETS
 #include <linux/ptrace.h>
 #include <asm/types.h>
+#include <linux/kbuild.h>
 
-#define DEFINE(sym, val) \
-	asm volatile("\n->" #sym " %0 " #val : : "i" (val))
+#define DEFINE_LONGS(sym, val)	\
+	COMMENT(#val " / sizeof(unsigned long)");	\
+	DEFINE(sym, val / sizeof(unsigned long))
 
-#define DEFINE_LONGS(sym, val) \
-	asm volatile("\n->" #sym " %0 " #val : : "i" (val/sizeof(unsigned long)))
+/* workaround for a warning with -Wmissing-prototypes */
+void foo(void);
 
 void foo(void)
 {
 #ifdef __i386__
-	DEFINE_LONGS(HOST_FP_SIZE, sizeof(struct user_fpregs_struct));
-	DEFINE_LONGS(HOST_FPX_SIZE, sizeof(struct user_fpxregs_struct));
-
 	DEFINE(HOST_IP, EIP);
 	DEFINE(HOST_SP, UESP);
 	DEFINE(HOST_EFLAGS, EFL);
@@ -39,11 +38,6 @@ void foo(void)
 	DEFINE(HOST_GS, GS);
 	DEFINE(HOST_ORIG_AX, ORIG_EAX);
 #else
-#ifdef FP_XSTATE_MAGIC1
-	DEFINE_LONGS(HOST_FP_SIZE, 2696);
-#else
-	DEFINE(HOST_FP_SIZE, sizeof(struct _fpstate) / sizeof(unsigned long));
-#endif
 	DEFINE_LONGS(HOST_BX, RBX);
 	DEFINE_LONGS(HOST_CX, RCX);
 	DEFINE_LONGS(HOST_DI, RDI);

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright(c) 1999 - 2018 Intel Corporation. */
+/* Copyright(c) 1999 - 2024 Intel Corporation. */
 
 #ifndef __IXGBE_VF_H__
 #define __IXGBE_VF_H__
@@ -26,6 +26,7 @@ struct ixgbe_mac_operations {
 	s32 (*stop_adapter)(struct ixgbe_hw *);
 	s32 (*get_bus_info)(struct ixgbe_hw *);
 	s32 (*negotiate_api_version)(struct ixgbe_hw *hw, int api);
+	int (*negotiate_features)(struct ixgbe_hw *hw, u32 *pf_features);
 
 	/* Link */
 	s32 (*setup_link)(struct ixgbe_hw *, ixgbe_link_speed, bool, bool);
@@ -39,6 +40,7 @@ struct ixgbe_mac_operations {
 	s32 (*init_rx_addrs)(struct ixgbe_hw *);
 	s32 (*update_mc_addr_list)(struct ixgbe_hw *, struct net_device *);
 	s32 (*update_xcast_mode)(struct ixgbe_hw *, int);
+	s32 (*get_link_state)(struct ixgbe_hw *hw, bool *link_state);
 	s32 (*enable_mc)(struct ixgbe_hw *);
 	s32 (*disable_mc)(struct ixgbe_hw *);
 	s32 (*clear_vfta)(struct ixgbe_hw *);
@@ -53,6 +55,8 @@ enum ixgbe_mac_type {
 	ixgbe_mac_X550_vf,
 	ixgbe_mac_X550EM_x_vf,
 	ixgbe_mac_x550em_a_vf,
+	ixgbe_mac_e610,
+	ixgbe_mac_e610_vf,
 	ixgbe_num_macs
 };
 
@@ -73,10 +77,9 @@ struct ixgbe_mac_info {
 
 struct ixgbe_mbx_operations {
 	s32 (*init_params)(struct ixgbe_hw *hw);
+	void (*release)(struct ixgbe_hw *hw);
 	s32 (*read)(struct ixgbe_hw *, u32 *, u16);
 	s32 (*write)(struct ixgbe_hw *, u32 *, u16);
-	s32 (*read_posted)(struct ixgbe_hw *, u32 *, u16);
-	s32 (*write_posted)(struct ixgbe_hw *, u32 *, u16);
 	s32 (*check_for_msg)(struct ixgbe_hw *);
 	s32 (*check_for_ack)(struct ixgbe_hw *);
 	s32 (*check_for_rst)(struct ixgbe_hw *);
@@ -96,7 +99,7 @@ struct ixgbe_mbx_info {
 	struct ixgbe_mbx_stats stats;
 	u32 timeout;
 	u32 udelay;
-	u32 v2p_mailbox;
+	u32 vf_mailbox;
 	u16 size;
 };
 

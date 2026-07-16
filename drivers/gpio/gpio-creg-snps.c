@@ -8,7 +8,7 @@
 #include <linux/gpio/driver.h>
 #include <linux/io.h>
 #include <linux/of.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 
 #define MAX_GPIO	32
 
@@ -27,7 +27,7 @@ struct creg_gpio {
 	const struct creg_layout *layout;
 };
 
-static void creg_gpio_set(struct gpio_chip *gc, unsigned int offset, int val)
+static int creg_gpio_set(struct gpio_chip *gc, unsigned int offset, int val)
 {
 	struct creg_gpio *hcg = gpiochip_get_data(gc);
 	const struct creg_layout *layout = hcg->layout;
@@ -47,13 +47,13 @@ static void creg_gpio_set(struct gpio_chip *gc, unsigned int offset, int val)
 	reg |=  (value << reg_shift);
 	writel(reg, hcg->regs);
 	spin_unlock_irqrestore(&hcg->lock, flags);
+
+	return 0;
 }
 
 static int creg_gpio_dir_out(struct gpio_chip *gc, unsigned int offset, int val)
 {
-	creg_gpio_set(gc, offset, val);
-
-	return 0;
+	return creg_gpio_set(gc, offset, val);
 }
 
 static int creg_gpio_validate_pg(struct device *dev, struct creg_gpio *hcg,
@@ -163,12 +163,12 @@ static int creg_gpio_probe(struct platform_device *pdev)
 
 	spin_lock_init(&hcg->lock);
 
+	hcg->gc.parent = dev;
 	hcg->gc.label = dev_name(dev);
 	hcg->gc.base = -1;
 	hcg->gc.ngpio = ngpios;
 	hcg->gc.set = creg_gpio_set;
 	hcg->gc.direction_output = creg_gpio_dir_out;
-	hcg->gc.of_node = dev->of_node;
 
 	ret = devm_gpiochip_add_data(dev, &hcg->gc, hcg);
 	if (ret)

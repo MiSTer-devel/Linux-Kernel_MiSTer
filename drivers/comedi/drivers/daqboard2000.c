@@ -96,10 +96,9 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
+#include <linux/comedi/comedi_pci.h>
+#include <linux/comedi/comedi_8255.h>
 
-#include "../comedi_pci.h"
-
-#include "8255.h"
 #include "plx9080.h"
 
 #define DB2K_FIRMWARE		"daqboard2000_firmware.bin"
@@ -739,8 +738,8 @@ static int db2k_auto_attach(struct comedi_device *dev, unsigned long context)
 		return result;
 
 	s = &dev->subdevices[2];
-	return subdev_8255_init(dev, s, db2k_8255_cb,
-				DB2K_REG_DIO_P2_EXP_IO_8_BIT);
+	return subdev_8255_cb_init(dev, s, db2k_8255_cb,
+				   DB2K_REG_DIO_P2_EXP_IO_8_BIT);
 }
 
 static void db2k_detach(struct comedi_device *dev)

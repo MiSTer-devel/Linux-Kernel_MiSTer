@@ -108,24 +108,14 @@ static void pty_unthrottle(struct tty_struct *tty)
  *	the other side of the pty/tty pair.
  */
 
-static int pty_write(struct tty_struct *tty, const unsigned char *buf, int c)
+static ssize_t pty_write(struct tty_struct *tty, const u8 *buf, size_t c)
 {
 	struct tty_struct *to = tty->link;
-	unsigned long flags;
 
-	if (tty->flow.stopped)
+	if (tty->flow.stopped || !c)
 		return 0;
 
-	if (c > 0) {
-		spin_lock_irqsave(&to->port->lock, flags);
-		/* Stuff the data into the input queue of the other end */
-		c = tty_insert_flip_string(to->port, buf, c);
-		spin_unlock_irqrestore(&to->port->lock, flags);
-		/* And shovel */
-		if (c)
-			tty_flip_buffer_push(to->port);
-	}
-	return c;
+	return tty_insert_flip_string_and_push_buffer(to->port, buf, c);
 }
 
 /**
@@ -250,7 +240,7 @@ out:
 }
 
 static void pty_set_termios(struct tty_struct *tty,
-					struct ktermios *old_termios)
+			    const struct ktermios *old_termios)
 {
 	/* See if packet mode change of state. */
 	if (tty->link && tty->link->ctrl.packet) {
@@ -808,7 +798,7 @@ static int ptmx_open(struct inode *inode, struct file *filp)
 	nonseekable_open(inode, filp);
 
 	/* We refuse fsnotify events on ptmx, since it's a shared resource */
-	filp->f_mode |= FMODE_NONOTIFY;
+	file_set_fsnotify_mode(filp, FMODE_NONOTIFY);
 
 	retval = tty_alloc_file(filp);
 	if (retval)
@@ -941,7 +931,7 @@ static void __init unix98_pty_init(void)
 	if (cdev_add(&ptmx_cdev, MKDEV(TTYAUX_MAJOR, 2), 1) ||
 	    register_chrdev_region(MKDEV(TTYAUX_MAJOR, 2), 1, "/dev/ptmx") < 0)
 		panic("Couldn't register /dev/ptmx driver");
-	device_create(tty_class, NULL, MKDEV(TTYAUX_MAJOR, 2), NULL, "ptmx");
+	device_create(&tty_class, NULL, MKDEV(TTYAUX_MAJOR, 2), NULL, "ptmx");
 }
 
 #else

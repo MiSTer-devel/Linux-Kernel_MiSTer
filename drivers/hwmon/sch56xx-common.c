@@ -9,6 +9,7 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
+#include <linux/regmap.h>
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/acpi.h>
@@ -57,6 +58,11 @@ struct sch56xx_watchdog_data {
 	u8 watchdog_preset;
 	u8 watchdog_control;
 	u8 watchdog_output_enable;
+};
+
+struct sch56xx_bus_context {
+	struct mutex *lock;	/* Used to serialize access to the mailbox registers */
+	u16 addr;
 };
 
 static struct platform_device *sch56xx_pdev;
@@ -134,7 +140,7 @@ static int sch56xx_send_cmd(u16 addr, u8 cmd, u16 reg, u8 v)
 	/* EM Interface Polling "Algorithm" */
 	for (i = 0; i < max_busy_polls + max_lazy_polls; i++) {
 		if (i >= max_busy_polls)
-			msleep(1);
+			usleep_range(1000, 2000);
 		/* Read Interrupt source Register */
 		val = inb(addr + 8);
 		/* Write Clear the interrupt source bits */
@@ -237,6 +243,107 @@ int sch56xx_read_virtual_reg12(u16 addr, u16 msb_reg, u16 lsn_reg,
 		return (msb << 4) | (lsn & 0x0f);
 }
 EXPORT_SYMBOL(sch56xx_read_virtual_reg12);
+
+/*
+ * Regmap support
+ */
+
+int sch56xx_regmap_read16(struct regmap *map, unsigned int reg, unsigned int *val)
+{
+	int lsb, msb, ret;
+
+	/* See sch56xx_read_virtual_reg16() */
+	ret = regmap_read(map, reg, &lsb);
+	if (ret < 0)
+		return ret;
+
+	ret = regmap_read(map, reg + 1, &msb);
+	if (ret < 0)
+		return ret;
+
+	*val = lsb | (msb << 8);
+
+	return 0;
+}
+EXPORT_SYMBOL(sch56xx_regmap_read16);
+
+int sch56xx_regmap_write16(struct regmap *map, unsigned int reg, unsigned int val)
+{
+	int ret;
+
+	ret = regmap_write(map, reg, val & 0xff);
+	if (ret < 0)
+		return ret;
+
+	return regmap_write(map, reg + 1, (val >> 8) & 0xff);
+}
+EXPORT_SYMBOL(sch56xx_regmap_write16);
+
+static int sch56xx_reg_write(void *context, unsigned int reg, unsigned int val)
+{
+	struct sch56xx_bus_context *bus = context;
+	int ret;
+
+	mutex_lock(bus->lock);
+	ret = sch56xx_write_virtual_reg(bus->addr, (u16)reg, (u8)val);
+	mutex_unlock(bus->lock);
+
+	return ret;
+}
+
+static int sch56xx_reg_read(void *context, unsigned int reg, unsigned int *val)
+{
+	struct sch56xx_bus_context *bus = context;
+	int ret;
+
+	mutex_lock(bus->lock);
+	ret = sch56xx_read_virtual_reg(bus->addr, (u16)reg);
+	mutex_unlock(bus->lock);
+
+	if (ret < 0)
+		return ret;
+
+	*val = ret;
+
+	return 0;
+}
+
+static void sch56xx_free_context(void *context)
+{
+	kfree(context);
+}
+
+static const struct regmap_bus sch56xx_bus = {
+	.reg_write = sch56xx_reg_write,
+	.reg_read = sch56xx_reg_read,
+	.free_context = sch56xx_free_context,
+	.reg_format_endian_default = REGMAP_ENDIAN_LITTLE,
+	.val_format_endian_default = REGMAP_ENDIAN_LITTLE,
+};
+
+struct regmap *devm_regmap_init_sch56xx(struct device *dev, struct mutex *lock, u16 addr,
+					const struct regmap_config *config)
+{
+	struct sch56xx_bus_context *context;
+	struct regmap *map;
+
+	if (config->reg_bits != 16 && config->val_bits != 8)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	context = kzalloc(sizeof(*context), GFP_KERNEL);
+	if (!context)
+		return ERR_PTR(-ENOMEM);
+
+	context->lock = lock;
+	context->addr = addr;
+
+	map = devm_regmap_init(dev, &sch56xx_bus, context, config);
+	if (IS_ERR(map))
+		kfree(context);
+
+	return map;
+}
+EXPORT_SYMBOL(devm_regmap_init_sch56xx);
 
 /*
  * Watchdog routines
@@ -422,7 +529,7 @@ void sch56xx_watchdog_register(struct device *parent, u16 addr, u32 revision,
 	data->wddev.max_timeout = 255 * 60;
 	watchdog_set_nowayout(&data->wddev, nowayout);
 	if (output_enable & SCH56XX_WDOG_OUTPUT_ENABLE)
-		set_bit(WDOG_ACTIVE, &data->wddev.status);
+		set_bit(WDOG_HW_RUNNING, &data->wddev.status);
 
 	/* Since the watchdog uses a downcounter there is no register to read
 	   the BIOS set timeout from (if any was set at all) ->
@@ -437,10 +544,8 @@ void sch56xx_watchdog_register(struct device *parent, u16 addr, u32 revision,
 
 	watchdog_set_drvdata(&data->wddev, data);
 	err = devm_watchdog_register_device(parent, &data->wddev);
-	if (err) {
-		pr_err("Registering watchdog chardev: %d\n", err);
+	if (err)
 		devm_kfree(parent, data);
-	}
 }
 EXPORT_SYMBOL(sch56xx_watchdog_register);
 

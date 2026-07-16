@@ -66,6 +66,7 @@
 #include <linux/slab.h>
 #include <linux/prefetch.h>
 #include <net/checksum.h>
+#include <net/gso.h>
 #include <net/ip.h>
 #include <net/tcp.h>
 #include <asm/byteorder.h>
@@ -552,8 +553,7 @@ myri10ge_validate_firmware(struct myri10ge_priv *mgp,
 	}
 
 	/* save firmware version for ethtool */
-	strncpy(mgp->fw_version, hdr->version, sizeof(mgp->fw_version));
-	mgp->fw_version[sizeof(mgp->fw_version) - 1] = '\0';
+	strscpy(mgp->fw_version, hdr->version, sizeof(mgp->fw_version));
 
 	sscanf(mgp->fw_version, "%d.%d.%d", &mgp->fw_ver_major,
 	       &mgp->fw_ver_minor, &mgp->fw_ver_tiny);
@@ -579,7 +579,7 @@ static int myri10ge_load_hotplug_firmware(struct myri10ge_priv *mgp, u32 * size)
 	int status;
 	unsigned i;
 
-	if ((status = request_firmware(&fw, mgp->fw_name, dev)) < 0) {
+	if (request_firmware(&fw, mgp->fw_name, dev) < 0) {
 		dev_err(dev, "Unable to load %s firmware image via hotplug\n",
 			mgp->fw_name);
 		status = -EINVAL;
@@ -688,6 +688,9 @@ static int myri10ge_get_firmware_capabilities(struct myri10ge_priv *mgp)
 
 	/* probe for IPv6 TSO support */
 	mgp->features = NETIF_F_SG | NETIF_F_HW_CSUM | NETIF_F_TSO;
+	cmd.data0 = 0,
+	cmd.data1 = 0,
+	cmd.data2 = 0,
 	status = myri10ge_send_cmd(mgp, MXGEFW_CMD_GET_MAX_TSO6_HDR_SIZE,
 				   &cmd, 0);
 	if (status == 0) {
@@ -796,7 +799,8 @@ static int myri10ge_load_firmware(struct myri10ge_priv *mgp, int adopt)
 	return status;
 }
 
-static int myri10ge_update_mac_address(struct myri10ge_priv *mgp, u8 * addr)
+static int myri10ge_update_mac_address(struct myri10ge_priv *mgp,
+				       const u8 * addr)
 {
 	struct myri10ge_cmd cmd;
 	int status;
@@ -805,6 +809,7 @@ static int myri10ge_update_mac_address(struct myri10ge_priv *mgp, u8 * addr)
 		     | (addr[2] << 8) | addr[3]);
 
 	cmd.data1 = ((addr[4] << 8) | (addr[5]));
+	cmd.data2 = 0;
 
 	status = myri10ge_send_cmd(mgp, MXGEFW_SET_MAC_ADDRESS, &cmd, 0);
 	return status;
@@ -816,6 +821,9 @@ static int myri10ge_change_pause(struct myri10ge_priv *mgp, int pause)
 	int status, ctl;
 
 	ctl = pause ? MXGEFW_ENABLE_FLOW_CONTROL : MXGEFW_DISABLE_FLOW_CONTROL;
+	cmd.data0 = 0,
+	cmd.data1 = 0,
+	cmd.data2 = 0,
 	status = myri10ge_send_cmd(mgp, ctl, &cmd, 0);
 
 	if (status) {
@@ -833,6 +841,9 @@ myri10ge_change_promisc(struct myri10ge_priv *mgp, int promisc, int atomic)
 	int status, ctl;
 
 	ctl = promisc ? MXGEFW_ENABLE_PROMISC : MXGEFW_DISABLE_PROMISC;
+	cmd.data0 = 0;
+	cmd.data1 = 0;
+	cmd.data2 = 0;
 	status = myri10ge_send_cmd(mgp, ctl, &cmd, atomic);
 	if (status)
 		netdev_err(mgp->dev, "Failed to set promisc mode\n");
@@ -1646,10 +1657,10 @@ myri10ge_get_drvinfo(struct net_device *netdev, struct ethtool_drvinfo *info)
 {
 	struct myri10ge_priv *mgp = netdev_priv(netdev);
 
-	strlcpy(info->driver, "myri10ge", sizeof(info->driver));
-	strlcpy(info->version, MYRI10GE_VERSION_STR, sizeof(info->version));
-	strlcpy(info->fw_version, mgp->fw_version, sizeof(info->fw_version));
-	strlcpy(info->bus_info, pci_name(mgp->pdev), sizeof(info->bus_info));
+	strscpy(info->driver, "myri10ge", sizeof(info->driver));
+	strscpy(info->version, MYRI10GE_VERSION_STR, sizeof(info->version));
+	strscpy(info->fw_version, mgp->fw_version, sizeof(info->fw_version));
+	strscpy(info->bus_info, pci_name(mgp->pdev), sizeof(info->bus_info));
 }
 
 static int myri10ge_get_coalesce(struct net_device *netdev,
@@ -1703,7 +1714,9 @@ myri10ge_set_pauseparam(struct net_device *netdev,
 
 static void
 myri10ge_get_ringparam(struct net_device *netdev,
-		       struct ethtool_ringparam *ring)
+		       struct ethtool_ringparam *ring,
+		       struct kernel_ethtool_ringparam *kernel_ring,
+		       struct netlink_ext_ack *extack)
 {
 	struct myri10ge_priv *mgp = netdev_priv(netdev);
 
@@ -1943,6 +1956,8 @@ static int myri10ge_allocate_rings(struct myri10ge_slice_state *ss)
 	/* get ring sizes */
 	slice = ss - mgp->ss;
 	cmd.data0 = slice;
+	cmd.data1 = 0;
+	cmd.data2 = 0;
 	status = myri10ge_send_cmd(mgp, MXGEFW_CMD_GET_SEND_RING_SIZE, &cmd, 0);
 	tx_ring_size = cmd.data0;
 	cmd.data0 = slice;
@@ -2235,12 +2250,16 @@ static int myri10ge_get_txrx(struct myri10ge_priv *mgp, int slice)
 	status = 0;
 	if (slice == 0 || (mgp->dev->real_num_tx_queues > 1)) {
 		cmd.data0 = slice;
+		cmd.data1 = 0;
+		cmd.data2 = 0;
 		status = myri10ge_send_cmd(mgp, MXGEFW_CMD_GET_SEND_OFFSET,
 					   &cmd, 0);
 		ss->tx.lanai = (struct mcp_kreq_ether_send __iomem *)
 		    (mgp->sram + cmd.data0);
 	}
 	cmd.data0 = slice;
+	cmd.data1 = 0;
+	cmd.data2 = 0;
 	status |= myri10ge_send_cmd(mgp, MXGEFW_CMD_GET_SMALL_RX_OFFSET,
 				    &cmd, 0);
 	ss->rx_small.lanai = (struct mcp_kreq_ether_recv __iomem *)
@@ -2309,6 +2328,7 @@ static int myri10ge_open(struct net_device *dev)
 	if (mgp->num_slices > 1) {
 		cmd.data0 = mgp->num_slices;
 		cmd.data1 = MXGEFW_SLICE_INTR_MODE_ONE_PER_SLICE;
+		cmd.data2 = 0;
 		if (mgp->dev->real_num_tx_queues > 1)
 			cmd.data1 |= MXGEFW_SLICE_ENABLE_MULTIPLE_TX_QUEUES;
 		status = myri10ge_send_cmd(mgp, MXGEFW_CMD_ENABLE_RSS_QUEUES,
@@ -2411,6 +2431,8 @@ static int myri10ge_open(struct net_device *dev)
 
 	/* now give firmware buffers sizes, and MTU */
 	cmd.data0 = dev->mtu + ETH_HLEN + VLAN_HLEN;
+	cmd.data1 = 0;
+	cmd.data2 = 0;
 	status = myri10ge_send_cmd(mgp, MXGEFW_CMD_SET_MTU, &cmd, 0);
 	cmd.data0 = mgp->small_bytes;
 	status |=
@@ -2469,7 +2491,6 @@ abort_with_nothing:
 static int myri10ge_close(struct net_device *dev)
 {
 	struct myri10ge_priv *mgp = netdev_priv(dev);
-	struct myri10ge_cmd cmd;
 	int status, old_down_cnt;
 	int i;
 
@@ -2479,7 +2500,7 @@ static int myri10ge_close(struct net_device *dev)
 	if (mgp->ss[0].tx.req_bytes == NULL)
 		return 0;
 
-	del_timer_sync(&mgp->watchdog_timer);
+	timer_delete_sync(&mgp->watchdog_timer);
 	mgp->running = MYRI10GE_ETH_STOPPING;
 	for (i = 0; i < mgp->num_slices; i++)
 		napi_disable(&mgp->ss[i].napi);
@@ -2488,8 +2509,13 @@ static int myri10ge_close(struct net_device *dev)
 
 	netif_tx_stop_all_queues(dev);
 	if (mgp->rebooted == 0) {
+		struct myri10ge_cmd cmd;
+
 		old_down_cnt = mgp->down_cnt;
 		mb();
+		cmd.data0 = 0;
+		cmd.data1 = 0;
+		cmd.data2 = 0;
 		status =
 		    myri10ge_send_cmd(mgp, MXGEFW_CMD_ETHERNET_DOWN, &cmd, 0);
 		if (status)
@@ -2689,7 +2715,7 @@ again:
 		 * send loop that we are still in the
 		 * header portion of the TSO packet.
 		 * TSO header can be at most 1KB long */
-		cum_len = -(skb_transport_offset(skb) + tcp_hdrlen(skb));
+		cum_len = -skb_tcp_all_headers(skb);
 
 		/* for IPv6 TSO, the checksum offset stores the
 		 * TCP header length, to save the firmware from
@@ -2900,11 +2926,9 @@ static netdev_tx_t myri10ge_sw_tso(struct sk_buff *skb,
 		status = myri10ge_xmit(curr, dev);
 		if (status != 0) {
 			dev_kfree_skb_any(curr);
-			if (segs != NULL) {
-				curr = segs;
-				segs = next;
+			skb_list_walk_safe(next, curr, next) {
 				curr->next = NULL;
-				dev_kfree_skb_any(segs);
+				dev_kfree_skb_any(curr);
 			}
 			goto drop;
 		}
@@ -2955,6 +2979,9 @@ static void myri10ge_set_multicast_list(struct net_device *dev)
 
 	/* Disable multicast filtering */
 
+	cmd.data0 = 0;
+	cmd.data1 = 0;
+	cmd.data2 = 0;
 	err = myri10ge_send_cmd(mgp, MXGEFW_ENABLE_ALLMULTI, &cmd, 1);
 	if (err != 0) {
 		netdev_err(dev, "Failed MXGEFW_ENABLE_ALLMULTI, error status: %d\n",
@@ -3022,7 +3049,7 @@ static int myri10ge_set_mac_address(struct net_device *dev, void *addr)
 	}
 
 	/* change the dev structure */
-	memcpy(dev->dev_addr, sa->sa_data, ETH_ALEN);
+	eth_hw_addr_set(dev, sa->sa_data);
 	return 0;
 }
 
@@ -3035,11 +3062,11 @@ static int myri10ge_change_mtu(struct net_device *dev, int new_mtu)
 		/* if we change the mtu on an active device, we must
 		 * reset the device so the firmware sees the change */
 		myri10ge_close(dev);
-		dev->mtu = new_mtu;
+		WRITE_ONCE(dev->mtu, new_mtu);
 		myri10ge_open(dev);
-	} else
-		dev->mtu = new_mtu;
-
+	} else {
+		WRITE_ONCE(dev->mtu, new_mtu);
+	}
 	return 0;
 }
 
@@ -3415,10 +3442,6 @@ static void myri10ge_watchdog(struct work_struct *work)
 		 * nic was resumed from power saving mode.
 		 */
 		pci_restore_state(mgp->pdev);
-
-		/* save state again for accounting reasons */
-		pci_save_state(mgp->pdev);
-
 	} else {
 		/* if we get back -1's from our slot, perhaps somebody
 		 * powered off our card.  Don't try to reset it in
@@ -3477,7 +3500,7 @@ static void myri10ge_watchdog_timer(struct timer_list *t)
 	u32 rx_pause_cnt;
 	u16 cmd;
 
-	mgp = from_timer(mgp, t, watchdog_timer);
+	mgp = timer_container_of(mgp, t, watchdog_timer);
 
 	rx_pause_cnt = ntohl(mgp->ss[0].fw_stats->dropped_pause);
 	busy_slice_cnt = 0;
@@ -3585,8 +3608,8 @@ static int myri10ge_alloc_slices(struct myri10ge_priv *mgp)
 			goto abort;
 		ss->mgp = mgp;
 		ss->dev = mgp->dev;
-		netif_napi_add(ss->dev, &ss->napi, myri10ge_poll,
-			       myri10ge_napi_weight);
+		netif_napi_add_weight(ss->dev, &ss->napi, myri10ge_poll,
+				      myri10ge_napi_weight);
 	}
 	return 0;
 abort:
@@ -3738,9 +3761,7 @@ static int myri10ge_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	struct net_device *netdev;
 	struct myri10ge_priv *mgp;
 	struct device *dev = &pdev->dev;
-	int i;
 	int status = -ENXIO;
-	int dac_enabled;
 	unsigned hdr_offset, ss_offset;
 	static int board_number;
 
@@ -3780,14 +3801,7 @@ static int myri10ge_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	myri10ge_mask_surprise_down(pdev);
 	pci_set_master(pdev);
-	dac_enabled = 1;
 	status = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
-	if (status != 0) {
-		dac_enabled = 0;
-		dev_err(&pdev->dev,
-			"64-bit pci address mask was refused, trying 32-bit\n");
-		status = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
-	}
 	if (status != 0) {
 		dev_err(&pdev->dev, "Error %d setting DMA mask\n", status);
 		goto abort_with_enabled;
@@ -3828,8 +3842,7 @@ static int myri10ge_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (status)
 		goto abort_with_ioremap;
 
-	for (i = 0; i < ETH_ALEN; i++)
-		netdev->dev_addr[i] = mgp->mac_addr[i];
+	eth_hw_addr_set(netdev, mgp->mac_addr);
 
 	myri10ge_select_firmware(mgp);
 
@@ -3873,10 +3886,7 @@ static int myri10ge_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	/* fake NETIF_F_HW_VLAN_CTAG_RX for good GRO performance */
 	netdev->hw_features |= NETIF_F_HW_VLAN_CTAG_RX;
 
-	netdev->features = netdev->hw_features;
-
-	if (dac_enabled)
-		netdev->features |= NETIF_F_HIGHDMA;
+	netdev->features = netdev->hw_features | NETIF_F_HIGHDMA;
 
 	netdev->vlan_features |= mgp->features;
 	if (mgp->fw_ver_tiny < 37)
@@ -3925,6 +3935,7 @@ abort_with_slices:
 	myri10ge_free_slices(mgp);
 
 abort_with_firmware:
+	kfree(mgp->msix_vectors);
 	myri10ge_dummy_rdma(mgp, 0);
 
 abort_with_ioremap:

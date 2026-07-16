@@ -15,6 +15,7 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
+#include <media/mipi-csi2.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-fwnode.h>
@@ -121,12 +122,12 @@ static const struct csi2tx_fmt csi2tx_formats[] = {
 	{
 		.mbus	= MEDIA_BUS_FMT_UYVY8_1X16,
 		.bpp	= 2,
-		.dt	= 0x1e,
+		.dt	= MIPI_CSI2_DT_YUV422_8B,
 	},
 	{
 		.mbus	= MEDIA_BUS_FMT_RGB888_1X24,
 		.bpp	= 3,
-		.dt	= 0x24,
+		.dt	= MIPI_CSI2_DT_RGB888,
 	},
 };
 
@@ -175,8 +176,7 @@ __csi2tx_get_pad_format(struct v4l2_subdev *subdev,
 	struct csi2tx_priv *csi2tx = v4l2_subdev_to_csi2tx(subdev);
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY)
-		return v4l2_subdev_get_try_format(subdev, sd_state,
-						  fmt->pad);
+		return v4l2_subdev_state_get_format(sd_state, fmt->pad);
 
 	return &csi2tx->pad_fmts[fmt->pad];
 }
@@ -433,13 +433,11 @@ static const struct v4l2_subdev_ops csi2tx_subdev_ops = {
 static int csi2tx_get_resources(struct csi2tx_priv *csi2tx,
 				struct platform_device *pdev)
 {
-	struct resource *res;
 	unsigned int i;
 	u32 dev_cfg;
 	int ret;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	csi2tx->base = devm_ioremap_resource(&pdev->dev, res);
+	csi2tx->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(csi2tx->base))
 		return PTR_ERR(csi2tx->base);
 
@@ -481,7 +479,7 @@ static int csi2tx_get_resources(struct csi2tx_priv *csi2tx,
 	csi2tx->has_internal_dphy = !!(dev_cfg & CSI2TX_DEVICE_CONFIG_HAS_DPHY);
 
 	for (i = 0; i < csi2tx->max_streams; i++) {
-		char clk_name[16];
+		char clk_name[23];
 
 		snprintf(clk_name, sizeof(clk_name), "pixel_if%u_clk", i);
 		csi2tx->pixel_clk[i] = devm_clk_get(&pdev->dev, clk_name);
@@ -593,8 +591,8 @@ static int csi2tx_probe(struct platform_device *pdev)
 	csi2tx->subdev.owner = THIS_MODULE;
 	csi2tx->subdev.dev = &pdev->dev;
 	csi2tx->subdev.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
-	snprintf(csi2tx->subdev.name, V4L2_SUBDEV_NAME_SIZE, "%s.%s",
-		 KBUILD_MODNAME, dev_name(&pdev->dev));
+	snprintf(csi2tx->subdev.name, sizeof(csi2tx->subdev.name),
+		 "%s.%s", KBUILD_MODNAME, dev_name(&pdev->dev));
 
 	ret = csi2tx_check_lanes(csi2tx);
 	if (ret)
@@ -636,19 +634,17 @@ err_free_priv:
 	return ret;
 }
 
-static int csi2tx_remove(struct platform_device *pdev)
+static void csi2tx_remove(struct platform_device *pdev)
 {
 	struct csi2tx_priv *csi2tx = platform_get_drvdata(pdev);
 
 	v4l2_async_unregister_subdev(&csi2tx->subdev);
 	kfree(csi2tx);
-
-	return 0;
 }
 
 static struct platform_driver csi2tx_driver = {
 	.probe	= csi2tx_probe,
-	.remove	= csi2tx_remove,
+	.remove = csi2tx_remove,
 
 	.driver	= {
 		.name		= "cdns-csi2tx",

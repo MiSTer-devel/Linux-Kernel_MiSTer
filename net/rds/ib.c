@@ -154,8 +154,8 @@ static int rds_ib_add_one(struct ib_device *device)
 	rds_ibdev->max_sge = min(device->attrs.max_send_sge, RDS_IB_MAX_SGE);
 
 	rds_ibdev->odp_capable =
-		!!(device->attrs.device_cap_flags &
-		   IB_DEVICE_ON_DEMAND_PAGING) &&
+		!!(device->attrs.kernel_cap_flags &
+		   IBK_ON_DEMAND_PAGING) &&
 		!!(device->attrs.odp_caps.per_transport_caps.rc_odp_caps &
 		   IB_ODP_SUPPORT_WRITE) &&
 		!!(device->attrs.odp_caps.per_transport_caps.rc_odp_caps &
@@ -403,8 +403,8 @@ static void rds6_ib_ic_info(struct socket *sock, unsigned int len,
  * allowed to influence which paths have priority.  We could call userspace
  * asserting this policy "routing".
  */
-static int rds_ib_laddr_check(struct net *net, const struct in6_addr *addr,
-			      __u32 scope_id)
+static int rds_ib_laddr_check_cm(struct net *net, const struct in6_addr *addr,
+				 __u32 scope_id)
 {
 	int ret;
 	struct rdma_cm_id *cm_id;
@@ -487,6 +487,26 @@ out:
 	rdma_destroy_id(cm_id);
 
 	return ret;
+}
+
+static int rds_ib_laddr_check(struct net *net, const struct in6_addr *addr,
+			      __u32 scope_id)
+{
+	struct rds_ib_device *rds_ibdev = NULL;
+
+	/* RDS/IB is restricted to the initial network namespace */
+	if (!net_eq(net, &init_net))
+		return -EPROTOTYPE;
+
+	if (ipv6_addr_v4mapped(addr)) {
+		rds_ibdev = rds_ib_get_device(addr->s6_addr32[3]);
+		if (rds_ibdev) {
+			rds_ib_dev_put(rds_ibdev);
+			return 0;
+		}
+	}
+
+	return rds_ib_laddr_check_cm(net, addr, scope_id);
 }
 
 static void rds_ib_unregister_client(void)

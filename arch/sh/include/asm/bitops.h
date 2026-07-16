@@ -24,7 +24,7 @@
 #include <asm-generic/bitops/non-atomic.h>
 #endif
 
-static inline unsigned long ffz(unsigned long word)
+static inline unsigned long __attribute_const__ ffz(unsigned long word)
 {
 	unsigned long result;
 
@@ -44,7 +44,7 @@ static inline unsigned long ffz(unsigned long word)
  *
  * Undefined if no bit exists, so code should check against 0 first.
  */
-static inline unsigned long __ffs(unsigned long word)
+static inline __attribute_const__ unsigned long __ffs(unsigned long word)
 {
 	unsigned long result;
 
@@ -68,6 +68,5 @@ static inline unsigned long __ffs(unsigned long word)
 #include <asm-generic/bitops/fls64.h>
 
 #include <asm-generic/bitops/le.h>
-#include <asm-generic/bitops/find.h>
 
 #endif /* __ASM_SH_BITOPS_H */

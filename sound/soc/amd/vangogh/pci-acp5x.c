@@ -2,7 +2,7 @@
 //
 // AMD Vangogh ACP PCI Driver
 //
-// Copyright (C) 2021 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2021, 2023 Advanced Micro Devices, Inc. All rights reserved.
 
 #include <linux/pci.h>
 #include <linux/module.h>
@@ -13,6 +13,7 @@
 #include <linux/pm_runtime.h>
 
 #include "acp5x.h"
+#include "../mach-config.h"
 
 struct acp5x_dev_data {
 	void __iomem *acp5x_base;
@@ -92,12 +93,14 @@ static int acp5x_init(void __iomem *acp5x_base)
 		pr_err("ACP5x power on failed\n");
 		return ret;
 	}
+	acp_writel(0x01, acp5x_base + ACP_CONTROL);
 	/* Reset */
 	ret = acp5x_reset(acp5x_base);
 	if (ret) {
 		pr_err("ACP5x reset failed\n");
 		return ret;
 	}
+	acp_writel(0x03, acp5x_base + ACP_CLKMUX_SEL);
 	acp5x_enable_interrupts(acp5x_base);
 	return 0;
 }
@@ -113,6 +116,8 @@ static int acp5x_deinit(void __iomem *acp5x_base)
 		pr_err("ACP5x reset failed\n");
 		return ret;
 	}
+	acp_writel(0x00, acp5x_base + ACP_CLKMUX_SEL);
+	acp_writel(0x00, acp5x_base + ACP_CONTROL);
 	return 0;
 }
 
@@ -121,9 +126,18 @@ static int snd_acp5x_probe(struct pci_dev *pci,
 {
 	struct acp5x_dev_data *adata;
 	struct platform_device_info pdevinfo[ACP5x_DEVS];
-	unsigned int irqflags;
+	unsigned int irqflags, flag;
 	int ret, i;
 	u32 addr, val;
+
+	/*
+	 * Return if ACP config flag is defined, except when board
+	 * supports SOF while it is not being enabled in kernel config.
+	 */
+	flag = snd_amd_acp_find_config(pci);
+	if (flag != FLAG_AMD_LEGACY &&
+	    (flag != FLAG_AMD_SOF || IS_ENABLED(CONFIG_SND_SOC_SOF_AMD_VANGOGH)))
+		return -ENODEV;
 
 	irqflags = IRQF_SHARED;
 	if (pci->revision != 0x50)
@@ -213,6 +227,9 @@ static int snd_acp5x_probe(struct pci_dev *pci,
 		pdevinfo[2].num_res = 1;
 		pdevinfo[2].res = &adata->res[2];
 
+		pdevinfo[3].name = "acp5x_mach";
+		pdevinfo[3].id = 0;
+		pdevinfo[3].parent = &pci->dev;
 		for (i = 0; i < ACP5x_DEVS; i++) {
 			adata->pdev[i] =
 				platform_device_register_full(&pdevinfo[i]);
@@ -247,7 +264,7 @@ disable_pci:
 	return ret;
 }
 
-static int __maybe_unused snd_acp5x_suspend(struct device *dev)
+static int snd_acp5x_suspend(struct device *dev)
 {
 	int ret;
 	struct acp5x_dev_data *adata;
@@ -262,7 +279,7 @@ static int __maybe_unused snd_acp5x_suspend(struct device *dev)
 	return ret;
 }
 
-static int __maybe_unused snd_acp5x_resume(struct device *dev)
+static int snd_acp5x_resume(struct device *dev)
 {
 	int ret;
 	struct acp5x_dev_data *adata;
@@ -277,9 +294,8 @@ static int __maybe_unused snd_acp5x_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops acp5x_pm = {
-	SET_RUNTIME_PM_OPS(snd_acp5x_suspend,
-			   snd_acp5x_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(snd_acp5x_suspend, snd_acp5x_resume)
+	RUNTIME_PM_OPS(snd_acp5x_suspend, snd_acp5x_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(snd_acp5x_suspend, snd_acp5x_resume)
 };
 
 static void snd_acp5x_remove(struct pci_dev *pci)
@@ -315,7 +331,7 @@ static struct pci_driver acp5x_driver  = {
 	.probe = snd_acp5x_probe,
 	.remove = snd_acp5x_remove,
 	.driver = {
-		.pm = &acp5x_pm,
+		.pm = pm_ptr(&acp5x_pm),
 	}
 };
 

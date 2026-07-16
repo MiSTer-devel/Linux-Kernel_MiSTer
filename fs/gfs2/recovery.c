@@ -27,7 +27,7 @@
 #include "util.h"
 #include "dir.h"
 
-struct workqueue_struct *gfs_recovery_wq;
+struct workqueue_struct *gfs2_recovery_wq;
 
 int gfs2_replay_read_block(struct gfs2_jdesc *jd, unsigned int blk,
 			   struct buffer_head **bh)
@@ -55,17 +55,16 @@ int gfs2_replay_read_block(struct gfs2_jdesc *jd, unsigned int blk,
 int gfs2_revoke_add(struct gfs2_jdesc *jd, u64 blkno, unsigned int where)
 {
 	struct list_head *head = &jd->jd_revoke_list;
-	struct gfs2_revoke_replay *rr;
-	int found = 0;
+	struct gfs2_revoke_replay *rr = NULL, *iter;
 
-	list_for_each_entry(rr, head, rr_list) {
-		if (rr->rr_blkno == blkno) {
-			found = 1;
+	list_for_each_entry(iter, head, rr_list) {
+		if (iter->rr_blkno == blkno) {
+			rr = iter;
 			break;
 		}
 	}
 
-	if (found) {
+	if (rr) {
 		rr->rr_where = where;
 		return 0;
 	}
@@ -83,18 +82,17 @@ int gfs2_revoke_add(struct gfs2_jdesc *jd, u64 blkno, unsigned int where)
 
 int gfs2_revoke_check(struct gfs2_jdesc *jd, u64 blkno, unsigned int where)
 {
-	struct gfs2_revoke_replay *rr;
+	struct gfs2_revoke_replay *rr = NULL, *iter;
 	int wrap, a, b, revoke;
-	int found = 0;
 
-	list_for_each_entry(rr, &jd->jd_revoke_list, rr_list) {
-		if (rr->rr_blkno == blkno) {
-			found = 1;
+	list_for_each_entry(iter, &jd->jd_revoke_list, rr_list) {
+		if (iter->rr_blkno == blkno) {
+			rr = iter;
 			break;
 		}
 	}
 
-	if (!found)
+	if (!rr)
 		return 0;
 
 	wrap = (rr->rr_where < jd->jd_replay_tail);
@@ -120,6 +118,7 @@ void gfs2_revoke_clean(struct gfs2_jdesc *jd)
 int __get_log_header(struct gfs2_sbd *sdp, const struct gfs2_log_header *lh,
 		     unsigned int blkno, struct gfs2_log_header_host *head)
 {
+	const u32 zero = 0;
 	u32 hash, crc;
 
 	if (lh->lh_header.mh_magic != cpu_to_be32(GFS2_MAGIC) ||
@@ -128,7 +127,7 @@ int __get_log_header(struct gfs2_sbd *sdp, const struct gfs2_log_header *lh,
 		return 1;
 
 	hash = crc32(~0, lh, LH_V1_SIZE - 4);
-	hash = ~crc32_le_shift(hash, 4); /* assume lh_hash is zero */
+	hash = ~crc32(hash, &zero, 4); /* assume lh_hash is zero */
 
 	if (be32_to_cpu(lh->lh_hash) != hash)
 		return 1;
@@ -265,16 +264,12 @@ static void clean_journal(struct gfs2_jdesc *jd,
 			  struct gfs2_log_header_host *head)
 {
 	struct gfs2_sbd *sdp = GFS2_SB(jd->jd_inode);
-	u32 lblock = head->lh_blkno;
 
-	gfs2_replay_incr_blk(jd, &lblock);
-	gfs2_write_log_header(sdp, jd, head->lh_sequence + 1, 0, lblock,
+	gfs2_replay_incr_blk(jd, &head->lh_blkno);
+	head->lh_sequence++;
+	gfs2_write_log_header(sdp, jd, head->lh_sequence, 0, head->lh_blkno,
 			      GFS2_LOG_HEAD_UNMOUNT | GFS2_LOG_HEAD_RECOVERY,
 			      REQ_PREFLUSH | REQ_FUA | REQ_META | REQ_SYNC);
-	if (jd->jd_jid == sdp->sd_lockstruct.ls_jid) {
-		sdp->sd_log_flush_head = lblock;
-		gfs2_log_incr_head(sdp);
-	}
 }
 
 
@@ -406,14 +401,14 @@ void gfs2_recover_func(struct work_struct *work)
 	struct gfs2_inode *ip = GFS2_I(jd->jd_inode);
 	struct gfs2_sbd *sdp = GFS2_SB(jd->jd_inode);
 	struct gfs2_log_header_host head;
-	struct gfs2_holder j_gh, ji_gh, thaw_gh;
+	struct gfs2_holder j_gh, ji_gh;
 	ktime_t t_start, t_jlck, t_jhd, t_tlck, t_rep;
 	int ro = 0;
 	unsigned int pass;
 	int error = 0;
 	int jlocked = 0;
 
-	if (gfs2_withdrawn(sdp)) {
+	if (gfs2_withdrawing_or_withdrawn(sdp)) {
 		fs_err(sdp, "jid=%u: Recovery not attempted due to withdraw.\n",
 		       jd->jd_jid);
 		goto fail;
@@ -422,10 +417,10 @@ void gfs2_recover_func(struct work_struct *work)
 	if (sdp->sd_args.ar_spectator)
 		goto fail;
 	if (jd->jd_jid != sdp->sd_lockstruct.ls_jid) {
-		fs_info(sdp, "jid=%u: Trying to acquire journal lock...\n",
+		fs_info(sdp, "jid=%u: Trying to acquire journal glock...\n",
 			jd->jd_jid);
 		jlocked = 1;
-		/* Acquire the journal lock so we can do recovery */
+		/* Acquire the journal glock so we can do recovery */
 
 		error = gfs2_glock_nq_num(sdp, jd->jd_jid, &gfs2_journal_glops,
 					  LM_ST_EXCLUSIVE,
@@ -459,7 +454,7 @@ void gfs2_recover_func(struct work_struct *work)
 	if (error)
 		goto fail_gunlock_ji;
 
-	error = gfs2_find_jhead(jd, &head, true);
+	error = gfs2_find_jhead(jd, &head);
 	if (error)
 		goto fail_gunlock_ji;
 	t_jhd = ktime_get();
@@ -467,14 +462,14 @@ void gfs2_recover_func(struct work_struct *work)
 		ktime_ms_delta(t_jhd, t_jlck));
 
 	if (!(head.lh_flags & GFS2_LOG_HEAD_UNMOUNT)) {
-		fs_info(sdp, "jid=%u: Acquiring the transaction lock...\n",
-			jd->jd_jid);
+		mutex_lock(&sdp->sd_freeze_mutex);
 
-		/* Acquire a shared hold on the freeze lock */
-
-		error = gfs2_freeze_lock(sdp, &thaw_gh, LM_FLAG_PRIORITY);
-		if (error)
+		if (test_bit(SDF_FROZEN, &sdp->sd_flags)) {
+			mutex_unlock(&sdp->sd_freeze_mutex);
+			fs_warn(sdp, "jid=%u: Can't replay: filesystem "
+				"is frozen\n", jd->jd_jid);
 			goto fail_gunlock_ji;
+		}
 
 		if (test_bit(SDF_RORECOVERY, &sdp->sd_flags)) {
 			ro = 1;
@@ -498,7 +493,7 @@ void gfs2_recover_func(struct work_struct *work)
 			fs_warn(sdp, "jid=%u: Can't replay: read-only block "
 				"device\n", jd->jd_jid);
 			error = -EROFS;
-			goto fail_gunlock_thaw;
+			goto fail_gunlock_nofreeze;
 		}
 
 		t_tlck = ktime_get();
@@ -516,7 +511,7 @@ void gfs2_recover_func(struct work_struct *work)
 			lops_after_scan(jd, error, pass);
 			if (error) {
 				up_read(&sdp->sd_log_flush_lock);
-				goto fail_gunlock_thaw;
+				goto fail_gunlock_nofreeze;
 			}
 		}
 
@@ -524,7 +519,7 @@ void gfs2_recover_func(struct work_struct *work)
 		clean_journal(jd, &head);
 		up_read(&sdp->sd_log_flush_lock);
 
-		gfs2_freeze_unlock(&thaw_gh);
+		mutex_unlock(&sdp->sd_freeze_mutex);
 		t_rep = ktime_get();
 		fs_info(sdp, "jid=%u: Journal replayed in %lldms [jlck:%lldms, "
 			"jhead:%lldms, tlck:%lldms, replay:%lldms]\n",
@@ -534,6 +529,9 @@ void gfs2_recover_func(struct work_struct *work)
 			ktime_ms_delta(t_tlck, t_jhd),
 			ktime_ms_delta(t_rep, t_tlck));
 	}
+
+	if (jd->jd_jid == sdp->sd_lockstruct.ls_jid)
+		gfs2_log_pointers_init(sdp, &head);
 
 	gfs2_recovery_done(sdp, jd->jd_jid, LM_RD_SUCCESS);
 
@@ -545,8 +543,8 @@ void gfs2_recover_func(struct work_struct *work)
 	fs_info(sdp, "jid=%u: Done\n", jd->jd_jid);
 	goto done;
 
-fail_gunlock_thaw:
-	gfs2_freeze_unlock(&thaw_gh);
+fail_gunlock_nofreeze:
+	mutex_unlock(&sdp->sd_freeze_mutex);
 fail_gunlock_ji:
 	if (jlocked) {
 		gfs2_glock_dq_uninit(&ji_gh);
@@ -572,7 +570,7 @@ int gfs2_recover_journal(struct gfs2_jdesc *jd, bool wait)
 		return -EBUSY;
 
 	/* we have JDF_RECOVERY, queue should always succeed */
-	rv = queue_work(gfs_recovery_wq, &jd->jd_work);
+	rv = queue_work(gfs2_recovery_wq, &jd->jd_work);
 	BUG_ON(!rv);
 
 	if (wait)
@@ -582,3 +580,13 @@ int gfs2_recover_journal(struct gfs2_jdesc *jd, bool wait)
 	return wait ? jd->jd_recover_error : 0;
 }
 
+void gfs2_log_pointers_init(struct gfs2_sbd *sdp,
+			    struct gfs2_log_header_host *head)
+{
+	sdp->sd_log_sequence = head->lh_sequence + 1;
+	gfs2_replay_incr_blk(sdp->sd_jdesc, &head->lh_blkno);
+	sdp->sd_log_tail = head->lh_blkno;
+	sdp->sd_log_flush_head = head->lh_blkno;
+	sdp->sd_log_flush_tail = head->lh_blkno;
+	sdp->sd_log_head = head->lh_blkno;
+}

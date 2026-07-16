@@ -4,7 +4,7 @@
  * Copyright (C) 2020 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
  *
- * See Documentation/watch_queue.rst
+ * See Documentation/core-api/watch_queue.rst
  */
 
 #ifndef _LINUX_WATCH_QUEUE_H
@@ -28,16 +28,17 @@ struct watch_type_filter {
 struct watch_filter {
 	union {
 		struct rcu_head	rcu;
-		unsigned long	type_filter[2];	/* Bitmask of accepted types */
+		/* Bitmask of accepted types */
+		DECLARE_BITMAP(type_filter, WATCH_TYPE__NR);
 	};
 	u32			nr_filters;	/* Number of filters */
-	struct watch_type_filter filters[];
+	struct watch_type_filter filters[] __counted_by(nr_filters);
 };
 
 struct watch_queue {
 	struct rcu_head		rcu;
 	struct watch_filter __rcu *filter;
-	struct pipe_inode_info	*pipe;		/* The pipe we're using as a buffer */
+	struct pipe_inode_info	*pipe;		/* Pipe we use as a buffer, NULL if queue closed */
 	struct hlist_head	watches;	/* Contributory watches */
 	struct page		**notes;	/* Preallocated notifications */
 	unsigned long		*notes_bitmap;	/* Allocation bitmap for notes */
@@ -45,7 +46,6 @@ struct watch_queue {
 	spinlock_t		lock;
 	unsigned int		nr_notes;	/* Number of notes */
 	unsigned int		nr_pages;	/* Number of pages in notes[] */
-	bool			defunct;	/* T when queues closed */
 };
 
 /*

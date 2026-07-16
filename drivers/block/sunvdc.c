@@ -9,7 +9,6 @@
 #include <linux/types.h>
 #include <linux/blk-mq.h>
 #include <linux/hdreg.h>
-#include <linux/genhd.h>
 #include <linux/cdrom.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
@@ -29,7 +28,7 @@
 
 static char version[] =
 	DRV_MODULE_NAME ".c:v" DRV_MODULE_VERSION " (" DRV_MODULE_RELDATE ")\n";
-MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
+MODULE_AUTHOR("David S. Miller <davem@davemloft.net>");
 MODULE_DESCRIPTION("Sun LDOM virtual disk client driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_MODULE_VERSION);
@@ -120,9 +119,8 @@ static inline u32 vdc_tx_dring_avail(struct vio_dring_state *dr)
 	return vio_dring_avail(dr, VDC_TX_RING_SIZE);
 }
 
-static int vdc_getgeo(struct block_device *bdev, struct hd_geometry *geo)
+static int vdc_getgeo(struct gendisk *disk, struct hd_geometry *geo)
 {
-	struct gendisk *disk = bdev->bd_disk;
 	sector_t nsect = get_capacity(disk);
 	sector_t cylinders = nsect;
 
@@ -140,11 +138,11 @@ static int vdc_getgeo(struct block_device *bdev, struct hd_geometry *geo)
  * when vdisk_mtype is VD_MEDIA_TYPE_CD or VD_MEDIA_TYPE_DVD.
  * Needed to be able to install inside an ldom from an iso image.
  */
-static int vdc_ioctl(struct block_device *bdev, fmode_t mode,
+static int vdc_ioctl(struct block_device *bdev, blk_mode_t mode,
 		     unsigned command, unsigned long argument)
 {
+	struct vdc_port *port = bdev->bd_disk->private_data;
 	int i;
-	struct gendisk *disk;
 
 	switch (command) {
 	case CDROMMULTISESSION:
@@ -155,12 +153,15 @@ static int vdc_ioctl(struct block_device *bdev, fmode_t mode,
 		return 0;
 
 	case CDROM_GET_CAPABILITY:
-		disk = bdev->bd_disk;
-
-		if (bdev->bd_disk && (disk->flags & GENHD_FL_CD))
+		if (!vdc_version_supported(port, 1, 1))
+			return -EINVAL;
+		switch (port->vdisk_mtype) {
+		case VD_MEDIA_TYPE_CD:
+		case VD_MEDIA_TYPE_DVD:
 			return 0;
-		return -EINVAL;
-
+		default:
+			return -EINVAL;
+		}
 	default:
 		pr_debug(PFX "ioctl %08x not supported\n", command);
 		return -EINVAL;
@@ -459,7 +460,7 @@ static int __vdc_tx_trigger(struct vdc_port *port)
 
 static int __send_request(struct request *req)
 {
-	struct vdc_port *port = req->rq_disk->private_data;
+	struct vdc_port *port = req->q->disk->private_data;
 	struct vio_dring_state *dr = &port->vio.drings[VIO_DRIVER_TX_RING];
 	struct scatterlist sg[MAX_RING_COOKIES];
 	struct vdc_req_entry *rqe;
@@ -483,7 +484,7 @@ static int __send_request(struct request *req)
 	}
 
 	sg_init_table(sg, port->ring_cookies);
-	nsg = blk_rq_map_sg(req->q, req, sg);
+	nsg = blk_rq_map_sg(req, sg);
 
 	len = 0;
 	for (i = 0; i < nsg; i++)
@@ -782,6 +783,15 @@ static const struct blk_mq_ops vdc_mq_ops = {
 
 static int probe_disk(struct vdc_port *port)
 {
+	struct queue_limits lim = {
+		.physical_block_size		= port->vdisk_phys_blksz,
+		.max_hw_sectors			= port->max_xfer_size,
+		/* Each segment in a request is up to an aligned page in size. */
+		.seg_boundary_mask		= PAGE_SIZE - 1,
+		.max_segment_size		= PAGE_SIZE,
+		.max_segments			= port->ring_cookies,
+		.features			= BLK_FEAT_ROTATIONAL,
+	};
 	struct request_queue *q;
 	struct gendisk *g;
 	int err;
@@ -818,27 +828,21 @@ static int probe_disk(struct vdc_port *port)
 	}
 
 	err = blk_mq_alloc_sq_tag_set(&port->tag_set, &vdc_mq_ops,
-			VDC_TX_RING_SIZE, BLK_MQ_F_SHOULD_MERGE);
+			VDC_TX_RING_SIZE, 0);
 	if (err)
 		return err;
 
-	g = blk_mq_alloc_disk(&port->tag_set, port);
+	g = blk_mq_alloc_disk(&port->tag_set, &lim, port);
 	if (IS_ERR(g)) {
 		printk(KERN_ERR PFX "%s: Could not allocate gendisk.\n",
 		       port->vio.name);
-		blk_mq_free_tag_set(&port->tag_set);
-		return PTR_ERR(g);
+		err = PTR_ERR(g);
+		goto out_free_tag;
 	}
 
 	port->disk = g;
 	q = g->queue;
 
-	/* Each segment in a request is up to an aligned page in size. */
-	blk_queue_segment_boundary(q, PAGE_SIZE - 1);
-	blk_queue_max_segment_size(q, PAGE_SIZE);
-
-	blk_queue_max_segments(q, port->ring_cookies);
-	blk_queue_max_hw_sectors(q, port->max_xfer_size);
 	g->major = vdc_major;
 	g->first_minor = port->vio.vdev->dev_no << PARTITION_SHIFT;
 	g->minors = 1 << PARTITION_SHIFT;
@@ -854,14 +858,12 @@ static int probe_disk(struct vdc_port *port)
 		switch (port->vdisk_mtype) {
 		case VD_MEDIA_TYPE_CD:
 			pr_info(PFX "Virtual CDROM %s\n", port->disk_name);
-			g->flags |= GENHD_FL_CD;
 			g->flags |= GENHD_FL_REMOVABLE;
 			set_disk_ro(g, 1);
 			break;
 
 		case VD_MEDIA_TYPE_DVD:
 			pr_info(PFX "Virtual DVD %s\n", port->disk_name);
-			g->flags |= GENHD_FL_CD;
 			g->flags |= GENHD_FL_REMOVABLE;
 			set_disk_ro(g, 1);
 			break;
@@ -872,16 +874,22 @@ static int probe_disk(struct vdc_port *port)
 		}
 	}
 
-	blk_queue_physical_block_size(q, port->vdisk_phys_blksz);
-
 	pr_info(PFX "%s: %u sectors (%u MB) protocol %d.%d\n",
 	       g->disk_name,
 	       port->vdisk_size, (port->vdisk_size >> (20 - 9)),
 	       port->vio.ver.major, port->vio.ver.minor);
 
-	device_add_disk(&port->vio.vdev->dev, g, NULL);
+	err = device_add_disk(&port->vio.vdev->dev, g, NULL);
+	if (err)
+		goto out_cleanup_disk;
 
 	return 0;
+
+out_cleanup_disk:
+	put_disk(g);
+out_free_tag:
+	blk_mq_free_tag_set(&port->tag_set);
+	return err;
 }
 
 static struct ldc_channel_config vdc_ldc_cfg = {
@@ -909,12 +917,12 @@ struct vdc_check_port_data {
 	char	*type;
 };
 
-static int vdc_device_probed(struct device *dev, void *arg)
+static int vdc_device_probed(struct device *dev, const void *arg)
 {
 	struct vio_dev *vdev = to_vio_dev(dev);
-	struct vdc_check_port_data *port_data;
+	const struct vdc_check_port_data *port_data;
 
-	port_data = (struct vdc_check_port_data *)arg;
+	port_data = (const struct vdc_check_port_data *)arg;
 
 	if ((vdev->dev_no == port_data->dev_no) &&
 	    (!(strcmp((char *)&vdev->type, port_data->type))) &&
@@ -948,8 +956,10 @@ static bool vdc_port_mpgroup_check(struct vio_dev *vdev)
 	dev = device_find_child(vdev->dev.parent, &port_data,
 				vdc_device_probed);
 
-	if (dev)
+	if (dev) {
+		put_device(dev);
 		return true;
+	}
 
 	return false;
 }
@@ -964,6 +974,8 @@ static int vdc_port_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 	print_version();
 
 	hp = mdesc_grab();
+	if (!hp)
+		return -ENODEV;
 
 	err = -ENODEV;
 	if ((vdev->dev_no << PARTITION_SHIFT) & ~(u64)MINORMASK) {
@@ -1059,10 +1071,10 @@ static void vdc_port_remove(struct vio_dev *vdev)
 
 		flush_work(&port->ldc_reset_work);
 		cancel_delayed_work_sync(&port->ldc_reset_timer_work);
-		del_timer_sync(&port->vio.timer);
+		timer_delete_sync(&port->vio.timer);
 
 		del_gendisk(port->disk);
-		blk_cleanup_disk(port->disk);
+		put_disk(port->disk);
 		blk_mq_free_tag_set(&port->tag_set);
 
 		vdc_free_tx_ring(port);
@@ -1102,6 +1114,7 @@ static void vdc_requeue_inflight(struct vdc_port *port)
 static void vdc_queue_drain(struct vdc_port *port)
 {
 	struct request_queue *q = port->disk->queue;
+	unsigned int memflags;
 
 	/*
 	 * Mark the queue as draining, then freeze/quiesce to ensure
@@ -1110,13 +1123,13 @@ static void vdc_queue_drain(struct vdc_port *port)
 	port->drain = 1;
 	spin_unlock_irq(&port->vio.lock);
 
-	blk_mq_freeze_queue(q);
+	memflags = blk_mq_freeze_queue(q);
 	blk_mq_quiesce_queue(q);
 
 	spin_lock_irq(&port->vio.lock);
 	port->drain = 0;
 	blk_mq_unquiesce_queue(q);
-	blk_mq_unfreeze_queue(q);
+	blk_mq_unfreeze_queue(q, memflags);
 }
 
 static void vdc_ldc_reset_timer_work(struct work_struct *work)
@@ -1175,7 +1188,7 @@ static void vdc_ldc_reset(struct vdc_port *port)
 	}
 
 	if (port->ldc_timeout)
-		mod_delayed_work(system_wq, &port->ldc_reset_timer_work,
+		mod_delayed_work(system_percpu_wq, &port->ldc_reset_timer_work,
 			  round_jiffies(jiffies + HZ * port->ldc_timeout));
 	mod_timer(&port->vio.timer, round_jiffies(jiffies + HZ));
 	return;
@@ -1203,7 +1216,7 @@ static int __init vdc_init(void)
 {
 	int err;
 
-	sunvdc_wq = alloc_workqueue("sunvdc", 0, 0);
+	sunvdc_wq = alloc_workqueue("sunvdc", WQ_PERCPU, 0);
 	if (!sunvdc_wq)
 		return -ENOMEM;
 

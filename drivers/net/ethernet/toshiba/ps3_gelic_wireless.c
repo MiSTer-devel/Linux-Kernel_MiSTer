@@ -1217,7 +1217,7 @@ static int gelic_wl_set_encodeext(struct net_device *netdev,
 		key_index = wl->current_key;
 
 	if (!enc->length && (ext->ext_flags & IW_ENCODE_EXT_SET_TX_KEY)) {
-		/* reques to change default key index */
+		/* request to change default key index */
 		pr_debug("%s: request to change default key to %d\n",
 			 __func__, key_index);
 		wl->current_key = key_index;
@@ -2566,7 +2566,6 @@ static void gelic_wl_setup_netdev_ops(struct net_device *netdev)
 
 	netdev->ethtool_ops = &gelic_wl_ethtool_ops;
 	netdev->netdev_ops = &gelic_wl_netdevice_ops;
-	netdev->wireless_data = &wl->wireless_data;
 	netdev->wireless_handlers = &gelic_wl_wext_handler_def;
 }
 

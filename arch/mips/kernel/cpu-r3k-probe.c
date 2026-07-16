@@ -42,7 +42,6 @@ void __init check_bugs32(void)
 static inline int cpu_has_confreg(void)
 {
 #ifdef CONFIG_CPU_R3000
-	extern unsigned long r3k_cache_size(unsigned long);
 	unsigned long size1, size2;
 	unsigned long cfg = read_c0_conf();
 
@@ -118,28 +117,6 @@ void cpu_probe(void)
 			c->options |= MIPS_CPU_FPU;
 		c->tlbsize = 64;
 		break;
-	case PRID_COMP_LEGACY | PRID_IMP_TX39:
-		c->options = MIPS_CPU_TLB | MIPS_CPU_TX39_CACHE;
-
-		if ((c->processor_id & 0xf0) == (PRID_REV_TX3927 & 0xf0)) {
-			c->cputype = CPU_TX3927;
-			__cpu_name[cpu] = "TX3927";
-			c->tlbsize = 64;
-		} else {
-			switch (c->processor_id & PRID_REV_MASK) {
-			case PRID_REV_TX3912:
-				c->cputype = CPU_TX3912;
-				__cpu_name[cpu] = "TX3912";
-				c->tlbsize = 32;
-				break;
-			case PRID_REV_TX3922:
-				c->cputype = CPU_TX3922;
-				__cpu_name[cpu] = "TX3922";
-				c->tlbsize = 64;
-				break;
-			}
-		}
-		break;
 	}
 
 	BUG_ON(!__cpu_name[cpu]);
@@ -159,6 +136,8 @@ void cpu_probe(void)
 		cpu_set_fpu_opts(c);
 	else
 		cpu_set_nofpu_opts(c);
+
+	c->vmbits = 31;
 
 	reserve_exception_space(0, 0x400);
 }

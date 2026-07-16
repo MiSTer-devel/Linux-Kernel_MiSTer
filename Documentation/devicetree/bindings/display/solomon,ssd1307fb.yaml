@@ -8,38 +8,30 @@ title: Solomon SSD1307 OLED Controller Framebuffer
 
 maintainers:
   - Maxime Ripard <mripard@kernel.org>
+  - Javier Martinez Canillas <javierm@redhat.com>
 
 properties:
   compatible:
-    enum:
-      - solomon,ssd1305fb-i2c
-      - solomon,ssd1306fb-i2c
-      - solomon,ssd1307fb-i2c
-      - solomon,ssd1309fb-i2c
-
-  reg:
-    maxItems: 1
+    oneOf:
+      # Deprecated compatible strings
+      - enum:
+          - solomon,ssd1305fb-i2c
+          - solomon,ssd1306fb-i2c
+          - solomon,ssd1307fb-i2c
+          - solomon,ssd1309fb-i2c
+        deprecated: true
+      - enum:
+          - sinowealth,sh1106
+          - solomon,ssd1305
+          - solomon,ssd1306
+          - solomon,ssd1307
+          - solomon,ssd1309
 
   pwms:
     maxItems: 1
 
-  reset-gpios:
-    maxItems: 1
-
   vbat-supply:
     description: The supply for VBAT
-
-  solomon,height:
-    $ref: /schemas/types.yaml#/definitions/uint32
-    default: 16
-    description:
-      Height in pixel of the screen driven by the controller
-
-  solomon,width:
-    $ref: /schemas/types.yaml#/definitions/uint32
-    default: 96
-    description:
-      Width in pixel of the screen driven by the controller
 
   solomon,page-offset:
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -130,13 +122,37 @@ required:
   - reg
 
 allOf:
+  - $ref: solomon,ssd-common.yaml#
+
   - if:
       properties:
         compatible:
           contains:
-            const: solomon,ssd1305fb-i2c
+            const: sinowealth,sh1106
     then:
       properties:
+        solomon,width:
+          default: 132
+        solomon,height:
+          default: 64
+        solomon,dclk-div:
+          default: 1
+        solomon,dclk-frq:
+          default: 5
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - solomon,ssd1305-i2c
+              - solomon,ssd1305
+    then:
+      properties:
+        solomon,width:
+          default: 132
+        solomon,height:
+          default: 64
         solomon,dclk-div:
           default: 1
         solomon,dclk-frq:
@@ -146,9 +162,15 @@ allOf:
       properties:
         compatible:
           contains:
-            const: solomon,ssd1306fb-i2c
+            enum:
+              - solomon,ssd1306-i2c
+              - solomon,ssd1306
     then:
       properties:
+        solomon,width:
+          default: 128
+        solomon,height:
+          default: 64
         solomon,dclk-div:
           default: 1
         solomon,dclk-frq:
@@ -158,9 +180,15 @@ allOf:
       properties:
         compatible:
           contains:
-            const: solomon,ssd1307fb-i2c
+            enum:
+              - solomon,ssd1307-i2c
+              - solomon,ssd1307
     then:
       properties:
+        solomon,width:
+          default: 128
+        solomon,height:
+          default: 39
         solomon,dclk-div:
           default: 2
         solomon,dclk-frq:
@@ -172,34 +200,67 @@ allOf:
       properties:
         compatible:
           contains:
-            const: solomon,ssd1309fb-i2c
+            enum:
+              - solomon,ssd1309-i2c
+              - solomon,ssd1309
     then:
       properties:
+        solomon,width:
+          default: 128
+        solomon,height:
+          default: 64
         solomon,dclk-div:
           default: 1
         solomon,dclk-frq:
           default: 10
 
-additionalProperties: false
+unevaluatedProperties: false
 
 examples:
   - |
-    i2c1 {
+    i2c {
             #address-cells = <1>;
             #size-cells = <0>;
 
-            ssd1307: oled@3c {
-                    compatible = "solomon,ssd1307fb-i2c";
+            ssd1307_i2c: oled@3c {
+                    compatible = "solomon,ssd1307";
                     reg = <0x3c>;
                     pwms = <&pwm 4 3000>;
                     reset-gpios = <&gpio2 7>;
             };
 
-            ssd1306: oled@3d {
-                    compatible = "solomon,ssd1306fb-i2c";
-                    reg = <0x3c>;
+            ssd1306_i2c: oled@3d {
+                    compatible = "solomon,ssd1306";
+                    reg = <0x3d>;
                     pwms = <&pwm 4 3000>;
                     reset-gpios = <&gpio2 7>;
+                    solomon,com-lrremap;
+                    solomon,com-invdir;
+                    solomon,com-offset = <32>;
+                    solomon,lookup-table = /bits/ 8 <0x3f 0x3f 0x3f 0x3f>;
+            };
+    };
+  - |
+    spi {
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            ssd1307_spi: oled@0 {
+                    compatible = "solomon,ssd1307";
+                    reg = <0x0>;
+                    pwms = <&pwm 4 3000>;
+                    reset-gpios = <&gpio2 7>;
+                    dc-gpios = <&gpio2 8>;
+                    spi-max-frequency = <10000000>;
+            };
+
+            ssd1306_spi: oled@1 {
+                    compatible = "solomon,ssd1306";
+                    reg = <0x1>;
+                    pwms = <&pwm 4 3000>;
+                    reset-gpios = <&gpio2 7>;
+                    dc-gpios = <&gpio2 8>;
+                    spi-max-frequency = <10000000>;
                     solomon,com-lrremap;
                     solomon,com-invdir;
                     solomon,com-offset = <32>;

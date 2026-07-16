@@ -184,7 +184,7 @@ static void	tlan_print_list(struct tlan_list *, char *, int);
 static void	tlan_read_and_clear_stats(struct net_device *, int);
 static void	tlan_reset_adapter(struct net_device *);
 static void	tlan_finish_reset(struct net_device *);
-static void	tlan_set_mac(struct net_device *, int areg, char *mac);
+static void	tlan_set_mac(struct net_device *, int areg, const char *mac);
 
 static void	__tlan_phy_print(struct net_device *);
 static void	tlan_phy_print(struct net_device *);
@@ -332,13 +332,13 @@ static void tlan_stop(struct net_device *dev)
 {
 	struct tlan_priv *priv = netdev_priv(dev);
 
-	del_timer_sync(&priv->media_timer);
+	timer_delete_sync(&priv->media_timer);
 	tlan_read_and_clear_stats(dev, TLAN_RECORD);
 	outl(TLAN_HC_AD_RST, dev->base_addr + TLAN_HOST_CMD);
 	/* Reset and power down phy */
 	tlan_reset_adapter(dev);
 	if (priv->timer.function != NULL) {
-		del_timer_sync(&priv->timer);
+		timer_delete_sync(&priv->timer);
 		priv->timer.function = NULL;
 	}
 }
@@ -762,12 +762,12 @@ static void tlan_get_drvinfo(struct net_device *dev,
 {
 	struct tlan_priv *priv = netdev_priv(dev);
 
-	strlcpy(info->driver, KBUILD_MODNAME, sizeof(info->driver));
+	strscpy(info->driver, KBUILD_MODNAME, sizeof(info->driver));
 	if (priv->pci_dev)
-		strlcpy(info->bus_info, pci_name(priv->pci_dev),
+		strscpy(info->bus_info, pci_name(priv->pci_dev),
 			sizeof(info->bus_info));
 	else
-		strlcpy(info->bus_info, "EISA",	sizeof(info->bus_info));
+		strscpy(info->bus_info, "EISA",	sizeof(info->bus_info));
 }
 
 static int tlan_get_eeprom_len(struct net_device *dev)
@@ -817,6 +817,7 @@ static int tlan_init(struct net_device *dev)
 	int		err;
 	int		i;
 	struct tlan_priv	*priv;
+	u8 addr[ETH_ALEN];
 
 	priv = netdev_priv(dev);
 
@@ -842,7 +843,7 @@ static int tlan_init(struct net_device *dev)
 	for (i = 0; i < ETH_ALEN; i++)
 		err |= tlan_ee_read_byte(dev,
 					 (u8) priv->adapter->addr_ofs + i,
-					 (u8 *) &dev->dev_addr[i]);
+					 addr + i);
 	if (err) {
 		pr_err("%s: Error reading MAC from eeprom: %d\n",
 		       dev->name, err);
@@ -850,11 +851,12 @@ static int tlan_init(struct net_device *dev)
 	/* Olicom OC-2325/OC-2326 have the address byte-swapped */
 	if (priv->adapter->addr_ofs == 0xf8) {
 		for (i = 0; i < ETH_ALEN; i += 2) {
-			char tmp = dev->dev_addr[i];
-			dev->dev_addr[i] = dev->dev_addr[i + 1];
-			dev->dev_addr[i + 1] = tmp;
+			char tmp = addr[i];
+			addr[i] = addr[i + 1];
+			addr[i + 1] = tmp;
 		}
 	}
+	eth_hw_addr_set(dev, addr);
 
 	netif_carrier_off(dev);
 
@@ -1813,7 +1815,7 @@ ThunderLAN driver timer function
 
 static void tlan_timer(struct timer_list *t)
 {
-	struct tlan_priv	*priv = from_timer(priv, t, timer);
+	struct tlan_priv	*priv = timer_container_of(priv, t, timer);
 	struct net_device	*dev = priv->dev;
 	u32		elapsed;
 	unsigned long	flags = 0;
@@ -2346,7 +2348,7 @@ tlan_finish_reset(struct net_device *dev)
  *
  **************************************************************/
 
-static void tlan_set_mac(struct net_device *dev, int areg, char *mac)
+static void tlan_set_mac(struct net_device *dev, int areg, const char *mac)
 {
 	int i;
 
@@ -2744,7 +2746,7 @@ static void tlan_phy_finish_auto_neg(struct net_device *dev)
 
 static void tlan_phy_monitor(struct timer_list *t)
 {
-	struct tlan_priv *priv = from_timer(priv, t, media_timer);
+	struct tlan_priv *priv = timer_container_of(priv, t, media_timer);
 	struct net_device *dev = priv->dev;
 	u16     phy;
 	u16     phy_status;

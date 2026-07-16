@@ -3,8 +3,11 @@
 .. note:: Per leggere la documentazione originale in inglese:
 	  :ref:`Documentation/doc-guide/index.rst <doc_guide>`
 
+.. title:: Commenti in kernel-doc
+
 .. _it_kernel_doc:
 
+=================================
 Scrivere i commenti in kernel-doc
 =================================
 
@@ -177,9 +180,9 @@ Il valore di ritorno, se c'è, viene descritto in una sezione dedicata di nome
      se provate a formattare bene il vostro testo come nel seguente esempio::
 
 	* Return:
-	* 0 - OK
-	* -EINVAL - invalid argument
-	* -ENOMEM - out of memory
+	* %0 - OK
+	* %-EINVAL - invalid argument
+	* %-ENOMEM - out of memory
 
      le righe verranno unite e il risultato sarà::
 
@@ -189,8 +192,8 @@ Il valore di ritorno, se c'è, viene descritto in una sezione dedicata di nome
      utilizzare una lista ReST, ad esempio::
 
       * Return:
-      * * 0		- OK to runtime suspend the device
-      * * -EBUSY	- Device should not be runtime suspended
+      * * %0		- OK to runtime suspend the device
+      * * %-EBUSY	- Device should not be runtime suspended
 
   #) Se il vostro testo ha delle righe che iniziano con una frase seguita dai
      due punti, allora ognuna di queste frasi verrà considerata come il nome
@@ -367,6 +370,50 @@ Anche i tipi di dato per prototipi di funzione possono essere documentati::
    */
    typedef void (*type_name)(struct v4l2_ctrl *arg1, void *arg2);
 
+Documentazione di macro simili a oggetti
+----------------------------------------
+
+Le macro simili a oggetti si distinguono dalle macro simili a funzione. Esse si
+distinguono in base al fatto che il nome della macro simile a funzione sia
+immediatamente seguito da una parentesi sinistra ('(') mentre in quelle simili a
+oggetti no.
+
+Le macro simili a funzioni sono gestite come funzioni da ``scripts/kernel-doc``.
+Possono avere un elenco di parametri. Le macro simili a oggetti non hanno un
+elenco di parametri.
+
+Il formato generale di un commento kernel-doc per una macro simile a oggetti è::
+
+  /**
+   * define object_name - Brief description.
+   *
+   * Description of the object.
+   */
+
+Esempio::
+
+  /**
+   * define MAX_ERRNO - maximum errno value that is supported
+   *
+   * Kernel pointers have redundant information, so we can use a
+   * scheme where we can return either an error code or a normal
+   * pointer with the same return value.
+   */
+  #define MAX_ERRNO	4095
+
+Esempio::
+
+  /**
+   * define DRM_GEM_VRAM_PLANE_HELPER_FUNCS - \
+   *	Initializes struct drm_plane_helper_funcs for VRAM handling
+   *
+   * This macro initializes struct drm_plane_helper_funcs to use the
+   * respective helper functions.
+   */
+  #define DRM_GEM_VRAM_PLANE_HELPER_FUNCS \
+	.prepare_fb = drm_gem_vram_plane_helper_prepare_fb, \
+	.cleanup_fb = drm_gem_vram_plane_helper_cleanup_fb
+
 Marcatori e riferimenti
 -----------------------
 
@@ -469,6 +516,7 @@ Il titolo che segue ``DOC:`` funziona da intestazione all'interno del file
 sorgente, ma anche come identificatore per l'estrazione di questi commenti di
 documentazione. Quindi, il titolo dev'essere unico all'interno del file.
 
+=======================================
 Includere i commenti di tipo kernel-doc
 =======================================
 

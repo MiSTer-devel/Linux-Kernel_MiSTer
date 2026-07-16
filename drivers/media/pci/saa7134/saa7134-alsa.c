@@ -1096,9 +1096,6 @@ static void snd_saa7134_free(struct snd_card * card)
 	if (chip->dev->dmasound.priv_data == NULL)
 		return;
 
-	if (chip->irq >= 0)
-		free_irq(chip->irq, &chip->dev->dmasound);
-
 	chip->dev->dmasound.priv_data = NULL;
 
 }
@@ -1147,10 +1144,8 @@ static int alsa_card_saa7134_create(struct saa7134_dev *dev, int devnum)
 	chip->iobase = pci_resource_start(dev->pci, 0);
 
 
-	err = request_irq(dev->pci->irq, saa7134_alsa_irq,
-				IRQF_SHARED, dev->name,
-				(void*) &dev->dmasound);
-
+	err = devm_request_irq(&dev->pci->dev, dev->pci->irq, saa7134_alsa_irq,
+			       IRQF_SHARED, dev->name, &dev->dmasound);
 	if (err < 0) {
 		pr_err("%s: can't get IRQ %d for ALSA\n",
 			dev->name, dev->pci->irq);
@@ -1214,7 +1209,7 @@ static int alsa_device_exit(struct saa7134_dev *dev)
 
 static int saa7134_alsa_init(void)
 {
-	struct saa7134_dev *dev = NULL;
+	struct saa7134_dev *dev;
 
 	saa7134_dmasound_init = alsa_device_init;
 	saa7134_dmasound_exit = alsa_device_exit;
@@ -1229,7 +1224,7 @@ static int saa7134_alsa_init(void)
 			alsa_device_init(dev);
 	}
 
-	if (dev == NULL)
+	if (list_empty(&saa7134_devlist))
 		pr_info("saa7134 ALSA: no saa7134 cards found\n");
 
 	return 0;
@@ -1259,5 +1254,6 @@ static void saa7134_alsa_exit(void)
 /* We initialize this late, to make sure the sound system is up and running */
 late_initcall(saa7134_alsa_init);
 module_exit(saa7134_alsa_exit);
+MODULE_DESCRIPTION("Philips SAA7134 DMA audio support");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Ricardo Cerqueira");

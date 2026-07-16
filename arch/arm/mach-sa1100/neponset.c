@@ -376,7 +376,7 @@ static int neponset_probe(struct platform_device *dev)
 	return ret;
 }
 
-static int neponset_remove(struct platform_device *dev)
+static void neponset_remove(struct platform_device *dev)
 {
 	struct neponset_drvdata *d = platform_get_drvdata(dev);
 	int irq = platform_get_irq(dev, 0);
@@ -395,8 +395,6 @@ static int neponset_remove(struct platform_device *dev)
 	nep = NULL;
 	iounmap(d->base);
 	kfree(d);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

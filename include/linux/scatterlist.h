@@ -16,6 +16,9 @@ struct scatterlist {
 #ifdef CONFIG_NEED_SG_DMA_LENGTH
 	unsigned int	dma_length;
 #endif
+#ifdef CONFIG_NEED_SG_DMA_FLAGS
+	unsigned int    dma_flags;
+#endif
 };
 
 /*
@@ -69,10 +72,49 @@ struct sg_append_table {
  * a valid sg entry, or whether it points to the start of a new scatterlist.
  * Those low bits are there for everyone! (thanks mason :-)
  */
-#define sg_is_chain(sg)		((sg)->page_link & SG_CHAIN)
-#define sg_is_last(sg)		((sg)->page_link & SG_END)
-#define sg_chain_ptr(sg)	\
-	((struct scatterlist *) ((sg)->page_link & ~(SG_CHAIN | SG_END)))
+#define SG_PAGE_LINK_MASK (SG_CHAIN | SG_END)
+
+static inline unsigned int __sg_flags(struct scatterlist *sg)
+{
+	return sg->page_link & SG_PAGE_LINK_MASK;
+}
+
+static inline struct scatterlist *sg_chain_ptr(struct scatterlist *sg)
+{
+	return (struct scatterlist *)(sg->page_link & ~SG_PAGE_LINK_MASK);
+}
+
+static inline bool sg_is_chain(struct scatterlist *sg)
+{
+	return __sg_flags(sg) & SG_CHAIN;
+}
+
+static inline bool sg_is_last(struct scatterlist *sg)
+{
+	return __sg_flags(sg) & SG_END;
+}
+
+/**
+ * sg_next - return the next scatterlist entry in a list
+ * @sg:		The current sg entry
+ *
+ * Description:
+ *   Usually the next entry will be @sg + 1, but if this sg element is part
+ *   of a chained scatterlist, it could jump to the start of a new
+ *   scatterlist array.
+ *
+ **/
+static inline struct scatterlist *sg_next(struct scatterlist *sg)
+{
+	if (sg_is_last(sg))
+		return NULL;
+
+	sg++;
+	if (unlikely(sg_is_chain(sg)))
+		sg = sg_chain_ptr(sg);
+
+	return sg;
+}
 
 /**
  * sg_assign_page - Assign a given page to an SG entry
@@ -92,7 +134,7 @@ static inline void sg_assign_page(struct scatterlist *sg, struct page *page)
 	 * In order for the low bit stealing approach to work, pages
 	 * must be aligned at a 32-bit boundary as a minimum.
 	 */
-	BUG_ON((unsigned long) page & (SG_CHAIN | SG_END));
+	BUG_ON((unsigned long)page & SG_PAGE_LINK_MASK);
 #ifdef CONFIG_DEBUG_SG
 	BUG_ON(sg_is_chain(sg));
 #endif
@@ -116,7 +158,32 @@ static inline void sg_assign_page(struct scatterlist *sg, struct page *page)
 static inline void sg_set_page(struct scatterlist *sg, struct page *page,
 			       unsigned int len, unsigned int offset)
 {
+	VM_WARN_ON_ONCE(!page_range_contiguous(page, ALIGN(len + offset, PAGE_SIZE) / PAGE_SIZE));
 	sg_assign_page(sg, page);
+	sg->offset = offset;
+	sg->length = len;
+}
+
+/**
+ * sg_set_folio - Set sg entry to point at given folio
+ * @sg:		 SG entry
+ * @folio:	 The folio
+ * @len:	 Length of data
+ * @offset:	 Offset into folio
+ *
+ * Description:
+ *   Use this function to set an sg entry pointing at a folio, never assign
+ *   the folio directly. We encode sg table information in the lower bits
+ *   of the folio pointer. See sg_page() for looking up the page belonging
+ *   to an sg entry.
+ *
+ **/
+static inline void sg_set_folio(struct scatterlist *sg, struct folio *folio,
+			       size_t len, size_t offset)
+{
+	WARN_ON_ONCE(len > UINT_MAX);
+	WARN_ON_ONCE(offset > UINT_MAX);
+	sg_assign_page(sg, &folio->page);
 	sg->offset = offset;
 	sg->length = len;
 }
@@ -126,7 +193,7 @@ static inline struct page *sg_page(struct scatterlist *sg)
 #ifdef CONFIG_DEBUG_SG
 	BUG_ON(sg_is_chain(sg));
 #endif
-	return (struct page *)((sg)->page_link & ~(SG_CHAIN | SG_END));
+	return (struct page *)((sg)->page_link & ~SG_PAGE_LINK_MASK);
 }
 
 /**
@@ -188,7 +255,7 @@ static inline void __sg_chain(struct scatterlist *chain_sg,
  * @sgl:	Second scatterlist
  *
  * Description:
- *   Links @prv@ and @sgl@ together, to form a longer scatterlist.
+ *   Links @prv and @sgl together, to form a longer scatterlist.
  *
  **/
 static inline void sg_chain(struct scatterlist *prv, unsigned int prv_nents,
@@ -227,6 +294,108 @@ static inline void sg_unmark_end(struct scatterlist *sg)
 {
 	sg->page_link &= ~SG_END;
 }
+
+/*
+ * On 64-bit architectures there is a 4-byte padding in struct scatterlist
+ * (assuming also CONFIG_NEED_SG_DMA_LENGTH is set). Use this padding for DMA
+ * flags bits to indicate when a specific dma address is a bus address or the
+ * buffer may have been bounced via SWIOTLB.
+ */
+#ifdef CONFIG_NEED_SG_DMA_FLAGS
+
+#define SG_DMA_BUS_ADDRESS	(1 << 0)
+#define SG_DMA_SWIOTLB		(1 << 1)
+
+/**
+ * sg_dma_is_bus_address - Return whether a given segment was marked
+ *			   as a bus address
+ * @sg:		 SG entry
+ *
+ * Description:
+ *   Returns true if sg_dma_mark_bus_address() has been called on
+ *   this segment.
+ **/
+static inline bool sg_dma_is_bus_address(struct scatterlist *sg)
+{
+	return sg->dma_flags & SG_DMA_BUS_ADDRESS;
+}
+
+/**
+ * sg_dma_mark_bus_address - Mark the scatterlist entry as a bus address
+ * @sg:		 SG entry
+ *
+ * Description:
+ *   Marks the passed in sg entry to indicate that the dma_address is
+ *   a bus address and doesn't need to be unmapped. This should only be
+ *   used by dma_map_sg() implementations to mark bus addresses
+ *   so they can be properly cleaned up in dma_unmap_sg().
+ **/
+static inline void sg_dma_mark_bus_address(struct scatterlist *sg)
+{
+	sg->dma_flags |= SG_DMA_BUS_ADDRESS;
+}
+
+/**
+ * sg_dma_unmark_bus_address - Unmark the scatterlist entry as a bus address
+ * @sg:		 SG entry
+ *
+ * Description:
+ *   Clears the bus address mark.
+ **/
+static inline void sg_dma_unmark_bus_address(struct scatterlist *sg)
+{
+	sg->dma_flags &= ~SG_DMA_BUS_ADDRESS;
+}
+
+/**
+ * sg_dma_is_swiotlb - Return whether the scatterlist was marked for SWIOTLB
+ *			bouncing
+ * @sg:		SG entry
+ *
+ * Description:
+ *   Returns true if the scatterlist was marked for SWIOTLB bouncing. Not all
+ *   elements may have been bounced, so the caller would have to check
+ *   individual SG entries with swiotlb_find_pool().
+ */
+static inline bool sg_dma_is_swiotlb(struct scatterlist *sg)
+{
+	return sg->dma_flags & SG_DMA_SWIOTLB;
+}
+
+/**
+ * sg_dma_mark_swiotlb - Mark the scatterlist for SWIOTLB bouncing
+ * @sg:		SG entry
+ *
+ * Description:
+ *   Marks a a scatterlist for SWIOTLB bounce. Not all SG entries may be
+ *   bounced.
+ */
+static inline void sg_dma_mark_swiotlb(struct scatterlist *sg)
+{
+	sg->dma_flags |= SG_DMA_SWIOTLB;
+}
+
+#else
+
+static inline bool sg_dma_is_bus_address(struct scatterlist *sg)
+{
+	return false;
+}
+static inline void sg_dma_mark_bus_address(struct scatterlist *sg)
+{
+}
+static inline void sg_dma_unmark_bus_address(struct scatterlist *sg)
+{
+}
+static inline bool sg_dma_is_swiotlb(struct scatterlist *sg)
+{
+	return false;
+}
+static inline void sg_dma_mark_swiotlb(struct scatterlist *sg)
+{
+}
+
+#endif	/* CONFIG_NEED_SG_DMA_FLAGS */
 
 /**
  * sg_phys - Return physical address of an sg entry
@@ -272,7 +441,6 @@ static inline void sg_init_marker(struct scatterlist *sgl,
 
 int sg_nents(struct scatterlist *sg);
 int sg_nents_for_len(struct scatterlist *sg, u64 len);
-struct scatterlist *sg_next(struct scatterlist *);
 struct scatterlist *sg_last(struct scatterlist *s, unsigned int);
 void sg_init_table(struct scatterlist *, unsigned int);
 void sg_init_one(struct scatterlist *, const void *, unsigned int);
@@ -433,7 +601,7 @@ void __sg_page_iter_start(struct sg_page_iter *piter,
  */
 static inline struct page *sg_page_iter_page(struct sg_page_iter *piter)
 {
-	return nth_page(sg_page(piter->sg), piter->sg_pgoffset);
+	return sg_page(piter->sg) + piter->sg_pgoffset;
 }
 
 /**
@@ -525,6 +693,7 @@ sg_page_iter_dma_address(struct sg_dma_page_iter *dma_iter)
 #define SG_MITER_ATOMIC		(1 << 0)	 /* use kmap_atomic */
 #define SG_MITER_TO_SG		(1 << 1)	/* flush back to phys on unmap */
 #define SG_MITER_FROM_SG	(1 << 2)	/* nop */
+#define SG_MITER_LOCAL		(1 << 3)	 /* use kmap_local */
 
 struct sg_mapping_iter {
 	/* the following three fields can be accessed directly */

@@ -36,20 +36,20 @@
 #include <linux/fb.h>
 #include <linux/ivtvfb.h>
 
-#ifdef CONFIG_X86_64
+#if defined(CONFIG_X86_64) && !defined(CONFIG_UML)
 #include <asm/memtype.h>
 #endif
 
 /* card parameters */
 static int ivtvfb_card_id = -1;
-static int ivtvfb_debug = 0;
+static int ivtvfb_debug;
 static bool ivtvfb_force_pat = IS_ENABLED(CONFIG_VIDEO_FB_IVTV_FORCE_PAT);
 static bool osd_laced;
 static int osd_depth;
 static int osd_upper;
 static int osd_left;
-static int osd_yres;
-static int osd_xres;
+static unsigned int osd_yres;
+static unsigned int osd_xres;
 
 module_param(ivtvfb_card_id, int, 0444);
 module_param_named(debug,ivtvfb_debug, int, 0644);
@@ -58,8 +58,8 @@ module_param(osd_laced, bool, 0444);
 module_param(osd_depth, int, 0444);
 module_param(osd_upper, int, 0444);
 module_param(osd_left, int, 0444);
-module_param(osd_yres, int, 0444);
-module_param(osd_xres, int, 0444);
+module_param(osd_yres, uint, 0444);
+module_param(osd_xres, uint, 0444);
 
 MODULE_PARM_DESC(ivtvfb_card_id,
 		 "Only use framebuffer of the specified ivtv card (0-31)\n"
@@ -104,6 +104,7 @@ MODULE_PARM_DESC(osd_xres,
 		 "\t\t\tdefault 640");
 
 MODULE_AUTHOR("Kevin Thayer, Chris Kennedy, Hans Verkuil, John Harvey, Ian Armstrong");
+MODULE_DESCRIPTION("Conexant cx23415 framebuffer support");
 MODULE_LICENSE("GPL");
 
 /* --------------------------------------------------------------------- */
@@ -281,10 +282,10 @@ static int ivtvfb_prep_dec_dma_to_device(struct ivtv *itv,
 	/* Map User DMA */
 	if (ivtv_udma_setup(itv, ivtv_dest_addr, userbuf, size_in_bytes) <= 0) {
 		mutex_unlock(&itv->udma.lock);
-		IVTVFB_WARN("ivtvfb_prep_dec_dma_to_device, Error with pin_user_pages: %d bytes, %d pages returned\n",
-			       size_in_bytes, itv->udma.page_count);
+		IVTVFB_WARN("%s, Error in ivtv_udma_setup: %d bytes, %d pages returned\n",
+			       __func__, size_in_bytes, itv->udma.page_count);
 
-		/* pin_user_pages must have failed completely */
+		/* pin_user_pages or DMA must have failed completely */
 		return -EIO;
 	}
 
@@ -378,8 +379,8 @@ static ssize_t ivtvfb_write(struct fb_info *info, const char __user *buf,
 	unsigned long dma_size;
 	u16 lead = 0, tail = 0;
 
-	if (info->state != FBINFO_STATE_RUNNING)
-		return -EPERM;
+	if (!info->screen_base)
+		return -ENODEV;
 
 	total_size = info->screen_size;
 
@@ -927,17 +928,17 @@ static int ivtvfb_blank(int blank_mode, struct fb_info *info)
 
 static const struct fb_ops ivtvfb_ops = {
 	.owner = THIS_MODULE,
+	.fb_read        = fb_io_read,
 	.fb_write       = ivtvfb_write,
 	.fb_check_var   = ivtvfb_check_var,
 	.fb_set_par     = ivtvfb_set_par,
 	.fb_setcolreg   = ivtvfb_setcolreg,
-	.fb_fillrect    = cfb_fillrect,
-	.fb_copyarea    = cfb_copyarea,
-	.fb_imageblit   = cfb_imageblit,
+	__FB_DEFAULT_IOMEM_OPS_DRAW,
 	.fb_cursor      = NULL,
 	.fb_ioctl       = ivtvfb_ioctl,
 	.fb_pan_display = ivtvfb_pan_display,
 	.fb_blank       = ivtvfb_blank,
+	__FB_DEFAULT_IOMEM_OPS_MMAP,
 };
 
 /* Restore hardware after firmware restart */
@@ -1048,7 +1049,6 @@ static int ivtvfb_init_vidmode(struct ivtv *itv)
 	/* Generate valid fb_info */
 
 	oi->ivtvfb_info.node = -1;
-	oi->ivtvfb_info.flags = FBINFO_FLAG_DEFAULT;
 	oi->ivtvfb_info.par = itv;
 	oi->ivtvfb_info.var = oi->ivtvfb_defined;
 	oi->ivtvfb_info.fix = oi->ivtvfb_fix;
@@ -1157,7 +1157,7 @@ static int ivtvfb_init_card(struct ivtv *itv)
 {
 	int rc;
 
-#ifdef CONFIG_X86_64
+#if defined(CONFIG_X86_64) && !defined(CONFIG_UML)
 	if (pat_enabled()) {
 		if (ivtvfb_force_pat) {
 			pr_info("PAT is enabled. Write-combined framebuffer caching will be disabled.\n");

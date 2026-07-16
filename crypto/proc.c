@@ -11,6 +11,7 @@
 #include <linux/atomic.h>
 #include <linux/init.h>
 #include <linux/crypto.h>
+#include <linux/fips.h>
 #include <linux/module.h>	/* for module_name() */
 #include <linux/rwsem.h>
 #include <linux/proc_fs.h>
@@ -46,8 +47,10 @@ static int c_show(struct seq_file *m, void *p)
 		   (alg->cra_flags & CRYPTO_ALG_TESTED) ?
 		   "passed" : "unknown");
 	seq_printf(m, "internal     : %s\n",
-		   (alg->cra_flags & CRYPTO_ALG_INTERNAL) ?
-		   "yes" : "no");
+		   str_yes_no(alg->cra_flags & CRYPTO_ALG_INTERNAL));
+	if (fips_enabled)
+		seq_printf(m, "fips         : %s\n",
+			str_no_yes(alg->cra_flags & CRYPTO_ALG_FIPS_INTERNAL));
 
 	if (alg->cra_flags & CRYPTO_ALG_LARVAL) {
 		seq_printf(m, "type         : larval\n");
@@ -68,9 +71,6 @@ static int c_show(struct seq_file *m, void *p)
 					alg->cra_cipher.cia_min_keysize);
 		seq_printf(m, "max keysize  : %u\n",
 					alg->cra_cipher.cia_max_keysize);
-		break;
-	case CRYPTO_ALG_TYPE_COMPRESS:
-		seq_printf(m, "type         : compression\n");
 		break;
 	default:
 		seq_printf(m, "type         : unknown\n");

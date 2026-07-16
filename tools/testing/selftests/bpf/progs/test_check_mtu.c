@@ -7,6 +7,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <errno.h>
 
 char _license[] SEC("license") = "GPL";
 
@@ -153,7 +154,7 @@ int xdp_input_len_exceed(struct xdp_md *ctx)
 	return retval;
 }
 
-SEC("classifier")
+SEC("tc")
 int tc_use_helper(struct __sk_buff *ctx)
 {
 	int retval = BPF_OK; /* Expected retval on successful test */
@@ -172,7 +173,7 @@ out:
 	return retval;
 }
 
-SEC("classifier")
+SEC("tc")
 int tc_exceed_mtu(struct __sk_buff *ctx)
 {
 	__u32 ifindex = GLOBAL_USER_IFINDEX;
@@ -196,7 +197,7 @@ int tc_exceed_mtu(struct __sk_buff *ctx)
 	return retval;
 }
 
-SEC("classifier")
+SEC("tc")
 int tc_exceed_mtu_da(struct __sk_buff *ctx)
 {
 	/* SKB Direct-Access variant */
@@ -223,7 +224,7 @@ int tc_exceed_mtu_da(struct __sk_buff *ctx)
 	return retval;
 }
 
-SEC("classifier")
+SEC("tc")
 int tc_minus_delta(struct __sk_buff *ctx)
 {
 	int retval = BPF_OK; /* Expected retval on successful test */
@@ -245,7 +246,7 @@ int tc_minus_delta(struct __sk_buff *ctx)
 	return retval;
 }
 
-SEC("classifier")
+SEC("tc")
 int tc_input_len(struct __sk_buff *ctx)
 {
 	int retval = BPF_OK; /* Expected retval on successful test */
@@ -265,7 +266,7 @@ int tc_input_len(struct __sk_buff *ctx)
 	return retval;
 }
 
-SEC("classifier")
+SEC("tc")
 int tc_input_len_exceed(struct __sk_buff *ctx)
 {
 	int retval = BPF_DROP; /* Fail */
@@ -287,4 +288,15 @@ int tc_input_len_exceed(struct __sk_buff *ctx)
 
 	global_bpf_mtu_xdp = mtu_len;
 	return retval;
+}
+
+SEC("tc")
+int tc_chk_segs_flag(struct __sk_buff *ctx)
+{
+	__u32 mtu_len = 0;
+	int err;
+
+	err = bpf_check_mtu(ctx, GLOBAL_USER_IFINDEX, &mtu_len, 0, BPF_MTU_CHK_SEGS);
+
+	return err == -EINVAL ? BPF_OK : BPF_DROP;
 }

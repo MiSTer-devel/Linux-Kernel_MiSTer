@@ -16,7 +16,7 @@
 
 #define PMIC_A0LOCK_REG		0xc5
 
-static struct pmic_table power_table[] = {
+static const struct pmic_table power_table[] = {
 /*	{
 		.address = 0x00,
 		.reg = ??,
@@ -134,7 +134,7 @@ static struct pmic_table power_table[] = {
 	}, /* V105 -> V1P05S, L2 SRAM */
 };
 
-static struct pmic_table thermal_table[] = {
+static const struct pmic_table thermal_table[] = {
 	{
 		.address = 0x00,
 		.reg = 0x75
@@ -271,17 +271,19 @@ static int intel_crc_pmic_update_policy(struct regmap *regmap,
 	return 0;
 }
 
-static struct intel_pmic_opregion_data intel_crc_pmic_opregion_data = {
+static const struct intel_pmic_opregion_data intel_crc_pmic_opregion_data = {
 	.get_power	= intel_crc_pmic_get_power,
 	.update_power	= intel_crc_pmic_update_power,
 	.get_raw_temp	= intel_crc_pmic_get_raw_temp,
 	.update_aux	= intel_crc_pmic_update_aux,
 	.get_policy	= intel_crc_pmic_get_policy,
 	.update_policy	= intel_crc_pmic_update_policy,
+	.lpat_raw_to_temp = acpi_lpat_raw_to_temp,
 	.power_table	= power_table,
 	.power_table_count= ARRAY_SIZE(power_table),
 	.thermal_table	= thermal_table,
 	.thermal_table_count = ARRAY_SIZE(thermal_table),
+	.pmic_i2c_address = 0x6e,
 };
 
 static int intel_crc_pmic_opregion_probe(struct platform_device *pdev)

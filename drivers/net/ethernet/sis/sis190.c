@@ -758,7 +758,7 @@ static irqreturn_t sis190_irq(int irq, void *__dev)
 
 	if (status & LinkChange) {
 		netif_info(tp, intr, dev, "link change\n");
-		del_timer(&tp->timer);
+		timer_delete(&tp->timer);
 		schedule_work(&tp->phy_task);
 	}
 
@@ -1023,7 +1023,7 @@ out_unlock:
 
 static void sis190_phy_timer(struct timer_list *t)
 {
-	struct sis190_private *tp = from_timer(tp, t, timer);
+	struct sis190_private *tp = timer_container_of(tp, t, timer);
 	struct net_device *dev = tp->dev;
 
 	if (likely(netif_running(dev)))
@@ -1034,7 +1034,7 @@ static inline void sis190_delete_timer(struct net_device *dev)
 {
 	struct sis190_private *tp = netdev_priv(dev);
 
-	del_timer_sync(&tp->timer);
+	timer_delete_sync(&tp->timer);
 }
 
 static inline void sis190_request_timer(struct net_device *dev)
@@ -1070,7 +1070,7 @@ static int sis190_open(struct net_device *dev)
 
 	/*
 	 * Rx and Tx descriptors need 256 bytes alignment.
-	 * pci_alloc_consistent() guarantees a stronger alignment.
+	 * dma_alloc_coherent() guarantees a stronger alignment.
 	 */
 	tp->TxDescRing = dma_alloc_coherent(&pdev->dev, TX_RING_BYTES,
 					    &tp->tx_dma, GFP_KERNEL);
@@ -1586,6 +1586,7 @@ static int sis190_get_mac_addr_from_eeprom(struct pci_dev *pdev,
 {
 	struct sis190_private *tp = netdev_priv(dev);
 	void __iomem *ioaddr = tp->mmio_addr;
+	__le16 addr[ETH_ALEN / 2];
 	u16 sig;
 	int i;
 
@@ -1606,8 +1607,9 @@ static int sis190_get_mac_addr_from_eeprom(struct pci_dev *pdev,
 	for (i = 0; i < ETH_ALEN / 2; i++) {
 		u16 w = sis190_read_eeprom(ioaddr, EEPROMMACAddr + i);
 
-		((__le16 *)dev->dev_addr)[i] = cpu_to_le16(w);
+		addr[i] = cpu_to_le16(w);
 	}
+	eth_hw_addr_set(dev, (u8 *)addr);
 
 	sis190_set_rgmii(tp, sis190_read_eeprom(ioaddr, EEPROMInfo));
 
@@ -1629,6 +1631,7 @@ static int sis190_get_mac_addr_from_apc(struct pci_dev *pdev,
 	static const u16 ids[] = { 0x0965, 0x0966, 0x0968 };
 	struct sis190_private *tp = netdev_priv(dev);
 	struct pci_dev *isa_bridge;
+	u8 addr[ETH_ALEN];
 	u8 reg, tmp8;
 	unsigned int i;
 
@@ -1657,8 +1660,9 @@ static int sis190_get_mac_addr_from_apc(struct pci_dev *pdev,
 
         for (i = 0; i < ETH_ALEN; i++) {
                 outb(0x9 + i, 0x78);
-                dev->dev_addr[i] = inb(0x79);
+                addr[i] = inb(0x79);
         }
+	eth_hw_addr_set(dev, addr);
 
 	outb(0x12, 0x78);
 	reg = inb(0x79);
@@ -1765,9 +1769,9 @@ static void sis190_get_drvinfo(struct net_device *dev,
 {
 	struct sis190_private *tp = netdev_priv(dev);
 
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, pci_name(tp->pci_dev),
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, pci_name(tp->pci_dev),
 		sizeof(info->bus_info));
 }
 

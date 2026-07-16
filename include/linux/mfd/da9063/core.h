@@ -36,6 +36,7 @@ enum da9063_variant_codes {
 	PMIC_DA9063_BB = 0x5,
 	PMIC_DA9063_CA = 0x6,
 	PMIC_DA9063_DA = 0x7,
+	PMIC_DA9063_EA = 0x8,
 };
 
 /* Interrupts */
@@ -77,6 +78,7 @@ struct da9063 {
 	enum da9063_type type;
 	unsigned char	variant_code;
 	unsigned int	flags;
+	bool use_sw_pm;
 
 	/* Control interface */
 	struct regmap	*regmap;

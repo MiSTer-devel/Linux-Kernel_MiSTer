@@ -30,7 +30,6 @@
  * SOFTWARE.
  */
 
-#include <linux/platform_device.h>
 #include <linux/pci.h>
 #include "hns_roce_device.h"
 
@@ -86,7 +85,6 @@ int hns_roce_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata)
 int hns_roce_uar_alloc(struct hns_roce_dev *hr_dev, struct hns_roce_uar *uar)
 {
 	struct hns_roce_ida *uar_ida = &hr_dev->uar_ida;
-	struct resource *res;
 	int id;
 
 	/* Using bitmap to manager UAR index */
@@ -104,18 +102,9 @@ int hns_roce_uar_alloc(struct hns_roce_dev *hr_dev, struct hns_roce_uar *uar)
 	else
 		uar->index = 0;
 
-	if (!dev_is_pci(hr_dev->dev)) {
-		res = platform_get_resource(hr_dev->pdev, IORESOURCE_MEM, 0);
-		if (!res) {
-			ida_free(&uar_ida->ida, id);
-			dev_err(&hr_dev->pdev->dev, "memory resource not found!\n");
-			return -EINVAL;
-		}
-		uar->pfn = ((res->start) >> PAGE_SHIFT) + uar->index;
-	} else {
-		uar->pfn = ((pci_resource_start(hr_dev->pci_dev, 2))
-			   >> PAGE_SHIFT);
-	}
+	uar->pfn = ((pci_resource_start(hr_dev->pci_dev, 2)) >> PAGE_SHIFT);
+	if (hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_DIRECT_WQE)
+		hr_dev->dwqe_page = pci_resource_start(hr_dev->pci_dev, 4);
 
 	return 0;
 }
@@ -160,14 +149,18 @@ int hns_roce_alloc_xrcd(struct ib_xrcd *ib_xrcd, struct ib_udata *udata)
 	struct hns_roce_xrcd *xrcd = to_hr_xrcd(ib_xrcd);
 	int ret;
 
-	if (!(hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_XRC))
-		return -EINVAL;
+	if (!(hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_XRC)) {
+		ret = -EOPNOTSUPP;
+		goto err_out;
+	}
 
 	ret = hns_roce_xrcd_alloc(hr_dev, &xrcd->xrcdn);
-	if (ret)
-		return ret;
 
-	return 0;
+err_out:
+	if (ret)
+		atomic64_inc(&hr_dev->dfx_cnt[HNS_ROCE_DFX_XRCD_ALLOC_ERR_CNT]);
+
+	return ret;
 }
 
 int hns_roce_dealloc_xrcd(struct ib_xrcd *ib_xrcd, struct ib_udata *udata)

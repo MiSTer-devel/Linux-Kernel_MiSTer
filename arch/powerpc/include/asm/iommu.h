@@ -28,6 +28,11 @@
 #define IOMMU_PAGE_MASK(tblptr) (~((1 << (tblptr)->it_page_shift) - 1))
 #define IOMMU_PAGE_ALIGN(addr, tblptr) ALIGN(addr, IOMMU_PAGE_SIZE(tblptr))
 
+#define DIRECT64_PROPNAME "linux,direct64-ddr-window-info"
+#define DMA64_PROPNAME "linux,dma64-ddr-window-info"
+
+#define	MIN_DDW_VPMEM_DMA_WINDOW	SZ_2G
+
 /* Boot time flags */
 extern int iommu_is_off;
 extern int iommu_force_on;
@@ -51,13 +56,11 @@ struct iommu_table_ops {
 	int (*xchg_no_kill)(struct iommu_table *tbl,
 			long index,
 			unsigned long *hpa,
-			enum dma_data_direction *direction,
-			bool realmode);
+			enum dma_data_direction *direction);
 
 	void (*tce_kill)(struct iommu_table *tbl,
 			unsigned long index,
-			unsigned long pages,
-			bool realmode);
+			unsigned long pages);
 
 	__be64 *(*useraddrptr)(struct iommu_table *tbl, long index, bool alloc);
 #endif
@@ -155,6 +158,9 @@ extern int iommu_tce_table_put(struct iommu_table *tbl);
 extern struct iommu_table *iommu_init_table(struct iommu_table *tbl,
 		int nid, unsigned long res_start, unsigned long res_end);
 bool iommu_table_in_use(struct iommu_table *tbl);
+extern void iommu_table_reserve_pages(struct iommu_table *tbl,
+		unsigned long res_start, unsigned long res_end);
+extern void iommu_table_clear(struct iommu_table *tbl);
 
 #define IOMMU_TABLE_GROUP_MAX_TABLES	2
 
@@ -177,9 +183,9 @@ struct iommu_table_group_ops {
 	long (*unset_window)(struct iommu_table_group *table_group,
 			int num);
 	/* Switch ownership from platform code to external user (e.g. VFIO) */
-	void (*take_ownership)(struct iommu_table_group *table_group);
+	long (*take_ownership)(struct iommu_table_group *table_group, struct device *dev);
 	/* Switch ownership from external user (e.g. VFIO) back to core */
-	void (*release_ownership)(struct iommu_table_group *table_group);
+	void (*release_ownership)(struct iommu_table_group *table_group, struct device *dev);
 };
 
 struct iommu_table_group_link {
@@ -207,7 +213,6 @@ extern void iommu_register_group(struct iommu_table_group *table_group,
 				 int pci_domain_number, unsigned long pe_num);
 extern int iommu_add_device(struct iommu_table_group *table_group,
 		struct device *dev);
-extern void iommu_del_device(struct device *dev);
 extern long iommu_tce_xchg(struct mm_struct *mm, struct iommu_table *tbl,
 		unsigned long entry, unsigned long *hpa,
 		enum dma_data_direction *direction);
@@ -217,6 +222,8 @@ extern long iommu_tce_xchg_no_kill(struct mm_struct *mm,
 		enum dma_data_direction *direction);
 extern void iommu_tce_kill(struct iommu_table *tbl,
 		unsigned long entry, unsigned long pages);
+int dev_has_iommu_table(struct device *dev, void *data);
+
 #else
 static inline void iommu_register_group(struct iommu_table_group *table_group,
 					int pci_domain_number,
@@ -230,8 +237,9 @@ static inline int iommu_add_device(struct iommu_table_group *table_group,
 	return 0;
 }
 
-static inline void iommu_del_device(struct device *dev)
+static inline int dev_has_iommu_table(struct device *dev, void *data)
 {
+	return 0;
 }
 #endif /* !CONFIG_IOMMU_API */
 
@@ -275,17 +283,11 @@ extern void iommu_unmap_page(struct iommu_table *tbl, dma_addr_t dma_handle,
 			     size_t size, enum dma_data_direction direction,
 			     unsigned long attrs);
 
-extern void iommu_init_early_pSeries(void);
+void __init iommu_init_early_pSeries(void);
 extern void iommu_init_early_dart(struct pci_controller_ops *controller_ops);
 extern void iommu_init_early_pasemi(void);
 
 #if defined(CONFIG_PPC64) && defined(CONFIG_PM)
-static inline void iommu_save(void)
-{
-	if (ppc_md.iommu_save)
-		ppc_md.iommu_save();
-}
-
 static inline void iommu_restore(void)
 {
 	if (ppc_md.iommu_restore)
@@ -311,17 +313,9 @@ extern int iommu_tce_check_gpa(unsigned long page_shift,
 		iommu_tce_check_gpa((tbl)->it_page_shift, (gpa)))
 
 extern void iommu_flush_tce(struct iommu_table *tbl);
-extern int iommu_take_ownership(struct iommu_table *tbl);
-extern void iommu_release_ownership(struct iommu_table *tbl);
 
 extern enum dma_data_direction iommu_tce_direction(unsigned long tce);
 extern unsigned long iommu_direction_to_tce_perm(enum dma_data_direction dir);
-
-#ifdef CONFIG_PPC_CELL_NATIVE
-extern bool iommu_fixed_is_weak;
-#else
-#define iommu_fixed_is_weak false
-#endif
 
 extern const struct dma_map_ops dma_iommu_ops;
 

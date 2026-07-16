@@ -29,7 +29,7 @@ static void blktrans_dev_release(struct kref *kref)
 	struct mtd_blktrans_dev *dev =
 		container_of(kref, struct mtd_blktrans_dev, ref);
 
-	blk_cleanup_disk(dev->disk);
+	put_disk(dev->disk);
 	blk_mq_free_tag_set(dev->tag_set);
 	kfree(dev->tag_set);
 	list_del(&dev->list);
@@ -46,23 +46,19 @@ static blk_status_t do_blktrans_request(struct mtd_blktrans_ops *tr,
 			       struct mtd_blktrans_dev *dev,
 			       struct request *req)
 {
+	struct req_iterator iter;
+	struct bio_vec bvec;
 	unsigned long block, nsect;
 	char *buf;
 
 	block = blk_rq_pos(req) << 9 >> tr->blkshift;
 	nsect = blk_rq_cur_bytes(req) >> tr->blkshift;
 
-	if (req_op(req) == REQ_OP_FLUSH) {
+	switch (req_op(req)) {
+	case REQ_OP_FLUSH:
 		if (tr->flush(dev))
 			return BLK_STS_IOERR;
 		return BLK_STS_OK;
-	}
-
-	if (blk_rq_pos(req) + blk_rq_cur_sectors(req) >
-	    get_capacity(req->rq_disk))
-		return BLK_STS_IOERR;
-
-	switch (req_op(req)) {
 	case REQ_OP_DISCARD:
 		if (tr->discard(dev, block, nsect))
 			return BLK_STS_IOERR;
@@ -76,13 +72,17 @@ static blk_status_t do_blktrans_request(struct mtd_blktrans_ops *tr,
 			}
 		}
 		kunmap(bio_page(req->bio));
-		rq_flush_dcache_pages(req);
+
+		rq_for_each_segment(bvec, req, iter)
+			flush_dcache_page(bvec.bv_page);
 		return BLK_STS_OK;
 	case REQ_OP_WRITE:
 		if (!tr->writesect)
 			return BLK_STS_IOERR;
 
-		rq_flush_dcache_pages(req);
+		rq_for_each_segment(bvec, req, iter)
+			flush_dcache_page(bvec.bv_page);
+
 		buf = kmap(bio_page(req->bio)) + bio_offset(req->bio);
 		for (; nsect > 0; nsect--, block++, buf += tr->blksize) {
 			if (tr->writesect(dev, block, buf)) {
@@ -158,6 +158,7 @@ static void mtd_blktrans_work(struct mtd_blktrans_dev *dev)
 		}
 
 		background_done = 0;
+		cond_resched();
 		spin_lock_irq(&dev->queue_lock);
 	}
 }
@@ -181,9 +182,9 @@ static blk_status_t mtd_queue_rq(struct blk_mq_hw_ctx *hctx,
 	return BLK_STS_OK;
 }
 
-static int blktrans_open(struct block_device *bdev, fmode_t mode)
+static int blktrans_open(struct gendisk *disk, blk_mode_t mode)
 {
-	struct mtd_blktrans_dev *dev = bdev->bd_disk->private_data;
+	struct mtd_blktrans_dev *dev = disk->private_data;
 	int ret = 0;
 
 	kref_get(&dev->ref);
@@ -207,7 +208,7 @@ static int blktrans_open(struct block_device *bdev, fmode_t mode)
 	ret = __get_mtd_device(dev->mtd);
 	if (ret)
 		goto error_release;
-	dev->file_mode = mode;
+	dev->writable = mode & BLK_OPEN_WRITE;
 
 unlock:
 	dev->open++;
@@ -224,7 +225,7 @@ error_put:
 	return ret;
 }
 
-static void blktrans_release(struct gendisk *disk, fmode_t mode)
+static void blktrans_release(struct gendisk *disk)
 {
 	struct mtd_blktrans_dev *dev = disk->private_data;
 
@@ -245,9 +246,9 @@ unlock:
 	blktrans_dev_put(dev);
 }
 
-static int blktrans_getgeo(struct block_device *bdev, struct hd_geometry *geo)
+static int blktrans_getgeo(struct gendisk *disk, struct hd_geometry *geo)
 {
-	struct mtd_blktrans_dev *dev = bdev->bd_disk->private_data;
+	struct mtd_blktrans_dev *dev = disk->private_data;
 	int ret = -ENXIO;
 
 	mutex_lock(&dev->lock);
@@ -276,6 +277,7 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 {
 	struct mtd_blktrans_ops *tr = new->tr;
 	struct mtd_blktrans_dev *d;
+	struct queue_limits lim = { };
 	int last_devnum = -1;
 	struct gendisk *gd;
 	int ret;
@@ -327,12 +329,18 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 		goto out_list_del;
 
 	ret = blk_mq_alloc_sq_tag_set(new->tag_set, &mtd_mq_ops, 2,
-			BLK_MQ_F_SHOULD_MERGE | BLK_MQ_F_BLOCKING);
+			BLK_MQ_F_BLOCKING);
 	if (ret)
 		goto out_kfree_tag_set;
+	
+	lim.logical_block_size = tr->blksize;
+	if (tr->discard)
+		lim.max_hw_discard_sectors = UINT_MAX;
+	if (tr->flush)
+		lim.features |= BLK_FEAT_WRITE_CACHE;
 
 	/* Create gendisk */
-	gd = blk_mq_alloc_disk(new->tag_set, new);
+	gd = blk_mq_alloc_disk(new->tag_set, &lim, new);
 	if (IS_ERR(gd)) {
 		ret = PTR_ERR(gd);
 		goto out_free_tag_set;
@@ -346,7 +354,7 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 	gd->minors = 1 << tr->part_bits;
 	gd->fops = &mtd_block_ops;
 
-	if (tr->part_bits)
+	if (tr->part_bits) {
 		if (new->devnum < 26)
 			snprintf(gd->disk_name, sizeof(gd->disk_name),
 				 "%s%c", tr->name, 'a' + new->devnum);
@@ -355,36 +363,25 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 				 "%s%c%c", tr->name,
 				 'a' - 1 + new->devnum / 26,
 				 'a' + new->devnum % 26);
-	else
+	} else {
 		snprintf(gd->disk_name, sizeof(gd->disk_name),
 			 "%s%d", tr->name, new->devnum);
+		gd->flags |= GENHD_FL_NO_PART;
+	}
 
 	set_capacity(gd, ((u64)new->size * tr->blksize) >> 9);
 
 	/* Create the request queue */
 	spin_lock_init(&new->queue_lock);
 	INIT_LIST_HEAD(&new->rq_list);
-
-	if (tr->flush)
-		blk_queue_write_cache(new->rq, true, false);
-
-	blk_queue_logical_block_size(new->rq, tr->blksize);
-
-	blk_queue_flag_set(QUEUE_FLAG_NONROT, new->rq);
-	blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, new->rq);
-
-	if (tr->discard) {
-		blk_queue_flag_set(QUEUE_FLAG_DISCARD, new->rq);
-		blk_queue_max_discard_sectors(new->rq, UINT_MAX);
-		new->rq->limits.discard_granularity = tr->blksize;
-	}
-
 	gd->queue = new->rq;
 
 	if (new->readonly)
 		set_disk_ro(gd, 1);
 
-	device_add_disk(&new->mtd->dev, gd, NULL);
+	ret = device_add_disk(&new->mtd->dev, gd, NULL);
+	if (ret)
+		goto out_cleanup_disk;
 
 	if (new->disk_attributes) {
 		ret = sysfs_create_group(&disk_to_dev(gd)->kobj,
@@ -393,6 +390,8 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 	}
 	return 0;
 
+out_cleanup_disk:
+	put_disk(new->disk);
 out_free_tag_set:
 	blk_mq_free_tag_set(new->tag_set);
 out_kfree_tag_set:
@@ -405,6 +404,7 @@ out_list_del:
 int del_mtd_blktrans_dev(struct mtd_blktrans_dev *old)
 {
 	unsigned long flags;
+	unsigned int memflags;
 
 	lockdep_assert_held(&mtd_table_mutex);
 
@@ -421,10 +421,10 @@ int del_mtd_blktrans_dev(struct mtd_blktrans_dev *old)
 	spin_unlock_irqrestore(&old->queue_lock, flags);
 
 	/* freeze+quiesce queue to ensure all requests are flushed */
-	blk_mq_freeze_queue(old->rq);
+	memflags = blk_mq_freeze_queue(old->rq);
 	blk_mq_quiesce_queue(old->rq);
 	blk_mq_unquiesce_queue(old->rq);
-	blk_mq_unfreeze_queue(old->rq);
+	blk_mq_unfreeze_queue(old->rq, memflags);
 
 	/* If the device is currently open, tell trans driver to close it,
 		then put mtd device, and don't touch it again */
@@ -457,7 +457,7 @@ static void blktrans_notify_add(struct mtd_info *mtd)
 {
 	struct mtd_blktrans_ops *tr;
 
-	if (mtd->type == MTD_ABSENT)
+	if (mtd->type == MTD_ABSENT || mtd->type == MTD_UBIVOLUME)
 		return;
 
 	list_for_each_entry(tr, &blktrans_majors, list)
@@ -497,7 +497,7 @@ int register_mtd_blktrans(struct mtd_blktrans_ops *tr)
 	mutex_lock(&mtd_table_mutex);
 	list_add(&tr->list, &blktrans_majors);
 	mtd_for_each_device(mtd)
-		if (mtd->type != MTD_ABSENT)
+		if (mtd->type != MTD_ABSENT && mtd->type != MTD_UBIVOLUME)
 			tr->add_mtd(tr, mtd);
 	mutex_unlock(&mtd_table_mutex);
 	return 0;

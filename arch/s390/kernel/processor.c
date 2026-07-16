@@ -18,7 +18,9 @@
 #include <linux/mm_types.h>
 #include <linux/delay.h>
 #include <linux/cpu.h>
-
+#include <linux/smp.h>
+#include <asm/text-patching.h>
+#include <asm/machine.h>
 #include <asm/diag.h>
 #include <asm/facility.h>
 #include <asm/elf.h>
@@ -72,12 +74,29 @@ void notrace stop_machine_yield(const struct cpumask *cpumask)
 	this_cpu = smp_processor_id();
 	if (__this_cpu_inc_return(cpu_relax_retry) >= spin_retry) {
 		__this_cpu_write(cpu_relax_retry, 0);
-		cpu = cpumask_next_wrap(this_cpu, cpumask, this_cpu, false);
+		cpu = cpumask_next_wrap(this_cpu, cpumask);
 		if (cpu >= nr_cpu_ids)
 			return;
 		if (arch_vcpu_is_preempted(cpu))
 			smp_yield_cpu(cpu);
 	}
+}
+
+static void do_sync_core(void *info)
+{
+	sync_core();
+}
+
+void text_poke_sync(void)
+{
+	on_each_cpu(do_sync_core, NULL, 1);
+}
+
+void text_poke_sync_lock(void)
+{
+	cpus_read_lock();
+	text_poke_sync();
+	cpus_read_unlock();
 }
 
 /*
@@ -95,15 +114,6 @@ void cpu_init(void)
 	BUG_ON(current->mm);
 	enter_lazy_tlb(&init_mm, current);
 }
-
-/*
- * cpu_have_feature - Test CPU features on module initialization
- */
-int cpu_have_feature(unsigned int num)
-{
-	return elf_hwcap & (1UL << num);
-}
-EXPORT_SYMBOL(cpu_have_feature);
 
 static void show_facilities(struct seq_file *m)
 {
@@ -172,8 +182,7 @@ static void show_cpu_summary(struct seq_file *m, void *v)
 static int __init setup_hwcaps(void)
 {
 	/* instructions named N3, "backported" to esa-mode */
-	if (test_facility(0))
-		elf_hwcap |= HWCAP_ESAN3;
+	elf_hwcap |= HWCAP_ESAN3;
 
 	/* z/Architecture mode active */
 	elf_hwcap |= HWCAP_ZARCH;
@@ -191,8 +200,7 @@ static int __init setup_hwcaps(void)
 		elf_hwcap |= HWCAP_LDISP;
 
 	/* extended-immediate */
-	if (test_facility(21))
-		elf_hwcap |= HWCAP_EIMM;
+	elf_hwcap |= HWCAP_EIMM;
 
 	/* extended-translation facility 3 enhancement */
 	if (test_facility(22) && test_facility(30))
@@ -203,21 +211,18 @@ static int __init setup_hwcaps(void)
 		elf_hwcap |= HWCAP_DFP;
 
 	/* huge page support */
-	if (MACHINE_HAS_EDAT1)
+	if (cpu_has_edat1())
 		elf_hwcap |= HWCAP_HPAGE;
 
 	/* 64-bit register support for 31-bit processes */
 	elf_hwcap |= HWCAP_HIGH_GPRS;
 
 	/* transactional execution */
-	if (MACHINE_HAS_TE)
+	if (machine_has_tx())
 		elf_hwcap |= HWCAP_TE;
 
-	/*
-	 * Vector extension can be disabled with the "novx" parameter.
-	 * Use MACHINE_HAS_VX instead of facility bit 129.
-	 */
-	if (MACHINE_HAS_VX) {
+	/* vector */
+	if (test_facility(129)) {
 		elf_hwcap |= HWCAP_VXRS;
 		if (test_facility(134))
 			elf_hwcap |= HWCAP_VXRS_BCD;
@@ -241,10 +246,10 @@ static int __init setup_hwcaps(void)
 		elf_hwcap |= HWCAP_NNPA;
 
 	/* guarded storage */
-	if (MACHINE_HAS_GS)
+	if (cpu_has_gs())
 		elf_hwcap |= HWCAP_GS;
 
-	if (MACHINE_HAS_PCI_MIO)
+	if (test_machine_feature(MFEATURE_PCI_MIO))
 		elf_hwcap |= HWCAP_PCI_MIO;
 
 	/* virtualization support */
@@ -262,42 +267,36 @@ static int __init setup_elf_platform(void)
 	get_cpu_id(&cpu_id);
 	add_device_randomness(&cpu_id, sizeof(cpu_id));
 	switch (cpu_id.machine) {
-	case 0x2064:
-	case 0x2066:
-	default:	/* Use "z900" as default for 64 bit kernels. */
-		strcpy(elf_platform, "z900");
-		break;
-	case 0x2084:
-	case 0x2086:
-		strcpy(elf_platform, "z990");
-		break;
-	case 0x2094:
-	case 0x2096:
-		strcpy(elf_platform, "z9-109");
-		break;
-	case 0x2097:
-	case 0x2098:
-		strcpy(elf_platform, "z10");
+	default:	/* Use "z10" as default. */
+		strscpy(elf_platform, "z10");
 		break;
 	case 0x2817:
 	case 0x2818:
-		strcpy(elf_platform, "z196");
+		strscpy(elf_platform, "z196");
 		break;
 	case 0x2827:
 	case 0x2828:
-		strcpy(elf_platform, "zEC12");
+		strscpy(elf_platform, "zEC12");
 		break;
 	case 0x2964:
 	case 0x2965:
-		strcpy(elf_platform, "z13");
+		strscpy(elf_platform, "z13");
 		break;
 	case 0x3906:
 	case 0x3907:
-		strcpy(elf_platform, "z14");
+		strscpy(elf_platform, "z14");
 		break;
 	case 0x8561:
 	case 0x8562:
-		strcpy(elf_platform, "z15");
+		strscpy(elf_platform, "z15");
+		break;
+	case 0x3931:
+	case 0x3932:
+		strscpy(elf_platform, "z16");
+		break;
+	case 0x9175:
+	case 0x9176:
+		strscpy(elf_platform, "z17");
 		break;
 	}
 	return 0;
@@ -386,21 +385,3 @@ const struct seq_operations cpuinfo_op = {
 	.stop	= c_stop,
 	.show	= show_cpuinfo,
 };
-
-int s390_isolate_bp(void)
-{
-	if (!test_facility(82))
-		return -EOPNOTSUPP;
-	set_thread_flag(TIF_ISOLATE_BP);
-	return 0;
-}
-EXPORT_SYMBOL(s390_isolate_bp);
-
-int s390_isolate_bp_guest(void)
-{
-	if (!test_facility(82))
-		return -EOPNOTSUPP;
-	set_thread_flag(TIF_ISOLATE_BP_GUEST);
-	return 0;
-}
-EXPORT_SYMBOL(s390_isolate_bp_guest);

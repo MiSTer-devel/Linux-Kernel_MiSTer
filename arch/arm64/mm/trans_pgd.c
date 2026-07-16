@@ -5,8 +5,8 @@
  *
  * This file derived from: arch/arm64/kernel/hibernate.c
  *
- * Copyright (c) 2020, Microsoft Corporation.
- * Pavel Tatashin <pasha.tatashin@soleen.com>
+ * Copyright (c) 2021, Microsoft Corporation.
+ * Pasha Tatashin <pasha.tatashin@soleen.com>
  *
  */
 
@@ -24,37 +24,11 @@
 #include <linux/bug.h>
 #include <linux/mm.h>
 #include <linux/mmzone.h>
+#include <linux/kfence.h>
 
 static void *trans_alloc(struct trans_pgd_info *info)
 {
 	return info->trans_alloc_page(info->trans_alloc_arg);
-}
-
-static void _copy_pte(pte_t *dst_ptep, pte_t *src_ptep, unsigned long addr)
-{
-	pte_t pte = READ_ONCE(*src_ptep);
-
-	if (pte_valid(pte)) {
-		/*
-		 * Resume will overwrite areas that may be marked
-		 * read only (code, rodata). Clear the RDONLY bit from
-		 * the temporary mappings we use during restore.
-		 */
-		set_pte(dst_ptep, pte_mkwrite(pte));
-	} else if (debug_pagealloc_enabled() && !pte_none(pte)) {
-		/*
-		 * debug_pagealloc will removed the PTE_VALID bit if
-		 * the page isn't in use by the resume kernel. It may have
-		 * been in use by the original kernel, in which case we need
-		 * to put it back in our copy to do the restore.
-		 *
-		 * Before marking this entry valid, check the pfn should
-		 * be mapped.
-		 */
-		BUG_ON(!pfn_valid(pte_pfn(pte)));
-
-		set_pte(dst_ptep, pte_mkpresent(pte_mkwrite(pte)));
-	}
 }
 
 static int copy_pte(struct trans_pgd_info *info, pmd_t *dst_pmdp,
@@ -72,7 +46,11 @@ static int copy_pte(struct trans_pgd_info *info, pmd_t *dst_pmdp,
 
 	src_ptep = pte_offset_kernel(src_pmdp, start);
 	do {
-		_copy_pte(dst_ptep, src_ptep, addr);
+		pte_t pte = __ptep_get(src_ptep);
+
+		if (pte_none(pte))
+			continue;
+		__set_pte(dst_ptep, pte_mkvalid_k(pte_mkwrite_novma(pte)));
 	} while (dst_ptep++, src_ptep++, addr += PAGE_SIZE, addr != end);
 
 	return 0;
@@ -105,8 +83,7 @@ static int copy_pmd(struct trans_pgd_info *info, pud_t *dst_pudp,
 			if (copy_pte(info, dst_pmdp, src_pmdp, addr, next))
 				return -ENOMEM;
 		} else {
-			set_pmd(dst_pmdp,
-				__pmd(pmd_val(pmd) & ~PMD_SECT_RDONLY));
+			set_pmd(dst_pmdp, pmd_mkvalid_k(pmd_mkwrite_novma(pmd)));
 		}
 	} while (dst_pmdp++, src_pmdp++, addr = next, addr != end);
 
@@ -141,8 +118,7 @@ static int copy_pud(struct trans_pgd_info *info, p4d_t *dst_p4dp,
 			if (copy_pmd(info, dst_pudp, src_pudp, addr, next))
 				return -ENOMEM;
 		} else {
-			set_pud(dst_pudp,
-				__pud(pud_val(pud) & ~PUD_SECT_RDONLY));
+			set_pud(dst_pudp, pud_mkvalid_k(pud_mkwrite_novma(pud)));
 		}
 	} while (dst_pudp++, src_pudp++, addr = next, addr != end);
 
@@ -157,6 +133,13 @@ static int copy_p4d(struct trans_pgd_info *info, pgd_t *dst_pgdp,
 	p4d_t *src_p4dp;
 	unsigned long next;
 	unsigned long addr = start;
+
+	if (pgd_none(READ_ONCE(*dst_pgdp))) {
+		dst_p4dp = trans_alloc(info);
+		if (!dst_p4dp)
+			return -ENOMEM;
+		pgd_populate(NULL, dst_pgdp, dst_p4dp);
+	}
 
 	dst_p4dp = p4d_offset(dst_pgdp, start);
 	src_p4dp = p4d_offset(src_pgdp, start);
@@ -218,63 +201,6 @@ int trans_pgd_create_copy(struct trans_pgd_info *info, pgd_t **dst_pgdp,
 }
 
 /*
- * Add map entry to trans_pgd for a base-size page at PTE level.
- * info:	contains allocator and its argument
- * trans_pgd:	page table in which new map is added.
- * page:	page to be mapped.
- * dst_addr:	new VA address for the page
- * pgprot:	protection for the page.
- *
- * Returns 0 on success, and -ENOMEM on failure.
- */
-int trans_pgd_map_page(struct trans_pgd_info *info, pgd_t *trans_pgd,
-		       void *page, unsigned long dst_addr, pgprot_t pgprot)
-{
-	pgd_t *pgdp;
-	p4d_t *p4dp;
-	pud_t *pudp;
-	pmd_t *pmdp;
-	pte_t *ptep;
-
-	pgdp = pgd_offset_pgd(trans_pgd, dst_addr);
-	if (pgd_none(READ_ONCE(*pgdp))) {
-		p4dp = trans_alloc(info);
-		if (!pgdp)
-			return -ENOMEM;
-		pgd_populate(NULL, pgdp, p4dp);
-	}
-
-	p4dp = p4d_offset(pgdp, dst_addr);
-	if (p4d_none(READ_ONCE(*p4dp))) {
-		pudp = trans_alloc(info);
-		if (!pudp)
-			return -ENOMEM;
-		p4d_populate(NULL, p4dp, pudp);
-	}
-
-	pudp = pud_offset(p4dp, dst_addr);
-	if (pud_none(READ_ONCE(*pudp))) {
-		pmdp = trans_alloc(info);
-		if (!pmdp)
-			return -ENOMEM;
-		pud_populate(NULL, pudp, pmdp);
-	}
-
-	pmdp = pmd_offset(pudp, dst_addr);
-	if (pmd_none(READ_ONCE(*pmdp))) {
-		ptep = trans_alloc(info);
-		if (!ptep)
-			return -ENOMEM;
-		pmd_populate_kernel(NULL, pmdp, ptep);
-	}
-
-	ptep = pte_offset_kernel(pmdp, dst_addr);
-	set_pte(ptep, pfn_pte(virt_to_pfn(page), pgprot));
-
-	return 0;
-}
-
-/*
  * The page we want to idmap may be outside the range covered by VA_BITS that
  * can be built using the kernel's p?d_populate() helpers. As a one off, for a
  * single page, we build these page tables bottom up and just assume that will
@@ -295,7 +221,7 @@ int trans_pgd_idmap_page(struct trans_pgd_info *info, phys_addr_t *trans_ttbr0,
 	int this_level, index, level_lsb, level_msb;
 
 	dst_addr &= PAGE_MASK;
-	prev_level_entry = pte_val(pfn_pte(pfn, PAGE_KERNEL_EXEC));
+	prev_level_entry = pte_val(pfn_pte(pfn, PAGE_KERNEL_ROX));
 
 	for (this_level = 3; this_level >= 0; this_level--) {
 		levels[this_level] = trans_alloc(info);
@@ -319,6 +245,29 @@ int trans_pgd_idmap_page(struct trans_pgd_info *info, phys_addr_t *trans_ttbr0,
 
 	*trans_ttbr0 = phys_to_ttbr(__pfn_to_phys(pfn));
 	*t0sz = TCR_T0SZ(max_msb + 1);
+
+	return 0;
+}
+
+/*
+ * Create a copy of the vector table so we can call HVC_SET_VECTORS or
+ * HVC_SOFT_RESTART from contexts where the table may be overwritten.
+ */
+int trans_pgd_copy_el2_vectors(struct trans_pgd_info *info,
+			       phys_addr_t *el2_vectors)
+{
+	void *hyp_stub = trans_alloc(info);
+
+	if (!hyp_stub)
+		return -ENOMEM;
+	*el2_vectors = virt_to_phys(hyp_stub);
+	memcpy(hyp_stub, &trans_pgd_stub_vectors, ARM64_VECTOR_TABLE_LEN);
+	caches_clean_inval_pou((unsigned long)hyp_stub,
+			       (unsigned long)hyp_stub +
+			       ARM64_VECTOR_TABLE_LEN);
+	dcache_clean_inval_poc((unsigned long)hyp_stub,
+			       (unsigned long)hyp_stub +
+			       ARM64_VECTOR_TABLE_LEN);
 
 	return 0;
 }

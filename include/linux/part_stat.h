@@ -2,7 +2,8 @@
 #ifndef _LINUX_PART_STAT_H
 #define _LINUX_PART_STAT_H
 
-#include <linux/genhd.h>
+#include <linux/blkdev.h>
+#include <asm/local.h>
 
 struct disk_stats {
 	u64 nsecs[NR_STAT_GROUPS];
@@ -16,8 +17,8 @@ struct disk_stats {
 /*
  * Macros to operate on percpu disk statistics:
  *
- * {disk|part|all}_stat_{add|sub|inc|dec}() modify the stat counters and should
- * be called between disk_stat_lock() and disk_stat_unlock().
+ * part_stat_{add|sub|inc|dec}() modify the stat counters and should
+ * be called between part_stat_lock() and part_stat_unlock().
  *
  * part_stat_read() can be called at any time.
  */
@@ -32,7 +33,7 @@ struct disk_stats {
 
 #define part_stat_read(part, field)					\
 ({									\
-	typeof((part)->bd_stats->field) res = 0;			\
+	TYPEOF_UNQUAL((part)->bd_stats->field) res = 0;			\
 	unsigned int _cpu;						\
 	for_each_possible_cpu(_cpu)					\
 		res += per_cpu_ptr((part)->bd_stats, _cpu)->field; \
@@ -58,7 +59,7 @@ static inline void part_stat_set_all(struct block_device *part, int value)
 
 #define part_stat_add(part, field, addnd)	do {			\
 	__part_stat_add((part), field, addnd);				\
-	if ((part)->bd_partno)						\
+	if (bdev_is_partition(part))					\
 		__part_stat_add(bdev_whole(part), field, addnd);	\
 } while (0)
 
@@ -77,5 +78,7 @@ static inline void part_stat_set_all(struct block_device *part, int value)
 	local_read(&(part_stat_get(part, field)))
 #define part_stat_local_read_cpu(part, field, cpu)			\
 	local_read(&(part_stat_get_cpu(part, field, cpu)))
+
+unsigned int bdev_count_inflight(struct block_device *part);
 
 #endif /* _LINUX_PART_STAT_H */

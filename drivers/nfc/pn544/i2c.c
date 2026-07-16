@@ -17,7 +17,7 @@
 #include <linux/firmware.h>
 #include <linux/gpio/consumer.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <net/nfc/hci.h>
 #include <net/nfc/llc.h>
@@ -44,7 +44,7 @@
 					 PN544_HCI_I2C_LLC_MAX_PAYLOAD)
 
 static const struct i2c_device_id pn544_hci_i2c_id_table[] = {
-	{"pn544", 0},
+	{ "pn544" },
 	{}
 };
 
@@ -126,8 +126,6 @@ struct pn544_i2c_fw_secure_blob {
 #define PN544_FW_CMD_RESULT_COMMAND_REJECTED 0xE0
 #define PN544_FW_CMD_RESULT_CHUNK_ERROR 0xE6
 
-#define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
-
 #define PN544_FW_WRITE_BUFFER_MAX_LEN 0x9f7
 #define PN544_FW_I2C_MAX_PAYLOAD PN544_HCI_I2C_LLC_MAX_SIZE
 #define PN544_FW_I2C_WRITE_FRAME_HEADER_LEN 8
@@ -188,7 +186,7 @@ do {								\
 static void pn544_hci_i2c_platform_init(struct pn544_i2c_phy *phy)
 {
 	int polarity, retry, ret;
-	char rset_cmd[] = { 0x05, 0xF9, 0x04, 0x00, 0xC3, 0xE5 };
+	static const char rset_cmd[] = { 0x05, 0xF9, 0x04, 0x00, 0xC3, 0xE5 };
 	int count = sizeof(rset_cmd);
 
 	nfc_info(&phy->i2c_dev->dev, "Detecting nfc_en polarity\n");
@@ -866,8 +864,7 @@ static const struct acpi_gpio_mapping acpi_pn544_gpios[] = {
 	{ },
 };
 
-static int pn544_hci_i2c_probe(struct i2c_client *client,
-			       const struct i2c_device_id *id)
+static int pn544_hci_i2c_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct pn544_i2c_phy *phy;
@@ -928,7 +925,7 @@ static int pn544_hci_i2c_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int pn544_hci_i2c_remove(struct i2c_client *client)
+static void pn544_hci_i2c_remove(struct i2c_client *client)
 {
 	struct pn544_i2c_phy *phy = i2c_get_clientdata(client);
 
@@ -940,8 +937,6 @@ static int pn544_hci_i2c_remove(struct i2c_client *client)
 
 	if (phy->powered)
 		pn544_hci_i2c_disable(phy);
-
-	return 0;
 }
 
 static const struct of_device_id of_pn544_i2c_match[] __maybe_unused = {

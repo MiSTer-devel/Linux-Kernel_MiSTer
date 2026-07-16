@@ -260,10 +260,9 @@ static const struct dev_pm_ops bd9571mwv_pm  = {
 	SET_SYSTEM_SLEEP_PM_OPS(bd9571mwv_suspend, bd9571mwv_resume)
 };
 
-static int bd9571mwv_regulator_remove(struct platform_device *pdev)
+static void bd9571mwv_regulator_remove(struct platform_device *pdev)
 {
 	device_remove_file(&pdev->dev, &dev_attr_backup_mode);
-	return 0;
 }
 #define DEV_PM_OPS	&bd9571mwv_pm
 #else
@@ -288,8 +287,9 @@ static int bd9571mwv_regulator_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, bdreg);
 
+	device_set_of_node_from_dev(&pdev->dev, pdev->dev.parent);
+
 	config.dev = &pdev->dev;
-	config.dev->of_node = pdev->dev.parent->of_node;
 	config.driver_data = bdreg;
 	config.regmap = bdreg->regmap;
 
@@ -353,6 +353,7 @@ MODULE_DEVICE_TABLE(platform, bd9571mwv_regulator_id_table);
 static struct platform_driver bd9571mwv_regulator_driver = {
 	.driver = {
 		.name = "bd9571mwv-regulator",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.pm = DEV_PM_OPS,
 	},
 	.probe = bd9571mwv_regulator_probe,

@@ -31,6 +31,11 @@ static const s16 fakedata[] = {
 	[DUMMY_INDEX_ACCELX] = 344,
 };
 
+struct dummy_scan {
+	s16 data[ARRAY_SIZE(fakedata)];
+	aligned_s64 timestamp;
+};
+
 /**
  * iio_simple_dummy_trigger_h() - the trigger handler function
  * @irq: the interrupt number
@@ -45,49 +50,43 @@ static irqreturn_t iio_simple_dummy_trigger_h(int irq, void *p)
 {
 	struct iio_poll_func *pf = p;
 	struct iio_dev *indio_dev = pf->indio_dev;
-	int len = 0;
-	u16 *data;
+	struct dummy_scan *scan;
+	int i = 0, j;
 
-	data = kmalloc(indio_dev->scan_bytes, GFP_KERNEL);
-	if (!data)
+	/*
+	 * Note that some buses such as SPI require DMA safe buffers which
+	 * cannot be on the stack. Two easy ways to do this:
+	 *  - Local kzalloc (as done here)
+	 *  - A buffer at the end of the structure accessed via iio_priv()
+	 *    that is marked __aligned(IIO_DMA_MINALIGN).
+	 */
+	scan = kzalloc(sizeof(*scan), GFP_KERNEL);
+	if (!scan)
 		goto done;
 
-	if (!bitmap_empty(indio_dev->active_scan_mask, indio_dev->masklength)) {
-		/*
-		 * Three common options here:
-		 * hardware scans: certain combinations of channels make
-		 *   up a fast read.  The capture will consist of all of them.
-		 *   Hence we just call the grab data function and fill the
-		 *   buffer without processing.
-		 * software scans: can be considered to be random access
-		 *   so efficient reading is just a case of minimal bus
-		 *   transactions.
-		 * software culled hardware scans:
-		 *   occasionally a driver may process the nearest hardware
-		 *   scan to avoid storing elements that are not desired. This
-		 *   is the fiddliest option by far.
-		 * Here let's pretend we have random access. And the values are
-		 * in the constant table fakedata.
-		 */
-		int i, j;
+	/*
+	 * Three common options here:
+	 * hardware scans:
+	 *   certain combinations of channels make up a fast read. The capture
+	 *   will consist of all of them. Hence we just call the grab data
+	 *   function and fill the buffer without processing.
+	 * software scans:
+	 *   can be considered to be random access so efficient reading is just
+	 *   a case of minimal bus transactions.
+	 * software culled hardware scans:
+	 *   occasionally a driver may process the nearest hardware scan to avoid
+	 *   storing elements that are not desired. This is the fiddliest option
+	 *   by far.
+	 * Here let's pretend we have random access. And the values are in the
+	 * constant table fakedata.
+	 */
+	iio_for_each_active_channel(indio_dev, j)
+		scan->data[i++] = fakedata[j];
 
-		for (i = 0, j = 0;
-		     i < bitmap_weight(indio_dev->active_scan_mask,
-				       indio_dev->masklength);
-		     i++, j++) {
-			j = find_next_bit(indio_dev->active_scan_mask,
-					  indio_dev->masklength, j);
-			/* random access read from the 'device' */
-			data[i] = fakedata[j];
-			len += 2;
-		}
-	}
+	iio_push_to_buffers_with_ts(indio_dev, scan, sizeof(*scan),
+				    iio_get_time_ns(indio_dev));
 
-	iio_push_to_buffers_with_timestamp(indio_dev, data,
-					   iio_get_time_ns(indio_dev));
-
-	kfree(data);
-
+	kfree(scan);
 done:
 	/*
 	 * Tell the core we are done with this trigger and ready for the

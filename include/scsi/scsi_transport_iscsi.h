@@ -162,7 +162,7 @@ struct iscsi_transport {
  * transport registration upcalls
  */
 extern struct scsi_transport_template *iscsi_register_transport(struct iscsi_transport *tt);
-extern int iscsi_unregister_transport(struct iscsi_transport *tt);
+extern void iscsi_unregister_transport(struct iscsi_transport *tt);
 
 /*
  * control plane upcalls
@@ -211,6 +211,8 @@ struct iscsi_cls_conn {
 	struct mutex ep_mutex;
 	struct iscsi_endpoint *ep;
 
+	/* Used when accessing flags and queueing work. */
+	spinlock_t lock;
 	unsigned long flags;
 	struct work_struct cleanup_work;
 
@@ -234,6 +236,14 @@ enum {
 	ISCSI_SESSION_FREE,
 };
 
+enum {
+	ISCSI_SESSION_TARGET_UNBOUND,
+	ISCSI_SESSION_TARGET_ALLOCATED,
+	ISCSI_SESSION_TARGET_SCANNED,
+	ISCSI_SESSION_TARGET_UNBINDING,
+	ISCSI_SESSION_TARGET_MAX,
+};
+
 #define ISCSI_MAX_TARGET -1
 
 struct iscsi_cls_session {
@@ -251,6 +261,8 @@ struct iscsi_cls_session {
 	bool recovery_tmo_sysfs_override;
 	struct delayed_work recovery_work;
 
+	struct workqueue_struct *workq;
+
 	unsigned int target_id;
 	bool ida_used;
 
@@ -260,6 +272,7 @@ struct iscsi_cls_session {
 	 */
 	pid_t creator;
 	int state;
+	int target_state;			/* session target bind state */
 	int sid;				/* session id */
 	void *dd_data;				/* LLD private data */
 	struct device dev;	/* sysfs transport/container device */
@@ -278,7 +291,6 @@ struct iscsi_cls_session {
 	iscsi_dev_to_session(_stgt->dev.parent)
 
 struct iscsi_cls_host {
-	atomic_t nr_scans;
 	struct mutex mutex;
 	struct request_queue *bsg_q;
 	uint32_t port_speed;
@@ -294,7 +306,7 @@ extern void iscsi_host_for_each_session(struct Scsi_Host *shost,
 struct iscsi_endpoint {
 	void *dd_data;			/* LLD private data */
 	struct device dev;
-	uint64_t id;
+	int id;
 	struct iscsi_cls_conn *conn;
 };
 
@@ -435,20 +447,17 @@ extern int iscsi_add_session(struct iscsi_cls_session *session,
 			     unsigned int target_id);
 extern int iscsi_session_event(struct iscsi_cls_session *session,
 			       enum iscsi_uevent_e event);
-extern struct iscsi_cls_session *iscsi_create_session(struct Scsi_Host *shost,
-						struct iscsi_transport *t,
-						int dd_size,
-						unsigned int target_id);
+extern void iscsi_force_destroy_session(struct iscsi_cls_session *session);
 extern void iscsi_remove_session(struct iscsi_cls_session *session);
 extern void iscsi_free_session(struct iscsi_cls_session *session);
-extern struct iscsi_cls_conn *iscsi_create_conn(struct iscsi_cls_session *sess,
+extern struct iscsi_cls_conn *iscsi_alloc_conn(struct iscsi_cls_session *sess,
 						int dd_size, uint32_t cid);
+extern int iscsi_add_conn(struct iscsi_cls_conn *conn);
+extern void iscsi_remove_conn(struct iscsi_cls_conn *conn);
 extern void iscsi_put_conn(struct iscsi_cls_conn *conn);
 extern void iscsi_get_conn(struct iscsi_cls_conn *conn);
-extern int iscsi_destroy_conn(struct iscsi_cls_conn *conn);
 extern void iscsi_unblock_session(struct iscsi_cls_session *session);
 extern void iscsi_block_session(struct iscsi_cls_session *session);
-extern int iscsi_scan_finished(struct Scsi_Host *shost, unsigned long time);
 extern struct iscsi_endpoint *iscsi_create_endpoint(int dd_size);
 extern void iscsi_destroy_endpoint(struct iscsi_endpoint *ep);
 extern struct iscsi_endpoint *iscsi_lookup_endpoint(u64 handle);
@@ -459,7 +468,6 @@ extern struct iscsi_iface *iscsi_create_iface(struct Scsi_Host *shost,
 					      uint32_t iface_type,
 					      uint32_t iface_num, int dd_size);
 extern void iscsi_destroy_iface(struct iscsi_iface *iface);
-extern struct iscsi_iface *iscsi_lookup_iface(int handle);
 extern char *iscsi_get_port_speed_name(struct Scsi_Host *shost);
 extern char *iscsi_get_port_state_name(struct Scsi_Host *shost);
 extern int iscsi_is_session_dev(const struct device *dev);
@@ -483,10 +491,10 @@ iscsi_destroy_flashnode_sess(struct iscsi_bus_flash_session *fnode_sess);
 
 extern void iscsi_destroy_all_flashnode(struct Scsi_Host *shost);
 extern int iscsi_flashnode_bus_match(struct device *dev,
-				     struct device_driver *drv);
+				     const struct device_driver *drv);
 extern struct device *
-iscsi_find_flashnode_sess(struct Scsi_Host *shost, void *data,
-			  int (*fn)(struct device *dev, void *data));
+iscsi_find_flashnode_sess(struct Scsi_Host *shost, const void *data,
+			  device_match_t fn);
 extern struct device *
 iscsi_find_flashnode_conn(struct iscsi_bus_flash_session *fnode_sess);
 

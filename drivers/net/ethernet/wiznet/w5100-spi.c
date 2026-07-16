@@ -14,8 +14,8 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/netdevice.h>
+#include <linux/of.h>
 #include <linux/of_net.h>
-#include <linux/of_device.h>
 #include <linux/spi/spi.h>
 
 #include "w5100.h"
@@ -420,7 +420,6 @@ MODULE_DEVICE_TABLE(of, w5100_of_match);
 
 static int w5100_spi_probe(struct spi_device *spi)
 {
-	const struct of_device_id *of_id;
 	const struct w5100_ops *ops;
 	kernel_ulong_t driver_data;
 	const void *mac = NULL;
@@ -432,14 +431,7 @@ static int w5100_spi_probe(struct spi_device *spi)
 	if (!ret)
 		mac = tmpmac;
 
-	if (spi->dev.of_node) {
-		of_id = of_match_device(w5100_of_match, &spi->dev);
-		if (!of_id)
-			return -ENODEV;
-		driver_data = (kernel_ulong_t)of_id->data;
-	} else {
-		driver_data = spi_get_device_id(spi)->driver_data;
-	}
+	driver_data = (uintptr_t)spi_get_device_match_data(spi);
 
 	switch (driver_data) {
 	case W5100:
@@ -461,9 +453,9 @@ static int w5100_spi_probe(struct spi_device *spi)
 	return w5100_probe(&spi->dev, ops, priv_size, mac, spi->irq, -EINVAL);
 }
 
-static int w5100_spi_remove(struct spi_device *spi)
+static void w5100_spi_remove(struct spi_device *spi)
 {
-	return w5100_remove(&spi->dev);
+	w5100_remove(&spi->dev);
 }
 
 static const struct spi_device_id w5100_spi_ids[] = {

@@ -17,7 +17,7 @@
 #define KVM_E500_H
 
 #include <linux/kvm_host.h>
-#include <asm/nohash/mmu-book3e.h>
+#include <asm/nohash/mmu-e500.h>
 #include <asm/tlb.h>
 #include <asm/cputhreads.h>
 
@@ -34,6 +34,8 @@ enum vcpu_ftr {
 #define E500_TLB_BITMAP		(1 << 30)
 /* TLB1 entry is mapped by host TLB0 */
 #define E500_TLB_TLB0		(1 << 29)
+/* entry is writable on the host */
+#define E500_TLB_WRITABLE	(1 << 28)
 /* bits [6-5] MAS2_X1 and MAS2_X0 and [4-0] bits for WIMGE */
 #define E500_TLB_MAS2_ATTR	(0x7f)
 

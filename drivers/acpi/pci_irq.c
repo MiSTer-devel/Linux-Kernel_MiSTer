@@ -22,6 +22,7 @@
 #include <linux/acpi.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
+#include <linux/string_choices.h>
 
 struct acpi_prt_entry {
 	struct acpi_pci_id	id;
@@ -288,7 +289,7 @@ static int acpi_reroute_boot_interrupt(struct pci_dev *dev,
 }
 #endif /* CONFIG_X86_IO_APIC */
 
-static struct acpi_prt_entry *acpi_pci_irq_lookup(struct pci_dev *dev, int pin)
+struct acpi_prt_entry *acpi_pci_irq_lookup(struct pci_dev *dev, int pin)
 {
 	struct acpi_prt_entry *entry = NULL;
 	struct pci_dev *bridge;
@@ -387,13 +388,15 @@ int acpi_pci_irq_enable(struct pci_dev *dev)
 	u8 pin;
 	int triggering = ACPI_LEVEL_SENSITIVE;
 	/*
-	 * On ARM systems with the GIC interrupt model, level interrupts
+	 * On ARM systems with the GIC interrupt model, or LoongArch
+	 * systems with the LPIC interrupt model, level interrupts
 	 * are always polarity high by specification; PCI legacy
 	 * IRQs lines are inverted before reaching the interrupt
 	 * controller and must therefore be considered active high
 	 * as default.
 	 */
-	int polarity = acpi_irq_model == ACPI_IRQ_MODEL_GIC ?
+	int polarity = acpi_irq_model == ACPI_IRQ_MODEL_GIC ||
+		       acpi_irq_model == ACPI_IRQ_MODEL_LPIC ?
 				      ACPI_ACTIVE_HIGH : ACPI_ACTIVE_LOW;
 	char *link = NULL;
 	char link_desc[16];
@@ -466,7 +469,7 @@ int acpi_pci_irq_enable(struct pci_dev *dev)
 	dev_dbg(&dev->dev, "PCI INT %c%s -> GSI %u (%s, %s) -> IRQ %d\n",
 		pin_name(pin), link_desc, gsi,
 		(triggering == ACPI_LEVEL_SENSITIVE) ? "level" : "edge",
-		(polarity == ACPI_ACTIVE_LOW) ? "low" : "high", dev->irq);
+		str_low_high(polarity == ACPI_ACTIVE_LOW), dev->irq);
 
 	kfree(entry);
 	return 0;

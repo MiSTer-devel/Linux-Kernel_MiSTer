@@ -1,2 +1,4 @@
-sphinx_rtd_theme
-Sphinx==2.4.4
+# SPDX-License-Identifier: GPL-2.0
+alabaster
+Sphinx
+pyyaml

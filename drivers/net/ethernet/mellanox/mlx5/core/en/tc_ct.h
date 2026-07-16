@@ -25,9 +25,12 @@ struct nf_flowtable;
 struct mlx5_ct_attr {
 	u16 zone;
 	u16 ct_action;
-	struct mlx5_ct_flow *ct_flow;
 	struct nf_flowtable *nf_ft;
 	u32 ct_labels_id;
+	u32 act_miss_mapping;
+	u64 act_miss_cookie;
+	bool offloaded;
+	struct mlx5_ct_ft *ft;
 };
 
 #define zone_to_reg_ct {\
@@ -62,10 +65,11 @@ struct mlx5_ct_attr {
 				 misc_parameters_2.metadata_reg_c_4),\
 }
 
+/* 8 LSB of metadata C5 are reserved for packet color */
 #define fteid_to_reg_ct {\
 	.mfield = MLX5_ACTION_IN_FIELD_METADATA_REG_C_5,\
-	.moffset = 0,\
-	.mlen = 32,\
+	.moffset = 8,\
+	.mlen = 24,\
 	.soffset = MLX5_BYTE_OFF(fte_match_param,\
 				 misc_parameters_2.metadata_reg_c_5),\
 }
@@ -84,8 +88,8 @@ struct mlx5_ct_attr {
 	.mlen = ESW_ZONE_ID_BITS,\
 }
 
-#define REG_MAPPING_MLEN(reg) (mlx5e_tc_attr_to_reg_mappings[reg].mlen)
-#define REG_MAPPING_MOFFSET(reg) (mlx5e_tc_attr_to_reg_mappings[reg].moffset)
+#define MLX5_CT_ZONE_BITS MLX5_REG_MAPPING_MBITS(ZONE_TO_REG)
+#define MLX5_CT_ZONE_MASK MLX5_REG_MAPPING_MASK(ZONE_TO_REG)
 
 #if IS_ENABLED(CONFIG_MLX5_TC_CT)
 
@@ -113,20 +117,19 @@ mlx5_tc_ct_parse_action(struct mlx5_tc_ct_priv *priv,
 			const struct flow_action_entry *act,
 			struct netlink_ext_ack *extack);
 
-struct mlx5_flow_handle *
-mlx5_tc_ct_flow_offload(struct mlx5_tc_ct_priv *priv,
-			struct mlx5e_tc_flow *flow,
-			struct mlx5_flow_spec *spec,
-			struct mlx5_flow_attr *attr,
-			struct mlx5e_tc_mod_hdr_acts *mod_hdr_acts);
+int
+mlx5_tc_ct_flow_offload(struct mlx5_tc_ct_priv *priv, struct mlx5_flow_attr *attr);
+
 void
 mlx5_tc_ct_delete_flow(struct mlx5_tc_ct_priv *priv,
-		       struct mlx5e_tc_flow *flow,
 		       struct mlx5_flow_attr *attr);
 
 bool
 mlx5e_tc_ct_restore_flow(struct mlx5_tc_ct_priv *ct_priv,
 			 struct sk_buff *skb, u8 zone_restore_id);
+
+#define MLX5_CT_TCP_FLAGS_MASK cpu_to_be16(be32_to_cpu(TCP_FLAG_RST | TCP_FLAG_FIN) >> 16)
+bool mlx5e_tc_ct_is_valid_flow_rule(const struct net_device *dev, struct flow_rule *flow_rule);
 
 #else /* CONFIG_MLX5_TC_CT */
 
@@ -179,19 +182,15 @@ mlx5_tc_ct_parse_action(struct mlx5_tc_ct_priv *priv,
 	return -EOPNOTSUPP;
 }
 
-static inline struct mlx5_flow_handle *
+static inline int
 mlx5_tc_ct_flow_offload(struct mlx5_tc_ct_priv *priv,
-			struct mlx5e_tc_flow *flow,
-			struct mlx5_flow_spec *spec,
-			struct mlx5_flow_attr *attr,
-			struct mlx5e_tc_mod_hdr_acts *mod_hdr_acts)
+			struct mlx5_flow_attr *attr)
 {
-	return ERR_PTR(-EOPNOTSUPP);
+	return -EOPNOTSUPP;
 }
 
 static inline void
 mlx5_tc_ct_delete_flow(struct mlx5_tc_ct_priv *priv,
-		       struct mlx5e_tc_flow *flow,
 		       struct mlx5_flow_attr *attr)
 {
 }
@@ -203,6 +202,13 @@ mlx5e_tc_ct_restore_flow(struct mlx5_tc_ct_priv *ct_priv,
 	if (!zone_restore_id)
 		return true;
 
+	return false;
+}
+
+static inline bool
+mlx5e_tc_ct_is_valid_flow_rule(const struct net_device *dev,
+			       struct flow_rule *flow_rule)
+{
 	return false;
 }
 

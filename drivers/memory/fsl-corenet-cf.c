@@ -10,10 +10,8 @@
 #include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
-#include <linux/of_irq.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 
 enum ccf_version {
 	CCF1,
@@ -172,31 +170,19 @@ out:
 static int ccf_probe(struct platform_device *pdev)
 {
 	struct ccf_private *ccf;
-	struct resource *r;
-	const struct of_device_id *match;
 	u32 errinten;
 	int ret, irq;
-
-	match = of_match_device(ccf_matches, &pdev->dev);
-	if (WARN_ON(!match))
-		return -ENODEV;
 
 	ccf = devm_kzalloc(&pdev->dev, sizeof(*ccf), GFP_KERNEL);
 	if (!ccf)
 		return -ENOMEM;
 
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!r) {
-		dev_err(&pdev->dev, "%s: no mem resource\n", __func__);
-		return -ENXIO;
-	}
-
-	ccf->regs = devm_ioremap_resource(&pdev->dev, r);
+	ccf->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(ccf->regs))
 		return PTR_ERR(ccf->regs);
 
 	ccf->dev = &pdev->dev;
-	ccf->info = match->data;
+	ccf->info = device_get_match_data(&pdev->dev);
 	ccf->err_regs = ccf->regs + ccf->info->err_reg_offs;
 
 	if (ccf->info->has_brr) {
@@ -237,7 +223,7 @@ static int ccf_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int ccf_remove(struct platform_device *pdev)
+static void ccf_remove(struct platform_device *pdev)
 {
 	struct ccf_private *ccf = dev_get_drvdata(&pdev->dev);
 
@@ -255,8 +241,6 @@ static int ccf_remove(struct platform_device *pdev)
 		iowrite32be(0, &ccf->err_regs->errinten);
 		break;
 	}
-
-	return 0;
 }
 
 static struct platform_driver ccf_driver = {

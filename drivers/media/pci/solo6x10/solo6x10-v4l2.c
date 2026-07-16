@@ -365,19 +365,13 @@ static const struct vb2_ops solo_video_qops = {
 	.buf_queue	= solo_buf_queue,
 	.start_streaming = solo_start_streaming,
 	.stop_streaming = solo_stop_streaming,
-	.wait_prepare	= vb2_ops_wait_prepare,
-	.wait_finish	= vb2_ops_wait_finish,
 };
 
 static int solo_querycap(struct file *file, void  *priv,
 			 struct v4l2_capability *cap)
 {
-	struct solo_dev *solo_dev = video_drvdata(file);
-
 	strscpy(cap->driver, SOLO6X10_NAME, sizeof(cap->driver));
 	strscpy(cap->card, "Softlogic 6x10", sizeof(cap->card));
-	snprintf(cap->bus_info, sizeof(cap->bus_info), "PCI:%s",
-		 pci_name(solo_dev->pdev));
 	return 0;
 }
 

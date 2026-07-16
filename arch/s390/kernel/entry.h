@@ -5,6 +5,7 @@
 #include <linux/percpu.h>
 #include <linux/types.h>
 #include <linux/signal.h>
+#include <asm/extable.h>
 #include <asm/ptrace.h>
 #include <asm/idle.h>
 
@@ -16,10 +17,13 @@ void ext_int_handler(void);
 void io_int_handler(void);
 void mcck_int_handler(void);
 void restart_int_handler(void);
+void early_pgm_check_handler(void);
 
+struct task_struct *__switch_to_asm(struct task_struct *prev, struct task_struct *next);
 void __ret_from_fork(struct task_struct *prev, struct pt_regs *regs);
 void __do_pgm_check(struct pt_regs *regs);
 void __do_syscall(struct pt_regs *regs, int per_trap);
+void __do_early_pgm_check(struct pt_regs *regs);
 
 void do_protection_exception(struct pt_regs *regs);
 void do_dat_exception(struct pt_regs *regs);
@@ -27,19 +31,16 @@ void do_secure_storage_access(struct pt_regs *regs);
 void do_non_secure_storage_access(struct pt_regs *regs);
 void do_secure_storage_violation(struct pt_regs *regs);
 void do_report_trap(struct pt_regs *regs, int si_signo, int si_code, char *str);
-void kernel_stack_overflow(struct pt_regs * regs);
+void kernel_stack_invalid(struct pt_regs *regs);
 void handle_signal32(struct ksignal *ksig, sigset_t *oldset,
 		     struct pt_regs *regs);
 
-void __init init_IRQ(void);
 void do_io_irq(struct pt_regs *regs);
 void do_ext_irq(struct pt_regs *regs);
 void do_restart(void *arg);
 void __init startup_init(void);
 void die(struct pt_regs *regs, const char *str);
 int setup_profiling_timer(unsigned int multiplier);
-void __init time_init(void);
-unsigned long prepare_ftrace_return(unsigned long parent, unsigned long sp, unsigned long ip);
 
 struct s390_mmap_arg_struct;
 struct fadvise64_64_args;

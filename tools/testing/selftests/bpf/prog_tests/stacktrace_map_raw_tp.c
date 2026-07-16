@@ -3,20 +3,20 @@
 
 void test_stacktrace_map_raw_tp(void)
 {
-	const char *prog_name = "tracepoint/sched/sched_switch";
+	const char *prog_name = "oncpu";
 	int control_map_fd, stackid_hmap_fd, stackmap_fd;
-	const char *file = "./test_stacktrace_map.o";
+	const char *file = "./stacktrace_map.bpf.o";
 	__u32 key, val, duration = 0;
 	int err, prog_fd;
 	struct bpf_program *prog;
 	struct bpf_object *obj;
 	struct bpf_link *link = NULL;
 
-	err = bpf_prog_load(file, BPF_PROG_TYPE_RAW_TRACEPOINT, &obj, &prog_fd);
+	err = bpf_prog_test_load(file, BPF_PROG_TYPE_RAW_TRACEPOINT, &obj, &prog_fd);
 	if (CHECK(err, "prog_load raw tp", "err %d errno %d\n", err, errno))
 		return;
 
-	prog = bpf_object__find_program_by_title(obj, prog_name);
+	prog = bpf_object__find_program_by_name(obj, prog_name);
 	if (CHECK(!prog, "find_prog", "prog '%s' not found\n", prog_name))
 		goto close_prog;
 
@@ -46,7 +46,7 @@ void test_stacktrace_map_raw_tp(void)
 	bpf_map_update_elem(control_map_fd, &key, &val, 0);
 
 	/* for every element in stackid_hmap, we can find a corresponding one
-	 * in stackmap, and vise versa.
+	 * in stackmap, and vice versa.
 	 */
 	err = compare_map_keys(stackid_hmap_fd, stackmap_fd);
 	if (CHECK(err, "compare_map_keys stackid_hmap vs. stackmap",

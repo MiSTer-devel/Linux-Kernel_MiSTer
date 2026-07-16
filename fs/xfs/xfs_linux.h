@@ -21,19 +21,18 @@ typedef __u32			xfs_nlink_t;
 
 #include "xfs_types.h"
 
-#include "kmem.h"
-#include "mrlock.h"
-
 #include <linux/semaphore.h>
 #include <linux/mm.h>
 #include <linux/sched/mm.h>
 #include <linux/kernel.h>
 #include <linux/blkdev.h>
 #include <linux/slab.h>
+#include <linux/vmalloc.h>
 #include <linux/crc32c.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/file.h>
+#include <linux/filelock.h>
 #include <linux/swap.h>
 #include <linux/errno.h>
 #include <linux/sched/signal.h>
@@ -50,6 +49,7 @@ typedef __u32			xfs_nlink_t;
 #include <linux/notifier.h>
 #include <linux/delay.h>
 #include <linux/log2.h>
+#include <linux/rwsem.h>
 #include <linux/spinlock.h>
 #include <linux/random.h>
 #include <linux/ctype.h>
@@ -61,13 +61,15 @@ typedef __u32			xfs_nlink_t;
 #include <linux/ratelimit.h>
 #include <linux/rhashtable.h>
 #include <linux/xattr.h>
+#include <linux/mnt_idmapping.h>
+#include <linux/debugfs.h>
 
 #include <asm/page.h>
 #include <asm/div64.h>
 #include <asm/param.h>
 #include <linux/uaccess.h>
 #include <asm/byteorder.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "xfs_fs.h"
 #include "xfs_stats.h"
@@ -78,6 +80,8 @@ typedef __u32			xfs_nlink_t;
 #include "xfs_cksum.h"
 #include "xfs_buf.h"
 #include "xfs_message.h"
+#include "xfs_drain.h"
+#include "xfs_hooks.h"
 
 #ifdef __BIG_ENDIAN
 #define XFS_NATIVE_HOST 1
@@ -85,8 +89,6 @@ typedef __u32			xfs_nlink_t;
 #undef XFS_NATIVE_HOST
 #endif
 
-#define irix_sgid_inherit	xfs_params.sgid_inherit.val
-#define irix_symlink_mode	xfs_params.symlink_mode.val
 #define xfs_panic_mask		xfs_params.panic_mask.val
 #define xfs_error_level		xfs_params.error_level.val
 #define xfs_syncd_centisecs	xfs_params.syncd_timer.val
@@ -130,8 +132,6 @@ typedef __u32			xfs_nlink_t;
  * return, which throws off the reported address.
  */
 #define __this_address	({ __label__ __here; __here: barrier(); &&__here; })
-
-#define XFS_PROJID_DEFAULT	0
 
 #define howmany(x, y)	(((x)+((y)-1))/(y))
 
@@ -194,10 +194,25 @@ static inline uint64_t howmany_64(uint64_t x, uint32_t y)
 	return x;
 }
 
+static inline bool isaligned_64(uint64_t x, uint32_t y)
+{
+	return do_div(x, y) == 0;
+}
+
+/* If @b is a power of 2, return log2(b).  Else return -1. */
+static inline int8_t log2_if_power2(unsigned long b)
+{
+	return is_power_of_2(b) ? ilog2(b) : -1;
+}
+
+/* If @b is a power of 2, return a mask of the lower bits, else return zero. */
+static inline unsigned long long mask64_if_power2(unsigned long b)
+{
+	return is_power_of_2(b) ? b - 1 : 0;
+}
+
 int xfs_rw_bdev(struct block_device *bdev, sector_t sector, unsigned int count,
-		char *data, unsigned int op);
-void xfs_flush_bdev_async(struct bio *bio, struct block_device *bdev,
-		struct completion *done);
+		char *data, enum req_op op);
 
 #define ASSERT_ALWAYS(expr)	\
 	(likely(expr) ? (void)0 : assfail(NULL, #expr, __FILE__, __LINE__))
@@ -254,5 +269,16 @@ void xfs_flush_bdev_async(struct bio *bio, struct block_device *bdev,
 #else
 # define PTR_FMT "%p"
 #endif
+
+/*
+ * Helper for IO routines to grab backing pages from allocated kernel memory.
+ */
+static inline struct page *
+kmem_to_page(void *addr)
+{
+	if (is_vmalloc_addr(addr))
+		return vmalloc_to_page(addr);
+	return virt_to_page(addr);
+}
 
 #endif /* __XFS_LINUX__ */

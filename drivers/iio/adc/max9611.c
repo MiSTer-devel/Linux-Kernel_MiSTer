@@ -22,9 +22,8 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
-
-#define DRIVER_NAME			"max9611"
+#include <linux/mod_devicetable.h>
+#include <linux/property.h>
 
 /* max9611 register addresses */
 #define MAX9611_REG_CSA_DATA		0x00
@@ -428,7 +427,7 @@ static ssize_t max9611_shunt_resistor_show(struct device *dev,
 	i = max9611->shunt_resistor_uohm / 1000000;
 	r = max9611->shunt_resistor_uohm % 1000000;
 
-	return sprintf(buf, "%u.%06u\n", i, r);
+	return sysfs_emit(buf, "%u.%06u\n", i, r);
 }
 
 static IIO_DEVICE_ATTR(in_power_shunt_resistor, 0444,
@@ -503,21 +502,18 @@ static int max9611_init(struct max9611_dev *max9611)
 }
 
 static const struct of_device_id max9611_of_table[] = {
-	{.compatible = "maxim,max9611", .data = "max9611"},
-	{.compatible = "maxim,max9612", .data = "max9612"},
-	{ },
+	{ .compatible = "maxim,max9611", .data = "max9611" },
+	{ .compatible = "maxim,max9612", .data = "max9612" },
+	{ }
 };
 
 MODULE_DEVICE_TABLE(of, max9611_of_table);
-static int max9611_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int max9611_probe(struct i2c_client *client)
 {
 	const char * const shunt_res_prop = "shunt-resistor-micro-ohms";
-	const struct device_node *of_node = client->dev.of_node;
-	const struct of_device_id *of_id =
-		of_match_device(max9611_of_table, &client->dev);
 	struct max9611_dev *max9611;
 	struct iio_dev *indio_dev;
+	struct device *dev = &client->dev;
 	unsigned int of_shunt;
 	int ret;
 
@@ -528,15 +524,14 @@ static int max9611_probe(struct i2c_client *client,
 	i2c_set_clientdata(client, indio_dev);
 
 	max9611			= iio_priv(indio_dev);
-	max9611->dev		= &client->dev;
+	max9611->dev		= dev;
 	max9611->i2c_client	= client;
 	mutex_init(&max9611->lock);
 
-	ret = of_property_read_u32(of_node, shunt_res_prop, &of_shunt);
+	ret = device_property_read_u32(dev, shunt_res_prop, &of_shunt);
 	if (ret) {
-		dev_err(&client->dev,
-			"Missing %s property for %pOF node\n",
-			shunt_res_prop, of_node);
+		dev_err(dev, "Missing %s property for %pfw node\n",
+			shunt_res_prop, dev_fwnode(dev));
 		return ret;
 	}
 	max9611->shunt_resistor_uohm = of_shunt;
@@ -545,18 +540,18 @@ static int max9611_probe(struct i2c_client *client,
 	if (ret)
 		return ret;
 
-	indio_dev->name		= of_id->data;
+	indio_dev->name		= device_get_match_data(dev);
 	indio_dev->modes	= INDIO_DIRECT_MODE;
 	indio_dev->info		= &indio_info;
 	indio_dev->channels	= max9611_channels;
 	indio_dev->num_channels	= ARRAY_SIZE(max9611_channels);
 
-	return devm_iio_device_register(&client->dev, indio_dev);
+	return devm_iio_device_register(dev, indio_dev);
 }
 
 static struct i2c_driver max9611_driver = {
 	.driver = {
-		   .name = DRIVER_NAME,
+		   .name = "max9611",
 		   .of_match_table = max9611_of_table,
 	},
 	.probe = max9611_probe,

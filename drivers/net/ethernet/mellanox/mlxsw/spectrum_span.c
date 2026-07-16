@@ -31,13 +31,13 @@ struct mlxsw_sp_span {
 	refcount_t policer_id_base_ref_count;
 	atomic_t active_entries_count;
 	int entries_count;
-	struct mlxsw_sp_span_entry entries[];
+	struct mlxsw_sp_span_entry entries[] __counted_by(entries_count);
 };
 
 struct mlxsw_sp_span_analyzed_port {
 	struct list_head list; /* Member of analyzed_ports_list */
 	refcount_t ref_count;
-	u8 local_port;
+	u16 local_port;
 	bool ingress;
 };
 
@@ -46,7 +46,7 @@ struct mlxsw_sp_span_trigger_entry {
 	struct mlxsw_sp_span *span;
 	const struct mlxsw_sp_span_trigger_ops *ops;
 	refcount_t ref_count;
-	u8 local_port;
+	u16 local_port;
 	enum mlxsw_sp_span_trigger trigger;
 	struct mlxsw_sp_span_trigger_parms parms;
 };
@@ -106,8 +106,8 @@ int mlxsw_sp_span_init(struct mlxsw_sp *mlxsw_sp)
 	if (err)
 		goto err_init;
 
-	devlink_resource_occ_get_register(devlink, MLXSW_SP_RESOURCE_SPAN,
-					  mlxsw_sp_span_occ_get, mlxsw_sp);
+	devl_resource_occ_get_register(devlink, MLXSW_SP_RESOURCE_SPAN,
+				       mlxsw_sp_span_occ_get, mlxsw_sp);
 	INIT_WORK(&span->work, mlxsw_sp_span_respin_work);
 
 	return 0;
@@ -123,7 +123,7 @@ void mlxsw_sp_span_fini(struct mlxsw_sp *mlxsw_sp)
 	struct devlink *devlink = priv_to_devlink(mlxsw_sp->core);
 
 	cancel_work_sync(&mlxsw_sp->span->work);
-	devlink_resource_occ_get_unregister(devlink, MLXSW_SP_RESOURCE_SPAN);
+	devl_resource_occ_get_unregister(devlink, MLXSW_SP_RESOURCE_SPAN);
 
 	WARN_ON_ONCE(!list_empty(&mlxsw_sp->span->trigger_entries_list));
 	WARN_ON_ONCE(!list_empty(&mlxsw_sp->span->analyzed_ports_list));
@@ -179,7 +179,7 @@ mlxsw_sp_span_entry_phys_configure(struct mlxsw_sp_span_entry *span_entry,
 {
 	struct mlxsw_sp_port *dest_port = sparms.dest_port;
 	struct mlxsw_sp *mlxsw_sp = dest_port->mlxsw_sp;
-	u8 local_port = dest_port->local_port;
+	u16 local_port = dest_port->local_port;
 	char mpat_pl[MLXSW_REG_MPAT_LEN];
 	int pa_id = span_entry->id;
 
@@ -199,7 +199,7 @@ mlxsw_sp_span_entry_deconfigure_common(struct mlxsw_sp_span_entry *span_entry,
 {
 	struct mlxsw_sp_port *dest_port = span_entry->parms.dest_port;
 	struct mlxsw_sp *mlxsw_sp = dest_port->mlxsw_sp;
-	u8 local_port = dest_port->local_port;
+	u16 local_port = dest_port->local_port;
 	char mpat_pl[MLXSW_REG_MPAT_LEN];
 	int pa_id = span_entry->id;
 
@@ -269,8 +269,7 @@ mlxsw_sp_span_entry_bridge_8021q(const struct net_device *br_dev,
 
 	if (!vid && WARN_ON(br_vlan_get_pvid(br_dev, &vid)))
 		return NULL;
-	if (!vid ||
-	    br_vlan_get_info(br_dev, vid, &vinfo) ||
+	if (!vid || br_vlan_get_info(br_dev, vid, &vinfo) ||
 	    !(vinfo.flags & BRIDGE_VLAN_INFO_BRENTRY))
 		return NULL;
 
@@ -414,8 +413,8 @@ mlxsw_sp_span_gretap4_route(const struct net_device *to_dev,
 			    __be32 *saddrp, __be32 *daddrp)
 {
 	struct ip_tunnel *tun = netdev_priv(to_dev);
+	struct ip_tunnel_parm_kern parms;
 	struct net_device *dev = NULL;
-	struct ip_tunnel_parm parms;
 	struct rtable *rt = NULL;
 	struct flowi4 fl4;
 
@@ -424,7 +423,7 @@ mlxsw_sp_span_gretap4_route(const struct net_device *to_dev,
 
 	parms = mlxsw_sp_ipip_netdev_parms4(to_dev);
 	ip_tunnel_init_flow(&fl4, parms.iph.protocol, *daddrp, *saddrp,
-			    0, 0, parms.link, tun->fwmark, 0);
+			    0, 0, tun->net, parms.link, tun->fwmark, 0, 0);
 
 	rt = ip_route_output_key(tun->net, &fl4);
 	if (IS_ERR(rt))
@@ -451,7 +450,7 @@ mlxsw_sp_span_entry_gretap4_parms(struct mlxsw_sp *mlxsw_sp,
 				  const struct net_device *to_dev,
 				  struct mlxsw_sp_span_parms *sparmsp)
 {
-	struct ip_tunnel_parm tparm = mlxsw_sp_ipip_netdev_parms4(to_dev);
+	struct ip_tunnel_parm_kern tparm = mlxsw_sp_ipip_netdev_parms4(to_dev);
 	union mlxsw_sp_l3addr saddr = { .addr4 = tparm.iph.saddr };
 	union mlxsw_sp_l3addr daddr = { .addr4 = tparm.iph.daddr };
 	bool inherit_tos = tparm.iph.tos & 0x1;
@@ -461,7 +460,8 @@ mlxsw_sp_span_entry_gretap4_parms(struct mlxsw_sp *mlxsw_sp,
 
 	if (!(to_dev->flags & IFF_UP) ||
 	    /* Reject tunnels with GRE keys, checksums, etc. */
-	    tparm.i_flags || tparm.o_flags ||
+	    !ip_tunnel_flags_empty(tparm.i_flags) ||
+	    !ip_tunnel_flags_empty(tparm.o_flags) ||
 	    /* Require a fixed TTL and a TOS copied from the mirrored packet. */
 	    inherit_ttl || !inherit_tos ||
 	    /* A destination address may not be "any". */
@@ -480,7 +480,7 @@ mlxsw_sp_span_entry_gretap4_configure(struct mlxsw_sp_span_entry *span_entry,
 {
 	struct mlxsw_sp_port *dest_port = sparms.dest_port;
 	struct mlxsw_sp *mlxsw_sp = dest_port->mlxsw_sp;
-	u8 local_port = dest_port->local_port;
+	u16 local_port = dest_port->local_port;
 	char mpat_pl[MLXSW_REG_MPAT_LEN];
 	int pa_id = span_entry->id;
 
@@ -539,7 +539,7 @@ mlxsw_sp_span_gretap6_route(const struct net_device *to_dev,
 	if (!dst || dst->error)
 		goto out;
 
-	rt6 = container_of(dst, struct rt6_info, dst);
+	rt6 = dst_rt6_info(dst);
 
 	dev = dst->dev;
 	*saddrp = fl6.saddr;
@@ -565,7 +565,8 @@ mlxsw_sp_span_entry_gretap6_parms(struct mlxsw_sp *mlxsw_sp,
 
 	if (!(to_dev->flags & IFF_UP) ||
 	    /* Reject tunnels with GRE keys, checksums, etc. */
-	    tparm.i_flags || tparm.o_flags ||
+	    !ip_tunnel_flags_empty(tparm.i_flags) ||
+	    !ip_tunnel_flags_empty(tparm.o_flags) ||
 	    /* Require a fixed TTL and a TOS copied from the mirrored packet. */
 	    inherit_ttl || !inherit_tos ||
 	    /* A destination address may not be "any". */
@@ -584,7 +585,7 @@ mlxsw_sp_span_entry_gretap6_configure(struct mlxsw_sp_span_entry *span_entry,
 {
 	struct mlxsw_sp_port *dest_port = sparms.dest_port;
 	struct mlxsw_sp *mlxsw_sp = dest_port->mlxsw_sp;
-	u8 local_port = dest_port->local_port;
+	u16 local_port = dest_port->local_port;
 	char mpat_pl[MLXSW_REG_MPAT_LEN];
 	int pa_id = span_entry->id;
 
@@ -650,7 +651,7 @@ mlxsw_sp_span_entry_vlan_configure(struct mlxsw_sp_span_entry *span_entry,
 {
 	struct mlxsw_sp_port *dest_port = sparms.dest_port;
 	struct mlxsw_sp *mlxsw_sp = dest_port->mlxsw_sp;
-	u8 local_port = dest_port->local_port;
+	u16 local_port = dest_port->local_port;
 	char mpat_pl[MLXSW_REG_MPAT_LEN];
 	int pa_id = span_entry->id;
 
@@ -997,7 +998,7 @@ static void mlxsw_sp_span_port_buffer_disable(struct mlxsw_sp_port *mlxsw_sp_por
 }
 
 static struct mlxsw_sp_span_analyzed_port *
-mlxsw_sp_span_analyzed_port_find(struct mlxsw_sp_span *span, u8 local_port,
+mlxsw_sp_span_analyzed_port_find(struct mlxsw_sp_span *span, u16 local_port,
 				 bool ingress)
 {
 	struct mlxsw_sp_span_analyzed_port *analyzed_port;
@@ -1165,7 +1166,7 @@ int mlxsw_sp_span_analyzed_port_get(struct mlxsw_sp_port *mlxsw_sp_port,
 {
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
 	struct mlxsw_sp_span_analyzed_port *analyzed_port;
-	u8 local_port = mlxsw_sp_port->local_port;
+	u16 local_port = mlxsw_sp_port->local_port;
 	int err = 0;
 
 	mutex_lock(&mlxsw_sp->span->analyzed_ports_lock);
@@ -1193,7 +1194,7 @@ void mlxsw_sp_span_analyzed_port_put(struct mlxsw_sp_port *mlxsw_sp_port,
 {
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
 	struct mlxsw_sp_span_analyzed_port *analyzed_port;
-	u8 local_port = mlxsw_sp_port->local_port;
+	u16 local_port = mlxsw_sp_port->local_port;
 
 	mutex_lock(&mlxsw_sp->span->analyzed_ports_lock);
 
@@ -1648,6 +1649,22 @@ void mlxsw_sp_span_trigger_disable(struct mlxsw_sp_port *mlxsw_sp_port,
 		return;
 
 	return trigger_entry->ops->disable(trigger_entry, mlxsw_sp_port, tc);
+}
+
+bool mlxsw_sp_span_trigger_is_ingress(enum mlxsw_sp_span_trigger trigger)
+{
+	switch (trigger) {
+	case MLXSW_SP_SPAN_TRIGGER_INGRESS:
+	case MLXSW_SP_SPAN_TRIGGER_EARLY_DROP:
+	case MLXSW_SP_SPAN_TRIGGER_TAIL_DROP:
+		return true;
+	case MLXSW_SP_SPAN_TRIGGER_EGRESS:
+	case MLXSW_SP_SPAN_TRIGGER_ECN:
+		return false;
+	}
+
+	WARN_ON_ONCE(1);
+	return false;
 }
 
 static int mlxsw_sp1_span_init(struct mlxsw_sp *mlxsw_sp)

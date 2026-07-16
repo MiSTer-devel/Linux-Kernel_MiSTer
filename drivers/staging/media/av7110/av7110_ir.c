@@ -59,8 +59,7 @@ void av7110_ir_handler(struct av7110 *av7110, u32 ircom)
 			proto = RC_PROTO_RC5;
 			break;
 		default:
-			dprintk(2, "unknown ir config %d\n",
-				av7110->ir.ir_config);
+			dprintk(2, "unknown ir config %d\n", av7110->ir.ir_config);
 			return;
 		}
 
@@ -152,6 +151,7 @@ int av7110_ir_init(struct av7110 *av7110)
 void av7110_ir_exit(struct av7110 *av7110)
 {
 	rc_unregister_device(av7110->ir.rcdev);
+	rc_free_device(av7110->ir.rcdev);
 }
 
 //MODULE_AUTHOR("Holger Waechtler <holger@convergence.de>, Oliver Endriss <o.endriss@gmx.de>");

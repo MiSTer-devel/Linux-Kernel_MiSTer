@@ -10,14 +10,24 @@ source "drivers/cxl/Kconfig"
 source "drivers/pcmcia/Kconfig"
 source "drivers/rapidio/Kconfig"
 
+config PC104
+	bool "PC/104 support" if EXPERT
+	help
+	  Expose PC/104 form factor device drivers and options available for
+	  selection and configuration. Enable this option if your target
+	  machine has a PC/104 bus.
 
 source "drivers/base/Kconfig"
 
 source "drivers/bus/Kconfig"
 
+source "drivers/cache/Kconfig"
+
 source "drivers/connector/Kconfig"
 
 source "drivers/firmware/Kconfig"
+
+source "drivers/fwctl/Kconfig"
 
 source "drivers/gnss/Kconfig"
 
@@ -73,6 +83,8 @@ source "drivers/pps/Kconfig"
 
 source "drivers/ptp/Kconfig"
 
+source "drivers/dpll/Kconfig"
+
 source "drivers/pinctrl/Kconfig"
 
 source "drivers/gpio/Kconfig"
@@ -99,6 +111,8 @@ source "drivers/media/Kconfig"
 
 source "drivers/video/Kconfig"
 
+source "drivers/accel/Kconfig"
+
 source "sound/Kconfig"
 
 source "drivers/hid/Kconfig"
@@ -106,6 +120,8 @@ source "drivers/hid/Kconfig"
 source "drivers/usb/Kconfig"
 
 source "drivers/mmc/Kconfig"
+
+source "drivers/ufs/Kconfig"
 
 source "drivers/memstick/Kconfig"
 
@@ -125,13 +141,9 @@ source "drivers/dma-buf/Kconfig"
 
 source "drivers/dca/Kconfig"
 
-source "drivers/auxdisplay/Kconfig"
-
 source "drivers/uio/Kconfig"
 
 source "drivers/vfio/Kconfig"
-
-source "drivers/vlynq/Kconfig"
 
 source "drivers/virt/Kconfig"
 
@@ -171,6 +183,8 @@ source "drivers/soundwire/Kconfig"
 
 source "drivers/soc/Kconfig"
 
+source "drivers/pmdomain/Kconfig"
+
 source "drivers/devfreq/Kconfig"
 
 source "drivers/extcon/Kconfig"
@@ -180,8 +194,6 @@ source "drivers/memory/Kconfig"
 source "drivers/iio/Kconfig"
 
 source "drivers/ntb/Kconfig"
-
-source "drivers/vme/Kconfig"
 
 source "drivers/pwm/Kconfig"
 
@@ -205,8 +217,6 @@ source "drivers/thunderbolt/Kconfig"
 
 source "drivers/android/Kconfig"
 
-source "drivers/gpu/trace/Kconfig"
-
 source "drivers/nvdimm/Kconfig"
 
 source "drivers/dax/Kconfig"
@@ -225,8 +235,6 @@ source "drivers/mux/Kconfig"
 
 source "drivers/opp/Kconfig"
 
-source "drivers/visorbus/Kconfig"
-
 source "drivers/siox/Kconfig"
 
 source "drivers/slimbus/Kconfig"
@@ -236,4 +244,11 @@ source "drivers/interconnect/Kconfig"
 source "drivers/counter/Kconfig"
 
 source "drivers/most/Kconfig"
+
+source "drivers/peci/Kconfig"
+
+source "drivers/hte/Kconfig"
+
+source "drivers/cdx/Kconfig"
+
 endmenu

@@ -30,7 +30,6 @@
  * SOFTWARE.
  *
  */
-#include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/errno.h>
@@ -306,7 +305,8 @@ int usnic_ib_query_device(struct ib_device *ibdev,
 	props->max_qp = qp_per_vf *
 		kref_read(&us_ibdev->vf_cnt);
 	props->device_cap_flags = IB_DEVICE_PORT_ACTIVE_EVENT |
-		IB_DEVICE_SYS_IMAGE_GUID | IB_DEVICE_BLOCK_MULTICAST_LOOPBACK;
+		IB_DEVICE_SYS_IMAGE_GUID;
+	props->kernel_cap_flags = IBK_BLOCK_MULTICAST_LOOPBACK;
 	props->max_cq = us_ibdev->vf_res_cnt[USNIC_VNIC_RES_TYPE_CQ] *
 		kref_read(&us_ibdev->vf_cnt);
 	props->max_pd = USNIC_UIOM_MAX_PD_CNT;
@@ -442,12 +442,10 @@ int usnic_ib_query_gid(struct ib_device *ibdev, u32 port, int index,
 int usnic_ib_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 {
 	struct usnic_ib_pd *pd = to_upd(ibpd);
-	void *umem_pd;
 
-	umem_pd = pd->umem_pd = usnic_uiom_alloc_pd();
-	if (IS_ERR_OR_NULL(umem_pd)) {
-		return umem_pd ? PTR_ERR(umem_pd) : -ENOMEM;
-	}
+	pd->umem_pd = usnic_uiom_alloc_pd(ibpd->device->dev.parent);
+	if (IS_ERR(pd->umem_pd))
+		return PTR_ERR(pd->umem_pd);
 
 	return 0;
 }
@@ -579,7 +577,7 @@ out_unlock:
 }
 
 int usnic_ib_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
-		       struct ib_udata *udata)
+		       struct uverbs_attr_bundle *attrs)
 {
 	if (attr->flags)
 		return -EOPNOTSUPP;
@@ -594,6 +592,7 @@ int usnic_ib_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
 
 struct ib_mr *usnic_ib_reg_mr(struct ib_pd *pd, u64 start, u64 length,
 					u64 virt_addr, int access_flags,
+					struct ib_dmah *dmah,
 					struct ib_udata *udata)
 {
 	struct usnic_ib_mr *mr;
@@ -601,6 +600,9 @@ struct ib_mr *usnic_ib_reg_mr(struct ib_pd *pd, u64 start, u64 length,
 
 	usnic_dbg("start 0x%llx va 0x%llx length 0x%llx\n", start,
 			virt_addr, length);
+
+	if (dmah)
+		return ERR_PTR(-EOPNOTSUPP);
 
 	mr = kzalloc(sizeof(*mr), GFP_KERNEL);
 	if (!mr)
@@ -674,7 +676,7 @@ int usnic_ib_mmap(struct ib_ucontext *context,
 	usnic_dbg("\n");
 
 	us_ibdev = to_usdev(context->device);
-	vma->vm_flags |= VM_IO;
+	vm_flags_set(vma, VM_IO);
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 	vfid = vma->vm_pgoff;
 	usnic_dbg("Page Offset %lu PAGE_SHIFT %u VFID %u\n",
@@ -709,4 +711,3 @@ int usnic_ib_mmap(struct ib_ucontext *context,
 	usnic_err("No VF %u found\n", vfid);
 	return -EINVAL;
 }
-

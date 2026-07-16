@@ -7,7 +7,9 @@
  * Author: Andy Shevchenko <andriy.shevchenko@linux.intel.com>
  */
 
-#include <linux/kernel.h>
+#include <linux/device/devres.h>
+#include <linux/err.h>
+#include <linux/gfp_types.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
 #include <linux/regmap.h>
@@ -19,16 +21,21 @@
 
 static const struct of_device_id st_lsm9ds0_of_match[] = {
 	{
+		.compatible = "st,lsm303d-imu",
+		.data = LSM303D_IMU_DEV_NAME,
+	},
+	{
 		.compatible = "st,lsm9ds0-imu",
 		.data = LSM9DS0_IMU_DEV_NAME,
 	},
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, st_lsm9ds0_of_match);
 
 static const struct spi_device_id st_lsm9ds0_id_table[] = {
+	{ LSM303D_IMU_DEV_NAME },
 	{ LSM9DS0_IMU_DEV_NAME },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, st_lsm9ds0_id_table);
 
@@ -63,18 +70,12 @@ static int st_lsm9ds0_spi_probe(struct spi_device *spi)
 	return st_lsm9ds0_probe(lsm9ds0, regmap);
 }
 
-static int st_lsm9ds0_spi_remove(struct spi_device *spi)
-{
-	return st_lsm9ds0_remove(spi_get_drvdata(spi));
-}
-
 static struct spi_driver st_lsm9ds0_driver = {
 	.driver = {
 		.name = "st-lsm9ds0-spi",
 		.of_match_table = st_lsm9ds0_of_match,
 	},
 	.probe = st_lsm9ds0_spi_probe,
-	.remove = st_lsm9ds0_spi_remove,
 	.id_table = st_lsm9ds0_id_table,
 };
 module_spi_driver(st_lsm9ds0_driver);
@@ -82,3 +83,4 @@ module_spi_driver(st_lsm9ds0_driver);
 MODULE_AUTHOR("Andy Shevchenko <andriy.shevchenko@linux.intel.com>");
 MODULE_DESCRIPTION("STMicroelectronics LSM9DS0 IMU SPI driver");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS("IIO_ST_SENSORS");

@@ -736,7 +736,7 @@ static struct cluster_pmu *l2_cache_associate_cpu_with_cluster(
 {
 	u64 mpidr;
 	int cpu_cluster_id;
-	struct cluster_pmu *cluster = NULL;
+	struct cluster_pmu *cluster;
 
 	/*
 	 * This assumes that the cluster_id is in MPIDR[aff1] for
@@ -758,10 +758,10 @@ static struct cluster_pmu *l2_cache_associate_cpu_with_cluster(
 			 cluster->cluster_id);
 		cpumask_set_cpu(cpu, &cluster->cluster_cpus);
 		*per_cpu_ptr(l2cache_pmu->pmu_cluster, cpu) = cluster;
-		break;
+		return cluster;
 	}
 
-	return cluster;
+	return NULL;
 }
 
 static int l2cache_pmu_online_cpu(unsigned int cpu, struct hlist_node *node)
@@ -801,9 +801,8 @@ static int l2cache_pmu_online_cpu(unsigned int cpu, struct hlist_node *node)
 
 static int l2cache_pmu_offline_cpu(unsigned int cpu, struct hlist_node *node)
 {
-	struct cluster_pmu *cluster;
 	struct l2cache_pmu *l2cache_pmu;
-	cpumask_t cluster_online_cpus;
+	struct cluster_pmu *cluster;
 	unsigned int target;
 
 	l2cache_pmu = hlist_entry_safe(node, struct l2cache_pmu, node);
@@ -820,9 +819,8 @@ static int l2cache_pmu_offline_cpu(unsigned int cpu, struct hlist_node *node)
 	cluster->on_cpu = -1;
 
 	/* Any other CPU for this cluster which is still online */
-	cpumask_and(&cluster_online_cpus, &cluster->cluster_cpus,
-		    cpu_online_mask);
-	target = cpumask_any_but(&cluster_online_cpus, cpu);
+	target = cpumask_any_and_but(&cluster->cluster_cpus,
+				     cpu_online_mask, cpu);
 	if (target >= nr_cpu_ids) {
 		disable_irq(cluster->irq);
 		return 0;
@@ -842,17 +840,14 @@ static int l2_cache_pmu_probe_cluster(struct device *dev, void *data)
 	struct platform_device *sdev = to_platform_device(dev);
 	struct l2cache_pmu *l2cache_pmu = data;
 	struct cluster_pmu *cluster;
-	struct acpi_device *device;
-	unsigned long fw_cluster_id;
+	u64 fw_cluster_id;
 	int err;
 	int irq;
 
-	if (acpi_bus_get_device(ACPI_HANDLE(dev), &device))
-		return -ENODEV;
-
-	if (kstrtoul(device->pnp.unique_id, 10, &fw_cluster_id) < 0) {
+	err = acpi_dev_uid_to_integer(ACPI_COMPANION(dev), &fw_cluster_id);
+	if (err) {
 		dev_err(&pdev->dev, "unable to read ACPI uid\n");
-		return -ENODEV;
+		return err;
 	}
 
 	cluster = devm_kzalloc(&pdev->dev, sizeof(*cluster), GFP_KERNEL);
@@ -860,7 +855,6 @@ static int l2_cache_pmu_probe_cluster(struct device *dev, void *data)
 		return -ENOMEM;
 
 	INIT_LIST_HEAD(&cluster->next);
-	list_add(&cluster->next, &l2cache_pmu->clusters);
 	cluster->cluster_id = fw_cluster_id;
 
 	irq = platform_get_irq(sdev, 0);
@@ -882,10 +876,11 @@ static int l2_cache_pmu_probe_cluster(struct device *dev, void *data)
 	}
 
 	dev_info(&pdev->dev,
-		"Registered L2 cache PMU cluster %ld\n", fw_cluster_id);
+		 "Registered L2 cache PMU cluster %lld\n", fw_cluster_id);
 
 	spin_lock_init(&cluster->pmu_lock);
 
+	list_add(&cluster->next, &l2cache_pmu->clusters);
 	l2cache_pmu->num_pmus++;
 
 	return 0;
@@ -907,6 +902,7 @@ static int l2_cache_pmu_probe(struct platform_device *pdev)
 	l2cache_pmu->pmu = (struct pmu) {
 		/* suffix is instance id for future use with multiple sockets */
 		.name		= "l2cache_0",
+		.parent		= &pdev->dev,
 		.task_ctx_nr    = perf_invalid_context,
 		.pmu_enable	= l2_cache_pmu_enable,
 		.pmu_disable	= l2_cache_pmu_disable,
@@ -968,7 +964,7 @@ out_unregister:
 	return err;
 }
 
-static int l2_cache_pmu_remove(struct platform_device *pdev)
+static void l2_cache_pmu_remove(struct platform_device *pdev)
 {
 	struct l2cache_pmu *l2cache_pmu =
 		to_l2cache_pmu(platform_get_drvdata(pdev));
@@ -976,7 +972,6 @@ static int l2_cache_pmu_remove(struct platform_device *pdev)
 	perf_pmu_unregister(&l2cache_pmu->pmu);
 	cpuhp_state_remove_instance(CPUHP_AP_PERF_ARM_QCOM_L2_ONLINE,
 				    &l2cache_pmu->node);
-	return 0;
 }
 
 static struct platform_driver l2_cache_pmu_driver = {

@@ -569,7 +569,7 @@ static void encx24j600_dump_config(struct encx24j600_priv *priv,
 	pr_info(DRV_NAME " MABBIPG: %04X\n", encx24j600_read_reg(priv,
 								 MABBIPG));
 
-	/* PHY configuation */
+	/* PHY configuration */
 	pr_info(DRV_NAME " PHCON1:  %04X\n", encx24j600_read_phy(priv, PHCON1));
 	pr_info(DRV_NAME " PHCON2:  %04X\n", encx24j600_read_phy(priv, PHCON2));
 	pr_info(DRV_NAME " PHANA:   %04X\n", encx24j600_read_phy(priv, PHANA));
@@ -761,7 +761,7 @@ static int encx24j600_set_mac_address(struct net_device *dev, void *addr)
 	if (!is_valid_ether_addr(address->sa_data))
 		return -EADDRNOTAVAIL;
 
-	memcpy(dev->dev_addr, address->sa_data, dev->addr_len);
+	eth_hw_addr_set(dev, address->sa_data);
 	return encx24j600_set_hw_macaddr(dev);
 }
 
@@ -837,7 +837,9 @@ static void encx24j600_hw_tx(struct encx24j600_priv *priv)
 		dump_packet("TX", priv->tx_skb->len, priv->tx_skb->data);
 
 	if (encx24j600_read_reg(priv, EIR) & TXABTIF)
-		/* Last transmition aborted due to error. Reset TX interface */
+		/* Last transmission aborted due to error.
+		 * Reset TX interface
+		 */
 		encx24j600_reset_hw_tx(priv);
 
 	/* Clear the TXIF flag if were previously set */
@@ -925,9 +927,9 @@ static void encx24j600_get_regs(struct net_device *dev,
 static void encx24j600_get_drvinfo(struct net_device *dev,
 				   struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, dev_name(dev->dev.parent),
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, dev_name(dev->dev.parent),
 		sizeof(info->bus_info));
 }
 
@@ -1001,6 +1003,7 @@ static int encx24j600_spi_probe(struct spi_device *spi)
 	struct net_device *ndev;
 	struct encx24j600_priv *priv;
 	u16 eidled;
+	u8 addr[ETH_ALEN];
 
 	ndev = alloc_etherdev(sizeof(struct encx24j600_priv));
 
@@ -1056,7 +1059,8 @@ static int encx24j600_spi_probe(struct spi_device *spi)
 	}
 
 	/* Get the MAC address from the chip */
-	encx24j600_hw_get_macaddr(priv, ndev->dev_addr);
+	encx24j600_hw_get_macaddr(priv, addr);
+	eth_hw_addr_set(ndev, addr);
 
 	ndev->ethtool_ops = &encx24j600_ethtool_ops;
 
@@ -1091,7 +1095,7 @@ error_out:
 	return ret;
 }
 
-static int encx24j600_spi_remove(struct spi_device *spi)
+static void encx24j600_spi_remove(struct spi_device *spi)
 {
 	struct encx24j600_priv *priv = dev_get_drvdata(&spi->dev);
 
@@ -1099,8 +1103,6 @@ static int encx24j600_spi_remove(struct spi_device *spi)
 	kthread_stop(priv->kworker_task);
 
 	free_netdev(priv->ndev);
-
-	return 0;
 }
 
 static const struct spi_device_id encx24j600_spi_id_table[] = {
@@ -1112,7 +1114,6 @@ MODULE_DEVICE_TABLE(spi, encx24j600_spi_id_table);
 static struct spi_driver encx24j600_spi_net_driver = {
 	.driver = {
 		.name	= DRV_NAME,
-		.owner	= THIS_MODULE,
 		.bus	= &spi_bus_type,
 	},
 	.probe		= encx24j600_spi_probe,
@@ -1125,4 +1126,3 @@ module_spi_driver(encx24j600_spi_net_driver);
 MODULE_DESCRIPTION(DRV_NAME " ethernet driver");
 MODULE_AUTHOR("Jon Ringle <jringle@gridpoint.com>");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("spi:" DRV_NAME);

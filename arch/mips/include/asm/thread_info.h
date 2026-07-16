@@ -11,7 +11,7 @@
 #ifdef __KERNEL__
 
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #include <asm/processor.h>
 
@@ -27,7 +27,7 @@ struct thread_info {
 	unsigned long		flags;		/* low level flags */
 	unsigned long		tp_value;	/* thread pointer */
 	__u32			cpu;		/* current CPU */
-	int			preempt_count;	/* 0 => preemptable, <0 => BUG */
+	int			preempt_count;	/* 0 => preemptible, <0 => BUG */
 	struct pt_regs		*regs;
 	long			syscall;	/* syscall number */
 };
@@ -69,7 +69,11 @@ static inline struct thread_info *current_thread_info(void)
 	return __current_thread_info;
 }
 
-#endif /* !__ASSEMBLY__ */
+#ifdef CONFIG_ARCH_HAS_CURRENT_STACK_POINTER
+register unsigned long current_stack_pointer __asm__("sp");
+#endif
+
+#endif /* !__ASSEMBLER__ */
 
 /* thread information allocation */
 #if defined(CONFIG_PAGE_SIZE_4KB) && defined(CONFIG_32BIT)

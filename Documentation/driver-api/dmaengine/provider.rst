@@ -162,6 +162,19 @@ Currently, the types available are:
 
   - The device is able to do memory to memory copies
 
+  - No matter what the overall size of the combined chunks for source and
+    destination is, only as many bytes as the smallest of the two will be
+    transmitted. That means the number and size of the scatter-gather buffers in
+    both lists need not be the same, and that the operation functionally is
+    equivalent to a ``strncpy`` where the ``count`` argument equals the smallest
+    total size of the two scatter-gather list buffers.
+
+  - It's usually used for copying pixel data between host memory and
+    memory-mapped GPU device memory, such as found on modern PCI video graphics
+    cards. The most immediate example is the OpenGL API function
+    ``glReadPixels()``, which might require a verbatim copy of a huge
+    framebuffer from local device memory onto host memory.
+
 - DMA_XOR
 
   - The device is able to perform XOR operations on memory areas
@@ -183,6 +196,12 @@ Currently, the types available are:
   - The device is able to perform parity check using RAID6 P+Q
     algorithm against a memory buffer.
 
+- DMA_MEMSET
+
+  - The device is able to fill memory with the provided pattern
+
+  - The pattern is treated as a single byte signed value.
+
 - DMA_INTERRUPT
 
   - The device is able to trigger a dummy transfer that will
@@ -198,10 +217,12 @@ Currently, the types available are:
 
 - DMA_ASYNC_TX
 
-  - Must not be set by the device, and will be set by the framework
-    if needed
+  - The device supports asynchronous memory-to-memory operations,
+    including memcpy, memset, xor, pq, xor_val, and pq_val.
 
-  - TODO: What is it about?
+  - This capability is automatically set by the DMA engine
+    framework and must not be configured manually by device
+    drivers.
 
 - DMA_SLAVE
 
@@ -414,6 +435,12 @@ supported.
     - residue: Provides the residue bytes of the transfer for those that
       support residue.
 
+- ``device_prep_peripheral_dma_vec``
+
+  - Similar to ``device_prep_slave_sg``, but it takes a pointer to a
+    array of ``dma_vec`` structures, which (in the long run) will replace
+    scatterlists.
+
 - ``device_issue_pending``
 
   - Takes the first transaction descriptor in the pending queue,
@@ -434,7 +461,7 @@ supported.
   - Should use dma_set_residue to report it
 
   - In the case of a cyclic transfer, it should only take into
-    account the current period.
+    account the total size of the cyclic buffer.
 
   - Should return DMA_OUT_OF_ORDER if the device does not support in order
     completion and is completing the operation out of order.
@@ -524,6 +551,10 @@ dma_cookie_t
 
 - Not really relevant any more since the introduction of ``virt-dma``
   that abstracts it away.
+
+dma_vec
+
+- A small structure that contains a DMA address and length.
 
 DMA_CTRL_ACK
 

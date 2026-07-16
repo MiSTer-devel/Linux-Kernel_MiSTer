@@ -20,6 +20,7 @@
 #include <linux/configfs.h>
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
+#include <linux/pagemap.h>
 #include <net/genetlink.h>
 #include <scsi/scsi_common.h>
 #include <scsi/scsi_proto.h>
@@ -61,10 +62,10 @@
 #define TCMU_TIME_OUT (30 * MSEC_PER_SEC)
 
 /* For mailbox plus cmd ring, the size is fixed 8MB */
-#define MB_CMDR_SIZE (8 * 1024 * 1024)
+#define MB_CMDR_SIZE_DEF (8 * 1024 * 1024)
 /* Offset of cmd ring is size of mailbox */
-#define CMDR_OFF sizeof(struct tcmu_mailbox)
-#define CMDR_SIZE (MB_CMDR_SIZE - CMDR_OFF)
+#define CMDR_OFF ((__u32)sizeof(struct tcmu_mailbox))
+#define CMDR_SIZE_DEF (MB_CMDR_SIZE_DEF - CMDR_OFF)
 
 /*
  * For data area, the default block size is PAGE_SIZE and
@@ -200,7 +201,7 @@ struct tcmu_tmr {
 
 	uint8_t tmr_type;
 	uint32_t tmr_cmd_cnt;
-	int16_t tmr_cmd_ids[];
+	int16_t tmr_cmd_ids[] __counted_by(tmr_cmd_cnt);
 };
 
 /*
@@ -360,7 +361,7 @@ static const struct genl_multicast_group tcmu_mcgrps[] = {
 	[TCMU_MCGRP_CONFIG] = { .name = "config", },
 };
 
-static struct nla_policy tcmu_attr_policy[TCMU_ATTR_MAX+1] = {
+static const struct nla_policy tcmu_attr_policy[TCMU_ATTR_MAX + 1] = {
 	[TCMU_ATTR_DEVICE]	= { .type = NLA_STRING },
 	[TCMU_ATTR_MINOR]	= { .type = NLA_U32 },
 	[TCMU_ATTR_CMD_STATUS]	= { .type = NLA_S32 },
@@ -485,6 +486,7 @@ static struct genl_family tcmu_genl_family __ro_after_init = {
 	.netnsok = true,
 	.small_ops = tcmu_genl_ops,
 	.n_small_ops = ARRAY_SIZE(tcmu_genl_ops),
+	.resv_start_op = TCMU_CMD_SET_FEATURES + 1,
 };
 
 #define tcmu_cmd_set_dbi_cur(cmd, index) ((cmd)->dbi_cur = (index))
@@ -523,8 +525,8 @@ static inline int tcmu_get_empty_block(struct tcmu_dev *udev,
 	rcu_read_unlock();
 
 	for (i = cnt; i < page_cnt; i++) {
-		/* try to get new page from the mm */
-		page = alloc_page(GFP_NOIO);
+		/* try to get new zeroed page from the mm */
+		page = alloc_page(GFP_NOIO | __GFP_ZERO);
 		if (!page)
 			break;
 
@@ -1230,7 +1232,7 @@ static void tcmu_set_next_deadline(struct list_head *queue,
 		cmd = list_first_entry(queue, struct tcmu_cmd, queue_entry);
 		mod_timer(timer, cmd->deadline);
 	} else
-		del_timer(timer);
+		timer_delete(timer);
 }
 
 static int
@@ -1255,7 +1257,6 @@ tcmu_tmr_notify(struct se_device *se_dev, enum tcm_tmreq_table tmf,
 {
 	int i = 0, cmd_cnt = 0;
 	bool unqueued = false;
-	uint16_t *cmd_ids = NULL;
 	struct tcmu_cmd *cmd;
 	struct se_cmd *se_cmd;
 	struct tcmu_tmr *tmr;
@@ -1292,7 +1293,7 @@ tcmu_tmr_notify(struct se_device *se_dev, enum tcm_tmreq_table tmf,
 	pr_debug("TMR event %d on dev %s, aborted cmds %d, afflicted cmd_ids %d\n",
 		 tcmu_tmr_type(tmf), udev->name, i, cmd_cnt);
 
-	tmr = kmalloc(sizeof(*tmr) + cmd_cnt * sizeof(*cmd_ids), GFP_NOIO);
+	tmr = kmalloc(struct_size(tmr, tmr_cmd_ids, cmd_cnt), GFP_NOIO);
 	if (!tmr)
 		goto unlock;
 
@@ -1563,7 +1564,7 @@ static void tcmu_device_timedout(struct tcmu_dev *udev)
 
 static void tcmu_cmd_timedout(struct timer_list *t)
 {
-	struct tcmu_dev *udev = from_timer(udev, t, cmd_timer);
+	struct tcmu_dev *udev = timer_container_of(udev, t, cmd_timer);
 
 	pr_debug("%s cmd timeout has expired\n", udev->name);
 	tcmu_device_timedout(udev);
@@ -1571,7 +1572,7 @@ static void tcmu_cmd_timedout(struct timer_list *t)
 
 static void tcmu_qfull_timedout(struct timer_list *t)
 {
-	struct tcmu_dev *udev = from_timer(udev, t, qfull_timer);
+	struct tcmu_dev *udev = timer_container_of(udev, t, qfull_timer);
 
 	pr_debug("%s qfull timeout has expired\n", udev->name);
 	tcmu_device_timedout(udev);
@@ -1618,6 +1619,7 @@ static struct se_device *tcmu_alloc_device(struct se_hba *hba, const char *name)
 
 	udev->data_pages_per_blk = DATA_PAGES_PER_BLK_DEF;
 	udev->max_blocks = DATA_AREA_PAGES_DEF / udev->data_pages_per_blk;
+	udev->cmdr_size = CMDR_SIZE_DEF;
 	udev->data_area_mb = TCMU_PAGES_TO_MBS(DATA_AREA_PAGES_DEF);
 
 	mutex_init(&udev->cmdr_lock);
@@ -1660,17 +1662,37 @@ static int tcmu_check_and_free_pending_cmd(struct tcmu_cmd *cmd)
 static u32 tcmu_blocks_release(struct tcmu_dev *udev, unsigned long first,
 				unsigned long last)
 {
-	XA_STATE(xas, &udev->data_pages, first * udev->data_pages_per_blk);
 	struct page *page;
+	unsigned long dpi;
 	u32 pages_freed = 0;
 
-	xas_lock(&xas);
-	xas_for_each(&xas, page, (last + 1) * udev->data_pages_per_blk - 1) {
-		xas_store(&xas, NULL);
+	first = first * udev->data_pages_per_blk;
+	last = (last + 1) * udev->data_pages_per_blk - 1;
+	xa_for_each_range(&udev->data_pages, dpi, page, first, last) {
+		xa_erase(&udev->data_pages, dpi);
+		/*
+		 * While reaching here there may be page faults occurring on
+		 * the to-be-released pages. A race condition may occur if
+		 * unmap_mapping_range() is called before page faults on these
+		 * pages have completed; a valid but stale map is created.
+		 *
+		 * If another command subsequently runs and needs to extend
+		 * dbi_thresh, it may reuse the slot corresponding to the
+		 * previous page in data_bitmap. Though we will allocate a new
+		 * page for the slot in data_area, no page fault will happen
+		 * because we have a valid map. Therefore the command's data
+		 * will be lost.
+		 *
+		 * We lock and unlock pages that are to be released to ensure
+		 * all page faults have completed. This way
+		 * unmap_mapping_range() can ensure stale maps are cleanly
+		 * removed.
+		 */
+		lock_page(page);
+		unlock_page(page);
 		__free_page(page);
 		pages_freed++;
 	}
-	xas_unlock(&xas);
 
 	atomic_sub(pages_freed, &global_page_count);
 
@@ -1821,6 +1843,8 @@ static struct page *tcmu_try_get_data_page(struct tcmu_dev *udev, uint32_t dpi)
 	mutex_lock(&udev->cmdr_lock);
 	page = xa_load(&udev->data_pages, dpi);
 	if (likely(page)) {
+		get_page(page);
+		lock_page(page);
 		mutex_unlock(&udev->cmdr_lock);
 		return page;
 	}
@@ -1862,6 +1886,7 @@ static vm_fault_t tcmu_vma_fault(struct vm_fault *vmf)
 	struct page *page;
 	unsigned long offset;
 	void *addr;
+	vm_fault_t ret = 0;
 
 	int mi = tcmu_find_mem_index(vmf->vma);
 	if (mi < 0)
@@ -1877,6 +1902,7 @@ static vm_fault_t tcmu_vma_fault(struct vm_fault *vmf)
 		/* For the vmalloc()ed cmd area pages */
 		addr = (void *)(unsigned long)info->mem[mi].addr + offset;
 		page = vmalloc_to_page(addr);
+		get_page(page);
 	} else {
 		uint32_t dpi;
 
@@ -1885,11 +1911,11 @@ static vm_fault_t tcmu_vma_fault(struct vm_fault *vmf)
 		page = tcmu_try_get_data_page(udev, dpi);
 		if (!page)
 			return VM_FAULT_SIGBUS;
+		ret = VM_FAULT_LOCKED;
 	}
 
-	get_page(page);
 	vmf->page = page;
-	return 0;
+	return ret;
 }
 
 static const struct vm_operations_struct tcmu_vm_ops = {
@@ -1902,7 +1928,7 @@ static int tcmu_mmap(struct uio_info *info, struct vm_area_struct *vma)
 {
 	struct tcmu_dev *udev = container_of(info, struct tcmu_dev, uio_info);
 
-	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
 	vma->vm_ops = &tcmu_vm_ops;
 
 	vma->vm_private_data = udev;
@@ -2104,7 +2130,7 @@ static int tcmu_netlink_event_send(struct tcmu_dev *udev,
 	}
 
 	ret = genlmsg_multicast_allns(&tcmu_genl_family, skb, 0,
-				      TCMU_MCGRP_CONFIG, GFP_KERNEL);
+				      TCMU_MCGRP_CONFIG);
 
 	/* Wait during an add as the listener may not be up yet */
 	if (ret == 0 ||
@@ -2190,7 +2216,7 @@ static int tcmu_configure_device(struct se_device *dev)
 		goto err_bitmap_alloc;
 	}
 
-	mb = vzalloc(MB_CMDR_SIZE);
+	mb = vzalloc(udev->cmdr_size + CMDR_OFF);
 	if (!mb) {
 		ret = -ENOMEM;
 		goto err_vzalloc;
@@ -2199,10 +2225,9 @@ static int tcmu_configure_device(struct se_device *dev)
 	/* mailbox fits in first part of CMDR space */
 	udev->mb_addr = mb;
 	udev->cmdr = (void *)mb + CMDR_OFF;
-	udev->cmdr_size = CMDR_SIZE;
-	udev->data_off = MB_CMDR_SIZE;
+	udev->data_off = udev->cmdr_size + CMDR_OFF;
 	data_size = TCMU_MBS_TO_PAGES(udev->data_area_mb) << PAGE_SHIFT;
-	udev->mmap_pages = (data_size + MB_CMDR_SIZE) >> PAGE_SHIFT;
+	udev->mmap_pages = (data_size + udev->cmdr_size + CMDR_OFF) >> PAGE_SHIFT;
 	udev->data_blk_size = udev->data_pages_per_blk * PAGE_SIZE;
 	udev->dbi_thresh = 0; /* Default in Idle state */
 
@@ -2222,7 +2247,7 @@ static int tcmu_configure_device(struct se_device *dev)
 
 	info->mem[0].name = "tcm-user command & data buffer";
 	info->mem[0].addr = (phys_addr_t)(uintptr_t)udev->mb_addr;
-	info->mem[0].size = data_size + MB_CMDR_SIZE;
+	info->mem[0].size = data_size + udev->cmdr_size + CMDR_OFF;
 	info->mem[0].memtype = UIO_MEM_NONE;
 
 	info->irqcontrol = tcmu_irqcontrol;
@@ -2296,8 +2321,8 @@ static void tcmu_destroy_device(struct se_device *dev)
 {
 	struct tcmu_dev *udev = TCMU_DEV(dev);
 
-	del_timer_sync(&udev->cmd_timer);
-	del_timer_sync(&udev->qfull_timer);
+	timer_delete_sync(&udev->cmd_timer);
+	timer_delete_sync(&udev->qfull_timer);
 
 	mutex_lock(&root_udev_mutex);
 	list_del(&udev->node);
@@ -2383,7 +2408,7 @@ static void tcmu_reset_ring(struct tcmu_dev *udev, u8 err_level)
 	tcmu_flush_dcache_range(mb, sizeof(*mb));
 	clear_bit(TCMU_DEV_BIT_BROKEN, &udev->flags);
 
-	del_timer(&udev->cmd_timer);
+	timer_delete(&udev->cmd_timer);
 
 	/*
 	 * ring is empty and qfull queue never contains aborted commands.
@@ -2402,10 +2427,10 @@ static void tcmu_reset_ring(struct tcmu_dev *udev, u8 err_level)
 enum {
 	Opt_dev_config, Opt_dev_size, Opt_hw_block_size, Opt_hw_max_sectors,
 	Opt_nl_reply_supported, Opt_max_data_area_mb, Opt_data_pages_per_blk,
-	Opt_err,
+	Opt_cmd_ring_size_mb, Opt_err,
 };
 
-static match_table_t tokens = {
+static const match_table_t tokens = {
 	{Opt_dev_config, "dev_config=%s"},
 	{Opt_dev_size, "dev_size=%s"},
 	{Opt_hw_block_size, "hw_block_size=%d"},
@@ -2413,6 +2438,7 @@ static match_table_t tokens = {
 	{Opt_nl_reply_supported, "nl_reply_supported=%d"},
 	{Opt_max_data_area_mb, "max_data_area_mb=%d"},
 	{Opt_data_pages_per_blk, "data_pages_per_blk=%d"},
+	{Opt_cmd_ring_size_mb, "cmd_ring_size_mb=%d"},
 	{Opt_err, NULL}
 };
 
@@ -2510,6 +2536,41 @@ unlock:
 	return ret;
 }
 
+static int tcmu_set_cmd_ring_size(struct tcmu_dev *udev, substring_t *arg)
+{
+	int val, ret;
+
+	ret = match_int(arg, &val);
+	if (ret < 0) {
+		pr_err("match_int() failed for cmd_ring_size_mb=. Error %d.\n",
+		       ret);
+		return ret;
+	}
+
+	if (val <= 0) {
+		pr_err("Invalid cmd_ring_size_mb %d.\n", val);
+		return -EINVAL;
+	}
+
+	mutex_lock(&udev->cmdr_lock);
+	if (udev->data_bitmap) {
+		pr_err("Cannot set cmd_ring_size_mb after it has been enabled.\n");
+		ret = -EINVAL;
+		goto unlock;
+	}
+
+	udev->cmdr_size = (val << 20) - CMDR_OFF;
+	if (val > (MB_CMDR_SIZE_DEF >> 20)) {
+		pr_err("%d is too large. Adjusting cmd_ring_size_mb to global limit of %u\n",
+		       val, (MB_CMDR_SIZE_DEF >> 20));
+		udev->cmdr_size = CMDR_SIZE_DEF;
+	}
+
+unlock:
+	mutex_unlock(&udev->cmdr_lock);
+	return ret;
+}
+
 static ssize_t tcmu_set_configfs_dev_params(struct se_device *dev,
 		const char *page, ssize_t count)
 {
@@ -2564,6 +2625,9 @@ static ssize_t tcmu_set_configfs_dev_params(struct se_device *dev,
 		case Opt_data_pages_per_blk:
 			ret = tcmu_set_data_pages_per_blk(udev, &args[0]);
 			break;
+		case Opt_cmd_ring_size_mb:
+			ret = tcmu_set_cmd_ring_size(udev, &args[0]);
+			break;
 		default:
 			break;
 		}
@@ -2585,7 +2649,9 @@ static ssize_t tcmu_show_configfs_dev_params(struct se_device *dev, char *b)
 		     udev->dev_config[0] ? udev->dev_config : "NULL");
 	bl += sprintf(b + bl, "Size: %llu ", udev->dev_size);
 	bl += sprintf(b + bl, "MaxDataAreaMB: %u ", udev->data_area_mb);
-	bl += sprintf(b + bl, "DataPagesPerBlk: %u\n", udev->data_pages_per_blk);
+	bl += sprintf(b + bl, "DataPagesPerBlk: %u ", udev->data_pages_per_blk);
+	bl += sprintf(b + bl, "CmdRingSizeMB: %u\n",
+		      (udev->cmdr_size + CMDR_OFF) >> 20);
 
 	return bl;
 }
@@ -2694,6 +2760,17 @@ static ssize_t tcmu_data_pages_per_blk_show(struct config_item *item,
 }
 CONFIGFS_ATTR_RO(tcmu_, data_pages_per_blk);
 
+static ssize_t tcmu_cmd_ring_size_mb_show(struct config_item *item, char *page)
+{
+	struct se_dev_attrib *da = container_of(to_config_group(item),
+						struct se_dev_attrib, da_group);
+	struct tcmu_dev *udev = TCMU_DEV(da->da_dev);
+
+	return snprintf(page, PAGE_SIZE, "%u\n",
+			(udev->cmdr_size + CMDR_OFF) >> 20);
+}
+CONFIGFS_ATTR_RO(tcmu_, cmd_ring_size_mb);
+
 static ssize_t tcmu_dev_config_show(struct config_item *item, char *page)
 {
 	struct se_dev_attrib *da = container_of(to_config_group(item),
@@ -2743,14 +2820,14 @@ static ssize_t tcmu_dev_config_store(struct config_item *item, const char *page,
 			pr_err("Unable to reconfigure device\n");
 			return ret;
 		}
-		strlcpy(udev->dev_config, page, TCMU_CONFIG_LEN);
+		strscpy(udev->dev_config, page, TCMU_CONFIG_LEN);
 
 		ret = tcmu_update_uio_info(udev);
 		if (ret)
 			return ret;
 		return count;
 	}
-	strlcpy(udev->dev_config, page, TCMU_CONFIG_LEN);
+	strscpy(udev->dev_config, page, TCMU_CONFIG_LEN);
 
 	return count;
 }
@@ -3065,6 +3142,7 @@ static struct configfs_attribute *tcmu_attrib_attrs[] = {
 	&tcmu_attr_qfull_time_out,
 	&tcmu_attr_max_data_area_mb,
 	&tcmu_attr_data_pages_per_blk,
+	&tcmu_attr_cmd_ring_size_mb,
 	&tcmu_attr_dev_config,
 	&tcmu_attr_dev_size,
 	&tcmu_attr_emulate_write_cache,
@@ -3152,12 +3230,22 @@ static void find_free_blocks(void)
 			udev->dbi_max = block;
 		}
 
+		/*
+		 * Release the block pages.
+		 *
+		 * Also note that since tcmu_vma_fault() gets an extra page
+		 * refcount, tcmu_blocks_release() won't free pages if pages
+		 * are mapped. This means it is safe to call
+		 * tcmu_blocks_release() before unmap_mapping_range() which
+		 * drops the refcount of any pages it unmaps and thus releases
+		 * them.
+		 */
+		pages_freed = tcmu_blocks_release(udev, start, end - 1);
+
 		/* Here will truncate the data area from off */
 		off = udev->data_off + (loff_t)start * udev->data_blk_size;
 		unmap_mapping_range(udev->inode->i_mapping, off, 0, 1);
 
-		/* Release the block pages */
-		pages_freed = tcmu_blocks_release(udev, start, end - 1);
 		mutex_unlock(&udev->cmdr_lock);
 
 		total_pages_freed += pages_freed;

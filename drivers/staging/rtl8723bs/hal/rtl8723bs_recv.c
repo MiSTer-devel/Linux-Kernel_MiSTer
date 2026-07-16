@@ -6,7 +6,6 @@
  ******************************************************************************/
 
 #include <drv_types.h>
-#include <rtw_debug.h>
 #include <rtl8723b_hal.h>
 
 static void initrecvbuf(struct recv_buf *precvbuf, struct adapter *padapter)
@@ -81,7 +80,7 @@ static void update_recvframe_phyinfo(union recv_frame *precvframe,
 	struct odm_phy_info *p_phy_info =
 		(struct odm_phy_info *)(&pattrib->phy_info);
 
-	u8 *wlanhdr;
+	u8 *wlanhdr = precvframe->u.hdr.rx_data;
 	u8 *my_bssid;
 	u8 *rx_bssid;
 	u8 *rx_ra;
@@ -100,7 +99,6 @@ static void update_recvframe_phyinfo(union recv_frame *precvframe,
 	struct sta_priv *pstapriv;
 	struct sta_info *psta;
 
-	wlanhdr = get_recvframe_data(precvframe);
 	my_bssid = get_bssid(&padapter->mlmepriv);
 	rx_bssid = get_hdr_bssid(wlanhdr);
 	pkt_info.bssid_match = ((!IsFrameTypeCtrl(wlanhdr)) &&
@@ -378,8 +376,10 @@ s32 rtl8723bs_init_recv_priv(struct adapter *padapter)
 	precvpriv = &padapter->recvpriv;
 
 	/* 3 1. init recv buffer */
-	_rtw_init_queue(&precvpriv->free_recv_buf_queue);
-	_rtw_init_queue(&precvpriv->recv_buf_pending_queue);
+	INIT_LIST_HEAD(&precvpriv->free_recv_buf_queue.queue);
+	spin_lock_init(&precvpriv->free_recv_buf_queue.lock);
+	INIT_LIST_HEAD(&precvpriv->recv_buf_pending_queue.queue);
+	spin_lock_init(&precvpriv->recv_buf_pending_queue.lock);
 
 	n = NR_RECVBUFF * sizeof(struct recv_buf) + 4;
 	precvpriv->pallocated_recv_buf = rtw_zmalloc(n);
@@ -431,7 +431,8 @@ initbuferror:
 		precvpriv->free_recv_buf_queue_cnt = 0;
 		for (i = 0; i < n ; i++) {
 			list_del_init(&precvbuf->list);
-			rtw_os_recvbuf_resource_free(padapter, precvbuf);
+			if (precvbuf->pskb)
+				dev_kfree_skb_any(precvbuf->pskb);
 			precvbuf++;
 		}
 		precvpriv->precv_buf = NULL;
@@ -467,7 +468,8 @@ void rtl8723bs_free_recv_priv(struct adapter *padapter)
 		precvpriv->free_recv_buf_queue_cnt = 0;
 		for (i = 0; i < NR_RECVBUFF; i++) {
 			list_del_init(&precvbuf->list);
-			rtw_os_recvbuf_resource_free(padapter, precvbuf);
+			if (precvbuf->pskb)
+				dev_kfree_skb_any(precvbuf->pskb);
 			precvbuf++;
 		}
 		precvpriv->precv_buf = NULL;

@@ -26,7 +26,7 @@
 #include "mt352_priv.h" /* FIXME */
 #include "tda1004x.h"
 #include "nxt200x.h"
-#include "tuner-xc2028.h"
+#include "xc2028.h"
 #include "xc5000.h"
 
 #include "tda10086.h"
@@ -52,6 +52,7 @@
 #include "s5h1411.h"
 
 MODULE_AUTHOR("Gerd Knorr <kraxel@bytesex.org> [SuSE Labs]");
+MODULE_DESCRIPTION("DVB/ATSC Support for saa7134 based TV cards");
 MODULE_LICENSE("GPL");
 
 static unsigned int antenna_pwr;
@@ -466,7 +467,9 @@ static int philips_europa_tuner_sleep(struct dvb_frontend *fe)
 	/* switch the board to analog mode */
 	if (fe->ops.i2c_gate_ctrl)
 		fe->ops.i2c_gate_ctrl(fe, 1);
-	i2c_transfer(&dev->i2c_adap, &analog_msg, 1);
+	if (i2c_transfer(&dev->i2c_adap, &analog_msg, 1) != 1)
+		return -EIO;
+
 	return 0;
 }
 
@@ -1018,7 +1021,9 @@ static int md8800_set_voltage2(struct dvb_frontend *fe,
 	else
 		wbuf[1] = rbuf & 0xef;
 	msg[0].len = 2;
-	i2c_transfer(&dev->i2c_adap, msg, 1);
+	if (i2c_transfer(&dev->i2c_adap, msg, 1) != 1)
+		return -EIO;
+
 	return 0;
 }
 
@@ -1179,6 +1184,22 @@ static struct tda18271_config kworld_pc150u_tda18271_config = {
 };
 
 static struct s5h1411_config kworld_s5h1411_config = {
+	.output_mode   = S5H1411_PARALLEL_OUTPUT,
+	.gpio          = S5H1411_GPIO_OFF,
+	.qam_if        = S5H1411_IF_4000,
+	.vsb_if        = S5H1411_IF_3250,
+	.inversion     = S5H1411_INVERSION_ON,
+	.status_mode   = S5H1411_DEMODLOCKING,
+	.mpeg_timing   =
+		S5H1411_MPEGTIMING_CONTINUOUS_NONINVERTING_CLOCK,
+};
+
+static struct tda18271_config hdtv200h_tda18271_config = {
+	.gate    = TDA18271_GATE_ANALOG,
+	.config  = 3	/* Use tuner callback for AGC */
+};
+
+static struct s5h1411_config hdtv200h_s5h1411_config = {
 	.output_mode   = S5H1411_PARALLEL_OUTPUT,
 	.gpio          = S5H1411_GPIO_OFF,
 	.qam_if        = S5H1411_IF_4000,
@@ -1852,6 +1873,19 @@ static int dvb_init(struct saa7134_dev *dev)
 					0x60, &dev->i2c_adap) == NULL)
 				pr_warn("%s: No zl10039 found!\n",
 					__func__);
+		}
+		break;
+	case SAA7134_BOARD_LEADTEK_WINFAST_HDTV200_H:
+		fe0->dvb.frontend = dvb_attach(s5h1411_attach,
+					       &hdtv200h_s5h1411_config,
+					       &dev->i2c_adap);
+		if (fe0->dvb.frontend) {
+			dvb_attach(tda829x_attach, fe0->dvb.frontend,
+				   &dev->i2c_adap, 0x4b,
+				   &tda829x_no_probe);
+			dvb_attach(tda18271_attach, fe0->dvb.frontend,
+				   0x60, &dev->i2c_adap,
+				   &hdtv200h_tda18271_config);
 		}
 		break;
 	default:

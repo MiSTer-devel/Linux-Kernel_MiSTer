@@ -25,7 +25,7 @@
 
 struct kmem_cache *bch_search_cache;
 
-static void bch_data_insert_start(struct closure *cl);
+static CLOSURE_CALLBACK(bch_data_insert_start);
 
 static unsigned int cache_mode(struct cached_dev *dc)
 {
@@ -44,10 +44,10 @@ static void bio_csum(struct bio *bio, struct bkey *k)
 	uint64_t csum = 0;
 
 	bio_for_each_segment(bv, bio, iter) {
-		void *d = kmap(bv.bv_page) + bv.bv_offset;
+		void *d = bvec_kmap_local(&bv);
 
-		csum = bch_crc64_update(csum, d, bv.bv_len);
-		kunmap(bv.bv_page);
+		csum = crc64_be(csum, d, bv.bv_len);
+		kunmap_local(d);
 	}
 
 	k->ptr[KEY_PTRS(k)] = csum & (~0ULL >> 1);
@@ -55,9 +55,9 @@ static void bio_csum(struct bio *bio, struct bkey *k)
 
 /* Insert data into cache */
 
-static void bch_data_insert_keys(struct closure *cl)
+static CLOSURE_CALLBACK(bch_data_insert_keys)
 {
-	struct data_insert_op *op = container_of(cl, struct data_insert_op, cl);
+	closure_type(op, struct data_insert_op, cl);
 	atomic_t *journal_ref = NULL;
 	struct bkey *replace_key = op->replace ? &op->replace_key : NULL;
 	int ret;
@@ -136,9 +136,9 @@ out:
 	continue_at(cl, bch_data_insert_keys, op->wq);
 }
 
-static void bch_data_insert_error(struct closure *cl)
+static CLOSURE_CALLBACK(bch_data_insert_error)
 {
-	struct data_insert_op *op = container_of(cl, struct data_insert_op, cl);
+	closure_type(op, struct data_insert_op, cl);
 
 	/*
 	 * Our data write just errored, which means we've got a bunch of keys to
@@ -163,7 +163,7 @@ static void bch_data_insert_error(struct closure *cl)
 
 	op->insert_keys.top = dst;
 
-	bch_data_insert_keys(cl);
+	bch_data_insert_keys(&cl->work);
 }
 
 static void bch_data_insert_endio(struct bio *bio)
@@ -184,9 +184,9 @@ static void bch_data_insert_endio(struct bio *bio)
 	bch_bbio_endio(op->c, bio, bio->bi_status, "writing data to cache");
 }
 
-static void bch_data_insert_start(struct closure *cl)
+static CLOSURE_CALLBACK(bch_data_insert_start)
 {
-	struct data_insert_op *op = container_of(cl, struct data_insert_op, cl);
+	closure_type(op, struct data_insert_op, cl);
 	struct bio *bio = op->bio, *n;
 
 	if (op->bypass)
@@ -244,7 +244,7 @@ static void bch_data_insert_start(struct closure *cl)
 		trace_bcache_cache_insert(k);
 		bch_keylist_push(&op->insert_keys);
 
-		bio_set_op_attrs(n, REQ_OP_WRITE, 0);
+		n->bi_opf = REQ_OP_WRITE;
 		bch_submit_bbio(n, op->c, k, 0);
 	} while (n != bio);
 
@@ -305,16 +305,16 @@ err:
  * If op->bypass is true, instead of inserting the data it invalidates the
  * region of the cache represented by op->bio and op->inode.
  */
-void bch_data_insert(struct closure *cl)
+CLOSURE_CALLBACK(bch_data_insert)
 {
-	struct data_insert_op *op = container_of(cl, struct data_insert_op, cl);
+	closure_type(op, struct data_insert_op, cl);
 
 	trace_bcache_write(op->c, op->inode, op->bio,
 			   op->writeback, op->bypass);
 
 	bch_keylist_init(&op->insert_keys);
 	bio_get(op->bio);
-	bch_data_insert_start(cl);
+	bch_data_insert_start(&cl->work);
 }
 
 /*
@@ -369,9 +369,23 @@ static bool check_should_bypass(struct cached_dev *dc, struct bio *bio)
 	struct io *i;
 
 	if (test_bit(BCACHE_DEV_DETACHING, &dc->disk.flags) ||
-	    c->gc_stats.in_use > CUTOFF_CACHE_ADD ||
 	    (bio_op(bio) == REQ_OP_DISCARD))
 		goto skip;
+
+	if (c->gc_stats.in_use > CUTOFF_CACHE_ADD) {
+		/*
+		 * If cached buckets are all clean now, 'true' will be
+		 * returned and all requests will bypass the cache device.
+		 * Then c->sectors_to_gc has no chance to be negative, and
+		 * gc thread won't wake up and caching won't work forever.
+		 * Here call force_wake_up_gc() to avoid such aftermath.
+		 */
+		if (BDEV_STATE(&dc->sb) == BDEV_STATE_CLEAN &&
+		    c->gc_mark_valid)
+			force_wake_up_gc(c);
+
+		goto skip;
+	}
 
 	if (mode == CACHE_MODE_NONE ||
 	    (mode == CACHE_MODE_WRITEAROUND &&
@@ -401,7 +415,7 @@ static bool check_should_bypass(struct cached_dev *dc, struct bio *bio)
 	}
 
 	if (bypass_torture_test(dc)) {
-		if ((get_random_int() & 3) == 3)
+		if (get_random_u32_below(4) == 3)
 			goto skip;
 		else
 			goto rescale;
@@ -575,9 +589,9 @@ static int cache_lookup_fn(struct btree_op *op, struct btree *b, struct bkey *k)
 	return n == bio ? MAP_DONE : MAP_CONTINUE;
 }
 
-static void cache_lookup(struct closure *cl)
+static CLOSURE_CALLBACK(cache_lookup)
 {
-	struct search *s = container_of(cl, struct search, iop.cl);
+	closure_type(s, struct search, iop.cl);
 	struct bio *bio = &s->bio.bio;
 	struct cached_dev *dc;
 	int ret;
@@ -651,8 +665,8 @@ static void backing_request_endio(struct bio *bio)
 		 */
 		if (unlikely(s->iop.writeback &&
 			     bio->bi_opf & REQ_PREFLUSH)) {
-			pr_err("Can't flush %s: returned bi_status %i\n",
-				dc->backing_dev_name, bio->bi_status);
+			pr_err("Can't flush %pg: returned bi_status %i\n",
+				dc->bdev, bio->bi_status);
 		} else {
 			/* set to orig_bio->bi_status in bio_complete() */
 			s->iop.status = bio->bi_status;
@@ -685,8 +699,7 @@ static void do_bio_hook(struct search *s,
 {
 	struct bio *bio = &s->bio.bio;
 
-	bio_init(bio, NULL, 0);
-	__bio_clone_fast(bio, orig_bio);
+	bio_init_clone(orig_bio->bi_bdev, bio, orig_bio, GFP_NOIO);
 	/*
 	 * bi_end_io can be set separately somewhere else, e.g. the
 	 * variants in,
@@ -699,9 +712,9 @@ static void do_bio_hook(struct search *s,
 	bio_cnt_set(bio, 3);
 }
 
-static void search_free(struct closure *cl)
+static CLOSURE_CALLBACK(search_free)
 {
-	struct search *s = container_of(cl, struct search, cl);
+	closure_type(s, struct search, cl);
 
 	atomic_dec(&s->iop.c->search_inflight);
 
@@ -750,20 +763,20 @@ static inline struct search *search_alloc(struct bio *bio,
 
 /* Cached devices */
 
-static void cached_dev_bio_complete(struct closure *cl)
+static CLOSURE_CALLBACK(cached_dev_bio_complete)
 {
-	struct search *s = container_of(cl, struct search, cl);
+	closure_type(s, struct search, cl);
 	struct cached_dev *dc = container_of(s->d, struct cached_dev, disk);
 
 	cached_dev_put(dc);
-	search_free(cl);
+	search_free(&cl->work);
 }
 
 /* Process reads */
 
-static void cached_dev_read_error_done(struct closure *cl)
+static CLOSURE_CALLBACK(cached_dev_read_error_done)
 {
-	struct search *s = container_of(cl, struct search, cl);
+	closure_type(s, struct search, cl);
 
 	if (s->iop.replace_collision)
 		bch_mark_cache_miss_collision(s->iop.c, s->d);
@@ -771,12 +784,12 @@ static void cached_dev_read_error_done(struct closure *cl)
 	if (s->iop.bio)
 		bio_free_pages(s->iop.bio);
 
-	cached_dev_bio_complete(cl);
+	cached_dev_bio_complete(&cl->work);
 }
 
-static void cached_dev_read_error(struct closure *cl)
+static CLOSURE_CALLBACK(cached_dev_read_error)
 {
-	struct search *s = container_of(cl, struct search, cl);
+	closure_type(s, struct search, cl);
 	struct bio *bio = &s->bio.bio;
 
 	/*
@@ -802,9 +815,9 @@ static void cached_dev_read_error(struct closure *cl)
 	continue_at(cl, cached_dev_read_error_done, NULL);
 }
 
-static void cached_dev_cache_miss_done(struct closure *cl)
+static CLOSURE_CALLBACK(cached_dev_cache_miss_done)
 {
-	struct search *s = container_of(cl, struct search, cl);
+	closure_type(s, struct search, cl);
 	struct bcache_device *d = s->d;
 
 	if (s->iop.replace_collision)
@@ -813,13 +826,13 @@ static void cached_dev_cache_miss_done(struct closure *cl)
 	if (s->iop.bio)
 		bio_free_pages(s->iop.bio);
 
-	cached_dev_bio_complete(cl);
+	cached_dev_bio_complete(&cl->work);
 	closure_put(&d->cl);
 }
 
-static void cached_dev_read_done(struct closure *cl)
+static CLOSURE_CALLBACK(cached_dev_read_done)
 {
-	struct search *s = container_of(cl, struct search, cl);
+	closure_type(s, struct search, cl);
 	struct cached_dev *dc = container_of(s->d, struct cached_dev, disk);
 
 	/*
@@ -831,11 +844,11 @@ static void cached_dev_read_done(struct closure *cl)
 	 */
 
 	if (s->iop.bio) {
-		bio_reset(s->iop.bio);
+		bio_reset(s->iop.bio, s->cache_miss->bi_bdev, REQ_OP_READ);
 		s->iop.bio->bi_iter.bi_sector =
 			s->cache_miss->bi_iter.bi_sector;
-		bio_copy_dev(s->iop.bio, s->cache_miss);
 		s->iop.bio->bi_iter.bi_size = s->insert_bio_sectors << 9;
+		bio_clone_blkg_association(s->iop.bio, s->cache_miss);
 		bch_bio_map(s->iop.bio, NULL);
 
 		bio_copy_data(s->cache_miss, s->iop.bio);
@@ -859,9 +872,9 @@ static void cached_dev_read_done(struct closure *cl)
 	continue_at(cl, cached_dev_cache_miss_done, NULL);
 }
 
-static void cached_dev_read_done_bh(struct closure *cl)
+static CLOSURE_CALLBACK(cached_dev_read_done_bh)
 {
-	struct search *s = container_of(cl, struct search, cl);
+	closure_type(s, struct search, cl);
 	struct cached_dev *dc = container_of(s->d, struct cached_dev, disk);
 
 	bch_mark_cache_accounting(s->iop.c, s->d,
@@ -913,14 +926,13 @@ static int cached_dev_cache_miss(struct btree *b, struct search *s,
 	/* btree_search_recurse()'s btree iterator is no good anymore */
 	ret = miss == bio ? MAP_DONE : -EINTR;
 
-	cache_bio = bio_alloc_bioset(GFP_NOWAIT,
+	cache_bio = bio_alloc_bioset(miss->bi_bdev,
 			DIV_ROUND_UP(s->insert_bio_sectors, PAGE_SECTORS),
-			&dc->disk.bio_split);
+			0, GFP_NOWAIT, &dc->disk.bio_split);
 	if (!cache_bio)
 		goto out_submit;
 
 	cache_bio->bi_iter.bi_sector	= miss->bi_iter.bi_sector;
-	bio_copy_dev(cache_bio, miss);
 	cache_bio->bi_iter.bi_size	= s->insert_bio_sectors << 9;
 
 	cache_bio->bi_end_io	= backing_request_endio;
@@ -957,13 +969,13 @@ static void cached_dev_read(struct cached_dev *dc, struct search *s)
 
 /* Process writes */
 
-static void cached_dev_write_complete(struct closure *cl)
+static CLOSURE_CALLBACK(cached_dev_write_complete)
 {
-	struct search *s = container_of(cl, struct search, cl);
+	closure_type(s, struct search, cl);
 	struct cached_dev *dc = container_of(s->d, struct cached_dev, disk);
 
 	up_read_non_owner(&dc->writeback_lock);
-	cached_dev_bio_complete(cl);
+	cached_dev_bio_complete(&cl->work);
 }
 
 static void cached_dev_write(struct cached_dev *dc, struct search *s)
@@ -1007,7 +1019,7 @@ static void cached_dev_write(struct cached_dev *dc, struct search *s)
 		bio_get(s->iop.bio);
 
 		if (bio_op(bio) == REQ_OP_DISCARD &&
-		    !blk_queue_discard(bdev_get_queue(dc->bdev)))
+		    !bdev_max_discard_sectors(dc->bdev))
 			goto insert_data;
 
 		/* I/O request sent to backing device */
@@ -1025,21 +1037,21 @@ static void cached_dev_write(struct cached_dev *dc, struct search *s)
 			 */
 			struct bio *flush;
 
-			flush = bio_alloc_bioset(GFP_NOIO, 0,
-						 &dc->disk.bio_split);
+			flush = bio_alloc_bioset(bio->bi_bdev, 0,
+						 REQ_OP_WRITE | REQ_PREFLUSH,
+						 GFP_NOIO, &dc->disk.bio_split);
 			if (!flush) {
 				s->iop.status = BLK_STS_RESOURCE;
 				goto insert_data;
 			}
-			bio_copy_dev(flush, bio);
 			flush->bi_end_io = backing_request_endio;
 			flush->bi_private = cl;
-			flush->bi_opf = REQ_OP_WRITE | REQ_PREFLUSH;
 			/* I/O request sent to backing device */
 			closure_bio_submit(s->iop.c, flush, cl);
 		}
 	} else {
-		s->iop.bio = bio_clone_fast(bio, GFP_NOIO, &dc->disk.bio_split);
+		s->iop.bio = bio_alloc_clone(bio->bi_bdev, bio, GFP_NOIO,
+					     &dc->disk.bio_split);
 		/* I/O request sent to backing device */
 		bio->bi_end_io = backing_request_endio;
 		closure_bio_submit(s->iop.c, bio, cl);
@@ -1050,9 +1062,9 @@ insert_data:
 	continue_at(cl, cached_dev_write_complete, NULL);
 }
 
-static void cached_dev_nodata(struct closure *cl)
+static CLOSURE_CALLBACK(cached_dev_nodata)
 {
-	struct search *s = container_of(cl, struct search, cl);
+	closure_type(s, struct search, cl);
 	struct bio *bio = &s->bio.bio;
 
 	if (s->iop.flush_journal)
@@ -1065,62 +1077,59 @@ static void cached_dev_nodata(struct closure *cl)
 	continue_at(cl, cached_dev_bio_complete, NULL);
 }
 
-struct detached_dev_io_private {
-	struct bcache_device	*d;
-	unsigned long		start_time;
-	bio_end_io_t		*bi_end_io;
-	void			*bi_private;
-	struct block_device	*orig_bdev;
-};
-
 static void detached_dev_end_io(struct bio *bio)
 {
-	struct detached_dev_io_private *ddip;
-
-	ddip = bio->bi_private;
-	bio->bi_end_io = ddip->bi_end_io;
-	bio->bi_private = ddip->bi_private;
+	struct detached_dev_io_private *ddip =
+		container_of(bio, struct detached_dev_io_private, bio);
+	struct bio *orig_bio = ddip->orig_bio;
 
 	/* Count on the bcache device */
-	bio_end_io_acct_remapped(bio, ddip->start_time, ddip->orig_bdev);
+	bio_end_io_acct(orig_bio, ddip->start_time);
 
 	if (bio->bi_status) {
-		struct cached_dev *dc = container_of(ddip->d,
-						     struct cached_dev, disk);
+		struct cached_dev *dc = bio->bi_private;
+
 		/* should count I/O error for backing device here */
 		bch_count_backing_io_errors(dc, bio);
+		orig_bio->bi_status = bio->bi_status;
 	}
 
-	kfree(ddip);
-	bio->bi_end_io(bio);
+	bio_put(bio);
+	bio_endio(orig_bio);
 }
 
-static void detached_dev_do_request(struct bcache_device *d, struct bio *bio,
-		struct block_device *orig_bdev, unsigned long start_time)
+static void detached_dev_do_request(struct bcache_device *d,
+		struct bio *orig_bio, unsigned long start_time)
 {
 	struct detached_dev_io_private *ddip;
 	struct cached_dev *dc = container_of(d, struct cached_dev, disk);
+	struct bio *clone_bio;
 
-	/*
-	 * no need to call closure_get(&dc->disk.cl),
-	 * because upper layer had already opened bcache device,
-	 * which would call closure_get(&dc->disk.cl)
-	 */
-	ddip = kzalloc(sizeof(struct detached_dev_io_private), GFP_NOIO);
-	ddip->d = d;
+	if (bio_op(orig_bio) == REQ_OP_DISCARD &&
+	    !bdev_max_discard_sectors(dc->bdev)) {
+		bio_end_io_acct(orig_bio, start_time);
+		bio_endio(orig_bio);
+		return;
+	}
+
+	clone_bio = bio_alloc_clone(dc->bdev, orig_bio, GFP_NOIO,
+				    &d->bio_detached);
+	if (!clone_bio) {
+		orig_bio->bi_status = BLK_STS_RESOURCE;
+		bio_endio(orig_bio);
+		return;
+	}
+
+	ddip = container_of(clone_bio, struct detached_dev_io_private, bio);
 	/* Count on the bcache device */
-	ddip->orig_bdev = orig_bdev;
+	ddip->d = d;
 	ddip->start_time = start_time;
-	ddip->bi_end_io = bio->bi_end_io;
-	ddip->bi_private = bio->bi_private;
-	bio->bi_end_io = detached_dev_end_io;
-	bio->bi_private = ddip;
+	ddip->orig_bio = orig_bio;
 
-	if ((bio_op(bio) == REQ_OP_DISCARD) &&
-	    !blk_queue_discard(bdev_get_queue(dc->bdev)))
-		bio->bi_end_io(bio);
-	else
-		submit_bio_noacct(bio);
+	clone_bio->bi_end_io = detached_dev_end_io;
+	clone_bio->bi_private = dc;
+
+	submit_bio_noacct(clone_bio);
 }
 
 static void quit_max_writeback_rate(struct cache_set *c,
@@ -1163,7 +1172,7 @@ static void quit_max_writeback_rate(struct cache_set *c,
 
 /* Cached devices - read & write stuff */
 
-blk_qc_t cached_dev_submit_bio(struct bio *bio)
+void cached_dev_submit_bio(struct bio *bio)
 {
 	struct search *s;
 	struct block_device *orig_bdev = bio->bi_bdev;
@@ -1176,7 +1185,7 @@ blk_qc_t cached_dev_submit_bio(struct bio *bio)
 		     dc->io_disable)) {
 		bio->bi_status = BLK_STS_IOERR;
 		bio_endio(bio);
-		return BLK_QC_T_NONE;
+		return;
 	}
 
 	if (likely(d->c)) {
@@ -1196,10 +1205,10 @@ blk_qc_t cached_dev_submit_bio(struct bio *bio)
 
 	start_time = bio_start_io_acct(bio);
 
-	bio_set_dev(bio, dc->bdev);
 	bio->bi_iter.bi_sector += dc->sb.data_offset;
 
 	if (cached_dev_get(dc)) {
+		bio_set_dev(bio, dc->bdev);
 		s = search_alloc(bio, d, orig_bdev, start_time);
 		trace_bcache_request_start(s->d, bio);
 
@@ -1219,14 +1228,13 @@ blk_qc_t cached_dev_submit_bio(struct bio *bio)
 			else
 				cached_dev_read(dc, s);
 		}
-	} else
+	} else {
 		/* I/O request sent to backing device */
-		detached_dev_do_request(d, bio, orig_bdev, start_time);
-
-	return BLK_QC_T_NONE;
+		detached_dev_do_request(d, bio, start_time);
+	}
 }
 
-static int cached_dev_ioctl(struct bcache_device *d, fmode_t mode,
+static int cached_dev_ioctl(struct bcache_device *d, blk_mode_t mode,
 			    unsigned int cmd, unsigned long arg)
 {
 	struct cached_dev *dc = container_of(d, struct cached_dev, disk);
@@ -1263,9 +1271,9 @@ static int flash_dev_cache_miss(struct btree *b, struct search *s,
 	return MAP_CONTINUE;
 }
 
-static void flash_dev_nodata(struct closure *cl)
+static CLOSURE_CALLBACK(flash_dev_nodata)
 {
-	struct search *s = container_of(cl, struct search, cl);
+	closure_type(s, struct search, cl);
 
 	if (s->iop.flush_journal)
 		bch_journal_meta(s->iop.c, cl);
@@ -1273,7 +1281,7 @@ static void flash_dev_nodata(struct closure *cl)
 	continue_at(cl, search_free, NULL);
 }
 
-blk_qc_t flash_dev_submit_bio(struct bio *bio)
+void flash_dev_submit_bio(struct bio *bio)
 {
 	struct search *s;
 	struct closure *cl;
@@ -1282,7 +1290,7 @@ blk_qc_t flash_dev_submit_bio(struct bio *bio)
 	if (unlikely(d->c && test_bit(CACHE_SET_IO_DISABLE, &d->c->flags))) {
 		bio->bi_status = BLK_STS_IOERR;
 		bio_endio(bio);
-		return BLK_QC_T_NONE;
+		return;
 	}
 
 	s = search_alloc(bio, d, bio->bi_bdev, bio_start_io_acct(bio));
@@ -1298,7 +1306,7 @@ blk_qc_t flash_dev_submit_bio(struct bio *bio)
 		continue_at_nobarrier(&s->cl,
 				      flash_dev_nodata,
 				      bcache_wq);
-		return BLK_QC_T_NONE;
+		return;
 	} else if (bio_data_dir(bio)) {
 		bch_keybuf_check_overlapping(&s->iop.c->moving_gc_keys,
 					&KEY(d->id, bio->bi_iter.bi_sector, 0),
@@ -1314,10 +1322,9 @@ blk_qc_t flash_dev_submit_bio(struct bio *bio)
 	}
 
 	continue_at(cl, search_free, NULL);
-	return BLK_QC_T_NONE;
 }
 
-static int flash_dev_ioctl(struct bcache_device *d, fmode_t mode,
+static int flash_dev_ioctl(struct bcache_device *d, blk_mode_t mode,
 			   unsigned int cmd, unsigned long arg)
 {
 	return -ENOTTY;

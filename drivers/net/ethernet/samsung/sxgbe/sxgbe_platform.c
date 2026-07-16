@@ -118,7 +118,7 @@ static int sxgbe_platform_probe(struct platform_device *pdev)
 	}
 
 	/* Get MAC address if available (DT) */
-	of_get_mac_address(node, priv->dev->dev_addr);
+	of_get_ethdev_address(node, priv->dev);
 
 	/* Get the TX/RX IRQ numbers */
 	for (i = 0, chan = 1; i < SXGBE_TX_QUEUES; i++) {
@@ -169,12 +169,11 @@ err_out:
  * Description: this function calls the main to free the net resources
  * and calls the platforms hook and release the resources (e.g. mem).
  */
-static int sxgbe_platform_remove(struct platform_device *pdev)
+static void sxgbe_platform_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
-	int ret = sxgbe_drv_remove(ndev);
 
-	return ret;
+	sxgbe_drv_remove(ndev);
 }
 
 #ifdef CONFIG_PM
@@ -225,11 +224,11 @@ MODULE_DEVICE_TABLE(of, sxgbe_dt_ids);
 
 static struct platform_driver sxgbe_platform_driver = {
 	.probe	= sxgbe_platform_probe,
-	.remove	= sxgbe_platform_remove,
+	.remove = sxgbe_platform_remove,
 	.driver	= {
 		.name		= SXGBE_RESOURCE_NAME,
 		.pm		= &sxgbe_platform_pm_ops,
-		.of_match_table	= of_match_ptr(sxgbe_dt_ids),
+		.of_match_table	= sxgbe_dt_ids,
 	},
 };
 

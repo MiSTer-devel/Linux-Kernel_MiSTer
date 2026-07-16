@@ -22,10 +22,10 @@
 #define	PROC_FIFO	"record-fifo"
 
 /* lock for procfs read access */
-static DEFINE_MUTEX(read_lock);
+static DEFINE_MUTEX(read_access);
 
 /* lock for procfs write access */
-static DEFINE_MUTEX(write_lock);
+static DEFINE_MUTEX(write_access);
 
 /*
  * define DYNAMIC in this example for a dynamically allocated fifo.
@@ -123,12 +123,12 @@ static ssize_t fifo_write(struct file *file, const char __user *buf,
 	int ret;
 	unsigned int copied;
 
-	if (mutex_lock_interruptible(&write_lock))
+	if (mutex_lock_interruptible(&write_access))
 		return -ERESTARTSYS;
 
 	ret = kfifo_from_user(&test, buf, count, &copied);
 
-	mutex_unlock(&write_lock);
+	mutex_unlock(&write_access);
 	if (ret)
 		return ret;
 
@@ -141,12 +141,12 @@ static ssize_t fifo_read(struct file *file, char __user *buf,
 	int ret;
 	unsigned int copied;
 
-	if (mutex_lock_interruptible(&read_lock))
+	if (mutex_lock_interruptible(&read_access))
 		return -ERESTARTSYS;
 
 	ret = kfifo_to_user(&test, buf, count, &copied);
 
-	mutex_unlock(&read_lock);
+	mutex_unlock(&read_access);
 	if (ret)
 		return ret;
 
@@ -198,5 +198,6 @@ static void __exit example_exit(void)
 
 module_init(example_init);
 module_exit(example_exit);
+MODULE_DESCRIPTION("Sample dynamic sized record fifo implementation");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Stefani Seibold <stefani@seibold.net>");

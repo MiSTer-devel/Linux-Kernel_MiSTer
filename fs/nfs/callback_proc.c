@@ -37,7 +37,7 @@ __be32 nfs4_callback_getattr(void *argp, void *resp,
 	if (!cps->clp) /* Always set for v4.0. Set in cb_sequence for v4.1 */
 		goto out;
 
-	res->bitmap[0] = res->bitmap[1] = 0;
+	memset(res->bitmap, 0, sizeof(res->bitmap));
 	res->status = htonl(NFS4ERR_BADHANDLE);
 
 	dprintk_rcu("NFS: GETATTR callback request from %s\n",
@@ -59,12 +59,16 @@ __be32 nfs4_callback_getattr(void *argp, void *resp,
 	res->change_attr = delegation->change_attr;
 	if (nfs_have_writebacks(inode))
 		res->change_attr++;
-	res->ctime = inode->i_ctime;
-	res->mtime = inode->i_mtime;
-	res->bitmap[0] = (FATTR4_WORD0_CHANGE|FATTR4_WORD0_SIZE) &
-		args->bitmap[0];
-	res->bitmap[1] = (FATTR4_WORD1_TIME_METADATA|FATTR4_WORD1_TIME_MODIFY) &
-		args->bitmap[1];
+	res->atime = inode_get_atime(inode);
+	res->ctime = inode_get_ctime(inode);
+	res->mtime = inode_get_mtime(inode);
+	res->bitmap[0] = (FATTR4_WORD0_CHANGE | FATTR4_WORD0_SIZE) &
+			 args->bitmap[0];
+	res->bitmap[1] = (FATTR4_WORD1_TIME_ACCESS |
+			  FATTR4_WORD1_TIME_METADATA |
+			  FATTR4_WORD1_TIME_MODIFY) & args->bitmap[1];
+	res->bitmap[2] = (FATTR4_WORD2_TIME_DELEG_ACCESS |
+			  FATTR4_WORD2_TIME_DELEG_MODIFY) & args->bitmap[2];
 	res->status = 0;
 out_iput:
 	rcu_read_unlock();
@@ -207,7 +211,8 @@ static struct inode *nfs_layout_find_inode(struct nfs_client *clp,
  * Enforce RFC5661 section 12.5.5.2.1. (Layout Recall and Return Sequencing)
  */
 static u32 pnfs_check_callback_stateid(struct pnfs_layout_hdr *lo,
-					const nfs4_stateid *new)
+					const nfs4_stateid *new,
+					struct cb_process_state *cps)
 {
 	u32 oldseq, newseq;
 
@@ -221,28 +226,29 @@ static u32 pnfs_check_callback_stateid(struct pnfs_layout_hdr *lo,
 
 	newseq = be32_to_cpu(new->seqid);
 	/* Are we already in a layout recall situation? */
-	if (test_bit(NFS_LAYOUT_RETURN_REQUESTED, &lo->plh_flags) &&
-	    lo->plh_return_seq != 0) {
-		if (newseq < lo->plh_return_seq)
-			return NFS4ERR_OLD_STATEID;
-		if (newseq > lo->plh_return_seq)
-			return NFS4ERR_DELAY;
-		goto out;
-	}
-
-	/* Check that the stateid matches what we think it should be. */
-	oldseq = be32_to_cpu(lo->plh_stateid.seqid);
-	if (newseq > oldseq + 1)
+	if (test_bit(NFS_LAYOUT_RETURN, &lo->plh_flags))
 		return NFS4ERR_DELAY;
+
+	/*
+	 * Check that the stateid matches what we think it should be.
+	 * Note that if the server sent us a list of referring calls,
+	 * and we know that those have completed, then we trust the
+	 * stateid argument is correct.
+	 */
+	oldseq = be32_to_cpu(lo->plh_stateid.seqid);
+	if (newseq > oldseq + 1 && !cps->referring_calls)
+		return NFS4ERR_DELAY;
+
 	/* Crazy server! */
 	if (newseq <= oldseq)
 		return NFS4ERR_OLD_STATEID;
-out:
+
 	return NFS_OK;
 }
 
 static u32 initiate_file_draining(struct nfs_client *clp,
-				  struct cb_layoutrecallargs *args)
+				  struct cb_layoutrecallargs *args,
+				  struct cb_process_state *cps)
 {
 	struct inode *ino;
 	struct pnfs_layout_hdr *lo;
@@ -266,7 +272,7 @@ static u32 initiate_file_draining(struct nfs_client *clp,
 		goto out;
 	}
 	pnfs_get_layout_hdr(lo);
-	rv = pnfs_check_callback_stateid(lo, &args->cbl_stateid);
+	rv = pnfs_check_callback_stateid(lo, &args->cbl_stateid, cps);
 	if (rv != NFS_OK)
 		goto unlock;
 
@@ -288,6 +294,7 @@ static u32 initiate_file_draining(struct nfs_client *clp,
 		rv = NFS4_OK;
 		break;
 	case -ENOENT:
+		set_bit(NFS_LAYOUT_DRAIN, &lo->plh_flags);
 		/* Embrace your forgetfulness! */
 		rv = NFS4ERR_NOMATCHING_LAYOUT;
 
@@ -316,19 +323,21 @@ static u32 initiate_bulk_draining(struct nfs_client *clp,
 	int stat;
 
 	if (args->cbl_recall_type == RETURN_FSID)
-		stat = pnfs_destroy_layouts_byfsid(clp, &args->cbl_fsid, true);
+		stat = pnfs_layout_destroy_byfsid(clp, &args->cbl_fsid,
+						  PNFS_LAYOUT_BULK_RETURN);
 	else
-		stat = pnfs_destroy_layouts_byclid(clp, true);
+		stat = pnfs_layout_destroy_byclid(clp, PNFS_LAYOUT_BULK_RETURN);
 	if (stat != 0)
 		return NFS4ERR_DELAY;
 	return NFS4ERR_NOMATCHING_LAYOUT;
 }
 
 static u32 do_callback_layoutrecall(struct nfs_client *clp,
-				    struct cb_layoutrecallargs *args)
+				    struct cb_layoutrecallargs *args,
+				    struct cb_process_state *cps)
 {
 	if (args->cbl_recall_type == RETURN_FILE)
-		return initiate_file_draining(clp, args);
+		return initiate_file_draining(clp, args, cps);
 	return initiate_bulk_draining(clp, args);
 }
 
@@ -339,11 +348,12 @@ __be32 nfs4_callback_layoutrecall(void *argp, void *resp,
 	u32 res = NFS4ERR_OP_NOT_IN_SESSION;
 
 	if (cps->clp)
-		res = do_callback_layoutrecall(cps->clp, args);
+		res = do_callback_layoutrecall(cps->clp, args, cps);
 	return cpu_to_be32(res);
 }
 
-static void pnfs_recall_all_layouts(struct nfs_client *clp)
+static void pnfs_recall_all_layouts(struct nfs_client *clp,
+				    struct cb_process_state *cps)
 {
 	struct cb_layoutrecallargs args;
 
@@ -351,19 +361,18 @@ static void pnfs_recall_all_layouts(struct nfs_client *clp)
 	memset(&args, 0, sizeof(args));
 	args.cbl_recall_type = RETURN_ALL;
 	/* FIXME we ignore errors, what should we do? */
-	do_callback_layoutrecall(clp, &args);
+	do_callback_layoutrecall(clp, &args, cps);
 }
 
 __be32 nfs4_callback_devicenotify(void *argp, void *resp,
 				  struct cb_process_state *cps)
 {
 	struct cb_devicenotifyargs *args = argp;
-	int i;
+	const struct pnfs_layoutdriver_type *ld = NULL;
+	uint32_t i;
 	__be32 res = 0;
-	struct nfs_client *clp = cps->clp;
-	struct nfs_server *server = NULL;
 
-	if (!clp) {
+	if (!cps->clp) {
 		res = cpu_to_be32(NFS4ERR_OP_NOT_IN_SESSION);
 		goto out;
 	}
@@ -371,23 +380,15 @@ __be32 nfs4_callback_devicenotify(void *argp, void *resp,
 	for (i = 0; i < args->ndevs; i++) {
 		struct cb_devicenotifyitem *dev = &args->devs[i];
 
-		if (!server ||
-		    server->pnfs_curr_ld->id != dev->cbd_layout_type) {
-			rcu_read_lock();
-			list_for_each_entry_rcu(server, &clp->cl_superblocks, client_link)
-				if (server->pnfs_curr_ld &&
-				    server->pnfs_curr_ld->id == dev->cbd_layout_type) {
-					rcu_read_unlock();
-					goto found;
-				}
-			rcu_read_unlock();
-			continue;
+		if (!ld || ld->id != dev->cbd_layout_type) {
+			pnfs_put_layoutdriver(ld);
+			ld = pnfs_find_layoutdriver(dev->cbd_layout_type);
+			if (!ld)
+				continue;
 		}
-
-	found:
-		nfs4_delete_deviceid(server->pnfs_curr_ld, clp, &dev->cbd_dev_id);
+		nfs4_delete_deviceid(ld, cps->clp, &dev->cbd_dev_id);
 	}
-
+	pnfs_put_layoutdriver(ld);
 out:
 	kfree(args->devs);
 	return res;
@@ -458,6 +459,7 @@ static int referring_call_exists(struct nfs_client *clp,
 	__acquires(lock)
 {
 	int status = 0;
+	int found = 0;
 	int i, j;
 	struct nfs4_session *session;
 	struct nfs4_slot_table *tbl;
@@ -486,11 +488,12 @@ static int referring_call_exists(struct nfs_client *clp,
 			spin_lock(lock);
 			if (status)
 				goto out;
+			found++;
 		}
 	}
 
 out:
-	return status;
+	return status < 0 ? status : found;
 }
 
 __be32 nfs4_callback_sequence(void *argp, void *resp,
@@ -501,6 +504,7 @@ __be32 nfs4_callback_sequence(void *argp, void *resp,
 	struct nfs4_slot_table *tbl;
 	struct nfs4_slot *slot;
 	struct nfs_client *clp;
+	int ret;
 	int i;
 	__be32 status = htonl(NFS4ERR_BADSESSION);
 
@@ -560,11 +564,13 @@ __be32 nfs4_callback_sequence(void *argp, void *resp,
 	 * related callback was received before the response to the original
 	 * call.
 	 */
-	if (referring_call_exists(clp, args->csa_nrclists, args->csa_rclists,
-				&tbl->slot_tbl_lock) < 0) {
+	ret = referring_call_exists(clp, args->csa_nrclists, args->csa_rclists,
+				    &tbl->slot_tbl_lock);
+	if (ret < 0) {
 		status = htonl(NFS4ERR_DELAY);
 		goto out_unlock;
 	}
+	cps->referring_calls = ret;
 
 	/*
 	 * RFC5661 20.9.3
@@ -625,7 +631,7 @@ __be32 nfs4_callback_recallany(void *argp, void *resp,
 		nfs_expire_unused_delegation_types(cps->clp, flags);
 
 	if (args->craa_type_mask & BIT(RCA4_TYPE_MASK_FILE_LAYOUT))
-		pnfs_recall_all_layouts(cps->clp);
+		pnfs_recall_all_layouts(cps->clp, cps);
 
 	if (args->craa_type_mask & BIT(PNFS_FF_RCA4_TYPE_MASK_READ)) {
 		set_bit(NFS4CLNT_RECALL_ANY_LAYOUT_READ, &cps->clp->cl_state);
@@ -710,9 +716,9 @@ __be32 nfs4_callback_offload(void *data, void *dummy,
 	struct nfs4_copy_state *copy, *tmp_copy;
 	bool found = false;
 
-	copy = kzalloc(sizeof(struct nfs4_copy_state), GFP_NOFS);
+	copy = kzalloc(sizeof(struct nfs4_copy_state), GFP_KERNEL);
 	if (!copy)
-		return htonl(NFS4ERR_SERVERFAULT);
+		return cpu_to_be32(NFS4ERR_DELAY);
 
 	spin_lock(&cps->clp->cl_lock);
 	rcu_read_lock();
@@ -739,6 +745,9 @@ out:
 		kfree(copy);
 	spin_unlock(&cps->clp->cl_lock);
 
+	trace_nfs4_cb_offload(&args->coa_fh, &args->coa_stateid,
+			args->wr_count, args->error,
+			args->wr_writeverf.committed);
 	return 0;
 }
 #endif /* CONFIG_NFS_V4_2 */

@@ -109,7 +109,7 @@ static const u8 DS1621_REG_TEMP[3] = {
 struct ds1621_data {
 	struct i2c_client *client;
 	struct mutex update_lock;
-	char valid;			/* !=0 if following fields are valid */
+	bool valid;			/* true if following fields are valid */
 	unsigned long last_updated;	/* In jiffies */
 	enum chips kind;		/* device type */
 
@@ -213,7 +213,7 @@ static struct ds1621_data *ds1621_update_client(struct device *dev)
 						  new_conf);
 
 		data->last_updated = jiffies;
-		data->valid = 1;
+		data->valid = true;
 	}
 
 	mutex_unlock(&data->update_lock);
@@ -269,7 +269,7 @@ static ssize_t update_interval_show(struct device *dev,
 				    struct device_attribute *da, char *buf)
 {
 	struct ds1621_data *data = dev_get_drvdata(dev);
-	return scnprintf(buf, PAGE_SIZE, "%hu\n", data->update_interval);
+	return sysfs_emit(buf, "%hu\n", data->update_interval);
 }
 
 static ssize_t update_interval_store(struct device *dev,
@@ -342,8 +342,6 @@ static const struct attribute_group ds1621_group = {
 };
 __ATTRIBUTE_GROUPS(ds1621);
 
-static const struct i2c_device_id ds1621_id[];
-
 static int ds1621_probe(struct i2c_client *client)
 {
 	struct ds1621_data *data;
@@ -356,7 +354,7 @@ static int ds1621_probe(struct i2c_client *client)
 
 	mutex_init(&data->update_lock);
 
-	data->kind = i2c_match_id(ds1621_id, client)->driver_data;
+	data->kind = (uintptr_t)i2c_get_match_data(client);
 	data->client = client;
 
 	/* Initialize the DS1621 chip */
@@ -380,11 +378,10 @@ MODULE_DEVICE_TABLE(i2c, ds1621_id);
 
 /* This is the driver that will be inserted */
 static struct i2c_driver ds1621_driver = {
-	.class		= I2C_CLASS_HWMON,
 	.driver = {
 		.name	= "ds1621",
 	},
-	.probe_new	= ds1621_probe,
+	.probe		= ds1621_probe,
 	.id_table	= ds1621_id,
 };
 

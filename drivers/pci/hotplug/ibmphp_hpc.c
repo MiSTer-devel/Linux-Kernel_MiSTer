@@ -124,7 +124,7 @@ static u8 i2c_ctrl_read(struct controller *ctlr_ptr, void __iomem *WPGBbar, u8 i
 	unsigned long ultemp;
 	unsigned long data;	// actual data HILO format
 
-	debug_polling("%s - Entry WPGBbar[%p] index[%x] \n", __func__, WPGBbar, index);
+	debug_polling("%s - Entry WPGBbar[%p] index[%x]\n", __func__, WPGBbar, index);
 
 	//--------------------------------------------------------------------
 	// READ - step 1
@@ -147,7 +147,7 @@ static u8 i2c_ctrl_read(struct controller *ctlr_ptr, void __iomem *WPGBbar, u8 i
 		ultemp = ultemp << 8;
 		data |= ultemp;
 	} else {
-		err("this controller type is not supported \n");
+		err("this controller type is not supported\n");
 		return HPC_ERROR;
 	}
 
@@ -258,7 +258,7 @@ static u8 i2c_ctrl_write(struct controller *ctlr_ptr, void __iomem *WPGBbar, u8 
 		ultemp = ultemp << 8;
 		data |= ultemp;
 	} else {
-		err("this controller type is not supported \n");
+		err("this controller type is not supported\n");
 		return HPC_ERROR;
 	}
 
@@ -325,11 +325,9 @@ static u8 i2c_ctrl_write(struct controller *ctlr_ptr, void __iomem *WPGBbar, u8 
 static u8 isa_ctrl_read(struct controller *ctlr_ptr, u8 offset)
 {
 	u16 start_address;
-	u16 end_address;
 	u8 data;
 
 	start_address = ctlr_ptr->u.isa_ctlr.io_start;
-	end_address = ctlr_ptr->u.isa_ctlr.io_end;
 	data = inb(start_address + offset);
 	return data;
 }

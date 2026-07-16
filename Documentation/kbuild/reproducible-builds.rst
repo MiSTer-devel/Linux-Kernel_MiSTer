@@ -61,6 +61,9 @@ supported.
 The Reproducible Builds web site has more information about these
 `prefix-map options`_.
 
+Some CONFIG options such as `CONFIG_DEBUG_EFI` embed absolute paths in
+object files. Such options should be disabled.
+
 Generated files in source packages
 ----------------------------------
 
@@ -99,10 +102,10 @@ unreproducible parts can be treated as sources:
 Structure randomisation
 -----------------------
 
-If you enable ``CONFIG_GCC_PLUGIN_RANDSTRUCT``, you will need to
-pre-generate the random seed in
-``scripts/gcc-plugins/randomize_layout_seed.h`` so the same value
-is used in rebuilds.
+If you enable ``CONFIG_RANDSTRUCT``, you will need to pre-generate
+the random seed in ``scripts/basic/randstruct.seed`` so the same
+value is used by each build. See ``scripts/gen-randstruct-seed.sh``
+for details.
 
 Debug info conflicts
 --------------------
@@ -118,6 +121,16 @@ packages for the different kernel versions.
 To avoid this, you can make the vDSO different for different
 kernel versions by including an arbitrary string of "salt" in it.
 This is specified by the Kconfig symbol ``CONFIG_BUILD_SALT``.
+
+Git
+---
+
+Uncommitted changes or different commit ids in git can also lead
+to different compilation results. For example, after executing
+``git reset HEAD^``, even if the code is the same, the
+``include/config/kernel.release`` generated during compilation
+will be different, which will eventually lead to binary differences.
+See ``scripts/setlocalversion`` for details.
 
 .. _KBUILD_BUILD_TIMESTAMP: kbuild.html#kbuild-build-timestamp
 .. _KBUILD_BUILD_USER and KBUILD_BUILD_HOST: kbuild.html#kbuild-build-user-kbuild-build-host

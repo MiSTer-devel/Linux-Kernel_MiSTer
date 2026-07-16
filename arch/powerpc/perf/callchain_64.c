@@ -18,33 +18,6 @@
 
 #include "callchain.h"
 
-/*
- * On 64-bit we don't want to invoke hash_page on user addresses from
- * interrupt context, so if the access faults, we read the page tables
- * to find which page (if any) is mapped and access it directly. Radix
- * has no need for this so it doesn't use read_user_stack_slow.
- */
-int read_user_stack_slow(const void __user *ptr, void *buf, int nb)
-{
-
-	unsigned long addr = (unsigned long) ptr;
-	unsigned long offset;
-	struct page *page;
-	void *kaddr;
-
-	if (get_user_page_fast_only(addr, FOLL_WRITE, &page)) {
-		kaddr = page_address(page);
-
-		/* align address to page boundary */
-		offset = addr & ~PAGE_MASK;
-
-		memcpy(buf, kaddr + offset, nb);
-		put_page(page);
-		return 0;
-	}
-	return -EFAULT;
-}
-
 static int read_user_stack_64(const unsigned long __user *ptr, unsigned long *ret)
 {
 	return __read_user_stack(ptr, ret, sizeof(*ret));
@@ -101,10 +74,9 @@ void perf_callchain_user_64(struct perf_callchain_entry_ctx *entry,
 	struct signal_frame_64 __user *sigframe;
 	unsigned long __user *fp, *uregs;
 
-	next_ip = perf_instruction_pointer(regs);
+	next_ip = perf_arch_instruction_pointer(regs);
 	lr = regs->link;
 	sp = regs->gpr[1];
-	perf_callchain_store(entry, next_ip);
 
 	while (entry->nr < entry->max_stack) {
 		fp = (unsigned long __user *) sp;

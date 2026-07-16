@@ -8,13 +8,17 @@
  * ECB mode.
  */
 
-#include <linux/crypto.h>
+#include <crypto/engine.h>
+#include <crypto/internal/skcipher.h>
+#include <crypto/scatterwalk.h>
 #include <linux/dma-mapping.h>
 #include <linux/delay.h>
+#include <linux/err.h>
 #include <linux/io.h>
+#include <linux/kernel.h>
 #include <linux/pm_runtime.h>
-#include <crypto/scatterwalk.h>
-#include <crypto/internal/skcipher.h>
+#include <linux/slab.h>
+#include <linux/string.h>
 #include "sl3516-ce.h"
 
 /* sl3516_ce_need_fallback - check if a request can be handled by the CE */
@@ -23,8 +27,8 @@ static bool sl3516_ce_need_fallback(struct skcipher_request *areq)
 	struct crypto_skcipher *tfm = crypto_skcipher_reqtfm(areq);
 	struct sl3516_ce_cipher_tfm_ctx *op = crypto_skcipher_ctx(tfm);
 	struct sl3516_ce_dev *ce = op->ce;
-	struct scatterlist *in_sg = areq->src;
-	struct scatterlist *out_sg = areq->dst;
+	struct scatterlist *in_sg;
+	struct scatterlist *out_sg;
 	struct scatterlist *sg;
 
 	if (areq->cryptlen == 0 || areq->cryptlen % 16) {
@@ -105,7 +109,7 @@ static int sl3516_ce_cipher_fallback(struct skcipher_request *areq)
 	struct sl3516_ce_alg_template *algt;
 	int err;
 
-	algt = container_of(alg, struct sl3516_ce_alg_template, alg.skcipher);
+	algt = container_of(alg, struct sl3516_ce_alg_template, alg.skcipher.base);
 	algt->stat_fb++;
 
 	skcipher_request_set_tfm(&rctx->fallback_req, op->fallback_tfm);
@@ -136,7 +140,7 @@ static int sl3516_ce_cipher(struct skcipher_request *areq)
 	int err = 0;
 	int i;
 
-	algt = container_of(alg, struct sl3516_ce_alg_template, alg.skcipher);
+	algt = container_of(alg, struct sl3516_ce_alg_template, alg.skcipher.base);
 
 	dev_dbg(ce->dev, "%s %s %u %x IV(%p %u) key=%u\n", __func__,
 		crypto_tfm_alg_name(areq->base.tfm),
@@ -258,13 +262,15 @@ theend:
 	return err;
 }
 
-static int sl3516_ce_handle_cipher_request(struct crypto_engine *engine, void *areq)
+int sl3516_ce_handle_cipher_request(struct crypto_engine *engine, void *areq)
 {
 	int err;
 	struct skcipher_request *breq = container_of(areq, struct skcipher_request, base);
 
 	err = sl3516_ce_cipher(breq);
+	local_bh_disable();
 	crypto_finalize_skcipher_request(engine, breq, err);
+	local_bh_enable();
 
 	return 0;
 }
@@ -316,7 +322,7 @@ int sl3516_ce_cipher_init(struct crypto_tfm *tfm)
 
 	memset(op, 0, sizeof(struct sl3516_ce_cipher_tfm_ctx));
 
-	algt = container_of(alg, struct sl3516_ce_alg_template, alg.skcipher);
+	algt = container_of(alg, struct sl3516_ce_alg_template, alg.skcipher.base);
 	op->ce = algt->ce;
 
 	op->fallback_tfm = crypto_alloc_skcipher(name, 0, CRYPTO_ALG_NEED_FALLBACK);
@@ -326,16 +332,12 @@ int sl3516_ce_cipher_init(struct crypto_tfm *tfm)
 		return PTR_ERR(op->fallback_tfm);
 	}
 
-	sktfm->reqsize = sizeof(struct sl3516_ce_cipher_req_ctx) +
-			 crypto_skcipher_reqsize(op->fallback_tfm);
+	crypto_skcipher_set_reqsize(sktfm, sizeof(struct sl3516_ce_cipher_req_ctx) +
+				    crypto_skcipher_reqsize(op->fallback_tfm));
 
 	dev_info(op->ce->dev, "Fallback for %s is %s\n",
 		 crypto_tfm_alg_driver_name(&sktfm->base),
 		 crypto_tfm_alg_driver_name(crypto_skcipher_tfm(op->fallback_tfm)));
-
-	op->enginectx.op.do_one_request = sl3516_ce_handle_cipher_request;
-	op->enginectx.op.prepare_request = NULL;
-	op->enginectx.op.unprepare_request = NULL;
 
 	err = pm_runtime_get_sync(op->ce->dev);
 	if (err < 0)

@@ -45,13 +45,12 @@ struct ad7766 {
 	struct spi_message msg;
 
 	/*
-	 * DMA (thus cache coherency maintenance) requires the
+	 * DMA (thus cache coherency maintenance) may require the
 	 * transfer buffers to live in their own cache lines.
 	 * Make the buffer large enough for one 24 bit sample and one 64 bit
 	 * aligned 64 bit timestamp.
 	 */
-	unsigned char data[ALIGN(3, sizeof(s64)) + sizeof(s64)]
-			____cacheline_aligned;
+	unsigned char data[ALIGN(3, sizeof(s64)) + sizeof(s64)]	__aligned(IIO_DMA_MINALIGN);
 };
 
 /*
@@ -262,7 +261,7 @@ static int ad7766_probe(struct spi_device *spi)
 		 * don't enable the interrupt to avoid extra load on the system
 		 */
 		ret = devm_request_irq(&spi->dev, spi->irq, ad7766_irq,
-				       IRQF_TRIGGER_FALLING | IRQF_NO_AUTOEN,
+				       IRQF_TRIGGER_FALLING | IRQF_NO_AUTOEN | IRQF_NO_THREAD,
 				       dev_name(&spi->dev),
 				       ad7766->trig);
 		if (ret < 0)
@@ -292,13 +291,13 @@ static int ad7766_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id ad7766_id[] = {
-	{"ad7766", ID_AD7766},
-	{"ad7766-1", ID_AD7766_1},
-	{"ad7766-2", ID_AD7766_2},
-	{"ad7767", ID_AD7766},
-	{"ad7767-1", ID_AD7766_1},
-	{"ad7767-2", ID_AD7766_2},
-	{}
+	{ "ad7766", ID_AD7766 },
+	{ "ad7766-1", ID_AD7766_1 },
+	{ "ad7766-2", ID_AD7766_2 },
+	{ "ad7767", ID_AD7766 },
+	{ "ad7767-1", ID_AD7766_1 },
+	{ "ad7767-2", ID_AD7766_2 },
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad7766_id);
 

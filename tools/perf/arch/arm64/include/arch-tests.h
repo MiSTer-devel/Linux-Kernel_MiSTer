@@ -2,6 +2,9 @@
 #ifndef ARCH_TESTS_H
 #define ARCH_TESTS_H
 
-extern struct test arch_tests[];
+struct test_suite;
+
+int test__cpuid_match(struct test_suite *test, int subtest);
+extern struct test_suite *arch_tests[];
 
 #endif

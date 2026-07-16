@@ -23,6 +23,7 @@ enum ipc_channel_id {
 	IPC_MEM_CTRL_CHL_ID_4,
 	IPC_MEM_CTRL_CHL_ID_5,
 	IPC_MEM_CTRL_CHL_ID_6,
+	IPC_MEM_CTRL_CHL_ID_7,
 };
 
 /**
@@ -50,7 +51,7 @@ struct ipc_chnl_cfg {
 /**
  * ipc_chnl_cfg_get - Get pipe configuration.
  * @chnl_cfg:		Array of ipc_chnl_cfg struct
- * @index:		Channel index (upto MAX_CHANNELS)
+ * @index:		Channel index (up to MAX_CHANNELS)
  *
  * Return: 0 on success and failure value on error
  */

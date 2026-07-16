@@ -30,16 +30,15 @@
  * struct mlxreg_wdt - wd private data:
  *
  * @wdd:	watchdog device;
- * @device:	basic device;
  * @pdata:	data received from platform driver;
  * @regmap:	register map of parent device;
- * @timeout:	defined timeout in sec.;
  * @action_idx:	index for direct access to action register;
  * @timeout_idx:index for direct access to TO register;
  * @tleft_idx:	index for direct access to time left register;
  * @ping_idx:	index for direct access to ping register;
  * @reset_idx:	index for direct access to reset cause register;
- * @wd_type:	watchdog HW type;
+ * @regmap_val_sz: size of value in register map;
+ * @wdt_type:	watchdog HW type;
  */
 struct mlxreg_wdt {
 	struct watchdog_device wdd;
@@ -100,9 +99,8 @@ static int mlxreg_wdt_ping(struct watchdog_device *wdd)
 	struct mlxreg_wdt *wdt = watchdog_get_drvdata(wdd);
 	struct mlxreg_core_data *reg_data = &wdt->pdata->data[wdt->ping_idx];
 
-	return regmap_update_bits_base(wdt->regmap, reg_data->reg,
-				       ~reg_data->mask, BIT(reg_data->bit),
-				       NULL, false, true);
+	return regmap_write_bits(wdt->regmap, reg_data->reg, ~reg_data->mask,
+				 BIT(reg_data->bit));
 }
 
 static int mlxreg_wdt_set_timeout(struct watchdog_device *wdd,

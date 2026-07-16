@@ -599,7 +599,7 @@ struct keyspan_port_private {
 #include "keyspan_usa67msg.h"
 
 
-static void keyspan_break_ctl(struct tty_struct *tty, int break_state)
+static int keyspan_break_ctl(struct tty_struct *tty, int break_state)
 {
 	struct usb_serial_port *port = tty->driver_data;
 	struct keyspan_port_private 	*p_priv;
@@ -611,12 +611,16 @@ static void keyspan_break_ctl(struct tty_struct *tty, int break_state)
 	else
 		p_priv->break_on = 0;
 
+	/* FIXME: return errors */
 	keyspan_send_setup(port, 0);
+
+	return 0;
 }
 
 
 static void keyspan_set_termios(struct tty_struct *tty,
-		struct usb_serial_port *port, struct ktermios *old_termios)
+				struct usb_serial_port *port,
+				const struct ktermios *old_termios)
 {
 	int				baud_rate, device_port;
 	struct keyspan_port_private 	*p_priv;
@@ -917,7 +921,6 @@ static void usa28_indat_callback(struct urb *urb)
 
 	port =  urb->context;
 	p_priv = usb_get_serial_port_data(port);
-	data = urb->transfer_buffer;
 
 	if (urb != p_priv->in_urbs[p_priv->in_flip])
 		return;
@@ -1184,6 +1187,10 @@ static void usa49wg_indat_callback(struct urb *urb)
 	len = 0;
 
 	while (i < urb->actual_length) {
+		if (urb->actual_length - i < 3) {
+			dev_warn_ratelimited(&urb->dev->dev, "malformed indat packet\n");
+			break;
+		}
 
 		/* Check port number from message */
 		if (data[i] >= serial->num_ports) {
@@ -2890,22 +2897,22 @@ static int keyspan_port_probe(struct usb_serial_port *port)
 	for (i = 0; i < ARRAY_SIZE(p_priv->in_buffer); ++i) {
 		p_priv->in_buffer[i] = kzalloc(IN_BUFLEN, GFP_KERNEL);
 		if (!p_priv->in_buffer[i])
-			goto err_in_buffer;
+			goto err_free_in_buffer;
 	}
 
 	for (i = 0; i < ARRAY_SIZE(p_priv->out_buffer); ++i) {
 		p_priv->out_buffer[i] = kzalloc(OUT_BUFLEN, GFP_KERNEL);
 		if (!p_priv->out_buffer[i])
-			goto err_out_buffer;
+			goto err_free_out_buffer;
 	}
 
 	p_priv->inack_buffer = kzalloc(INACK_BUFLEN, GFP_KERNEL);
 	if (!p_priv->inack_buffer)
-		goto err_inack_buffer;
+		goto err_free_out_buffer;
 
 	p_priv->outcont_buffer = kzalloc(OUTCONT_BUFLEN, GFP_KERNEL);
 	if (!p_priv->outcont_buffer)
-		goto err_outcont_buffer;
+		goto err_free_inack_buffer;
 
 	p_priv->device_details = d_details;
 
@@ -2951,15 +2958,14 @@ static int keyspan_port_probe(struct usb_serial_port *port)
 
 	return 0;
 
-err_outcont_buffer:
+err_free_inack_buffer:
 	kfree(p_priv->inack_buffer);
-err_inack_buffer:
+err_free_out_buffer:
 	for (i = 0; i < ARRAY_SIZE(p_priv->out_buffer); ++i)
 		kfree(p_priv->out_buffer[i]);
-err_out_buffer:
+err_free_in_buffer:
 	for (i = 0; i < ARRAY_SIZE(p_priv->in_buffer); ++i)
 		kfree(p_priv->in_buffer[i]);
-err_in_buffer:
 	kfree(p_priv);
 
 	return -ENOMEM;
@@ -2999,7 +3005,6 @@ static void keyspan_port_remove(struct usb_serial_port *port)
 /* Structs for the devices, pre and post renumeration. */
 static struct usb_serial_driver keyspan_pre_device = {
 	.driver = {
-		.owner		= THIS_MODULE,
 		.name		= "keyspan_no_firm",
 	},
 	.description		= "Keyspan - (without firmware)",
@@ -3010,7 +3015,6 @@ static struct usb_serial_driver keyspan_pre_device = {
 
 static struct usb_serial_driver keyspan_1port_device = {
 	.driver = {
-		.owner		= THIS_MODULE,
 		.name		= "keyspan_1",
 	},
 	.description		= "Keyspan 1 port adapter",
@@ -3034,7 +3038,6 @@ static struct usb_serial_driver keyspan_1port_device = {
 
 static struct usb_serial_driver keyspan_2port_device = {
 	.driver = {
-		.owner		= THIS_MODULE,
 		.name		= "keyspan_2",
 	},
 	.description		= "Keyspan 2 port adapter",
@@ -3058,7 +3061,6 @@ static struct usb_serial_driver keyspan_2port_device = {
 
 static struct usb_serial_driver keyspan_4port_device = {
 	.driver = {
-		.owner		= THIS_MODULE,
 		.name		= "keyspan_4",
 	},
 	.description		= "Keyspan 4 port adapter",

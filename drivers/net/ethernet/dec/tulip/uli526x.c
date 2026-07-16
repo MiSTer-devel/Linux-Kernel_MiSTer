@@ -272,6 +272,7 @@ static int uli526x_init_one(struct pci_dev *pdev,
 	struct uli526x_board_info *db;	/* board information structure */
 	struct net_device *dev;
 	void __iomem *ioaddr;
+	u8 addr[ETH_ALEN];
 	int i, err;
 
 	ULI526X_DBUG(0, "uli526x_init_one()", 0);
@@ -379,7 +380,7 @@ static int uli526x_init_one(struct pci_dev *pdev,
 		uw32(DCR13, 0x1b0);	//Select ID Table access port
 		//Read MAC address from CR14
 		for (i = 0; i < 6; i++)
-			dev->dev_addr[i] = ur32(DCR14);
+			addr[i] = ur32(DCR14);
 		//Read end
 		uw32(DCR13, 0);		//Clear CR13
 		uw32(DCR0, 0);		//Clear CR0
@@ -388,8 +389,10 @@ static int uli526x_init_one(struct pci_dev *pdev,
 	else		/*Exist SROM*/
 	{
 		for (i = 0; i < 6; i++)
-			dev->dev_addr[i] = db->srom[20 + i];
+			addr[i] = db->srom[20 + i];
 	}
+	eth_hw_addr_set(dev, addr);
+
 	err = register_netdev (dev);
 	if (err)
 		goto err_out_unmap;
@@ -653,7 +656,7 @@ static int uli526x_stop(struct net_device *dev)
 	netif_stop_queue(dev);
 
 	/* deleted timer */
-	del_timer_sync(&db->timer);
+	timer_delete_sync(&db->timer);
 
 	/* Reset & stop ULI526X board */
 	uw32(DCR0, ULI526X_RESET);
@@ -968,8 +971,8 @@ static void netdev_get_drvinfo(struct net_device *dev,
 {
 	struct uli526x_board_info *np = netdev_priv(dev);
 
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->bus_info, pci_name(np->pdev), sizeof(info->bus_info));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->bus_info, pci_name(np->pdev), sizeof(info->bus_info));
 }
 
 static int netdev_get_link_ksettings(struct net_device *dev,
@@ -1011,7 +1014,7 @@ static const struct ethtool_ops netdev_ethtool_ops = {
 
 static void uli526x_timer(struct timer_list *t)
 {
-	struct uli526x_board_info *db = from_timer(db, t, timer);
+	struct uli526x_board_info *db = timer_container_of(db, t, timer);
 	struct net_device *dev = pci_get_drvdata(db->pdev);
 	struct uli_phy_ops *phy = &db->phy;
 	void __iomem *ioaddr = db->ioaddr;
@@ -1343,7 +1346,7 @@ static void send_filter_frame(struct net_device *dev, int mc_cnt)
 	void __iomem *ioaddr = db->ioaddr;
 	struct netdev_hw_addr *ha;
 	struct tx_desc *txptr;
-	u16 * addrptr;
+	const u16 * addrptr;
 	u32 * suptr;
 	int i;
 
@@ -1353,7 +1356,7 @@ static void send_filter_frame(struct net_device *dev, int mc_cnt)
 	suptr = (u32 *) txptr->tx_buf_ptr;
 
 	/* Node address */
-	addrptr = (u16 *) dev->dev_addr;
+	addrptr = (const u16 *) dev->dev_addr;
 	*suptr++ = addrptr[0] << FLT_SHIFT;
 	*suptr++ = addrptr[1] << FLT_SHIFT;
 	*suptr++ = addrptr[2] << FLT_SHIFT;

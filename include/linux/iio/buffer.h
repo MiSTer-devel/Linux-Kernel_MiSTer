@@ -11,7 +11,14 @@
 
 struct iio_buffer;
 
+enum iio_buffer_direction {
+	IIO_BUFFER_DIRECTION_IN,
+	IIO_BUFFER_DIRECTION_OUT,
+};
+
 int iio_push_to_buffers(struct iio_dev *indio_dev, const void *data);
+
+int iio_pop_from_buffer(struct iio_buffer *buffer, void *data);
 
 /**
  * iio_push_to_buffers_with_timestamp() - push data and timestamp to buffers
@@ -30,13 +37,29 @@ int iio_push_to_buffers(struct iio_dev *indio_dev, const void *data);
 static inline int iio_push_to_buffers_with_timestamp(struct iio_dev *indio_dev,
 	void *data, int64_t timestamp)
 {
-	if (indio_dev->scan_timestamp) {
+	if (ACCESS_PRIVATE(indio_dev, scan_timestamp)) {
 		size_t ts_offset = indio_dev->scan_bytes / sizeof(int64_t) - 1;
 		((int64_t *)data)[ts_offset] = timestamp;
 	}
 
 	return iio_push_to_buffers(indio_dev, data);
 }
+
+static inline int iio_push_to_buffers_with_ts(struct iio_dev *indio_dev,
+					      void *data, size_t data_total_len,
+					      s64 timestamp)
+{
+	if (unlikely(data_total_len < indio_dev->scan_bytes)) {
+		dev_err(&indio_dev->dev, "Undersized storage pushed to buffer\n");
+		return -ENOSPC;
+	}
+
+	return iio_push_to_buffers_with_timestamp(indio_dev, data, timestamp);
+}
+
+int iio_push_to_buffers_with_ts_unaligned(struct iio_dev *indio_dev,
+					  const void *data, size_t data_sz,
+					  int64_t timestamp);
 
 bool iio_validate_scan_mask_onehot(struct iio_dev *indio_dev,
 				   const unsigned long *mask);

@@ -336,8 +336,8 @@ static int ds1305_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	/* make sure alarm fires within the next 24 hours */
 	if (later <= now)
 		return -EINVAL;
-	if ((later - now) > 24 * 60 * 60)
-		return -EDOM;
+	if ((later - now) > ds1305->rtc->alarm_offset_max)
+		return -ERANGE;
 
 	/* disable alarm if needed */
 	if (ds1305->ctrl[0] & DS1305_AEI0) {
@@ -691,6 +691,7 @@ static int ds1305_probe(struct spi_device *spi)
 	ds1305->rtc->ops = &ds1305_ops;
 	ds1305->rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;
 	ds1305->rtc->range_max = RTC_TIMESTAMP_END_2099;
+	ds1305->rtc->alarm_offset_max = 24 * 60 * 60;
 
 	ds1305_nvmem_cfg.priv = ds1305;
 	status = devm_rtc_register_device(ds1305->rtc);
@@ -720,7 +721,7 @@ static int ds1305_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int ds1305_remove(struct spi_device *spi)
+static void ds1305_remove(struct spi_device *spi)
 {
 	struct ds1305 *ds1305 = spi_get_drvdata(spi);
 
@@ -730,8 +731,6 @@ static int ds1305_remove(struct spi_device *spi)
 		devm_free_irq(&spi->dev, spi->irq, ds1305);
 		cancel_work_sync(&ds1305->work);
 	}
-
-	return 0;
 }
 
 static struct spi_driver ds1305_driver = {

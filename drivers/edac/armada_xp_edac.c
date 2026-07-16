@@ -5,7 +5,9 @@
 
 #include <linux/kernel.h>
 #include <linux/edac.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/platform_device.h>
 
 #include <asm/hardware/cache-l2x0.h>
 #include <asm/hardware/cache-aurora-l2.h>
@@ -286,17 +288,10 @@ static int axp_mc_probe(struct platform_device *pdev)
 	struct edac_mc_layer layers[1];
 	const struct of_device_id *id;
 	struct mem_ctl_info *mci;
-	struct resource *r;
 	void __iomem *base;
 	uint32_t config;
 
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!r) {
-		dev_err(&pdev->dev, "Unable to get mem resource\n");
-		return -ENODEV;
-	}
-
-	base = devm_ioremap_resource(&pdev->dev, r);
+	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base)) {
 		dev_err(&pdev->dev, "Unable to map regs\n");
 		return PTR_ERR(base);
@@ -358,15 +353,13 @@ static int axp_mc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int axp_mc_remove(struct platform_device *pdev)
+static void axp_mc_remove(struct platform_device *pdev)
 {
 	struct mem_ctl_info *mci = platform_get_drvdata(pdev);
 
 	edac_mc_del_mc(&pdev->dev);
 	edac_mc_free(mci);
 	platform_set_drvdata(pdev, NULL);
-
-	return 0;
 }
 
 static struct platform_driver axp_mc_driver = {
@@ -516,15 +509,8 @@ static int aurora_l2_probe(struct platform_device *pdev)
 	const struct of_device_id *id;
 	uint32_t l2x0_aux_ctrl;
 	void __iomem *base;
-	struct resource *r;
 
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!r) {
-		dev_err(&pdev->dev, "Unable to get mem resource\n");
-		return -ENODEV;
-	}
-
-	base = devm_ioremap_resource(&pdev->dev, r);
+	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base)) {
 		dev_err(&pdev->dev, "Unable to map regs\n");
 		return PTR_ERR(base);
@@ -537,7 +523,7 @@ static int aurora_l2_probe(struct platform_device *pdev)
 		dev_warn(&pdev->dev, "data ECC is not enabled\n");
 
 	dci = edac_device_alloc_ctl_info(sizeof(*drvdata),
-					 "cpu", 1, "L", 1, 2, NULL, 0, 0);
+					 "cpu", 1, "L", 1, 2, 0);
 	if (!dci)
 		return -ENOMEM;
 
@@ -578,7 +564,7 @@ static int aurora_l2_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int aurora_l2_remove(struct platform_device *pdev)
+static void aurora_l2_remove(struct platform_device *pdev)
 {
 	struct edac_device_ctl_info *dci = platform_get_drvdata(pdev);
 #ifdef CONFIG_EDAC_DEBUG
@@ -589,8 +575,6 @@ static int aurora_l2_remove(struct platform_device *pdev)
 	edac_device_del_device(&pdev->dev);
 	edac_device_free_ctl_info(dci);
 	platform_set_drvdata(pdev, NULL);
-
-	return 0;
 }
 
 static struct platform_driver aurora_l2_driver = {
@@ -612,6 +596,9 @@ static struct platform_driver * const drivers[] = {
 static int __init armada_xp_edac_init(void)
 {
 	int res;
+
+	if (ghes_get_devices())
+		return -EBUSY;
 
 	/* only polling is supported */
 	edac_op_state = EDAC_OPSTATE_POLL;

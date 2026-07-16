@@ -73,11 +73,9 @@
 #include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/io.h>
-
-#include "../comedidev.h"
-
-#include "comedi_isadma.h"
-#include "comedi_8254.h"
+#include <linux/comedi/comedidev.h>
+#include <linux/comedi/comedi_8254.h>
+#include <linux/comedi/comedi_isadma.h>
 
 /* misc. defines */
 #define DAS1800_SIZE           16	/* uses 16 io addresses */
@@ -1235,10 +1233,10 @@ static int das1800_attach(struct comedi_device *dev,
 	if (!devpriv->fifo_buf)
 		return -ENOMEM;
 
-	dev->pacer = comedi_8254_init(dev->iobase + DAS1800_COUNTER,
-				      I8254_OSC_BASE_5MHZ, I8254_IO8, 0);
-	if (!dev->pacer)
-		return -ENOMEM;
+	dev->pacer = comedi_8254_io_alloc(dev->iobase + DAS1800_COUNTER,
+					  I8254_OSC_BASE_5MHZ, I8254_IO8, 0);
+	if (IS_ERR(dev->pacer))
+		return PTR_ERR(dev->pacer);
 
 	ret = comedi_alloc_subdevices(dev, 4);
 	if (ret)

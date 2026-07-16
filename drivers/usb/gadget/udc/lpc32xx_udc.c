@@ -532,7 +532,7 @@ static void create_debug_file(struct lpc32xx_udc *udc)
 
 static void remove_debug_file(struct lpc32xx_udc *udc)
 {
-	debugfs_remove(debugfs_lookup(debug_filename, NULL));
+	debugfs_lookup_and_remove(debug_filename, NULL);
 }
 
 #else
@@ -1487,31 +1487,29 @@ static int udc_ep0_out_req(struct lpc32xx_udc *udc)
 		req = list_entry(ep0->queue.next, struct lpc32xx_request,
 				 queue);
 
-	if (req) {
-		if (req->req.length == 0) {
-			/* Just dequeue request */
-			done(ep0, req, 0);
-			udc->ep0state = WAIT_FOR_SETUP;
-			return 1;
-		}
+	if (req->req.length == 0) {
+		/* Just dequeue request */
+		done(ep0, req, 0);
+		udc->ep0state = WAIT_FOR_SETUP;
+		return 1;
+	}
 
-		/* Get data from FIFO */
-		bufferspace = req->req.length - req->req.actual;
-		if (bufferspace > ep0->ep.maxpacket)
-			bufferspace = ep0->ep.maxpacket;
+	/* Get data from FIFO */
+	bufferspace = req->req.length - req->req.actual;
+	if (bufferspace > ep0->ep.maxpacket)
+		bufferspace = ep0->ep.maxpacket;
 
-		/* Copy data to buffer */
-		prefetchw(req->req.buf + req->req.actual);
-		tr = udc_read_hwep(udc, EP_OUT, req->req.buf + req->req.actual,
-				   bufferspace);
-		req->req.actual += bufferspace;
+	/* Copy data to buffer */
+	prefetchw(req->req.buf + req->req.actual);
+	tr = udc_read_hwep(udc, EP_OUT, req->req.buf + req->req.actual,
+			   bufferspace);
+	req->req.actual += bufferspace;
 
-		if (tr < ep0->ep.maxpacket) {
-			/* This is the last packet */
-			done(ep0, req, 0);
-			udc->ep0state = WAIT_FOR_SETUP;
-			return 1;
-		}
+	if (tr < ep0->ep.maxpacket) {
+		/* This is the last packet */
+		done(ep0, req, 0);
+		udc->ep0state = WAIT_FOR_SETUP;
+		return 1;
 	}
 
 	return 0;
@@ -1631,7 +1629,7 @@ static int lpc32xx_ep_enable(struct usb_ep *_ep,
 		return -ESHUTDOWN;
 	}
 
-	tmp = desc->bmAttributes & USB_ENDPOINT_XFERTYPE_MASK;
+	tmp = usb_endpoint_type(desc);
 	switch (tmp) {
 	case USB_ENDPOINT_XFER_CONTROL:
 		return -EINVAL;
@@ -1830,7 +1828,7 @@ static int lpc32xx_ep_queue(struct usb_ep *_ep,
 static int lpc32xx_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 {
 	struct lpc32xx_ep *ep;
-	struct lpc32xx_request *req;
+	struct lpc32xx_request *req = NULL, *iter;
 	unsigned long flags;
 
 	ep = container_of(_ep, struct lpc32xx_ep, ep);
@@ -1840,11 +1838,13 @@ static int lpc32xx_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	spin_lock_irqsave(&ep->udc->lock, flags);
 
 	/* make sure it's actually queued on this endpoint */
-	list_for_each_entry(req, &ep->queue, queue) {
-		if (&req->req == _req)
-			break;
+	list_for_each_entry(iter, &ep->queue, queue) {
+		if (&iter->req != _req)
+			continue;
+		req = iter;
+		break;
 	}
-	if (&req->req != _req) {
+	if (!req) {
 		spin_unlock_irqrestore(&ep->udc->lock, flags);
 		return -EINVAL;
 	}
@@ -1960,18 +1960,17 @@ static void udc_handle_eps(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
 
 	/* If there isn't a request waiting, something went wrong */
 	req = list_entry(ep->queue.next, struct lpc32xx_request, queue);
-	if (req) {
-		done(ep, req, 0);
 
-		/* Start another request if ready */
-		if (!list_empty(&ep->queue)) {
-			if (ep->is_in)
-				udc_ep_in_req_dma(udc, ep);
-			else
-				udc_ep_out_req_dma(udc, ep);
-		} else
-			ep->req_pending = 0;
-	}
+	done(ep, req, 0);
+
+	/* Start another request if ready */
+	if (!list_empty(&ep->queue)) {
+		if (ep->is_in)
+			udc_ep_in_req_dma(udc, ep);
+		else
+			udc_ep_out_req_dma(udc, ep);
+	} else
+		ep->req_pending = 0;
 }
 
 
@@ -1987,10 +1986,6 @@ static void udc_handle_dma_ep(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
 #endif
 
 	req = list_entry(ep->queue.next, struct lpc32xx_request, queue);
-	if (!req) {
-		ep_err(ep, "DMA interrupt on no req!\n");
-		return;
-	}
 	dd = req->dd_desc_ptr;
 
 	/* DMA descriptor should always be retired for this call */
@@ -3014,6 +3009,7 @@ static int lpc32xx_udc_probe(struct platform_device *pdev)
 	}
 
 	udc->isp1301_i2c_client = isp1301_get_client(isp1301_node);
+	of_node_put(isp1301_node);
 	if (!udc->isp1301_i2c_client) {
 		return -EPROBE_DEFER;
 	}
@@ -3024,7 +3020,7 @@ static int lpc32xx_udc_probe(struct platform_device *pdev)
 	pdev->dev.dma_mask = &lpc32xx_usbd_dmamask;
 	retval = dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(32));
 	if (retval)
-		return retval;
+		goto err_put_client;
 
 	udc->board = &lpc32xx_usbddata;
 
@@ -3042,28 +3038,32 @@ static int lpc32xx_udc_probe(struct platform_device *pdev)
 	/* Get IRQs */
 	for (i = 0; i < 4; i++) {
 		udc->udp_irq[i] = platform_get_irq(pdev, i);
-		if (udc->udp_irq[i] < 0)
-			return udc->udp_irq[i];
+		if (udc->udp_irq[i] < 0) {
+			retval = udc->udp_irq[i];
+			goto err_put_client;
+		}
 	}
 
 	udc->udp_baseaddr = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(udc->udp_baseaddr)) {
 		dev_err(udc->dev, "IO map failure\n");
-		return PTR_ERR(udc->udp_baseaddr);
+		retval = PTR_ERR(udc->udp_baseaddr);
+		goto err_put_client;
 	}
 
 	/* Get USB device clock */
 	udc->usb_slv_clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(udc->usb_slv_clk)) {
 		dev_err(udc->dev, "failed to acquire USB device clock\n");
-		return PTR_ERR(udc->usb_slv_clk);
+		retval = PTR_ERR(udc->usb_slv_clk);
+		goto err_put_client;
 	}
 
 	/* Enable USB device clock */
 	retval = clk_prepare_enable(udc->usb_slv_clk);
 	if (retval < 0) {
 		dev_err(udc->dev, "failed to start USB device clock\n");
-		return retval;
+		goto err_put_client;
 	}
 
 	/* Setup deferred workqueue data */
@@ -3166,18 +3166,24 @@ dma_alloc_fail:
 			  udc->udca_v_base, udc->udca_p_base);
 i2c_fail:
 	clk_disable_unprepare(udc->usb_slv_clk);
+err_put_client:
+	put_device(&udc->isp1301_i2c_client->dev);
+
 	dev_err(udc->dev, "%s probe failed, %d\n", driver_name, retval);
 
 	return retval;
 }
 
-static int lpc32xx_udc_remove(struct platform_device *pdev)
+static void lpc32xx_udc_remove(struct platform_device *pdev)
 {
 	struct lpc32xx_udc *udc = platform_get_drvdata(pdev);
 
 	usb_del_gadget_udc(&udc->gadget);
-	if (udc->driver)
-		return -EBUSY;
+	if (udc->driver) {
+		dev_err(&pdev->dev,
+			"Driver still in use but removing anyhow\n");
+		return;
+	}
 
 	udc_clk_set(udc, 1);
 	udc_disable(udc);
@@ -3192,7 +3198,7 @@ static int lpc32xx_udc_remove(struct platform_device *pdev)
 
 	clk_disable_unprepare(udc->usb_slv_clk);
 
-	return 0;
+	put_device(&udc->isp1301_i2c_client->dev);
 }
 
 #ifdef CONFIG_PM
@@ -3251,6 +3257,7 @@ MODULE_DEVICE_TABLE(of, lpc32xx_udc_of_match);
 #endif
 
 static struct platform_driver lpc32xx_udc_driver = {
+	.probe		= lpc32xx_udc_probe,
 	.remove		= lpc32xx_udc_remove,
 	.shutdown	= lpc32xx_udc_shutdown,
 	.suspend	= lpc32xx_udc_suspend,
@@ -3261,7 +3268,7 @@ static struct platform_driver lpc32xx_udc_driver = {
 	},
 };
 
-module_platform_driver_probe(lpc32xx_udc_driver, lpc32xx_udc_probe);
+module_platform_driver(lpc32xx_udc_driver);
 
 MODULE_DESCRIPTION("LPC32XX udc driver");
 MODULE_AUTHOR("Kevin Wells <kevin.wells@nxp.com>");

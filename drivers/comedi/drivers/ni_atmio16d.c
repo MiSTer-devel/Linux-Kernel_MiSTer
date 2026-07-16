@@ -39,9 +39,8 @@
 
 #include <linux/module.h>
 #include <linux/interrupt.h>
-#include "../comedidev.h"
-
-#include "8255.h"
+#include <linux/comedi/comedidev.h>
+#include <linux/comedi/comedi_8255.h>
 
 /* Configuration and Status Registers */
 #define COM_REG_1	0x00	/* wo 16 */
@@ -678,7 +677,7 @@ static int atmio16d_attach(struct comedi_device *dev,
 	/* 8255 subdevice */
 	s = &dev->subdevices[3];
 	if (board->has_8255) {
-		ret = subdev_8255_init(dev, s, NULL, 0x00);
+		ret = subdev_8255_io_init(dev, s, 0x00);
 		if (ret)
 			return ret;
 	} else {
@@ -699,7 +698,8 @@ static int atmio16d_attach(struct comedi_device *dev,
 
 static void atmio16d_detach(struct comedi_device *dev)
 {
-	reset_atmio16d(dev);
+	if (dev->private)
+		reset_atmio16d(dev);
 	comedi_legacy_detach(dev);
 }
 

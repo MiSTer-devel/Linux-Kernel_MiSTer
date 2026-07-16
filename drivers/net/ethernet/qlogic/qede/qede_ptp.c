@@ -28,16 +28,19 @@ struct qede_ptp {
 };
 
 /**
- * qede_ptp_adjfreq() - Adjust the frequency of the PTP cycle counter.
+ * qede_ptp_adjfine() - Adjust the frequency of the PTP cycle counter.
  *
  * @info: The PTP clock info structure.
- * @ppb: Parts per billion adjustment from base.
+ * @scaled_ppm: Scaled parts per million adjustment from base.
+ *
+ * Scaled parts per million is ppm with a 16-bit binary fractional field.
  *
  * Return: Zero on success, negative errno otherwise.
  */
-static int qede_ptp_adjfreq(struct ptp_clock_info *info, s32 ppb)
+static int qede_ptp_adjfine(struct ptp_clock_info *info, long scaled_ppm)
 {
 	struct qede_ptp *ptp = container_of(info, struct qede_ptp, clock_info);
+	s32 ppb = scaled_ppm_to_ppb(scaled_ppm);
 	struct qede_dev *edev = ptp->edev;
 	int rc;
 
@@ -47,7 +50,7 @@ static int qede_ptp_adjfreq(struct ptp_clock_info *info, s32 ppb)
 		rc = ptp->ops->adjfreq(edev->cdev, ppb);
 		spin_unlock_bh(&ptp->lock);
 	} else {
-		DP_ERR(edev, "PTP adjfreq called while interface is down\n");
+		DP_ERR(edev, "PTP adjfine called while interface is down\n");
 		rc = -EFAULT;
 	}
 	__qede_unlock(edev);
@@ -178,7 +181,7 @@ static void qede_ptp_task(struct work_struct *work)
 }
 
 /* Read the PHC. This API is invoked with ptp_lock held. */
-static u64 qede_ptp_read_cc(const struct cyclecounter *cc)
+static u64 qede_ptp_read_cc(struct cyclecounter *cc)
 {
 	struct qede_dev *edev;
 	struct qede_ptp *ptp;
@@ -304,11 +307,6 @@ int qede_ptp_hw_ts(struct qede_dev *edev, struct ifreq *ifr)
 		   "HWTSTAMP IOCTL: Requested tx_type = %d, requested rx_filters = %d\n",
 		   config.tx_type, config.rx_filter);
 
-	if (config.flags) {
-		DP_ERR(edev, "config.flags is reserved for future use\n");
-		return -EINVAL;
-	}
-
 	ptp->hw_ts_ioctl_called = 1;
 	ptp->tx_type = config.tx_type;
 	ptp->rx_filter = config.rx_filter;
@@ -323,30 +321,23 @@ int qede_ptp_hw_ts(struct qede_dev *edev, struct ifreq *ifr)
 			    sizeof(config)) ? -EFAULT : 0;
 }
 
-int qede_ptp_get_ts_info(struct qede_dev *edev, struct ethtool_ts_info *info)
+int qede_ptp_get_ts_info(struct qede_dev *edev, struct kernel_ethtool_ts_info *info)
 {
 	struct qede_ptp *ptp = edev->ptp;
 
 	if (!ptp) {
-		info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE |
-					SOF_TIMESTAMPING_RX_SOFTWARE |
-					SOF_TIMESTAMPING_SOFTWARE;
-		info->phc_index = -1;
+		info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE;
 
 		return 0;
 	}
 
 	info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE |
-				SOF_TIMESTAMPING_RX_SOFTWARE |
-				SOF_TIMESTAMPING_SOFTWARE |
 				SOF_TIMESTAMPING_TX_HARDWARE |
 				SOF_TIMESTAMPING_RX_HARDWARE |
 				SOF_TIMESTAMPING_RAW_HARDWARE;
 
 	if (ptp->clock)
 		info->phc_index = ptp_clock_index(ptp->clock);
-	else
-		info->phc_index = -1;
 
 	info->rx_filters = BIT(HWTSTAMP_FILTER_NONE) |
 			   BIT(HWTSTAMP_FILTER_PTP_V1_L4_EVENT) |
@@ -467,7 +458,7 @@ int qede_ptp_enable(struct qede_dev *edev)
 	ptp->clock_info.n_ext_ts = 0;
 	ptp->clock_info.n_per_out = 0;
 	ptp->clock_info.pps = 0;
-	ptp->clock_info.adjfreq = qede_ptp_adjfreq;
+	ptp->clock_info.adjfine = qede_ptp_adjfine;
 	ptp->clock_info.adjtime = qede_ptp_adjtime;
 	ptp->clock_info.gettime64 = qede_ptp_gettime;
 	ptp->clock_info.settime64 = qede_ptp_settime;
@@ -501,19 +492,19 @@ void qede_ptp_tx_ts(struct qede_dev *edev, struct sk_buff *skb)
 
 	if (test_and_set_bit_lock(QEDE_FLAGS_PTP_TX_IN_PRORGESS,
 				  &edev->flags)) {
-		DP_ERR(edev, "Timestamping in progress\n");
+		DP_VERBOSE(edev, QED_MSG_DEBUG, "Timestamping in progress\n");
 		edev->ptp_skip_txts++;
 		return;
 	}
 
 	if (unlikely(!test_bit(QEDE_FLAGS_TX_TIMESTAMPING_EN, &edev->flags))) {
-		DP_ERR(edev,
-		       "Tx timestamping was not enabled, this packet will not be timestamped\n");
+		DP_VERBOSE(edev, QED_MSG_DEBUG,
+			   "Tx timestamping was not enabled, this pkt will not be timestamped\n");
 		clear_bit_unlock(QEDE_FLAGS_PTP_TX_IN_PRORGESS, &edev->flags);
 		edev->ptp_skip_txts++;
 	} else if (unlikely(ptp->tx_skb)) {
-		DP_ERR(edev,
-		       "The device supports only a single outstanding packet to timestamp, this packet will not be timestamped\n");
+		DP_VERBOSE(edev, QED_MSG_DEBUG,
+			   "Device supports a single outstanding pkt to ts, It will not be ts\n");
 		clear_bit_unlock(QEDE_FLAGS_PTP_TX_IN_PRORGESS, &edev->flags);
 		edev->ptp_skip_txts++;
 	} else {

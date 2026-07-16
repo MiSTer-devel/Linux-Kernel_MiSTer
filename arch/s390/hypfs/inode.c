@@ -24,6 +24,7 @@
 #include <linux/kobject.h>
 #include <linux/seq_file.h>
 #include <linux/uio.h>
+#include <asm/machine.h>
 #include <asm/ebcdic.h>
 #include "hypfs.h"
 
@@ -53,7 +54,7 @@ static void hypfs_update_update(struct super_block *sb)
 	struct inode *inode = d_inode(sb_info->update_file);
 
 	sb_info->last_update = ktime_get_seconds();
-	inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+	simple_inode_init_ts(inode);
 }
 
 /* directory tree removal functions */
@@ -101,7 +102,7 @@ static struct inode *hypfs_make_inode(struct super_block *sb, umode_t mode)
 		ret->i_mode = mode;
 		ret->i_uid = hypfs_info->uid;
 		ret->i_gid = hypfs_info->gid;
-		ret->i_atime = ret->i_mtime = ret->i_ctime = current_time(ret);
+		simple_inode_init_ts(ret);
 		if (S_ISDIR(mode))
 			set_nlink(ret, 2);
 	}
@@ -184,7 +185,7 @@ static ssize_t hypfs_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		goto out;
 	}
 	hypfs_delete_tree(sb->s_root);
-	if (MACHINE_IS_VM)
+	if (machine_is_vm())
 		rc = hypfs_vm_create_files(sb->s_root);
 	else
 		rc = hypfs_diag_create_files(sb->s_root);
@@ -273,7 +274,7 @@ static int hypfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_root = root_dentry = d_make_root(root_inode);
 	if (!root_dentry)
 		return -ENOMEM;
-	if (MACHINE_IS_VM)
+	if (machine_is_vm())
 		rc = hypfs_vm_create_files(root_dentry);
 	else
 		rc = hypfs_diag_create_files(root_dentry);
@@ -341,7 +342,7 @@ static struct dentry *hypfs_create_file(struct dentry *parent, const char *name,
 	struct inode *inode;
 
 	inode_lock(d_inode(parent));
-	dentry = lookup_one_len(name, parent, strlen(name));
+	dentry = lookup_noperm(&QSTR(name), parent);
 	if (IS_ERR(dentry)) {
 		dentry = ERR_PTR(-ENOMEM);
 		goto fail;
@@ -443,7 +444,6 @@ static const struct file_operations hypfs_file_ops = {
 	.release	= hypfs_release,
 	.read_iter	= hypfs_read_iter,
 	.write_iter	= hypfs_write_iter,
-	.llseek		= no_llseek,
 };
 
 static struct file_system_type hypfs_type = {
@@ -460,45 +460,18 @@ static const struct super_operations hypfs_s_ops = {
 	.show_options	= hypfs_show_options,
 };
 
-static int __init hypfs_init(void)
+int __init __hypfs_fs_init(void)
 {
 	int rc;
 
-	hypfs_dbfs_init();
-
-	if (hypfs_diag_init()) {
-		rc = -ENODATA;
-		goto fail_dbfs_exit;
-	}
-	if (hypfs_vm_init()) {
-		rc = -ENODATA;
-		goto fail_hypfs_diag_exit;
-	}
-	hypfs_sprp_init();
-	if (hypfs_diag0c_init()) {
-		rc = -ENODATA;
-		goto fail_hypfs_sprp_exit;
-	}
 	rc = sysfs_create_mount_point(hypervisor_kobj, "s390");
 	if (rc)
-		goto fail_hypfs_diag0c_exit;
+		return rc;
 	rc = register_filesystem(&hypfs_type);
 	if (rc)
-		goto fail_filesystem;
+		goto fail;
 	return 0;
-
-fail_filesystem:
+fail:
 	sysfs_remove_mount_point(hypervisor_kobj, "s390");
-fail_hypfs_diag0c_exit:
-	hypfs_diag0c_exit();
-fail_hypfs_sprp_exit:
-	hypfs_sprp_exit();
-	hypfs_vm_exit();
-fail_hypfs_diag_exit:
-	hypfs_diag_exit();
-fail_dbfs_exit:
-	hypfs_dbfs_exit();
-	pr_err("Initialization of hypfs failed with rc=%i\n", rc);
 	return rc;
 }
-device_initcall(hypfs_init)

@@ -3,7 +3,7 @@
  *
  * Name: hwxfsleep.c - ACPI Hardware Sleep/Wake External Interfaces
  *
- * Copyright (C) 2000 - 2021, Intel Corp.
+ * Copyright (C) 2000 - 2025, Intel Corp.
  *
  *****************************************************************************/
 
@@ -16,20 +16,11 @@
 ACPI_MODULE_NAME("hwxfsleep")
 
 /* Local prototypes */
-#if (!ACPI_REDUCED_HARDWARE)
 static acpi_status
 acpi_hw_set_firmware_waking_vector(struct acpi_table_facs *facs,
 				   acpi_physical_address physical_address,
 				   acpi_physical_address physical_address64);
-#endif
 
-/*
- * These functions are removed for the ACPI_REDUCED_HARDWARE case:
- *      acpi_set_firmware_waking_vector
- *      acpi_enter_sleep_state_s4bios
- */
-
-#if (!ACPI_REDUCED_HARDWARE)
 /*******************************************************************************
  *
  * FUNCTION:    acpi_hw_set_firmware_waking_vector
@@ -115,6 +106,12 @@ acpi_set_firmware_waking_vector(acpi_physical_address physical_address,
 
 ACPI_EXPORT_SYMBOL(acpi_set_firmware_waking_vector)
 
+/*
+ * These functions are removed for the ACPI_REDUCED_HARDWARE case:
+ *      acpi_enter_sleep_state_s4bios
+ */
+
+#if (!ACPI_REDUCED_HARDWARE)
 /*******************************************************************************
  *
  * FUNCTION:    acpi_enter_sleep_state_s4bios
@@ -161,8 +158,6 @@ acpi_status acpi_enter_sleep_state_s4bios(void)
 	if (ACPI_FAILURE(status)) {
 		return_ACPI_STATUS(status);
 	}
-
-	ACPI_FLUSH_CPU_CACHE();
 
 	status = acpi_hw_write_port(acpi_gbl_FADT.smi_command,
 				    (u32)acpi_gbl_FADT.s4_bios_request, 8);
@@ -215,6 +210,13 @@ acpi_status acpi_enter_sleep_state_prep(u8 sleep_state)
 					  &acpi_gbl_sleep_type_b);
 	if (ACPI_FAILURE(status)) {
 		return_ACPI_STATUS(status);
+	}
+
+	status = acpi_get_sleep_type_data(ACPI_STATE_S0,
+					  &acpi_gbl_sleep_type_a_s0,
+					  &acpi_gbl_sleep_type_b_s0);
+	if (ACPI_FAILURE(status)) {
+		acpi_gbl_sleep_type_a_s0 = ACPI_SLEEP_TYPE_INVALID;
 	}
 
 	/* Execute the _PTS method (Prepare To Sleep) */

@@ -91,6 +91,9 @@ __acquires(ohci->lock)
 	update_done_list(ohci);
 	ohci_work(ohci);
 
+	/* All ED unlinks should be finished, no need for SOF interrupts */
+	ohci_writel(ohci, OHCI_INTR_SF, &ohci->regs->intrdisable);
+
 	/*
 	 * Some controllers don't handle "global" suspend properly if
 	 * there are unsuspended ports.  For these controllers, put all
@@ -312,7 +315,7 @@ static int ohci_bus_suspend (struct usb_hcd *hcd)
 	spin_unlock_irq (&ohci->lock);
 
 	if (rc == 0) {
-		del_timer_sync(&ohci->io_watchdog);
+		timer_delete_sync(&ohci->io_watchdog);
 		ohci->prev_frame_no = IO_WATCHDOG_OFF;
 	}
 	return rc;

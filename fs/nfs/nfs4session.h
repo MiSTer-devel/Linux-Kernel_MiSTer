@@ -12,6 +12,7 @@
 #define NFS4_DEF_SLOT_TABLE_SIZE (64U)
 #define NFS4_DEF_CB_SLOT_TABLE_SIZE (16U)
 #define NFS4_MAX_SLOT_TABLE (1024U)
+#define NFS4_MAX_SLOTID (NFS4_MAX_SLOT_TABLE - 1U)
 #define NFS4_NO_SLOT ((u32)-1)
 
 #if IS_ENABLED(CONFIG_NFS_V4)
@@ -147,16 +148,12 @@ static inline void nfs4_copy_sessionid(struct nfs4_sessionid *dst,
 	memcpy(dst->data, src->data, NFS4_MAX_SESSIONID_LEN);
 }
 
-#ifdef CONFIG_CRC32
 /*
  * nfs_session_id_hash - calculate the crc32 hash for the session id
  * @session - pointer to session
  */
 #define nfs_session_id_hash(sess_id) \
 	(~crc32_le(0xFFFFFFFF, &(sess_id)->data[0], sizeof((sess_id)->data)))
-#else
-#define nfs_session_id_hash(session) (0)
-#endif
 #else /* defined(CONFIG_NFS_V4_1) */
 
 static inline int nfs4_init_session(struct nfs_client *clp)

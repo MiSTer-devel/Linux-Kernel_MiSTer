@@ -60,6 +60,7 @@
 #define   SD_EXIST			(1 << 16)
 #define   DELINK_INT			GPIO0_INT
 #define   MS_OC_INT			(1 << 23)
+#define   SD_OVP_INT		(1 << 23)
 #define   SD_OC_INT			(1 << 22)
 
 #define CARD_INT		(XD_INT | MS_INT | SD_INT)
@@ -80,6 +81,7 @@
 #define   OC_INT_EN			(1 << 23)
 #define   DELINK_INT_EN			GPIO0_INT_EN
 #define   MS_OC_INT_EN			(1 << 23)
+#define   SD_OVP_INT_EN			(1 << 23)
 #define   SD_OC_INT_EN			(1 << 22)
 
 #define RTSX_DUM_REG			0x1C
@@ -583,6 +585,7 @@
 #define   OBFF_DISABLE			0x00
 
 #define CDRESUMECTL			0xFE52
+#define CDGW				0xFE53
 #define WAKE_SEL_CTL			0xFE54
 #define PCLK_CTL			0xFE55
 #define   PCLK_MODE_SEL			0x20
@@ -763,6 +766,9 @@
 #define   SD40_VIO_TUNE_1V7		0x30
 #define   SD_VIO_LDO_1V8		0x40
 #define   SD_VIO_LDO_3V3		0x70
+
+#define RTS5264_AUTOLOAD_CFG2		0xFF7D
+#define RTS5264_CHIP_RST_N_SEL		(1 << 6)
 
 #define RTS5260_AUTOLOAD_CFG4		0xFF7F
 #define   RTS5260_MIMO_DISABLE		0x8A
@@ -1067,6 +1073,9 @@
 #define PCR_SETTING_REG1		0x724
 #define PCR_SETTING_REG2		0x814
 #define PCR_SETTING_REG3		0x747
+#define PCR_SETTING_REG4		0x818
+#define PCR_SETTING_REG5		0x81C
+
 
 #define rtsx_pci_init_cmd(pcr)		((pcr)->ci = 0)
 
@@ -1095,7 +1104,7 @@ struct pcr_ops {
 	unsigned int	(*cd_deglitch)(struct rtsx_pcr *pcr);
 	int		(*conv_clk_and_div_n)(int clk, int dir);
 	void		(*fetch_vendor_settings)(struct rtsx_pcr *pcr);
-	void		(*force_power_down)(struct rtsx_pcr *pcr, u8 pm_state);
+	void		(*force_power_down)(struct rtsx_pcr *pcr, u8 pm_state, bool runtime);
 	void		(*stop_cmd)(struct rtsx_pcr *pcr);
 
 	void (*set_aspm)(struct rtsx_pcr *pcr, bool enable);
@@ -1151,6 +1160,8 @@ struct rtsx_cr_option {
 	bool ocp_en;
 	u8 sd_400mA_ocp_thd;
 	u8 sd_800mA_ocp_thd;
+	u8 sd_cd_reverse_en;
+	u8 sd_wp_reverse_en;
 };
 
 /*
@@ -1201,8 +1212,6 @@ struct rtsx_pcr {
 	unsigned int			card_exist;
 
 	struct delayed_work		carddet_work;
-	struct delayed_work		idle_work;
-	struct delayed_work		rtd3_work;
 
 	spinlock_t			lock;
 	struct mutex			pcr_mutex;
@@ -1212,7 +1221,6 @@ struct rtsx_pcr {
 	unsigned int			cur_clock;
 	bool				remove_pci;
 	bool				msi_en;
-	bool				is_runtime_suspended;
 
 #define EXTRA_CAPS_SD_SDR50		(1 << 0)
 #define EXTRA_CAPS_SD_SDR104		(1 << 1)
@@ -1261,6 +1269,7 @@ struct rtsx_pcr {
 	u8				dma_error_count;
 	u8			ocp_stat;
 	u8			ocp_stat2;
+	u8			ovp_stat;
 	u8			rtd3_en;
 };
 
@@ -1271,6 +1280,7 @@ struct rtsx_pcr {
 #define PID_5260	0x5260
 #define PID_5261	0x5261
 #define PID_5228	0x5228
+#define PID_5264	0x5264
 
 #define CHK_PCI_PID(pcr, pid)		((pcr)->pci->device == (pid))
 #define PCI_VID(pcr)			((pcr)->pci->vendor)
@@ -1304,8 +1314,6 @@ void rtsx_pci_add_cmd(struct rtsx_pcr *pcr,
 		u8 cmd_type, u16 reg_addr, u8 mask, u8 data);
 void rtsx_pci_send_cmd_no_wait(struct rtsx_pcr *pcr);
 int rtsx_pci_send_cmd(struct rtsx_pcr *pcr, int timeout);
-int rtsx_pci_transfer_data(struct rtsx_pcr *pcr, struct scatterlist *sglist,
-		int num_sg, bool read, int timeout);
 int rtsx_pci_dma_map_sg(struct rtsx_pcr *pcr, struct scatterlist *sglist,
 		int num_sg, bool read);
 void rtsx_pci_dma_unmap_sg(struct rtsx_pcr *pcr, struct scatterlist *sglist,

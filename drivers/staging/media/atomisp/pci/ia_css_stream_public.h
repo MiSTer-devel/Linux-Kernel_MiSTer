@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #ifndef __IA_CSS_STREAM_PUBLIC_H
@@ -24,12 +15,14 @@
 #include "ia_css_types.h"
 #include "ia_css_pipe_public.h"
 #include "ia_css_metadata.h"
-#include "ia_css_tpg.h"
 #include "ia_css_prbs.h"
 #include "ia_css_input_port.h"
 
-/* Input modes, these enumerate all supported input modes.
- *  Note that not all ISP modes support all input modes.
+/*
+ * Input modes, these enumerate all supported input modes.
+ * This enum is part of the atomisp firmware ABI and must
+ * NOT be changed!
+ * Note that not all ISP modes support all input modes.
  */
 enum ia_css_input_mode {
 	IA_CSS_INPUT_MODE_SENSOR, /** data from sensor */
@@ -91,7 +84,6 @@ struct ia_css_stream_config {
 	enum ia_css_input_mode    mode; /** Input mode */
 	union {
 		struct ia_css_input_port  port; /** Port, for sensor only. */
-		struct ia_css_tpg_config  tpg;  /** TPG configuration */
 		struct ia_css_prbs_config prbs; /** PRBS configuration */
 	} source; /** Source of input data */
 	unsigned int	      channel_id; /** Channel on which input data
@@ -102,12 +94,10 @@ struct ia_css_stream_config {
 		isys_config[IA_CSS_STREAM_MAX_ISYS_STREAM_PER_CH];
 	struct ia_css_stream_input_config input_config;
 
-	/* Currently, Android and Windows platforms interpret the binning_factor parameter
-	 * differently. In Android, the binning factor is expressed in the form
-	 * 2^N * 2^N, whereas in Windows platform, the binning factor is N*N
-	 * To use the Windows method of specification, the caller has to define
-	 * macro USE_WINDOWS_BINNING_FACTOR. This is for backward compatibility only
-	 * and will be deprecated. In the future,all platforms will use the N*N method
+	/*
+	 * Currently, Linux and Windows platforms interpret the binning_factor
+	 * parameter differently. In Linux, the binning factor is expressed
+	 * in the form 2^N * 2^N
 	 */
 	/* ISP2401 */
 	unsigned int sensor_binning_factor; /** Binning factor used by sensor
@@ -202,15 +192,6 @@ int
 ia_css_stream_get_info(const struct ia_css_stream *stream,
 		       struct ia_css_stream_info *stream_info);
 
-/* @brief load (rebuild) a stream that was unloaded.
- * @param[in]	stream The stream
- * @return		0 or the error code
- *
- * Rebuild a stream, including allocating structs, setting configuration and
- * building the required pipes.
- */
-int
-ia_css_stream_load(struct ia_css_stream *stream);
 
 /* @brief Starts the stream.
  * @param[in]	stream The stream.
@@ -470,20 +451,6 @@ ia_css_stream_send_input_embedded_line(const struct ia_css_stream *stream,
  */
 void
 ia_css_stream_end_input_frame(const struct ia_css_stream *stream);
-
-/* @brief send a request flash command to SP
- *
- * @param[in]	stream The stream.
- * @return	None
- *
- * Driver needs to call this function to send a flash request command
- * to SP, SP will be responsible for switching on/off the flash at proper
- * time. Due to the SP multi-threading environment, this request may have
- * one-frame delay, the driver needs to check the flashed flag in frame info
- * to determine which frame is being flashed.
- */
-void
-ia_css_stream_request_flash(struct ia_css_stream *stream);
 
 /* @brief Configure a stream with filter coefficients.
  *	   @deprecated {Replaced by

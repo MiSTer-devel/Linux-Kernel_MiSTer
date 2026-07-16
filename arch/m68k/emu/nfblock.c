@@ -13,7 +13,6 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/types.h>
-#include <linux/genhd.h>
 #include <linux/blkdev.h>
 #include <linux/hdreg.h>
 #include <linux/slab.h>
@@ -58,7 +57,7 @@ struct nfhd_device {
 	struct gendisk *disk;
 };
 
-static blk_qc_t nfhd_submit_bio(struct bio *bio)
+static void nfhd_submit_bio(struct bio *bio)
 {
 	struct nfhd_device *dev = bio->bi_bdev->bd_disk->private_data;
 	struct bio_vec bvec;
@@ -72,16 +71,15 @@ static blk_qc_t nfhd_submit_bio(struct bio *bio)
 		len = bvec.bv_len;
 		len >>= 9;
 		nfhd_read_write(dev->id, 0, dir, sec >> shift, len >> shift,
-				page_to_phys(bvec.bv_page) + bvec.bv_offset);
+				bvec_phys(&bvec));
 		sec += len;
 	}
 	bio_endio(bio);
-	return BLK_QC_T_NONE;
 }
 
-static int nfhd_getgeo(struct block_device *bdev, struct hd_geometry *geo)
+static int nfhd_getgeo(struct gendisk *disk, struct hd_geometry *geo)
 {
-	struct nfhd_device *dev = bdev->bd_disk->private_data;
+	struct nfhd_device *dev = disk->private_data;
 
 	geo->cylinders = dev->blocks >> (6 - dev->bshift);
 	geo->heads = 4;
@@ -98,8 +96,13 @@ static const struct block_device_operations nfhd_ops = {
 
 static int __init nfhd_init_one(int id, u32 blocks, u32 bsize)
 {
+	struct queue_limits lim = {
+		.logical_block_size	= bsize,
+		.features		= BLK_FEAT_ROTATIONAL,
+	};
 	struct nfhd_device *dev;
 	int dev_id = id - NFHD_DEV_OFFSET;
+	int err = -ENOMEM;
 
 	pr_info("nfhd%u: found device with %u blocks (%u bytes)\n", dev_id,
 		blocks, bsize);
@@ -118,9 +121,11 @@ static int __init nfhd_init_one(int id, u32 blocks, u32 bsize)
 	dev->bsize = bsize;
 	dev->bshift = ffs(bsize) - 10;
 
-	dev->disk = blk_alloc_disk(NUMA_NO_NODE);
-	if (!dev->disk)
+	dev->disk = blk_alloc_disk(&lim, NUMA_NO_NODE);
+	if (IS_ERR(dev->disk)) {
+		err = PTR_ERR(dev->disk);
 		goto free_dev;
+	}
 
 	dev->disk->major = major_num;
 	dev->disk->first_minor = dev_id * 16;
@@ -129,17 +134,20 @@ static int __init nfhd_init_one(int id, u32 blocks, u32 bsize)
 	dev->disk->private_data = dev;
 	sprintf(dev->disk->disk_name, "nfhd%u", dev_id);
 	set_capacity(dev->disk, (sector_t)blocks * (bsize / 512));
-	blk_queue_logical_block_size(dev->disk->queue, bsize);
-	add_disk(dev->disk);
+	err = add_disk(dev->disk);
+	if (err)
+		goto out_cleanup_disk;
 
 	list_add_tail(&dev->list, &nfhd_list);
 
 	return 0;
 
+out_cleanup_disk:
+	put_disk(dev->disk);
 free_dev:
 	kfree(dev);
 out:
-	return -ENOMEM;
+	return err;
 }
 
 static int __init nfhd_init(void)
@@ -177,7 +185,7 @@ static void __exit nfhd_exit(void)
 	list_for_each_entry_safe(dev, next, &nfhd_list, list) {
 		list_del(&dev->list);
 		del_gendisk(dev->disk);
-		blk_cleanup_disk(dev->disk);
+		put_disk(dev->disk);
 		kfree(dev);
 	}
 	unregister_blkdev(major_num, "nfhd");
@@ -186,4 +194,5 @@ static void __exit nfhd_exit(void)
 module_init(nfhd_init);
 module_exit(nfhd_exit);
 
+MODULE_DESCRIPTION("Atari NatFeat block device driver");
 MODULE_LICENSE("GPL");

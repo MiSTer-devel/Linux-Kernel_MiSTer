@@ -216,24 +216,12 @@ static ssize_t state_show(struct ib_device *ibdev, u32 port_num,
 	struct ib_port_attr attr;
 	ssize_t ret;
 
-	static const char *state_name[] = {
-		[IB_PORT_NOP]		= "NOP",
-		[IB_PORT_DOWN]		= "DOWN",
-		[IB_PORT_INIT]		= "INIT",
-		[IB_PORT_ARMED]		= "ARMED",
-		[IB_PORT_ACTIVE]	= "ACTIVE",
-		[IB_PORT_ACTIVE_DEFER]	= "ACTIVE_DEFER"
-	};
-
 	ret = ib_query_port(ibdev, port_num, &attr);
 	if (ret)
 		return ret;
 
 	return sysfs_emit(buf, "%d: %s\n", attr.state,
-			  attr.state >= 0 &&
-					  attr.state < ARRAY_SIZE(state_name) ?
-				  state_name[attr.state] :
-				  "UNKNOWN");
+			  ib_port_state_to_str(attr.state));
 }
 
 static ssize_t lid_show(struct ib_device *ibdev, u32 port_num,
@@ -342,6 +330,10 @@ static ssize_t rate_show(struct ib_device *ibdev, u32 port_num,
 		speed = " NDR";
 		rate = 1000;
 		break;
+	case IB_SPEED_XDR:
+		speed = " XDR";
+		rate = 2000;
+		break;
 	case IB_SPEED_SDR:
 	default:		/* default to SDR for invalid rates */
 		speed = " SDR";
@@ -433,6 +425,7 @@ static struct attribute *port_default_attrs[] = {
 	&ib_port_attr_link_layer.attr,
 	NULL
 };
+ATTRIBUTE_GROUPS(port_default);
 
 static ssize_t print_ndev(const struct ib_gid_attr *gid_attr, char *buf)
 {
@@ -755,9 +748,9 @@ static void ib_port_release(struct kobject *kobj)
 	for (i = 0; i != ARRAY_SIZE(port->groups); i++)
 		kfree(port->groups[i].attrs);
 	if (port->hw_stats_data)
-		kfree(port->hw_stats_data->stats);
+		rdma_free_hw_stats_struct(port->hw_stats_data->stats);
 	kfree(port->hw_stats_data);
-	kfree(port);
+	kvfree(port);
 }
 
 static void ib_port_gid_attr_release(struct kobject *kobj)
@@ -774,7 +767,7 @@ static void ib_port_gid_attr_release(struct kobject *kobj)
 static struct kobj_type port_type = {
 	.release       = ib_port_release,
 	.sysfs_ops     = &port_sysfs_ops,
-	.default_attrs = port_default_attrs
+	.default_groups = port_default_groups,
 };
 
 static struct kobj_type gid_attr_type = {
@@ -895,14 +888,14 @@ alloc_hw_stats_device(struct ib_device *ibdev)
 	stats = ibdev->ops.alloc_hw_device_stats(ibdev);
 	if (!stats)
 		return ERR_PTR(-ENOMEM);
-	if (!stats->names || stats->num_counters <= 0)
+	if (!stats->descs || stats->num_counters <= 0)
 		goto err_free_stats;
 
 	/*
 	 * Two extra attribue elements here, one for the lifespan entry and
 	 * one to NULL terminate the list for the sysfs core code
 	 */
-	data = kzalloc(struct_size(data, attrs, stats->num_counters + 1),
+	data = kzalloc(struct_size(data, attrs, size_add(stats->num_counters, 1)),
 		       GFP_KERNEL);
 	if (!data)
 		goto err_free_stats;
@@ -911,7 +904,6 @@ alloc_hw_stats_device(struct ib_device *ibdev)
 	if (!data->group.attrs)
 		goto err_free_data;
 
-	mutex_init(&stats->lock);
 	data->group.name = "hw_counters";
 	data->stats = stats;
 	return data;
@@ -919,14 +911,14 @@ alloc_hw_stats_device(struct ib_device *ibdev)
 err_free_data:
 	kfree(data);
 err_free_stats:
-	kfree(stats);
+	rdma_free_hw_stats_struct(stats);
 	return ERR_PTR(-ENOMEM);
 }
 
 void ib_device_release_hw_stats(struct hw_stats_device_data *data)
 {
 	kfree(data->group.attrs);
-	kfree(data->stats);
+	rdma_free_hw_stats_struct(data->stats);
 	kfree(data);
 }
 
@@ -934,7 +926,8 @@ int ib_setup_device_attrs(struct ib_device *ibdev)
 {
 	struct hw_stats_device_attribute *attr;
 	struct hw_stats_device_data *data;
-	int i, ret;
+	bool opstat_skipped = false;
+	int i, ret, pos = 0;
 
 	data = alloc_hw_stats_device(ibdev);
 	if (IS_ERR(data)) {
@@ -955,16 +948,23 @@ int ib_setup_device_attrs(struct ib_device *ibdev)
 	data->stats->timestamp = jiffies;
 
 	for (i = 0; i < data->stats->num_counters; i++) {
-		attr = &data->attrs[i];
+		if (data->stats->descs[i].flags & IB_STAT_FLAG_OPTIONAL) {
+			opstat_skipped = true;
+			continue;
+		}
+
+		WARN_ON(opstat_skipped);
+		attr = &data->attrs[pos];
 		sysfs_attr_init(&attr->attr.attr);
-		attr->attr.attr.name = data->stats->names[i];
+		attr->attr.attr.name = data->stats->descs[i].name;
 		attr->attr.attr.mode = 0444;
 		attr->attr.show = hw_stat_device_show;
 		attr->show = show_hw_stats;
-		data->group.attrs[i] = &attr->attr.attr;
+		data->group.attrs[pos] = &attr->attr.attr;
+		pos++;
 	}
 
-	attr = &data->attrs[i];
+	attr = &data->attrs[pos];
 	sysfs_attr_init(&attr->attr.attr);
 	attr->attr.attr.name = "lifespan";
 	attr->attr.attr.mode = 0644;
@@ -972,10 +972,11 @@ int ib_setup_device_attrs(struct ib_device *ibdev)
 	attr->show = show_stats_lifespan;
 	attr->attr.store = hw_stat_device_store;
 	attr->store = set_stats_lifespan;
-	data->group.attrs[i] = &attr->attr.attr;
+	data->group.attrs[pos] = &attr->attr.attr;
 	for (i = 0; i != ARRAY_SIZE(ibdev->groups); i++)
 		if (!ibdev->groups[i]) {
 			ibdev->groups[i] = &data->group;
+			ibdev->hw_stats_attr_index = i;
 			return 0;
 		}
 	WARN(true, "struct ib_device->groups is too small");
@@ -994,14 +995,14 @@ alloc_hw_stats_port(struct ib_port *port, struct attribute_group *group)
 	stats = ibdev->ops.alloc_hw_port_stats(port->ibdev, port->port_num);
 	if (!stats)
 		return ERR_PTR(-ENOMEM);
-	if (!stats->names || stats->num_counters <= 0)
+	if (!stats->descs || stats->num_counters <= 0)
 		goto err_free_stats;
 
 	/*
 	 * Two extra attribue elements here, one for the lifespan entry and
 	 * one to NULL terminate the list for the sysfs core code
 	 */
-	data = kzalloc(struct_size(data, attrs, stats->num_counters + 1),
+	data = kzalloc(struct_size(data, attrs, size_add(stats->num_counters, 1)),
 		       GFP_KERNEL);
 	if (!data)
 		goto err_free_stats;
@@ -1010,7 +1011,6 @@ alloc_hw_stats_port(struct ib_port *port, struct attribute_group *group)
 	if (!group->attrs)
 		goto err_free_data;
 
-	mutex_init(&stats->lock);
 	group->name = "hw_counters";
 	data->stats = stats;
 	return data;
@@ -1018,7 +1018,7 @@ alloc_hw_stats_port(struct ib_port *port, struct attribute_group *group)
 err_free_data:
 	kfree(data);
 err_free_stats:
-	kfree(stats);
+	rdma_free_hw_stats_struct(stats);
 	return ERR_PTR(-ENOMEM);
 }
 
@@ -1027,7 +1027,8 @@ static int setup_hw_port_stats(struct ib_port *port,
 {
 	struct hw_stats_port_attribute *attr;
 	struct hw_stats_port_data *data;
-	int i, ret;
+	bool opstat_skipped = false;
+	int i, ret, pos = 0;
 
 	data = alloc_hw_stats_port(port, group);
 	if (IS_ERR(data))
@@ -1045,16 +1046,23 @@ static int setup_hw_port_stats(struct ib_port *port,
 	data->stats->timestamp = jiffies;
 
 	for (i = 0; i < data->stats->num_counters; i++) {
-		attr = &data->attrs[i];
+		if (data->stats->descs[i].flags & IB_STAT_FLAG_OPTIONAL) {
+			opstat_skipped = true;
+			continue;
+		}
+
+		WARN_ON(opstat_skipped);
+		attr = &data->attrs[pos];
 		sysfs_attr_init(&attr->attr.attr);
-		attr->attr.attr.name = data->stats->names[i];
+		attr->attr.attr.name = data->stats->descs[i].name;
 		attr->attr.attr.mode = 0444;
 		attr->attr.show = hw_stat_port_show;
 		attr->show = show_hw_stats;
-		group->attrs[i] = &attr->attr.attr;
+		group->attrs[pos] = &attr->attr.attr;
+		pos++;
 	}
 
-	attr = &data->attrs[i];
+	attr = &data->attrs[pos];
 	sysfs_attr_init(&attr->attr.attr);
 	attr->attr.attr.name = "lifespan";
 	attr->attr.attr.mode = 0644;
@@ -1062,7 +1070,7 @@ static int setup_hw_port_stats(struct ib_port *port,
 	attr->show = show_stats_lifespan;
 	attr->attr.store = hw_stat_port_store;
 	attr->store = set_stats_lifespan;
-	group->attrs[i] = &attr->attr.attr;
+	group->attrs[pos] = &attr->attr.attr;
 
 	port->hw_stats_data = data;
 	return 0;
@@ -1125,7 +1133,7 @@ static int setup_gid_attrs(struct ib_port *port,
 	int ret;
 
 	gid_attr_group = kzalloc(struct_size(gid_attr_group, attrs_list,
-					     attr->gid_tbl_len * 2),
+					     size_mul(attr->gid_tbl_len, 2)),
 				 GFP_KERNEL);
 	if (!gid_attr_group)
 		return -ENOMEM;
@@ -1189,14 +1197,17 @@ static struct ib_port *setup_port(struct ib_core_device *coredev, int port_num,
 	struct ib_port *p;
 	int ret;
 
-	p = kzalloc(struct_size(p, attrs_list,
-				attr->gid_tbl_len + attr->pkey_tbl_len),
-		    GFP_KERNEL);
+	p = kvzalloc(struct_size(p, attrs_list,
+				size_add(attr->gid_tbl_len, attr->pkey_tbl_len)),
+		     GFP_KERNEL);
 	if (!p)
 		return ERR_PTR(-ENOMEM);
 	p->ibdev = device;
 	p->port_num = port_num;
 	kobject_init(&p->kobj, &port_type);
+
+	if (device->port_data && is_full_dev)
+		device->port_data[port_num].sysfs = p;
 
 	cur_group = p->groups_list;
 	ret = alloc_port_table_group("gids", &p->groups[0], p->attrs_list,
@@ -1243,9 +1254,6 @@ static struct ib_port *setup_port(struct ib_core_device *coredev, int port_num,
 	}
 
 	list_add_tail(&p->kobj.entry, &coredev->port_list);
-	if (device->port_data && is_full_dev)
-		device->port_data[port_num].sysfs = p;
-
 	return p;
 
 err_groups:
@@ -1253,6 +1261,8 @@ err_groups:
 err_del:
 	kobject_del(&p->kobj);
 err_put:
+	if (device->port_data && is_full_dev)
+		device->port_data[port_num].sysfs = NULL;
 	kobject_put(&p->kobj);
 	return ERR_PTR(ret);
 }
@@ -1261,14 +1271,17 @@ static void destroy_port(struct ib_core_device *coredev, struct ib_port *port)
 {
 	bool is_full_dev = &port->ibdev->coredev == coredev;
 
-	if (port->ibdev->port_data &&
-	    port->ibdev->port_data[port->port_num].sysfs == port)
-		port->ibdev->port_data[port->port_num].sysfs = NULL;
 	list_del(&port->kobj.entry);
 	if (is_full_dev)
 		sysfs_remove_groups(&port->kobj, port->ibdev->ops.port_groups);
+
 	sysfs_remove_groups(&port->kobj, port->groups_list);
 	kobject_del(&port->kobj);
+
+	if (port->ibdev->port_data &&
+	    port->ibdev->port_data[port->port_num].sysfs == port)
+		port->ibdev->port_data[port->port_num].sysfs = NULL;
+
 	kobject_put(&port->kobj);
 }
 

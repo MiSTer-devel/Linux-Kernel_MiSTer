@@ -756,10 +756,7 @@ static void rtl8821ae_dm_dig(struct ieee80211_hw *hw)
 		rtl_dbg(rtlpriv, COMP_DIG, DBG_LOUD,
 			"DIG AfterLink\n");
 		if (first_connect) {
-			if (dm_digtable->rssi_val_min <= dig_max_of_min)
-				current_igi = dm_digtable->rssi_val_min;
-			else
-				current_igi = dig_max_of_min;
+			current_igi = min(dm_digtable->rssi_val_min, dig_max_of_min);
 			rtl_dbg(rtlpriv, COMP_DIG, DBG_LOUD,
 				"First Connect\n");
 		} else {
@@ -827,8 +824,7 @@ static void rtl8821ae_dm_dig(struct ieee80211_hw *hw)
 static void rtl8821ae_dm_common_info_self_update(struct ieee80211_hw *hw)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
-	u8 cnt = 0;
-	struct rtl_sta_info *drv_priv;
+	u8 cnt;
 
 	rtlpriv->dm.tx_rate = 0xff;
 
@@ -844,8 +840,7 @@ static void rtl8821ae_dm_common_info_self_update(struct ieee80211_hw *hw)
 	    rtlpriv->mac80211.opmode == NL80211_IFTYPE_ADHOC ||
 	    rtlpriv->mac80211.opmode == NL80211_IFTYPE_MESH_POINT) {
 		spin_lock_bh(&rtlpriv->locks.entry_list_lock);
-		list_for_each_entry(drv_priv, &rtlpriv->entry_list, list)
-			cnt++;
+		cnt = list_count_nodes(&rtlpriv->entry_list);
 		spin_unlock_bh(&rtlpriv->locks.entry_list_lock);
 
 		if (cnt == 1)
@@ -872,7 +867,7 @@ static void rtl8821ae_dm_false_alarm_counter_statistics(struct ieee80211_hw *hw)
 	else
 		falsealm_cnt->cnt_all = falsealm_cnt->cnt_ofdm_fail;
 
-	/*reset OFDM FA coutner*/
+	/*reset OFDM FA counter*/
 	rtl_set_bbreg(hw, ODM_REG_OFDM_FA_RST_11AC, BIT(17), 1);
 	rtl_set_bbreg(hw, ODM_REG_OFDM_FA_RST_11AC, BIT(17), 0);
 	/* reset CCK FA counter*/
@@ -1464,7 +1459,7 @@ void rtl8812ae_dm_txpower_tracking_callback_thermalmeter(
 	const u8 *delta_swing_table_idx_tup_b;
 	const u8 *delta_swing_table_idx_tdown_b;
 
-	/*2. Initilization ( 7 steps in total )*/
+	/*2. Initialization ( 7 steps in total )*/
 	rtl8812ae_get_delta_swing_table(hw,
 		&delta_swing_table_idx_tup_a,
 		&delta_swing_table_idx_tdown_a,
@@ -2502,7 +2497,7 @@ static void rtl8821ae_dm_check_edca_turbo(struct ieee80211_hw *hw)
 	rtlpriv->dm.dbginfo.num_non_be_pkt = 0;
 
 	/*===============================
-	 * list paramter for different platform
+	 * list parameter for different platform
 	 *===============================
 	 */
 	pb_is_cur_rdl_state = &rtlpriv->dm.is_cur_rdlstate;

@@ -17,7 +17,8 @@
 #include <linux/bcma/bcma.h>
 #include <linux/bcma/bcma_regs.h>
 #include <linux/platform_data/x86/apple.h>
-#include <drm/i915_drm.h>
+#include <drm/intel/i915_drm.h>
+#include <drm/intel/pciids.h>
 #include <asm/pci-direct.h>
 #include <asm/dma.h>
 #include <asm/io_apic.h>
@@ -515,45 +516,48 @@ static const struct intel_early_ops gen11_early_ops __initconst = {
 	.stolen_size = gen9_stolen_size,
 };
 
+/* Intel integrated GPUs for which we need to reserve "stolen memory" */
 static const struct pci_device_id intel_early_ids[] __initconst = {
-	INTEL_I830_IDS(&i830_early_ops),
-	INTEL_I845G_IDS(&i845_early_ops),
-	INTEL_I85X_IDS(&i85x_early_ops),
-	INTEL_I865G_IDS(&i865_early_ops),
-	INTEL_I915G_IDS(&gen3_early_ops),
-	INTEL_I915GM_IDS(&gen3_early_ops),
-	INTEL_I945G_IDS(&gen3_early_ops),
-	INTEL_I945GM_IDS(&gen3_early_ops),
-	INTEL_VLV_IDS(&gen6_early_ops),
-	INTEL_PINEVIEW_G_IDS(&gen3_early_ops),
-	INTEL_PINEVIEW_M_IDS(&gen3_early_ops),
-	INTEL_I965G_IDS(&gen3_early_ops),
-	INTEL_G33_IDS(&gen3_early_ops),
-	INTEL_I965GM_IDS(&gen3_early_ops),
-	INTEL_GM45_IDS(&gen3_early_ops),
-	INTEL_G45_IDS(&gen3_early_ops),
-	INTEL_IRONLAKE_D_IDS(&gen3_early_ops),
-	INTEL_IRONLAKE_M_IDS(&gen3_early_ops),
-	INTEL_SNB_D_IDS(&gen6_early_ops),
-	INTEL_SNB_M_IDS(&gen6_early_ops),
-	INTEL_IVB_M_IDS(&gen6_early_ops),
-	INTEL_IVB_D_IDS(&gen6_early_ops),
-	INTEL_HSW_IDS(&gen6_early_ops),
-	INTEL_BDW_IDS(&gen8_early_ops),
-	INTEL_CHV_IDS(&chv_early_ops),
-	INTEL_SKL_IDS(&gen9_early_ops),
-	INTEL_BXT_IDS(&gen9_early_ops),
-	INTEL_KBL_IDS(&gen9_early_ops),
-	INTEL_CFL_IDS(&gen9_early_ops),
-	INTEL_GLK_IDS(&gen9_early_ops),
-	INTEL_CNL_IDS(&gen9_early_ops),
-	INTEL_ICL_11_IDS(&gen11_early_ops),
-	INTEL_EHL_IDS(&gen11_early_ops),
-	INTEL_JSL_IDS(&gen11_early_ops),
-	INTEL_TGL_12_IDS(&gen11_early_ops),
-	INTEL_RKL_IDS(&gen11_early_ops),
-	INTEL_ADLS_IDS(&gen11_early_ops),
-	INTEL_ADLP_IDS(&gen11_early_ops),
+	INTEL_I830_IDS(INTEL_VGA_DEVICE, &i830_early_ops),
+	INTEL_I845G_IDS(INTEL_VGA_DEVICE, &i845_early_ops),
+	INTEL_I85X_IDS(INTEL_VGA_DEVICE, &i85x_early_ops),
+	INTEL_I865G_IDS(INTEL_VGA_DEVICE, &i865_early_ops),
+	INTEL_I915G_IDS(INTEL_VGA_DEVICE, &gen3_early_ops),
+	INTEL_I915GM_IDS(INTEL_VGA_DEVICE, &gen3_early_ops),
+	INTEL_I945G_IDS(INTEL_VGA_DEVICE, &gen3_early_ops),
+	INTEL_I945GM_IDS(INTEL_VGA_DEVICE, &gen3_early_ops),
+	INTEL_VLV_IDS(INTEL_VGA_DEVICE, &gen6_early_ops),
+	INTEL_PNV_IDS(INTEL_VGA_DEVICE, &gen3_early_ops),
+	INTEL_I965G_IDS(INTEL_VGA_DEVICE, &gen3_early_ops),
+	INTEL_G33_IDS(INTEL_VGA_DEVICE, &gen3_early_ops),
+	INTEL_I965GM_IDS(INTEL_VGA_DEVICE, &gen3_early_ops),
+	INTEL_GM45_IDS(INTEL_VGA_DEVICE, &gen3_early_ops),
+	INTEL_G45_IDS(INTEL_VGA_DEVICE, &gen3_early_ops),
+	INTEL_ILK_IDS(INTEL_VGA_DEVICE, &gen3_early_ops),
+	INTEL_SNB_IDS(INTEL_VGA_DEVICE, &gen6_early_ops),
+	INTEL_IVB_IDS(INTEL_VGA_DEVICE, &gen6_early_ops),
+	INTEL_HSW_IDS(INTEL_VGA_DEVICE, &gen6_early_ops),
+	INTEL_BDW_IDS(INTEL_VGA_DEVICE, &gen8_early_ops),
+	INTEL_CHV_IDS(INTEL_VGA_DEVICE, &chv_early_ops),
+	INTEL_SKL_IDS(INTEL_VGA_DEVICE, &gen9_early_ops),
+	INTEL_BXT_IDS(INTEL_VGA_DEVICE, &gen9_early_ops),
+	INTEL_KBL_IDS(INTEL_VGA_DEVICE, &gen9_early_ops),
+	INTEL_CFL_IDS(INTEL_VGA_DEVICE, &gen9_early_ops),
+	INTEL_WHL_IDS(INTEL_VGA_DEVICE, &gen9_early_ops),
+	INTEL_CML_IDS(INTEL_VGA_DEVICE, &gen9_early_ops),
+	INTEL_GLK_IDS(INTEL_VGA_DEVICE, &gen9_early_ops),
+	INTEL_CNL_IDS(INTEL_VGA_DEVICE, &gen9_early_ops),
+	INTEL_ICL_IDS(INTEL_VGA_DEVICE, &gen11_early_ops),
+	INTEL_EHL_IDS(INTEL_VGA_DEVICE, &gen11_early_ops),
+	INTEL_JSL_IDS(INTEL_VGA_DEVICE, &gen11_early_ops),
+	INTEL_TGL_IDS(INTEL_VGA_DEVICE, &gen11_early_ops),
+	INTEL_RKL_IDS(INTEL_VGA_DEVICE, &gen11_early_ops),
+	INTEL_ADLS_IDS(INTEL_VGA_DEVICE, &gen11_early_ops),
+	INTEL_ADLP_IDS(INTEL_VGA_DEVICE, &gen11_early_ops),
+	INTEL_ADLN_IDS(INTEL_VGA_DEVICE, &gen11_early_ops),
+	INTEL_RPLS_IDS(INTEL_VGA_DEVICE, &gen11_early_ops),
+	INTEL_RPLU_IDS(INTEL_VGA_DEVICE, &gen11_early_ops),
+	INTEL_RPLP_IDS(INTEL_VGA_DEVICE, &gen11_early_ops),
 };
 
 struct resource intel_graphics_stolen_res __ro_after_init = DEFINE_RES_MEM(0, 0);
@@ -590,6 +594,13 @@ static void __init intel_graphics_quirks(int num, int slot, int func)
 	const struct intel_early_ops *early_ops;
 	u16 device;
 	int i;
+
+	/*
+	 * Reserve "stolen memory" for an integrated GPU.  If we've already
+	 * found one, there's nothing to do for other (discrete) GPUs.
+	 */
+	if (resource_size(&intel_graphics_stolen_res))
+		return;
 
 	device = read_pci_config_16(num, slot, func, PCI_DEVICE_ID);
 
@@ -703,7 +714,7 @@ static struct chipset early_qrk[] __initdata = {
 	{ PCI_VENDOR_ID_INTEL, 0x3406, PCI_CLASS_BRIDGE_HOST,
 	  PCI_BASE_CLASS_BRIDGE, 0, intel_remapping_check },
 	{ PCI_VENDOR_ID_INTEL, PCI_ANY_ID, PCI_CLASS_DISPLAY_VGA, PCI_ANY_ID,
-	  QFLAG_APPLY_ONCE, intel_graphics_quirks },
+	  0, intel_graphics_quirks },
 	/*
 	 * HPET on the current version of the Baytrail platform has accuracy
 	 * problems: it will halt in deep idle state - so we disable it.
@@ -767,13 +778,13 @@ static int __init check_dev_quirk(int num, int slot, int func)
 	type = read_pci_config_byte(num, slot, func,
 				    PCI_HEADER_TYPE);
 
-	if ((type & 0x7f) == PCI_HEADER_TYPE_BRIDGE) {
+	if ((type & PCI_HEADER_TYPE_MASK) == PCI_HEADER_TYPE_BRIDGE) {
 		sec = read_pci_config_byte(num, slot, func, PCI_SECONDARY_BUS);
 		if (sec > num)
 			early_pci_scan_bus(sec);
 	}
 
-	if (!(type & 0x80))
+	if (!(type & PCI_HEADER_TYPE_MFD))
 		return -1;
 
 	return 0;

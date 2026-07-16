@@ -37,6 +37,16 @@
 #include <asm/mach-rc32434/rb.h>
 #include <asm/mach-rc32434/gpio.h>
 
+#define GPIOBASE	0x050000
+/* Offsets relative to GPIOBASE */
+#define GPIOFUNC	0x00
+#define GPIOCFG		0x04
+#define GPIOD		0x08
+#define GPIOILEVEL	0x0C
+#define GPIOISTAT	0x10
+#define GPIONMIEN	0x14
+#define IMASK6		0x38
+
 struct rb532_gpio_chip {
 	struct gpio_chip chip;
 	void __iomem	 *regbase;
@@ -95,13 +105,15 @@ static int rb532_gpio_get(struct gpio_chip *chip, unsigned offset)
 /*
  * Set output GPIO level
  */
-static void rb532_gpio_set(struct gpio_chip *chip,
-				unsigned offset, int value)
+static int rb532_gpio_set(struct gpio_chip *chip, unsigned int offset,
+			  int value)
 {
 	struct rb532_gpio_chip	*gpch;
 
 	gpch = gpiochip_get_data(chip);
 	rb532_set_bit(value, offset, gpch->regbase + GPIOD);
+
+	return 0;
 }
 
 /*
@@ -187,7 +199,7 @@ void rb532_gpio_set_func(unsigned gpio)
 }
 EXPORT_SYMBOL(rb532_gpio_set_func);
 
-int __init rb532_gpio_init(void)
+static int __init rb532_gpio_init(void)
 {
 	struct resource *r;
 

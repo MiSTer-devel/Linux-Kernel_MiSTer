@@ -11,11 +11,10 @@
 
 #include <linux/module.h>
 #include <linux/interrupt.h>
-
-#include "../comedidev.h"
+#include <linux/comedi/comedidev.h>
+#include <linux/comedi/comedi_8255.h>
 
 #include "amplc_pc236.h"
-#include "8255.h"
 
 static void pc236_intr_update(struct comedi_device *dev, bool enable)
 {
@@ -148,7 +147,7 @@ int amplc_pc236_common_attach(struct comedi_device *dev, unsigned long iobase,
 
 	s = &dev->subdevices[0];
 	/* digital i/o subdevice (8255) */
-	ret = subdev_8255_init(dev, s, NULL, 0x00);
+	ret = subdev_8255_io_init(dev, s, 0x00);
 	if (ret)
 		return ret;
 

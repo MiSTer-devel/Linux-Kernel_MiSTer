@@ -17,6 +17,7 @@
 #include <linux/mtd/partitions.h>
 #include <linux/err.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 
 #include "mtdcore.h"
 
@@ -29,6 +30,12 @@ static inline void free_partition(struct mtd_info *mtd)
 {
 	kfree(mtd->name);
 	kfree(mtd);
+}
+
+void release_mtd_partition(struct mtd_info *mtd)
+{
+	WARN_ON(!list_empty(&mtd->part.node));
+	free_partition(mtd);
 }
 
 static struct mtd_info *allocate_partition(struct mtd_info *parent,
@@ -308,12 +315,10 @@ static int __mtd_del_partition(struct mtd_info *mtd)
 
 	sysfs_remove_files(&mtd->dev.kobj, mtd_partition_attrs);
 
+	list_del_init(&mtd->part.node);
 	err = del_mtd_device(mtd);
 	if (err)
 		return err;
-
-	list_del(&child->part.node);
-	free_partition(mtd);
 
 	return 0;
 }
@@ -325,7 +330,6 @@ static int __mtd_del_partition(struct mtd_info *mtd)
 static int __del_mtd_partitions(struct mtd_info *mtd)
 {
 	struct mtd_info *child, *next;
-	LIST_HEAD(tmp_list);
 	int ret, err = 0;
 
 	list_for_each_entry_safe(child, next, &mtd->partitions, part.node) {
@@ -333,6 +337,7 @@ static int __del_mtd_partitions(struct mtd_info *mtd)
 			__del_mtd_partitions(child);
 
 		pr_info("Deleting %s MTD partition\n", child->name);
+		list_del_init(&child->part.node);
 		ret = del_mtd_device(child);
 		if (ret < 0) {
 			pr_err("Error when deleting partition \"%s\" (%d)\n",
@@ -340,9 +345,6 @@ static int __del_mtd_partitions(struct mtd_info *mtd)
 			err = ret;
 			continue;
 		}
-
-		list_del(&child->part.node);
-		free_partition(child);
 	}
 
 	return err;
@@ -423,8 +425,15 @@ int add_mtd_partitions(struct mtd_info *parent,
 
 		mtd_add_partition_attrs(child);
 
-		/* Look for subpartitions */
-		parse_mtd_partitions(child, parts[i].types, NULL);
+		/* Look for subpartitions (skip if no maching parser found) */
+		ret = parse_mtd_partitions(child, parts[i].types, NULL);
+		if (ret < 0 && ret == -ENOENT) {
+			pr_debug("Skip parsing subpartitions: %d\n", ret);
+			continue;
+		} else if (ret < 0) {
+			pr_err("Failed to parse subpartitions: %d\n", ret);
+			goto err_del_partitions;
+		}
 
 		cur_offset = child->part.offset + child->part.size;
 	}
@@ -576,10 +585,17 @@ static int mtd_part_of_parse(struct mtd_info *master,
 {
 	struct mtd_part_parser *parser;
 	struct device_node *np;
+	struct device_node *child;
 	struct property *prop;
+	struct device *dev;
 	const char *compat;
 	const char *fixed = "fixed-partitions";
 	int ret, err = 0;
+
+	dev = &master->dev;
+	/* Use parent device (controller) if the top level MTD is not registered */
+	if (!IS_ENABLED(CONFIG_MTD_PARTITIONED_MASTER) && !mtd_is_partition(master))
+		dev = master->dev.parent;
 
 	np = mtd_get_of_node(master);
 	if (mtd_is_partition(master))
@@ -587,12 +603,22 @@ static int mtd_part_of_parse(struct mtd_info *master,
 	else
 		np = of_get_child_by_name(np, "partitions");
 
+	/*
+	 * Don't create devices that are added to a bus but will never get
+	 * probed. That'll cause fw_devlink to block probing of consumers of
+	 * this partition until the partition device is probed.
+	 */
+	for_each_child_of_node(np, child)
+		if (of_device_is_compatible(child, "nvmem-cells"))
+			of_node_set_flag(child, OF_POPULATED);
+
 	of_property_for_each_string(np, "compatible", prop, compat) {
 		parser = mtd_part_get_compatible_parser(compat);
 		if (!parser)
 			continue;
 		ret = mtd_part_do_parse(parser, master, pparts, NULL);
 		if (ret > 0) {
+			of_platform_populate(np, NULL, NULL, dev);
 			of_node_put(np);
 			return ret;
 		}
@@ -600,6 +626,7 @@ static int mtd_part_of_parse(struct mtd_info *master,
 		if (ret < 0 && !err)
 			err = ret;
 	}
+	of_platform_populate(np, NULL, NULL, dev);
 	of_node_put(np);
 
 	/*
@@ -666,10 +693,9 @@ int parse_mtd_partitions(struct mtd_info *master, const char *const *types,
 			parser = mtd_part_parser_get(*types);
 			if (!parser && !request_module("%s", *types))
 				parser = mtd_part_parser_get(*types);
-			pr_debug("%s: got parser %s\n", master->name,
-				parser ? parser->name : NULL);
 			if (!parser)
 				continue;
+			pr_debug("%s: got parser %s\n", master->name, parser->name);
 			ret = mtd_part_do_parse(parser, master, &pparts, data);
 			if (ret <= 0)
 				mtd_part_parser_put(parser);

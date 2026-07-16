@@ -39,11 +39,9 @@
 #include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/io.h>
-
-#include "../comedidev.h"
-
-#include "comedi_isadma.h"
-#include "comedi_8254.h"
+#include <linux/comedi/comedidev.h>
+#include <linux/comedi/comedi_8254.h>
+#include <linux/comedi/comedi_isadma.h>
 
 #define A2150_DMA_BUFFER_SIZE	0xff00	/*  size in bytes of dma buffer */
 
@@ -709,10 +707,10 @@ static int a2150_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 	/* an IRQ and DMA are required to support async commands */
 	a2150_alloc_irq_and_dma(dev, it);
 
-	dev->pacer = comedi_8254_init(dev->iobase + I8253_BASE_REG,
-				      0, I8254_IO8, 0);
-	if (!dev->pacer)
-		return -ENOMEM;
+	dev->pacer = comedi_8254_io_alloc(dev->iobase + I8253_BASE_REG,
+					  0, I8254_IO8, 0);
+	if (IS_ERR(dev->pacer))
+		return PTR_ERR(dev->pacer);
 
 	ret = comedi_alloc_subdevices(dev, 1);
 	if (ret)

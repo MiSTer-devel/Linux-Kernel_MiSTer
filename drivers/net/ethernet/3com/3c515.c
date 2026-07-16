@@ -31,9 +31,6 @@
    Setting to > 1512 effectively disables this feature. */
 static int rx_copybreak = 200;
 
-/* Allow setting MTU to a larger size, bypassing the normal ethernet setup. */
-static const int mtu = 1500;
-
 /* Maximum events (Rx packets, etc.) to handle at each interrupt. */
 static int max_interrupt_work = 20;
 
@@ -66,8 +63,10 @@ static int max_interrupt_work = 20;
 #include <linux/timer.h>
 #include <linux/ethtool.h>
 #include <linux/bitops.h>
-
 #include <linux/uaccess.h>
+
+#include <net/Space.h>
+
 #include <asm/io.h>
 #include <asm/dma.h>
 
@@ -567,6 +566,7 @@ static int corkscrew_setup(struct net_device *dev, int ioaddr,
 {
 	struct corkscrew_private *vp = netdev_priv(dev);
 	unsigned int eeprom[0x40], checksum = 0;	/* EEPROM contents */
+	__be16 addr[ETH_ALEN / 2];
 	int i;
 	int irq;
 
@@ -619,7 +619,6 @@ static int corkscrew_setup(struct net_device *dev, int ioaddr,
 	/* Read the station address from the EEPROM. */
 	EL3WINDOW(0);
 	for (i = 0; i < 0x18; i++) {
-		__be16 *phys_addr = (__be16 *) dev->dev_addr;
 		int timer;
 		outw(EEPROM_Read + i, ioaddr + Wn0EepromCmd);
 		/* Pause for at least 162 us. for the read to take place. */
@@ -631,8 +630,9 @@ static int corkscrew_setup(struct net_device *dev, int ioaddr,
 		eeprom[i] = inw(ioaddr + Wn0EepromData);
 		checksum ^= eeprom[i];
 		if (i < 3)
-			phys_addr[i] = htons(eeprom[i]);
+			addr[i] = htons(eeprom[i]);
 	}
+	eth_hw_addr_set(dev, (u8 *)addr);
 	checksum = (checksum ^ (checksum >> 8)) & 0xff;
 	if (checksum != 0x00)
 		pr_cont(" ***INVALID CHECKSUM %4.4x*** ", checksum);
@@ -859,7 +859,7 @@ static int corkscrew_open(struct net_device *dev)
 static void corkscrew_timer(struct timer_list *t)
 {
 #ifdef AUTOMEDIA
-	struct corkscrew_private *vp = from_timer(vp, t, timer);
+	struct corkscrew_private *vp = timer_container_of(vp, t, timer);
 	struct net_device *dev = vp->our_dev;
 	int ioaddr = dev->base_addr;
 	unsigned long flags;
@@ -1414,7 +1414,7 @@ static int corkscrew_close(struct net_device *dev)
 			dev->name, rx_nocopy, rx_copy, queued_packet);
 	}
 
-	del_timer_sync(&vp->timer);
+	timer_delete_sync(&vp->timer);
 
 	/* Turn off statistics ASAP.  We update lp->stats below. */
 	outw(StatsDisable, ioaddr + EL3_CMD);
@@ -1526,7 +1526,7 @@ static void set_rx_mode(struct net_device *dev)
 static void netdev_get_drvinfo(struct net_device *dev,
 			       struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
 	snprintf(info->bus_info, sizeof(info->bus_info), "ISA 0x%lx",
 		 dev->base_addr);
 }

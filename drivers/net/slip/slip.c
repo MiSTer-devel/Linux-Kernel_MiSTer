@@ -286,7 +286,7 @@ static int sl_realloc_bufs(struct slip *sl, int mtu)
 		}
 	}
 	sl->mtu      = mtu;
-	dev->mtu      = mtu;
+	WRITE_ONCE(dev->mtu, mtu);
 	sl->buffsize = len;
 	err = 0;
 
@@ -368,7 +368,7 @@ static void sl_bump(struct slip *sl)
 	skb_put_data(skb, sl->rbuff, count);
 	skb_reset_mac_header(skb);
 	skb->protocol = htons(ETH_P_IP);
-	netif_rx_ni(skb);
+	netif_rx(skb);
 	dev->stats.rx_packets++;
 }
 
@@ -469,7 +469,7 @@ static void sl_tx_timeout(struct net_device *dev, unsigned int txqueue)
 	spin_lock(&sl->lock);
 
 	if (netif_queue_stopped(dev)) {
-		if (!netif_running(dev))
+		if (!netif_running(dev) || !sl->tty)
 			goto out;
 
 		/* May be we must check transmitter timeout here ?
@@ -685,8 +685,8 @@ static void sl_setup(struct net_device *dev)
  * in parallel
  */
 
-static void slip_receive_buf(struct tty_struct *tty, const unsigned char *cp,
-		const char *fp, int count)
+static void slip_receive_buf(struct tty_struct *tty, const u8 *cp, const u8 *fp,
+			     size_t count)
 {
 	struct slip *sl = tty->disc_data;
 
@@ -899,18 +899,17 @@ static void slip_close(struct tty_struct *tty)
 
 	/* VSV = very important to remove timers */
 #ifdef CONFIG_SLIP_SMART
-	del_timer_sync(&sl->keepalive_timer);
-	del_timer_sync(&sl->outfill_timer);
+	timer_delete_sync(&sl->keepalive_timer);
+	timer_delete_sync(&sl->outfill_timer);
 #endif
 	/* Flush network side */
 	unregister_netdev(sl->dev);
 	/* This will complete via sl_free_netdev */
 }
 
-static int slip_hangup(struct tty_struct *tty)
+static void slip_hangup(struct tty_struct *tty)
 {
 	slip_close(tty);
-	return 0;
 }
  /************************************************************************
   *			STANDARD SLIP ENCAPSULATION		  	 *
@@ -1073,8 +1072,8 @@ static void slip_unesc6(struct slip *sl, unsigned char s)
 #endif /* CONFIG_SLIP_MODE_SLIP6 */
 
 /* Perform I/O control on an active SLIP channel. */
-static int slip_ioctl(struct tty_struct *tty, struct file *file,
-					unsigned int cmd, unsigned long arg)
+static int slip_ioctl(struct tty_struct *tty, unsigned int cmd,
+		unsigned long arg)
 {
 	struct slip *sl = tty->disc_data;
 	unsigned int tmp;
@@ -1138,7 +1137,7 @@ static int slip_ioctl(struct tty_struct *tty, struct file *file,
 					jiffies + sl->keepalive * HZ);
 			set_bit(SLF_KEEPTEST, &sl->flags);
 		} else
-			del_timer(&sl->keepalive_timer);
+			timer_delete(&sl->keepalive_timer);
 		spin_unlock_bh(&sl->lock);
 		return 0;
 
@@ -1163,7 +1162,7 @@ static int slip_ioctl(struct tty_struct *tty, struct file *file,
 						jiffies + sl->outfill * HZ);
 			set_bit(SLF_OUTWAIT, &sl->flags);
 		} else
-			del_timer(&sl->outfill_timer);
+			timer_delete(&sl->outfill_timer);
 		spin_unlock_bh(&sl->lock);
 		return 0;
 
@@ -1174,7 +1173,7 @@ static int slip_ioctl(struct tty_struct *tty, struct file *file,
 	/* VSV changes end */
 #endif
 	default:
-		return tty_mode_ioctl(tty, file, cmd, arg);
+		return tty_mode_ioctl(tty, cmd, arg);
 	}
 }
 
@@ -1218,7 +1217,7 @@ static int sl_siocdevprivate(struct net_device *dev, struct ifreq *rq,
 						jiffies + sl->keepalive * HZ);
 			set_bit(SLF_KEEPTEST, &sl->flags);
 		} else
-			del_timer(&sl->keepalive_timer);
+			timer_delete(&sl->keepalive_timer);
 		break;
 
 	case SIOCGKEEPALIVE:
@@ -1236,7 +1235,7 @@ static int sl_siocdevprivate(struct net_device *dev, struct ifreq *rq,
 						jiffies + sl->outfill * HZ);
 			set_bit(SLF_OUTWAIT, &sl->flags);
 		} else
-			del_timer(&sl->outfill_timer);
+			timer_delete(&sl->outfill_timer);
 		break;
 
 	case SIOCGOUTFILL:
@@ -1379,7 +1378,7 @@ module_exit(slip_exit);
 
 static void sl_outfill(struct timer_list *t)
 {
-	struct slip *sl = from_timer(sl, t, outfill_timer);
+	struct slip *sl = timer_container_of(sl, t, outfill_timer);
 
 	spin_lock(&sl->lock);
 
@@ -1410,7 +1409,7 @@ out:
 
 static void sl_keepalive(struct timer_list *t)
 {
-	struct slip *sl = from_timer(sl, t, keepalive_timer);
+	struct slip *sl = timer_container_of(sl, t, keepalive_timer);
 
 	spin_lock(&sl->lock);
 
@@ -1422,7 +1421,7 @@ static void sl_keepalive(struct timer_list *t)
 			/* keepalive still high :(, we must hangup */
 			if (sl->outfill)
 				/* outfill timer must be deleted too */
-				(void)del_timer(&sl->outfill_timer);
+				(void) timer_delete(&sl->outfill_timer);
 			printk(KERN_DEBUG "%s: no packets received during keepalive timeout, hangup.\n", sl->dev->name);
 			/* this must hangup tty & close slip */
 			tty_hangup(sl->tty);
@@ -1438,5 +1437,6 @@ out:
 }
 
 #endif
+MODULE_DESCRIPTION("SLIP (serial line) protocol module");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_LDISC(N_SLIP);

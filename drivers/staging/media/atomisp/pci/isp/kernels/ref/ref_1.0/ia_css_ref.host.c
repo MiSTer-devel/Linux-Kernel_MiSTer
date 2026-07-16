@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include <assert_support.h>
@@ -22,16 +13,17 @@
 #include "isp.h"
 #include "ia_css_ref.host.h"
 
-void
-ia_css_ref_config(
-    struct sh_css_isp_ref_isp_config *to,
-    const struct ia_css_ref_configuration  *from,
-    unsigned int size)
+int ia_css_ref_config(struct sh_css_isp_ref_isp_config *to,
+		      const struct ia_css_ref_configuration  *from,
+		      unsigned int size)
 {
 	unsigned int elems_a = ISP_VEC_NELEMS, i;
+	int ret;
 
 	if (from->ref_frames[0]) {
-		ia_css_dma_configure_from_info(&to->port_b, &from->ref_frames[0]->info);
+		ret = ia_css_dma_configure_from_info(&to->port_b, &from->ref_frames[0]->frame_info);
+		if (ret)
+			return ret;
 		to->width_a_over_b = elems_a / to->port_b.elems;
 		to->dvs_frame_delay = from->dvs_frame_delay;
 	} else {
@@ -52,22 +44,25 @@ ia_css_ref_config(
 	}
 
 	/* Assume divisiblity here, may need to generalize to fixed point. */
-	assert(elems_a % to->port_b.elems == 0);
+	if (elems_a % to->port_b.elems != 0)
+		return -EINVAL;
+
+	return 0;
 }
 
-void
-ia_css_ref_configure(
-    const struct ia_css_binary     *binary,
-    const struct ia_css_frame * const *ref_frames,
-    const uint32_t dvs_frame_delay)
+int ia_css_ref_configure(const struct ia_css_binary        *binary,
+			 const struct ia_css_frame * const *ref_frames,
+			 const uint32_t dvs_frame_delay)
 {
 	struct ia_css_ref_configuration config;
 	unsigned int i;
 
 	for (i = 0; i < MAX_NUM_VIDEO_DELAY_FRAMES; i++)
 		config.ref_frames[i] = ref_frames[i];
+
 	config.dvs_frame_delay = dvs_frame_delay;
-	ia_css_configure_ref(binary, &config);
+
+	return ia_css_configure_ref(binary, &config);
 }
 
 void

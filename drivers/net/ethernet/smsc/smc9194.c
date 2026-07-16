@@ -856,6 +856,7 @@ static int __init smc_probe(struct net_device *dev, int ioaddr)
 	word configuration_register;
 	word memory_info_register;
 	word memory_cfg_register;
+	u8 addr[ETH_ALEN];
 
 	/* Grab the region so that no one else tries to probe our ioports. */
 	if (!request_region(ioaddr, SMC_IO_EXTENT, DRV_NAME))
@@ -924,9 +925,10 @@ static int __init smc_probe(struct net_device *dev, int ioaddr)
 		word	address;
 
 		address = inw( ioaddr + ADDR0 + i  );
-		dev->dev_addr[ i + 1] = address >> 8;
-		dev->dev_addr[ i ] = address & 0xFF;
+		addr[i + 1] = address >> 8;
+		addr[i] = address & 0xFF;
 	}
+	eth_hw_addr_set(dev, addr);
 
 	/* get the memory information */
 
@@ -1499,6 +1501,7 @@ static void smc_set_multicast_list(struct net_device *dev)
 #ifdef MODULE
 
 static struct net_device *devSMC9194;
+MODULE_DESCRIPTION("SMC 9194 Ethernet driver");
 MODULE_LICENSE("GPL");
 
 module_param_hw(io, int, ioport, 0);

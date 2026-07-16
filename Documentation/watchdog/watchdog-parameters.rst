@@ -120,16 +120,6 @@ coh901327_wdt:
 
 -------------------------------------------------
 
-cpu5wdt:
-    port:
-	base address of watchdog card, default is 0x91
-    verbose:
-	be verbose, default is 0 (no)
-    ticks:
-	count down ticks, default is 10000
-
--------------------------------------------------
-
 cpwd:
     wd0_timeout:
 	Default watchdog0 timeout in 1/10secs
@@ -422,6 +412,18 @@ pnx833x_wdt:
 	(default=kernel config parameter)
     start_enabled:
 	Watchdog is started on module insertion (default=1)
+
+-------------------------------------------------
+
+pseries-wdt:
+    action:
+	Action taken when watchdog expires: 0 (power off), 1 (restart),
+	2 (dump and restart). (default=1)
+    timeout:
+	Initial watchdog timeout in seconds. (default=60)
+    nowayout:
+	Watchdog cannot be stopped once started.
+	(default=kernel config parameter)
 
 -------------------------------------------------
 

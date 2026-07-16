@@ -56,13 +56,13 @@ struct ad5764_state {
 	struct mutex			lock;
 
 	/*
-	 * DMA (thus cache coherency maintenance) requires the
+	 * DMA (thus cache coherency maintenance) may require the
 	 * transfer buffers to live in their own cache lines.
 	 */
 	union {
 		__be32 d32;
 		u8 d8[4];
-	} data[2] ____cacheline_aligned;
+	} data[2] __aligned(IIO_DMA_MINALIGN);
 };
 
 enum ad5764_type {
@@ -278,10 +278,8 @@ static int ad5764_probe(struct spi_device *spi)
 	int ret;
 
 	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*st));
-	if (indio_dev == NULL) {
-		dev_err(&spi->dev, "Failed to allocate iio device\n");
+	if (indio_dev == NULL)
 		return -ENOMEM;
-	}
 
 	st = iio_priv(indio_dev);
 	spi_set_drvdata(spi, indio_dev);
@@ -332,7 +330,7 @@ error_disable_reg:
 	return ret;
 }
 
-static int ad5764_remove(struct spi_device *spi)
+static void ad5764_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ad5764_state *st = iio_priv(indio_dev);
@@ -341,8 +339,6 @@ static int ad5764_remove(struct spi_device *spi)
 
 	if (st->chip_info->int_vref == 0)
 		regulator_bulk_disable(ARRAY_SIZE(st->vref_reg), st->vref_reg);
-
-	return 0;
 }
 
 static const struct spi_device_id ad5764_ids[] = {

@@ -261,7 +261,7 @@ struct w83792d_data {
 	struct device *hwmon_dev;
 
 	struct mutex update_lock;
-	char valid;		/* !=0 if following fields are valid */
+	bool valid;		/* true if following fields are valid */
 	unsigned long last_updated;	/* In jiffies */
 
 	u8 in[9];		/* Register value */
@@ -286,7 +286,7 @@ struct w83792d_data {
 static int w83792d_probe(struct i2c_client *client);
 static int w83792d_detect(struct i2c_client *client,
 			  struct i2c_board_info *info);
-static int w83792d_remove(struct i2c_client *client);
+static void w83792d_remove(struct i2c_client *client);
 static struct w83792d_data *w83792d_update_device(struct device *dev);
 
 #ifdef DEBUG
@@ -296,7 +296,7 @@ static void w83792d_print_debug(struct w83792d_data *data, struct device *dev);
 static void w83792d_init_client(struct i2c_client *client);
 
 static const struct i2c_device_id w83792d_id[] = {
-	{ "w83792d", 0 },
+	{ "w83792d" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, w83792d_id);
@@ -306,7 +306,7 @@ static struct i2c_driver w83792d_driver = {
 	.driver = {
 		.name = "w83792d",
 	},
-	.probe_new	= w83792d_probe,
+	.probe		= w83792d_probe,
 	.remove		= w83792d_remove,
 	.id_table	= w83792d_id,
 	.detect		= w83792d_detect,
@@ -740,7 +740,7 @@ intrusion0_alarm_store(struct device *dev, struct device_attribute *attr,
 	mutex_lock(&data->update_lock);
 	reg = w83792d_read_value(client, W83792D_REG_CHASSIS_CLR);
 	w83792d_write_value(client, W83792D_REG_CHASSIS_CLR, reg | 0x80);
-	data->valid = 0;		/* Force cache refresh */
+	data->valid = false;		/* Force cache refresh */
 	mutex_unlock(&data->update_lock);
 
 	return count;
@@ -1346,7 +1346,7 @@ w83792d_detect(struct i2c_client *client, struct i2c_board_info *info)
 	if (val1 != 0x7a || val2 != 0x5c)
 		return -ENODEV;
 
-	strlcpy(info->type, "w83792d", I2C_NAME_SIZE);
+	strscpy(info->type, "w83792d", I2C_NAME_SIZE);
 
 	return 0;
 }
@@ -1429,7 +1429,7 @@ exit_remove_files:
 	return err;
 }
 
-static int
+static void
 w83792d_remove(struct i2c_client *client)
 {
 	struct w83792d_data *data = i2c_get_clientdata(client);
@@ -1440,8 +1440,6 @@ w83792d_remove(struct i2c_client *client)
 	for (i = 0; i < ARRAY_SIZE(w83792d_group_fan); i++)
 		sysfs_remove_group(&client->dev.kobj,
 				   &w83792d_group_fan[i]);
-
-	return 0;
 }
 
 static void
@@ -1589,7 +1587,7 @@ static struct w83792d_data *w83792d_update_device(struct device *dev)
 		}
 
 		data->last_updated = jiffies;
-		data->valid = 1;
+		data->valid = true;
 	}
 
 	mutex_unlock(&data->update_lock);

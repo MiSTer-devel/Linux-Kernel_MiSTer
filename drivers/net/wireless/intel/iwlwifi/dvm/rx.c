@@ -3,22 +3,17 @@
  *
  * Copyright(c) 2003 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2015 Intel Deutschland GmbH
- * Copyright(c) 2018, 2020 Intel Corporation
+ * Copyright(c) 2018, 2020-2021, 2025 Intel Corporation
  *
  * Portions of this file are derived from the ipw3945 project, as well
  * as portionhelp of the ieee80211 subsystem header files.
- *
- * Contact Information:
- *  Intel Linux Wireless <linuxwifi@intel.com>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
- *
  *****************************************************************************/
 
 #include <linux/etherdevice.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
 #include <net/mac80211.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "iwl-trans.h"
 #include "iwl-io.h"
@@ -55,7 +50,7 @@ static void iwlagn_rx_csa(struct iwl_priv *priv, struct iwl_rx_cmd_buffer *rxb)
 	 * See iwlagn_mac_channel_switch.
 	 */
 	struct iwl_rxon_context *ctx = &priv->contexts[IWL_RXON_CTX_BSS];
-	struct iwl_rxon_cmd *rxon = (void *)&ctx->active;
+	struct iwl_rxon_cmd *rxon = (void *)(uintptr_t)&ctx->active;
 
 	if (!test_bit(STATUS_CHANNEL_SWITCH_PENDING, &priv->status))
 		return;
@@ -434,7 +429,7 @@ static void iwlagn_rx_statistics(struct iwl_priv *priv,
 	 * thermal update even if the uCode doesn't give
 	 * us one */
 	mod_timer(&priv->statistics_periodic, jiffies +
-		  msecs_to_jiffies(reg_recalib_period * 1000));
+		  secs_to_jiffies(reg_recalib_period));
 
 	if (unlikely(!test_bit(STATUS_SCANNING, &priv->status)) &&
 	    (pkt->hdr.cmd == STATISTICS_NOTIFICATION)) {
@@ -648,8 +643,8 @@ static void iwlagn_pass_packet_to_mac80211(struct iwl_priv *priv,
 	fraglen = len - hdrlen;
 
 	if (fraglen) {
-		int offset = (void *)hdr + hdrlen -
-			     rxb_addr(rxb) + rxb_offset(rxb);
+		int offset = (u8 *)hdr + hdrlen -
+			     (u8 *)rxb_addr(rxb) + rxb_offset(rxb);
 
 		skb_add_rx_frag(skb, 0, rxb_steal_page(rxb), offset,
 				fraglen, rxb->truesize);
@@ -920,7 +915,7 @@ static void iwlagn_rx_noa_notification(struct iwl_priv *priv,
 		len += 1 + 2;
 		copylen += 1 + 2;
 
-		new_data = kmalloc(sizeof(*new_data) + len, GFP_ATOMIC);
+		new_data = kmalloc(struct_size(new_data, data, len), GFP_ATOMIC);
 		if (new_data) {
 			new_data->length = len;
 			new_data->data[0] = WLAN_EID_VENDOR_SPECIFIC;
@@ -1020,8 +1015,7 @@ void iwl_rx_dispatch(struct iwl_op_mode *op_mode, struct napi_struct *napi,
 		/* No handling needed */
 		IWL_DEBUG_RX(priv, "No handler needed for %s, 0x%02x\n",
 			     iwl_get_cmd_string(priv->trans,
-						iwl_cmd_id(pkt->hdr.cmd,
-							   0, 0)),
+						WIDE_ID(0, pkt->hdr.cmd)),
 			     pkt->hdr.cmd);
 	}
 }

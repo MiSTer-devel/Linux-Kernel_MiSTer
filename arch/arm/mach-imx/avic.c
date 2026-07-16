@@ -154,7 +154,7 @@ static void __exception_irq_entry avic_handle_irq(struct pt_regs *regs)
 		if (nivector == 0xffff)
 			break;
 
-		handle_domain_irq(domain, nivector, regs);
+		generic_handle_domain_irq(domain, nivector);
 	} while (1);
 }
 
@@ -201,8 +201,8 @@ static void __init mxc_init_irq(void __iomem *irqbase)
 	WARN_ON(irq_base < 0);
 
 	np = of_find_compatible_node(NULL, NULL, "fsl,avic");
-	domain = irq_domain_add_legacy(np, AVIC_NUM_IRQS, irq_base, 0,
-				       &irq_domain_simple_ops, NULL);
+	domain = irq_domain_create_legacy(of_fwnode_handle(np), AVIC_NUM_IRQS, irq_base, 0,
+					  &irq_domain_simple_ops, NULL);
 	WARN_ON(!domain);
 
 	for (i = 0; i < AVIC_NUM_IRQS / 32; i++, irq_base += 32)

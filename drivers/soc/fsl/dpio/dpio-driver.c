@@ -10,7 +10,6 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
-#include <linux/msi.h>
 #include <linux/dma-mapping.h>
 #include <linux/delay.h>
 #include <linux/io.h>
@@ -88,7 +87,7 @@ static void unregister_dpio_irq_handlers(struct fsl_mc_device *dpio_dev)
 	irq = dpio_dev->irqs[0];
 
 	/* clear the affinity hint */
-	irq_set_affinity_hint(irq->msi_desc->irq, NULL);
+	irq_set_affinity_hint(irq->virq, NULL);
 }
 
 static int register_dpio_irq_handlers(struct fsl_mc_device *dpio_dev, int cpu)
@@ -98,7 +97,7 @@ static int register_dpio_irq_handlers(struct fsl_mc_device *dpio_dev, int cpu)
 
 	irq = dpio_dev->irqs[0];
 	error = devm_request_irq(&dpio_dev->dev,
-				 irq->msi_desc->irq,
+				 irq->virq,
 				 dpio_irq_handler,
 				 0,
 				 dev_name(&dpio_dev->dev),
@@ -111,10 +110,10 @@ static int register_dpio_irq_handlers(struct fsl_mc_device *dpio_dev, int cpu)
 	}
 
 	/* set the affinity hint */
-	if (irq_set_affinity_hint(irq->msi_desc->irq, cpumask_of(cpu)))
+	if (irq_set_affinity_hint(irq->virq, cpumask_of(cpu)))
 		dev_err(&dpio_dev->dev,
 			"irq_set_affinity failed irq %d cpu %d\n",
-			irq->msi_desc->irq, cpu);
+			irq->virq, cpu);
 
 	return 0;
 }
@@ -162,6 +161,7 @@ static int dpaa2_dpio_probe(struct fsl_mc_device *dpio_dev)
 		goto err_get_attr;
 	}
 	desc.qman_version = dpio_attrs.qbman_version;
+	desc.qman_clk = dpio_attrs.clk;
 
 	err = dpio_enable(dpio_dev->mc_io, 0, dpio_dev->mc_handle);
 	if (err) {
@@ -270,7 +270,7 @@ static void dpio_teardown_irqs(struct fsl_mc_device *dpio_dev)
 	fsl_mc_free_irqs(dpio_dev);
 }
 
-static int dpaa2_dpio_remove(struct fsl_mc_device *dpio_dev)
+static void dpaa2_dpio_remove(struct fsl_mc_device *dpio_dev)
 {
 	struct device *dev;
 	struct dpio_priv *priv;
@@ -297,14 +297,8 @@ static int dpaa2_dpio_remove(struct fsl_mc_device *dpio_dev)
 
 	dpio_close(dpio_dev->mc_io, 0, dpio_dev->mc_handle);
 
-	fsl_mc_portal_free(dpio_dev->mc_io);
-
-	return 0;
-
 err_open:
 	fsl_mc_portal_free(dpio_dev->mc_io);
-
-	return err;
 }
 
 static const struct fsl_mc_device_id dpaa2_dpio_match_id_table[] = {

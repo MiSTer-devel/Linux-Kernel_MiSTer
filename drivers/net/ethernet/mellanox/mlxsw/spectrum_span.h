@@ -93,13 +93,8 @@ void mlxsw_sp_span_respin(struct mlxsw_sp *mlxsw_sp);
 struct mlxsw_sp_span_entry *
 mlxsw_sp_span_entry_find_by_port(struct mlxsw_sp *mlxsw_sp,
 				 const struct net_device *to_dev);
-
 void mlxsw_sp_span_entry_invalidate(struct mlxsw_sp *mlxsw_sp,
 				    struct mlxsw_sp_span_entry *span_entry);
-
-int mlxsw_sp_span_port_mtu_update(struct mlxsw_sp_port *port, u16 mtu);
-void mlxsw_sp_span_speed_update_work(struct work_struct *work);
-
 int mlxsw_sp_span_agent_get(struct mlxsw_sp *mlxsw_sp, int *p_span_id,
 			    const struct mlxsw_sp_span_agent_parms *parms);
 void mlxsw_sp_span_agent_put(struct mlxsw_sp *mlxsw_sp, int span_id);
@@ -120,6 +115,7 @@ int mlxsw_sp_span_trigger_enable(struct mlxsw_sp_port *mlxsw_sp_port,
 				 enum mlxsw_sp_span_trigger trigger, u8 tc);
 void mlxsw_sp_span_trigger_disable(struct mlxsw_sp_port *mlxsw_sp_port,
 				   enum mlxsw_sp_span_trigger trigger, u8 tc);
+bool mlxsw_sp_span_trigger_is_ingress(enum mlxsw_sp_span_trigger trigger);
 
 extern const struct mlxsw_sp_span_ops mlxsw_sp1_span_ops;
 extern const struct mlxsw_sp_span_ops mlxsw_sp2_span_ops;

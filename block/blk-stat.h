@@ -69,6 +69,7 @@ void blk_stat_add(struct request *rq, u64 now);
 
 /* record time/size info in request but not add a callback */
 void blk_stat_enable_accounting(struct request_queue *q);
+void blk_stat_disable_accounting(struct request_queue *q);
 
 /**
  * blk_stat_alloc_callback() - Allocate a block statistics callback.
@@ -147,7 +148,7 @@ static inline void blk_stat_activate_nsecs(struct blk_stat_callback *cb,
 
 static inline void blk_stat_deactivate(struct blk_stat_callback *cb)
 {
-	del_timer_sync(&cb->timer);
+	timer_delete_sync(&cb->timer);
 }
 
 /**

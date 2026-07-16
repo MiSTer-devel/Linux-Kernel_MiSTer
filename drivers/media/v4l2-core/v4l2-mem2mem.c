@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Memory-to-memory device framework for Video for Linux 2 and videobuf.
+ * Memory-to-memory device framework for Video for Linux 2 and vb2.
  *
- * Helper functions for devices that use videobuf buffers for both their
+ * Helper functions for devices that use vb2 buffers for both their
  * source and destination.
  *
  * Copyright (c) 2009-2010 Samsung Electronics Co., Ltd.
@@ -21,7 +21,7 @@
 #include <media/v4l2-fh.h>
 #include <media/v4l2-event.h>
 
-MODULE_DESCRIPTION("Mem to mem device framework for videobuf");
+MODULE_DESCRIPTION("Mem to mem device framework for vb2");
 MODULE_AUTHOR("Pawel Osciak, <pawel@osciak.com>");
 MODULE_LICENSE("GPL");
 
@@ -68,16 +68,16 @@ static const char * const m2m_entity_name[] = {
  * struct v4l2_m2m_dev - per-device context
  * @source:		&struct media_entity pointer with the source entity
  *			Used only when the M2M device is registered via
- *			v4l2_m2m_unregister_media_controller().
+ *			v4l2_m2m_register_media_controller().
  * @source_pad:		&struct media_pad with the source pad.
  *			Used only when the M2M device is registered via
- *			v4l2_m2m_unregister_media_controller().
+ *			v4l2_m2m_register_media_controller().
  * @sink:		&struct media_entity pointer with the sink entity
  *			Used only when the M2M device is registered via
- *			v4l2_m2m_unregister_media_controller().
+ *			v4l2_m2m_register_media_controller().
  * @sink_pad:		&struct media_pad with the sink pad.
  *			Used only when the M2M device is registered via
- *			v4l2_m2m_unregister_media_controller().
+ *			v4l2_m2m_register_media_controller().
  * @proc:		&struct media_entity pointer with the M2M device itself.
  * @proc_pads:		&struct media_pad with the @proc pads.
  *			Used only when the M2M device is registered via
@@ -301,9 +301,12 @@ static void __v4l2_m2m_try_queue(struct v4l2_m2m_dev *m2m_dev,
 
 	dprintk("Trying to schedule a job for m2m_ctx: %p\n", m2m_ctx);
 
-	if (!m2m_ctx->out_q_ctx.q.streaming
-	    || !m2m_ctx->cap_q_ctx.q.streaming) {
-		dprintk("Streaming needs to be on for both queues\n");
+	if (!m2m_ctx->out_q_ctx.q.streaming ||
+	    (!m2m_ctx->cap_q_ctx.q.streaming && !m2m_ctx->ignore_cap_streaming)) {
+		if (!m2m_ctx->ignore_cap_streaming)
+			dprintk("Streaming needs to be on for both queues\n");
+		else
+			dprintk("Streaming needs to be on for the OUTPUT queue\n");
 		return;
 	}
 
@@ -336,6 +339,7 @@ static void __v4l2_m2m_try_queue(struct v4l2_m2m_dev *m2m_dev,
 	if (src && dst && dst->is_held &&
 	    dst->vb2_buf.copied_timestamp &&
 	    dst->vb2_buf.timestamp != src->vb2_buf.timestamp) {
+		dprintk("Timestamp mismatch, returning held capture buffer\n");
 		dst->is_held = false;
 		v4l2_m2m_dst_buf_remove(m2m_ctx);
 		v4l2_m2m_buf_done(dst, VB2_BUF_STATE_DONE);
@@ -585,19 +589,14 @@ int v4l2_m2m_reqbufs(struct file *file, struct v4l2_m2m_ctx *m2m_ctx,
 }
 EXPORT_SYMBOL_GPL(v4l2_m2m_reqbufs);
 
-int v4l2_m2m_querybuf(struct file *file, struct v4l2_m2m_ctx *m2m_ctx,
-		      struct v4l2_buffer *buf)
+static void v4l2_m2m_adjust_mem_offset(struct vb2_queue *vq,
+				       struct v4l2_buffer *buf)
 {
-	struct vb2_queue *vq;
-	int ret = 0;
-	unsigned int i;
-
-	vq = v4l2_m2m_get_vq(m2m_ctx, buf->type);
-	ret = vb2_querybuf(vq, buf);
-
 	/* Adjust MMAP memory offsets for the CAPTURE queue */
 	if (buf->memory == V4L2_MEMORY_MMAP && V4L2_TYPE_IS_CAPTURE(vq->type)) {
 		if (V4L2_TYPE_IS_MULTIPLANAR(vq->type)) {
+			unsigned int i;
+
 			for (i = 0; i < buf->length; ++i)
 				buf->m.planes[i].m.mem_offset
 					+= DST_QUEUE_OFF_BASE;
@@ -605,8 +604,23 @@ int v4l2_m2m_querybuf(struct file *file, struct v4l2_m2m_ctx *m2m_ctx,
 			buf->m.offset += DST_QUEUE_OFF_BASE;
 		}
 	}
+}
 
-	return ret;
+int v4l2_m2m_querybuf(struct file *file, struct v4l2_m2m_ctx *m2m_ctx,
+		      struct v4l2_buffer *buf)
+{
+	struct vb2_queue *vq;
+	int ret;
+
+	vq = v4l2_m2m_get_vq(m2m_ctx, buf->type);
+	ret = vb2_querybuf(vq, buf);
+	if (ret)
+		return ret;
+
+	/* Adjust MMAP memory offsets for the CAPTURE queue */
+	v4l2_m2m_adjust_mem_offset(vq, buf);
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(v4l2_m2m_querybuf);
 
@@ -763,6 +777,9 @@ int v4l2_m2m_qbuf(struct file *file, struct v4l2_m2m_ctx *m2m_ctx,
 	if (ret)
 		return ret;
 
+	/* Adjust MMAP memory offsets for the CAPTURE queue */
+	v4l2_m2m_adjust_mem_offset(vq, buf);
+
 	/*
 	 * If the capture queue is streaming, but streaming hasn't started
 	 * on the device, but was asked to stop, mark the previously queued
@@ -784,9 +801,17 @@ int v4l2_m2m_dqbuf(struct file *file, struct v4l2_m2m_ctx *m2m_ctx,
 		   struct v4l2_buffer *buf)
 {
 	struct vb2_queue *vq;
+	int ret;
 
 	vq = v4l2_m2m_get_vq(m2m_ctx, buf->type);
-	return vb2_dqbuf(vq, buf, file->f_flags & O_NONBLOCK);
+	ret = vb2_dqbuf(vq, buf, file->f_flags & O_NONBLOCK);
+	if (ret)
+		return ret;
+
+	/* Adjust MMAP memory offsets for the CAPTURE queue */
+	v4l2_m2m_adjust_mem_offset(vq, buf);
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(v4l2_m2m_dqbuf);
 
@@ -795,9 +820,17 @@ int v4l2_m2m_prepare_buf(struct file *file, struct v4l2_m2m_ctx *m2m_ctx,
 {
 	struct video_device *vdev = video_devdata(file);
 	struct vb2_queue *vq;
+	int ret;
 
 	vq = v4l2_m2m_get_vq(m2m_ctx, buf->type);
-	return vb2_prepare_buf(vq, vdev->v4l2_dev->mdev, buf);
+	ret = vb2_prepare_buf(vq, vdev->v4l2_dev->mdev, buf);
+	if (ret)
+		return ret;
+
+	/* Adjust MMAP memory offsets for the CAPTURE queue */
+	v4l2_m2m_adjust_mem_offset(vq, buf);
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(v4l2_m2m_prepare_buf);
 
@@ -892,10 +925,10 @@ static __poll_t v4l2_m2m_poll_for_data(struct file *file,
 	 * means either in driver already or waiting for driver to claim it
 	 * and start processing.
 	 */
-	if ((!src_q->streaming || src_q->error ||
+	if ((!vb2_is_streaming(src_q) || src_q->error ||
 	     list_empty(&src_q->queued_list)) &&
-	    (!dst_q->streaming || dst_q->error ||
-	     list_empty(&dst_q->queued_list)))
+	    (!vb2_is_streaming(dst_q) || dst_q->error ||
+	     (list_empty(&dst_q->queued_list) && !dst_q->last_buffer_dequeued)))
 		return EPOLLERR;
 
 	spin_lock_irqsave(&src_q->done_lock, flags);
@@ -918,7 +951,7 @@ static __poll_t v4l2_m2m_poll_for_data(struct file *file,
 __poll_t v4l2_m2m_poll(struct file *file, struct v4l2_m2m_ctx *m2m_ctx,
 		       struct poll_table_struct *wait)
 {
-	struct video_device *vfd = video_devdata(file);
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
 	struct vb2_queue *src_q = v4l2_m2m_get_src_vq(m2m_ctx);
 	struct vb2_queue *dst_q = v4l2_m2m_get_dst_vq(m2m_ctx);
 	__poll_t req_events = poll_requested_events(wait);
@@ -937,13 +970,9 @@ __poll_t v4l2_m2m_poll(struct file *file, struct v4l2_m2m_ctx *m2m_ctx,
 	if (req_events & (EPOLLOUT | EPOLLWRNORM | EPOLLIN | EPOLLRDNORM))
 		rc = v4l2_m2m_poll_for_data(file, m2m_ctx, wait);
 
-	if (test_bit(V4L2_FL_USES_V4L2_FH, &vfd->flags)) {
-		struct v4l2_fh *fh = file->private_data;
-
-		poll_wait(file, &fh->wait, wait);
-		if (v4l2_event_pending(fh))
-			rc |= EPOLLPRI;
-	}
+	poll_wait(file, &fh->wait, wait);
+	if (v4l2_event_pending(fh))
+		rc |= EPOLLPRI;
 
 	return rc;
 }
@@ -965,6 +994,27 @@ int v4l2_m2m_mmap(struct file *file, struct v4l2_m2m_ctx *m2m_ctx,
 	return vb2_mmap(vq, vma);
 }
 EXPORT_SYMBOL(v4l2_m2m_mmap);
+
+#ifndef CONFIG_MMU
+unsigned long v4l2_m2m_get_unmapped_area(struct file *file, unsigned long addr,
+					 unsigned long len, unsigned long pgoff,
+					 unsigned long flags)
+{
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
+	unsigned long offset = pgoff << PAGE_SHIFT;
+	struct vb2_queue *vq;
+
+	if (offset < DST_QUEUE_OFF_BASE) {
+		vq = v4l2_m2m_get_src_vq(fh->m2m_ctx);
+	} else {
+		vq = v4l2_m2m_get_dst_vq(fh->m2m_ctx);
+		pgoff -= (DST_QUEUE_OFF_BASE >> PAGE_SHIFT);
+	}
+
+	return vb2_get_unmapped_area(vq, addr, len, pgoff, flags);
+}
+EXPORT_SYMBOL_GPL(v4l2_m2m_get_unmapped_area);
+#endif
 
 #if defined(CONFIG_MEDIA_CONTROLLER)
 void v4l2_m2m_unregister_media_controller(struct v4l2_m2m_dev *m2m_dev)
@@ -1033,11 +1083,17 @@ static int v4l2_m2m_register_entity(struct media_device *mdev,
 	entity->function = function;
 
 	ret = media_entity_pads_init(entity, num_pads, pads);
-	if (ret)
+	if (ret) {
+		kfree(entity->name);
+		entity->name = NULL;
 		return ret;
+	}
 	ret = media_device_register_entity(mdev, entity);
-	if (ret)
+	if (ret) {
+		kfree(entity->name);
+		entity->name = NULL;
 		return ret;
+	}
 
 	return 0;
 }
@@ -1311,7 +1367,7 @@ EXPORT_SYMBOL_GPL(v4l2_m2m_request_queue);
 int v4l2_m2m_ioctl_reqbufs(struct file *file, void *priv,
 				struct v4l2_requestbuffers *rb)
 {
-	struct v4l2_fh *fh = file->private_data;
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
 
 	return v4l2_m2m_reqbufs(file, fh->m2m_ctx, rb);
 }
@@ -1320,16 +1376,31 @@ EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_reqbufs);
 int v4l2_m2m_ioctl_create_bufs(struct file *file, void *priv,
 				struct v4l2_create_buffers *create)
 {
-	struct v4l2_fh *fh = file->private_data;
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
 
 	return v4l2_m2m_create_bufs(file, fh->m2m_ctx, create);
 }
 EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_create_bufs);
 
+int v4l2_m2m_ioctl_remove_bufs(struct file *file, void *priv,
+			       struct v4l2_remove_buffers *remove)
+{
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
+	struct vb2_queue *q = v4l2_m2m_get_vq(fh->m2m_ctx, remove->type);
+
+	if (!q)
+		return -EINVAL;
+	if (q->type != remove->type)
+		return -EINVAL;
+
+	return vb2_core_remove_bufs(q, remove->index, remove->count);
+}
+EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_remove_bufs);
+
 int v4l2_m2m_ioctl_querybuf(struct file *file, void *priv,
 				struct v4l2_buffer *buf)
 {
-	struct v4l2_fh *fh = file->private_data;
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
 
 	return v4l2_m2m_querybuf(file, fh->m2m_ctx, buf);
 }
@@ -1338,7 +1409,7 @@ EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_querybuf);
 int v4l2_m2m_ioctl_qbuf(struct file *file, void *priv,
 				struct v4l2_buffer *buf)
 {
-	struct v4l2_fh *fh = file->private_data;
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
 
 	return v4l2_m2m_qbuf(file, fh->m2m_ctx, buf);
 }
@@ -1347,7 +1418,7 @@ EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_qbuf);
 int v4l2_m2m_ioctl_dqbuf(struct file *file, void *priv,
 				struct v4l2_buffer *buf)
 {
-	struct v4l2_fh *fh = file->private_data;
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
 
 	return v4l2_m2m_dqbuf(file, fh->m2m_ctx, buf);
 }
@@ -1356,7 +1427,7 @@ EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_dqbuf);
 int v4l2_m2m_ioctl_prepare_buf(struct file *file, void *priv,
 			       struct v4l2_buffer *buf)
 {
-	struct v4l2_fh *fh = file->private_data;
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
 
 	return v4l2_m2m_prepare_buf(file, fh->m2m_ctx, buf);
 }
@@ -1365,7 +1436,7 @@ EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_prepare_buf);
 int v4l2_m2m_ioctl_expbuf(struct file *file, void *priv,
 				struct v4l2_exportbuffer *eb)
 {
-	struct v4l2_fh *fh = file->private_data;
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
 
 	return v4l2_m2m_expbuf(file, fh->m2m_ctx, eb);
 }
@@ -1374,7 +1445,7 @@ EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_expbuf);
 int v4l2_m2m_ioctl_streamon(struct file *file, void *priv,
 				enum v4l2_buf_type type)
 {
-	struct v4l2_fh *fh = file->private_data;
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
 
 	return v4l2_m2m_streamon(file, fh->m2m_ctx, type);
 }
@@ -1383,13 +1454,13 @@ EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_streamon);
 int v4l2_m2m_ioctl_streamoff(struct file *file, void *priv,
 				enum v4l2_buf_type type)
 {
-	struct v4l2_fh *fh = file->private_data;
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
 
 	return v4l2_m2m_streamoff(file, fh->m2m_ctx, type);
 }
 EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_streamoff);
 
-int v4l2_m2m_ioctl_try_encoder_cmd(struct file *file, void *fh,
+int v4l2_m2m_ioctl_try_encoder_cmd(struct file *file, void *priv,
 				   struct v4l2_encoder_cmd *ec)
 {
 	if (ec->cmd != V4L2_ENC_CMD_STOP && ec->cmd != V4L2_ENC_CMD_START)
@@ -1400,7 +1471,7 @@ int v4l2_m2m_ioctl_try_encoder_cmd(struct file *file, void *fh,
 }
 EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_try_encoder_cmd);
 
-int v4l2_m2m_ioctl_try_decoder_cmd(struct file *file, void *fh,
+int v4l2_m2m_ioctl_try_decoder_cmd(struct file *file, void *priv,
 				   struct v4l2_decoder_cmd *dc)
 {
 	if (dc->cmd != V4L2_DEC_CMD_STOP && dc->cmd != V4L2_DEC_CMD_START)
@@ -1467,7 +1538,7 @@ EXPORT_SYMBOL_GPL(v4l2_m2m_decoder_cmd);
 int v4l2_m2m_ioctl_encoder_cmd(struct file *file, void *priv,
 			       struct v4l2_encoder_cmd *ec)
 {
-	struct v4l2_fh *fh = file->private_data;
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
 
 	return v4l2_m2m_encoder_cmd(file, fh->m2m_ctx, ec);
 }
@@ -1476,13 +1547,13 @@ EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_encoder_cmd);
 int v4l2_m2m_ioctl_decoder_cmd(struct file *file, void *priv,
 			       struct v4l2_decoder_cmd *dc)
 {
-	struct v4l2_fh *fh = file->private_data;
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
 
 	return v4l2_m2m_decoder_cmd(file, fh->m2m_ctx, dc);
 }
 EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_decoder_cmd);
 
-int v4l2_m2m_ioctl_stateless_try_decoder_cmd(struct file *file, void *fh,
+int v4l2_m2m_ioctl_stateless_try_decoder_cmd(struct file *file, void *priv,
 					     struct v4l2_decoder_cmd *dc)
 {
 	if (dc->cmd != V4L2_DEC_CMD_FLUSH)
@@ -1497,7 +1568,7 @@ EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_stateless_try_decoder_cmd);
 int v4l2_m2m_ioctl_stateless_decoder_cmd(struct file *file, void *priv,
 					 struct v4l2_decoder_cmd *dc)
 {
-	struct v4l2_fh *fh = file->private_data;
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
 	struct vb2_v4l2_buffer *out_vb, *cap_vb;
 	struct v4l2_m2m_dev *m2m_dev = fh->m2m_ctx->m2m_dev;
 	unsigned long flags;
@@ -1542,7 +1613,7 @@ EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_stateless_decoder_cmd);
 
 int v4l2_m2m_fop_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	struct v4l2_fh *fh = file->private_data;
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
 
 	return v4l2_m2m_mmap(file, fh->m2m_ctx, vma);
 }
@@ -1550,7 +1621,7 @@ EXPORT_SYMBOL_GPL(v4l2_m2m_fop_mmap);
 
 __poll_t v4l2_m2m_fop_poll(struct file *file, poll_table *wait)
 {
-	struct v4l2_fh *fh = file->private_data;
+	struct v4l2_fh *fh = file_to_v4l2_fh(file);
 	struct v4l2_m2m_ctx *m2m_ctx = fh->m2m_ctx;
 	__poll_t ret;
 

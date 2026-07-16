@@ -22,6 +22,7 @@
 #include <linux/regulator/consumer.h>
 
 static LIST_HEAD(mfd_of_node_list);
+static DEFINE_MUTEX(mfd_of_node_mutex);
 
 struct mfd_of_node_entry {
 	struct list_head list;
@@ -29,43 +30,34 @@ struct mfd_of_node_entry {
 	struct device_node *np;
 };
 
-static struct device_type mfd_dev_type = {
+static const struct device_type mfd_dev_type = {
 	.name	= "mfd_device",
 };
 
-int mfd_cell_enable(struct platform_device *pdev)
-{
-	const struct mfd_cell *cell = mfd_get_cell(pdev);
-
-	if (!cell->enable) {
-		dev_dbg(&pdev->dev, "No .enable() call-back registered\n");
-		return 0;
-	}
-
-	return cell->enable(pdev);
-}
-EXPORT_SYMBOL(mfd_cell_enable);
-
-int mfd_cell_disable(struct platform_device *pdev)
-{
-	const struct mfd_cell *cell = mfd_get_cell(pdev);
-
-	if (!cell->disable) {
-		dev_dbg(&pdev->dev, "No .disable() call-back registered\n");
-		return 0;
-	}
-
-	return cell->disable(pdev);
-}
-EXPORT_SYMBOL(mfd_cell_disable);
-
 #if IS_ENABLED(CONFIG_ACPI)
+struct match_ids_walk_data {
+	struct acpi_device_id *ids;
+	struct acpi_device *adev;
+};
+
+static int match_device_ids(struct acpi_device *adev, void *data)
+{
+	struct match_ids_walk_data *wd = data;
+
+	if (!acpi_match_device_ids(adev, wd->ids)) {
+		wd->adev = adev;
+		return 1;
+	}
+
+	return 0;
+}
+
 static void mfd_acpi_add_device(const struct mfd_cell *cell,
 				struct platform_device *pdev)
 {
 	const struct mfd_cell_acpi_match *match = cell->acpi_match;
-	struct acpi_device *parent, *child;
 	struct acpi_device *adev = NULL;
+	struct acpi_device *parent;
 
 	parent = ACPI_COMPANION(pdev->dev.parent);
 	if (!parent)
@@ -83,20 +75,30 @@ static void mfd_acpi_add_device(const struct mfd_cell *cell,
 	if (match) {
 		if (match->pnpid) {
 			struct acpi_device_id ids[2] = {};
+			struct match_ids_walk_data wd = {
+				.adev = NULL,
+				.ids = ids,
+			};
 
-			strlcpy(ids[0].id, match->pnpid, sizeof(ids[0].id));
-			list_for_each_entry(child, &parent->children, node) {
-				if (!acpi_match_device_ids(child, ids)) {
-					adev = child;
-					break;
-				}
-			}
+			strscpy(ids[0].id, match->pnpid, sizeof(ids[0].id));
+			acpi_dev_for_each_child(parent, match_device_ids, &wd);
+			adev = wd.adev;
 		} else {
 			adev = acpi_find_child_device(parent, match->adr, false);
 		}
 	}
 
-	ACPI_COMPANION_SET(&pdev->dev, adev ?: parent);
+	/*
+	 * NOTE: The fwnode design doesn't allow proper stacking/sharing. This
+	 * should eventually turn into a device fwnode API call that will allow
+	 * prepending to a list of fwnodes (with ACPI taking precedence).
+	 *
+	 * set_primary_fwnode() is used here, instead of device_set_node(), as
+	 * device_set_node() will overwrite the existing fwnode, which may be an
+	 * OF node that was populated earlier. To support a use case where ACPI
+	 * and OF is used in conjunction, we call set_primary_fwnode() instead.
+	 */
+	set_primary_fwnode(&pdev->dev, acpi_fwnode_handle(adev ?: parent));
 }
 #else
 static inline void mfd_acpi_add_device(const struct mfd_cell *cell,
@@ -111,25 +113,23 @@ static int mfd_match_of_node_to_dev(struct platform_device *pdev,
 {
 #if IS_ENABLED(CONFIG_OF)
 	struct mfd_of_node_entry *of_entry;
-	const __be32 *reg;
 	u64 of_node_addr;
 
 	/* Skip if OF node has previously been allocated to a device */
-	list_for_each_entry(of_entry, &mfd_of_node_list, list)
-		if (of_entry->np == np)
-			return -EAGAIN;
+	scoped_guard(mutex, &mfd_of_node_mutex) {
+		list_for_each_entry(of_entry, &mfd_of_node_list, list)
+			if (of_entry->np == np)
+				return -EAGAIN;
+	}
 
 	if (!cell->use_of_reg)
 		/* No of_reg defined - allocate first free compatible match */
 		goto allocate_of_node;
 
 	/* We only care about each node's first defined address */
-	reg = of_get_address(np, 0, NULL, NULL);
-	if (!reg)
+	if (of_property_read_reg(np, 0, &of_node_addr, NULL))
 		/* OF node does not contatin a 'reg' property to match to */
 		return -EAGAIN;
-
-	of_node_addr = of_read_number(reg, of_n_addr_cells(np));
 
 	if (cell->of_reg != of_node_addr)
 		/* No match */
@@ -142,10 +142,11 @@ allocate_of_node:
 
 	of_entry->dev = &pdev->dev;
 	of_entry->np = np;
-	list_add_tail(&of_entry->list, &mfd_of_node_list);
+	scoped_guard(mutex, &mfd_of_node_mutex)
+		list_add_tail(&of_entry->list, &mfd_of_node_list);
 
-	pdev->dev.of_node = np;
-	pdev->dev.fwnode = &np->fwnode;
+	of_node_get(np);
+	device_set_node(&pdev->dev, of_fwnode_handle(np));
 #endif
 	return 0;
 }
@@ -159,6 +160,7 @@ static int mfd_add_device(struct device *parent, int id,
 	struct platform_device *pdev;
 	struct device_node *np = NULL;
 	struct mfd_of_node_entry *of_entry, *tmp;
+	bool disabled = false;
 	int ret = -ENOMEM;
 	int platform_id;
 	int r;
@@ -196,22 +198,30 @@ static int mfd_add_device(struct device *parent, int id,
 	if (IS_ENABLED(CONFIG_OF) && parent->of_node && cell->of_compatible) {
 		for_each_child_of_node(parent->of_node, np) {
 			if (of_device_is_compatible(np, cell->of_compatible)) {
-				/* Ignore 'disabled' devices error free */
+				/* Skip 'disabled' devices */
 				if (!of_device_is_available(np)) {
-					ret = 0;
-					goto fail_alias;
+					disabled = true;
+					continue;
 				}
 
 				ret = mfd_match_of_node_to_dev(pdev, np, cell);
 				if (ret == -EAGAIN)
 					continue;
+				of_node_put(np);
 				if (ret)
 					goto fail_alias;
 
-				break;
+				goto match;
 			}
 		}
 
+		if (disabled) {
+			/* Ignore 'disabled' devices error free */
+			ret = 0;
+			goto fail_alias;
+		}
+
+match:
 		if (!pdev->dev.of_node)
 			pr_warn("%s: Failed to locate of_node [id: %d]\n",
 				cell->name, platform_id);
@@ -290,11 +300,13 @@ fail_res_conflict:
 	if (cell->swnode)
 		device_remove_software_node(&pdev->dev);
 fail_of_entry:
-	list_for_each_entry_safe(of_entry, tmp, &mfd_of_node_list, list)
-		if (of_entry->dev == &pdev->dev) {
-			list_del(&of_entry->list);
-			kfree(of_entry);
-		}
+	scoped_guard(mutex, &mfd_of_node_mutex) {
+		list_for_each_entry_safe(of_entry, tmp, &mfd_of_node_list, list)
+			if (of_entry->dev == &pdev->dev) {
+				list_del(&of_entry->list);
+				kfree(of_entry);
+			}
+	}
 fail_alias:
 	regulator_bulk_unregister_supply_alias(&pdev->dev,
 					       cell->parent_supplies,
@@ -349,6 +361,7 @@ static int mfd_remove_devices_fn(struct device *dev, void *data)
 {
 	struct platform_device *pdev;
 	const struct mfd_cell *cell;
+	struct mfd_of_node_entry *of_entry, *tmp;
 	int *level = data;
 
 	if (dev->type != &mfd_dev_type)
@@ -362,6 +375,14 @@ static int mfd_remove_devices_fn(struct device *dev, void *data)
 
 	if (cell->swnode)
 		device_remove_software_node(&pdev->dev);
+
+	scoped_guard(mutex, &mfd_of_node_mutex) {
+		list_for_each_entry_safe(of_entry, tmp, &mfd_of_node_list, list)
+			if (of_entry->dev == &pdev->dev) {
+				list_del(&of_entry->list);
+				kfree(of_entry);
+			}
+	}
 
 	regulator_bulk_unregister_supply_alias(dev, cell->parent_supplies,
 					       cell->num_parent_supplies);
@@ -434,5 +455,6 @@ int devm_mfd_add_devices(struct device *dev, int id,
 }
 EXPORT_SYMBOL(devm_mfd_add_devices);
 
+MODULE_DESCRIPTION("Core MFD support");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Ian Molton, Dmitry Baryshkov");

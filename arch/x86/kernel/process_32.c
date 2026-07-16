@@ -41,7 +41,7 @@
 
 #include <asm/ldt.h>
 #include <asm/processor.h>
-#include <asm/fpu/internal.h>
+#include <asm/fpu/sched.h>
 #include <asm/desc.h>
 
 #include <linux/err.h>
@@ -63,10 +63,7 @@ void __show_regs(struct pt_regs *regs, enum show_regs_mode mode,
 	unsigned long d0, d1, d2, d3, d6, d7;
 	unsigned short gs;
 
-	if (user_mode(regs))
-		gs = get_user_gs(regs);
-	else
-		savesegment(gs, gs);
+	savesegment(gs, gs);
 
 	show_ip(regs, log_lvl);
 
@@ -96,7 +93,7 @@ void __show_regs(struct pt_regs *regs, enum show_regs_mode mode,
 
 	/* Only print out debug registers if they are in their non-default state. */
 	if ((d0 == 0) && (d1 == 0) && (d2 == 0) && (d3 == 0) &&
-	    (d6 == DR6_RESERVED) && (d7 == 0x400))
+	    (d6 == DR6_RESERVED) && (d7 == DR7_FIXED_1))
 		return;
 
 	printk("%sDR0: %08lx DR1: %08lx DR2: %08lx DR3: %08lx\n",
@@ -114,7 +111,7 @@ void release_thread(struct task_struct *dead_task)
 void
 start_thread(struct pt_regs *regs, unsigned long new_ip, unsigned long new_sp)
 {
-	set_user_gs(regs, 0);
+	loadsegment(gs, 0);
 	regs->fs		= 0;
 	regs->ds		= __USER_DS;
 	regs->es		= __USER_DS;
@@ -159,14 +156,11 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 {
 	struct thread_struct *prev = &prev_p->thread,
 			     *next = &next_p->thread;
-	struct fpu *prev_fpu = &prev->fpu;
-	struct fpu *next_fpu = &next->fpu;
 	int cpu = smp_processor_id();
 
 	/* never put a printk in __switch_to... printk() calls wake_up*() indirectly */
 
-	if (!test_thread_flag(TIF_NEED_FPU_LOAD))
-		switch_fpu_prepare(prev_fpu, cpu);
+	switch_fpu(prev_p, cpu);
 
 	/*
 	 * Save away %gs. No need to save %fs, as it was saved on the
@@ -178,7 +172,7 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 	 * used %fs or %gs (it does not today), or if the kernel is
 	 * running inside of a hypervisor layer.
 	 */
-	lazy_save_gs(prev->gs);
+	savesegment(gs, prev->gs);
 
 	/*
 	 * Load the per-thread Thread-Local Storage descriptor.
@@ -209,19 +203,12 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 	 * Restore %gs if needed (which is common)
 	 */
 	if (prev->gs | next->gs)
-		lazy_load_gs(next->gs);
+		loadsegment(gs, next->gs);
 
-	this_cpu_write(current_task, next_p);
-
-	switch_fpu_finish(next_fpu);
+	raw_cpu_write(current_task, next_p);
 
 	/* Load the Intel cache allocation PQR MSR. */
-	resctrl_sched_in();
+	resctrl_arch_sched_in(next_p);
 
 	return prev_p;
-}
-
-SYSCALL_DEFINE2(arch_prctl, int, option, unsigned long, arg2)
-{
-	return do_arch_prctl_common(current, option, arg2);
 }

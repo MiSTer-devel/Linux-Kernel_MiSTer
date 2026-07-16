@@ -37,27 +37,6 @@
 #include "aops.h"
 
 
-void gfs2_page_add_databufs(struct gfs2_inode *ip, struct page *page,
-			    unsigned int from, unsigned int len)
-{
-	struct buffer_head *head = page_buffers(page);
-	unsigned int bsize = head->b_size;
-	struct buffer_head *bh;
-	unsigned int to = from + len;
-	unsigned int start, end;
-
-	for (bh = head, start = 0; bh != head || !start;
-	     bh = bh->b_this_page, start = end) {
-		end = start + bsize;
-		if (end <= from)
-			continue;
-		if (start >= to)
-			break;
-		set_buffer_uptodate(bh);
-		gfs2_trans_add_data(ip->i_gl, bh);
-	}
-}
-
 /**
  * gfs2_get_block_noalloc - Fills in a buffer head with details about a block
  * @inode: The inode
@@ -82,115 +61,91 @@ static int gfs2_get_block_noalloc(struct inode *inode, sector_t lblock,
 }
 
 /**
- * gfs2_writepage - Write page for writeback mappings
- * @page: The page
- * @wbc: The writeback control
- */
-static int gfs2_writepage(struct page *page, struct writeback_control *wbc)
-{
-	struct inode *inode = page->mapping->host;
-	struct gfs2_inode *ip = GFS2_I(inode);
-	struct gfs2_sbd *sdp = GFS2_SB(inode);
-	struct iomap_writepage_ctx wpc = { };
-
-	if (gfs2_assert_withdraw(sdp, gfs2_glock_is_held_excl(ip->i_gl)))
-		goto out;
-	if (current->journal_info)
-		goto redirty;
-	return iomap_writepage(page, wbc, &wpc, &gfs2_writeback_ops);
-
-redirty:
-	redirty_page_for_writepage(wbc, page);
-out:
-	unlock_page(page);
-	return 0;
-}
-
-/**
- * gfs2_write_jdata_page - gfs2 jdata-specific version of block_write_full_page
- * @page: The page to write
+ * gfs2_write_jdata_folio - gfs2 jdata-specific version of block_write_full_folio
+ * @folio: The folio to write
  * @wbc: The writeback control
  *
- * This is the same as calling block_write_full_page, but it also
+ * This is the same as calling block_write_full_folio, but it also
  * writes pages outside of i_size
  */
-static int gfs2_write_jdata_page(struct page *page,
+static int gfs2_write_jdata_folio(struct folio *folio,
 				 struct writeback_control *wbc)
 {
-	struct inode * const inode = page->mapping->host;
+	struct inode * const inode = folio->mapping->host;
 	loff_t i_size = i_size_read(inode);
-	const pgoff_t end_index = i_size >> PAGE_SHIFT;
-	unsigned offset;
 
 	/*
-	 * The page straddles i_size.  It must be zeroed out on each and every
+	 * The folio straddles i_size.  It must be zeroed out on each and every
 	 * writepage invocation because it may be mmapped.  "A file is mapped
 	 * in multiples of the page size.  For a file that is not a multiple of
-	 * the  page size, the remaining memory is zeroed when mapped, and
+	 * the page size, the remaining memory is zeroed when mapped, and
 	 * writes to that region are not written out to the file."
 	 */
-	offset = i_size & (PAGE_SIZE - 1);
-	if (page->index == end_index && offset)
-		zero_user_segment(page, offset, PAGE_SIZE);
+	if (folio_pos(folio) < i_size &&
+	    i_size < folio_pos(folio) + folio_size(folio))
+		folio_zero_segment(folio, offset_in_folio(folio, i_size),
+				folio_size(folio));
 
-	return __block_write_full_page(inode, page, gfs2_get_block_noalloc, wbc,
-				       end_buffer_async_write);
+	return __block_write_full_folio(inode, folio, gfs2_get_block_noalloc,
+			wbc);
 }
 
 /**
- * __gfs2_jdata_writepage - The core of jdata writepage
- * @page: The page to write
+ * __gfs2_jdata_write_folio - The core of jdata writepage
+ * @folio: The folio to write
  * @wbc: The writeback control
  *
- * This is shared between writepage and writepages and implements the
- * core of the writepage operation. If a transaction is required then
- * PageChecked will have been set and the transaction will have
+ * Implements the core of write back. If a transaction is required then
+ * the checked flag will have been set and the transaction will have
  * already been started before this is called.
  */
-
-static int __gfs2_jdata_writepage(struct page *page, struct writeback_control *wbc)
+static int __gfs2_jdata_write_folio(struct folio *folio,
+		struct writeback_control *wbc)
 {
-	struct inode *inode = page->mapping->host;
+	struct inode *inode = folio->mapping->host;
 	struct gfs2_inode *ip = GFS2_I(inode);
-	struct gfs2_sbd *sdp = GFS2_SB(inode);
 
-	if (PageChecked(page)) {
-		ClearPageChecked(page);
-		if (!page_has_buffers(page)) {
-			create_empty_buffers(page, inode->i_sb->s_blocksize,
-					     BIT(BH_Dirty)|BIT(BH_Uptodate));
+	if (folio_test_checked(folio)) {
+		folio_clear_checked(folio);
+		if (!folio_buffers(folio)) {
+			create_empty_buffers(folio,
+					inode->i_sb->s_blocksize,
+					BIT(BH_Dirty)|BIT(BH_Uptodate));
 		}
-		gfs2_page_add_databufs(ip, page, 0, sdp->sd_vfs->s_blocksize);
+		gfs2_trans_add_databufs(ip->i_gl, folio, 0, folio_size(folio));
 	}
-	return gfs2_write_jdata_page(page, wbc);
+	return gfs2_write_jdata_folio(folio, wbc);
 }
 
 /**
- * gfs2_jdata_writepage - Write complete page
- * @page: Page to write
+ * gfs2_jdata_writeback - Write jdata folios to the log
+ * @mapping: The mapping to write
  * @wbc: The writeback control
  *
  * Returns: errno
- *
  */
-
-static int gfs2_jdata_writepage(struct page *page, struct writeback_control *wbc)
+int gfs2_jdata_writeback(struct address_space *mapping, struct writeback_control *wbc)
 {
-	struct inode *inode = page->mapping->host;
+	struct inode *inode = mapping->host;
 	struct gfs2_inode *ip = GFS2_I(inode);
-	struct gfs2_sbd *sdp = GFS2_SB(inode);
+	struct gfs2_sbd *sdp = GFS2_SB(mapping->host);
+	struct folio *folio = NULL;
+	int error;
 
-	if (gfs2_assert_withdraw(sdp, gfs2_glock_is_held_excl(ip->i_gl)))
-		goto out;
-	if (PageChecked(page) || current->journal_info)
-		goto out_ignore;
-	return __gfs2_jdata_writepage(page, wbc);
+	BUG_ON(current->journal_info);
+	if (gfs2_assert_withdraw(sdp, ip->i_gl->gl_state == LM_ST_EXCLUSIVE))
+		return 0;
 
-out_ignore:
-	redirty_page_for_writepage(wbc, page);
-out:
-	unlock_page(page);
-	return 0;
+	while ((folio = writeback_iter(mapping, wbc, folio, &error))) {
+		if (folio_test_checked(folio)) {
+			folio_redirty_for_writepage(wbc, folio);
+			folio_unlock(folio);
+			continue;
+		}
+		error = __gfs2_jdata_write_folio(folio, wbc);
+	}
+
+	return error;
 }
 
 /**
@@ -204,7 +159,12 @@ static int gfs2_writepages(struct address_space *mapping,
 			   struct writeback_control *wbc)
 {
 	struct gfs2_sbd *sdp = gfs2_mapping2sbd(mapping);
-	struct iomap_writepage_ctx wpc = { };
+	long initial_nr_to_write = wbc->nr_to_write;
+	struct iomap_writepage_ctx wpc = {
+		.inode		= mapping->host,
+		.wbc		= wbc,
+		.ops		= &gfs2_writeback_ops,
+	};
 	int ret;
 
 	/*
@@ -213,90 +173,86 @@ static int gfs2_writepages(struct address_space *mapping,
 	 * want balance_dirty_pages() to loop indefinitely trying to write out
 	 * pages held in the ail that it can't find.
 	 */
-	ret = iomap_writepages(mapping, wbc, &wpc, &gfs2_writeback_ops);
-	if (ret == 0)
+	ret = iomap_writepages(&wpc);
+	if (ret == 0 && wbc->nr_to_write == initial_nr_to_write)
 		set_bit(SDF_FORCE_AIL_FLUSH, &sdp->sd_flags);
 	return ret;
 }
 
 /**
- * gfs2_write_jdata_pagevec - Write back a pagevec's worth of pages
+ * gfs2_write_jdata_batch - Write back a folio batch's worth of folios
  * @mapping: The mapping
  * @wbc: The writeback control
- * @pvec: The vector of pages
- * @nr_pages: The number of pages to write
+ * @fbatch: The batch of folios
  * @done_index: Page index
  *
  * Returns: non-zero if loop should terminate, zero otherwise
  */
 
-static int gfs2_write_jdata_pagevec(struct address_space *mapping,
+static int gfs2_write_jdata_batch(struct address_space *mapping,
 				    struct writeback_control *wbc,
-				    struct pagevec *pvec,
-				    int nr_pages,
+				    struct folio_batch *fbatch,
 				    pgoff_t *done_index)
 {
 	struct inode *inode = mapping->host;
 	struct gfs2_sbd *sdp = GFS2_SB(inode);
-	unsigned nrblocks = nr_pages * (PAGE_SIZE >> inode->i_blkbits);
+	unsigned nrblocks;
 	int i;
 	int ret;
+	size_t size = 0;
+	int nr_folios = folio_batch_count(fbatch);
+
+	for (i = 0; i < nr_folios; i++)
+		size += folio_size(fbatch->folios[i]);
+	nrblocks = size >> inode->i_blkbits;
 
 	ret = gfs2_trans_begin(sdp, nrblocks, nrblocks);
 	if (ret < 0)
 		return ret;
 
-	for(i = 0; i < nr_pages; i++) {
-		struct page *page = pvec->pages[i];
+	for (i = 0; i < nr_folios; i++) {
+		struct folio *folio = fbatch->folios[i];
 
-		*done_index = page->index;
+		*done_index = folio->index;
 
-		lock_page(page);
+		folio_lock(folio);
 
-		if (unlikely(page->mapping != mapping)) {
+		if (unlikely(folio->mapping != mapping)) {
 continue_unlock:
-			unlock_page(page);
+			folio_unlock(folio);
 			continue;
 		}
 
-		if (!PageDirty(page)) {
+		if (!folio_test_dirty(folio)) {
 			/* someone wrote it for us */
 			goto continue_unlock;
 		}
 
-		if (PageWriteback(page)) {
+		if (folio_test_writeback(folio)) {
 			if (wbc->sync_mode != WB_SYNC_NONE)
-				wait_on_page_writeback(page);
+				folio_wait_writeback(folio);
 			else
 				goto continue_unlock;
 		}
 
-		BUG_ON(PageWriteback(page));
-		if (!clear_page_dirty_for_io(page))
+		BUG_ON(folio_test_writeback(folio));
+		if (!folio_clear_dirty_for_io(folio))
 			goto continue_unlock;
 
 		trace_wbc_writepage(wbc, inode_to_bdi(inode));
 
-		ret = __gfs2_jdata_writepage(page, wbc);
+		ret = __gfs2_jdata_write_folio(folio, wbc);
 		if (unlikely(ret)) {
-			if (ret == AOP_WRITEPAGE_ACTIVATE) {
-				unlock_page(page);
-				ret = 0;
-			} else {
-
-				/*
-				 * done_index is set past this page,
-				 * so media errors will not choke
-				 * background writeout for the entire
-				 * file. This has consequences for
-				 * range_cyclic semantics (ie. it may
-				 * not be suitable for data integrity
-				 * writeout).
-				 */
-				*done_index = page->index + 1;
-				ret = 1;
-				break;
-			}
+			/*
+			 * done_index is set past this page, so media errors
+			 * will not choke background writeout for the entire
+			 * file. This has consequences for range_cyclic
+			 * semantics (ie. it may not be suitable for data
+			 * integrity writeout).
+			 */
+			*done_index = folio_next_index(folio);
+			ret = 1;
+			break;
 		}
 
 		/*
@@ -330,8 +286,8 @@ static int gfs2_write_cache_jdata(struct address_space *mapping,
 {
 	int ret = 0;
 	int done = 0;
-	struct pagevec pvec;
-	int nr_pages;
+	struct folio_batch fbatch;
+	int nr_folios;
 	pgoff_t writeback_index;
 	pgoff_t index;
 	pgoff_t end;
@@ -340,7 +296,7 @@ static int gfs2_write_cache_jdata(struct address_space *mapping,
 	int range_whole = 0;
 	xa_mark_t tag;
 
-	pagevec_init(&pvec);
+	folio_batch_init(&fbatch);
 	if (wbc->range_cyclic) {
 		writeback_index = mapping->writeback_index; /* prev offset */
 		index = writeback_index;
@@ -366,17 +322,18 @@ retry:
 		tag_pages_for_writeback(mapping, index, end);
 	done_index = index;
 	while (!done && (index <= end)) {
-		nr_pages = pagevec_lookup_range_tag(&pvec, mapping, &index, end,
-				tag);
-		if (nr_pages == 0)
+		nr_folios = filemap_get_folios_tag(mapping, &index, end,
+				tag, &fbatch);
+		if (nr_folios == 0)
 			break;
 
-		ret = gfs2_write_jdata_pagevec(mapping, wbc, &pvec, nr_pages, &done_index);
+		ret = gfs2_write_jdata_batch(mapping, wbc, &fbatch,
+				&done_index);
 		if (ret)
 			done = 1;
 		if (ret > 0)
 			ret = 0;
-		pagevec_release(&pvec);
+		folio_batch_release(&fbatch);
 		cond_resched();
 	}
 
@@ -423,80 +380,66 @@ static int gfs2_jdata_writepages(struct address_space *mapping,
 }
 
 /**
- * stuffed_readpage - Fill in a Linux page with stuffed file data
+ * stuffed_read_folio - Fill in a Linux folio with stuffed file data
  * @ip: the inode
- * @page: the page
+ * @folio: the folio
  *
  * Returns: errno
  */
-static int stuffed_readpage(struct gfs2_inode *ip, struct page *page)
+static int stuffed_read_folio(struct gfs2_inode *ip, struct folio *folio)
 {
-	struct buffer_head *dibh;
-	u64 dsize = i_size_read(&ip->i_inode);
-	void *kaddr;
-	int error;
+	struct buffer_head *dibh = NULL;
+	size_t dsize = i_size_read(&ip->i_inode);
+	void *from = NULL;
+	int error = 0;
 
 	/*
 	 * Due to the order of unstuffing files and ->fault(), we can be
-	 * asked for a zero page in the case of a stuffed file being extended,
+	 * asked for a zero folio in the case of a stuffed file being extended,
 	 * so we need to supply one here. It doesn't happen often.
 	 */
-	if (unlikely(page->index)) {
-		zero_user(page, 0, PAGE_SIZE);
-		SetPageUptodate(page);
-		return 0;
-	}
-
-	error = gfs2_meta_inode_buffer(ip, &dibh);
-	if (error)
-		return error;
-
-	kaddr = kmap_atomic(page);
-	if (dsize > gfs2_max_stuffed_size(ip))
-		dsize = gfs2_max_stuffed_size(ip);
-	memcpy(kaddr, dibh->b_data + sizeof(struct gfs2_dinode), dsize);
-	memset(kaddr + dsize, 0, PAGE_SIZE - dsize);
-	kunmap_atomic(kaddr);
-	flush_dcache_page(page);
-	brelse(dibh);
-	SetPageUptodate(page);
-
-	return 0;
-}
-
-
-static int __gfs2_readpage(void *file, struct page *page)
-{
-	struct inode *inode = page->mapping->host;
-	struct gfs2_inode *ip = GFS2_I(inode);
-	struct gfs2_sbd *sdp = GFS2_SB(inode);
-	int error;
-
-	if (!gfs2_is_jdata(ip) ||
-	    (i_blocksize(inode) == PAGE_SIZE && !page_has_buffers(page))) {
-		error = iomap_readpage(page, &gfs2_iomap_ops);
-	} else if (gfs2_is_stuffed(ip)) {
-		error = stuffed_readpage(ip, page);
-		unlock_page(page);
+	if (unlikely(folio->index)) {
+		dsize = 0;
 	} else {
-		error = mpage_readpage(page, gfs2_block_map);
+		error = gfs2_meta_inode_buffer(ip, &dibh);
+		if (error)
+			goto out;
+		from = dibh->b_data + sizeof(struct gfs2_dinode);
 	}
 
-	if (unlikely(gfs2_withdrawn(sdp)))
-		return -EIO;
+	folio_fill_tail(folio, 0, from, dsize);
+	brelse(dibh);
+out:
+	folio_end_read(folio, error == 0);
 
 	return error;
 }
 
 /**
- * gfs2_readpage - read a page of a file
+ * gfs2_read_folio - read a folio from a file
  * @file: The file to read
- * @page: The page of the file
+ * @folio: The folio in the file
  */
-
-static int gfs2_readpage(struct file *file, struct page *page)
+static int gfs2_read_folio(struct file *file, struct folio *folio)
 {
-	return __gfs2_readpage(file, page);
+	struct inode *inode = folio->mapping->host;
+	struct gfs2_inode *ip = GFS2_I(inode);
+	struct gfs2_sbd *sdp = GFS2_SB(inode);
+	int error;
+
+	if (!gfs2_is_jdata(ip) ||
+	    (i_blocksize(inode) == PAGE_SIZE && !folio_buffers(folio))) {
+		error = iomap_read_folio(folio, &gfs2_iomap_ops);
+	} else if (gfs2_is_stuffed(ip)) {
+		error = stuffed_read_folio(ip, folio);
+	} else {
+		error = mpage_read_folio(folio, gfs2_block_map);
+	}
+
+	if (gfs2_withdrawing_or_withdrawn(sdp))
+		return -EIO;
+
+	return error;
 }
 
 /**
@@ -508,31 +451,29 @@ static int gfs2_readpage(struct file *file, struct page *page)
  *
  */
 
-int gfs2_internal_read(struct gfs2_inode *ip, char *buf, loff_t *pos,
-                       unsigned size)
+ssize_t gfs2_internal_read(struct gfs2_inode *ip, char *buf, loff_t *pos,
+			   size_t size)
 {
 	struct address_space *mapping = ip->i_inode.i_mapping;
 	unsigned long index = *pos >> PAGE_SHIFT;
-	unsigned offset = *pos & (PAGE_SIZE - 1);
-	unsigned copied = 0;
-	unsigned amt;
-	struct page *page;
-	void *p;
+	size_t copied = 0;
 
 	do {
-		amt = size - copied;
-		if (offset + size > PAGE_SIZE)
-			amt = PAGE_SIZE - offset;
-		page = read_cache_page(mapping, index, __gfs2_readpage, NULL);
-		if (IS_ERR(page))
-			return PTR_ERR(page);
-		p = kmap_atomic(page);
-		memcpy(buf + copied, p + offset, amt);
-		kunmap_atomic(p);
-		put_page(page);
-		copied += amt;
-		index++;
-		offset = 0;
+		size_t offset, chunk;
+		struct folio *folio;
+
+		folio = read_cache_folio(mapping, index, gfs2_read_folio, NULL);
+		if (IS_ERR(folio)) {
+			if (PTR_ERR(folio) == -EINTR)
+				continue;
+			return PTR_ERR(folio);
+		}
+		offset = *pos + copied - folio_pos(folio);
+		chunk = min(size - copied, folio_size(folio) - offset);
+		memcpy_from_folio(buf + copied, folio, offset, chunk);
+		index = folio_next_index(folio);
+		folio_put(folio);
+		copied += chunk;
 	} while(copied < size);
 	(*pos) += size;
 	return size;
@@ -606,18 +547,12 @@ out:
 	gfs2_trans_end(sdp);
 }
 
-/**
- * jdata_set_page_dirty - Page dirtying function
- * @page: The page to dirty
- *
- * Returns: 1 if it dirtyed the page, or 0 otherwise
- */
- 
-static int jdata_set_page_dirty(struct page *page)
+static bool gfs2_jdata_dirty_folio(struct address_space *mapping,
+		struct folio *folio)
 {
 	if (current->journal_info)
-		SetPageChecked(page);
-	return __set_page_dirty_buffers(page);
+		folio_set_checked(folio);
+	return block_dirty_folio(mapping, folio);
 }
 
 /**
@@ -672,22 +607,23 @@ static void gfs2_discard(struct gfs2_sbd *sdp, struct buffer_head *bh)
 	unlock_buffer(bh);
 }
 
-static void gfs2_invalidatepage(struct page *page, unsigned int offset,
-				unsigned int length)
+static void gfs2_invalidate_folio(struct folio *folio, size_t offset,
+				size_t length)
 {
-	struct gfs2_sbd *sdp = GFS2_SB(page->mapping->host);
-	unsigned int stop = offset + length;
-	int partial_page = (offset || length < PAGE_SIZE);
+	struct gfs2_sbd *sdp = GFS2_SB(folio->mapping->host);
+	size_t stop = offset + length;
+	int partial_page = (offset || length < folio_size(folio));
 	struct buffer_head *bh, *head;
 	unsigned long pos = 0;
 
-	BUG_ON(!PageLocked(page));
+	BUG_ON(!folio_test_locked(folio));
 	if (!partial_page)
-		ClearPageChecked(page);
-	if (!page_has_buffers(page))
+		folio_clear_checked(folio);
+	head = folio_buffers(folio);
+	if (!head)
 		goto out;
 
-	bh = head = page_buffers(page);
+	bh = head;
 	do {
 		if (pos + bh->b_size > stop)
 			return;
@@ -699,42 +635,44 @@ static void gfs2_invalidatepage(struct page *page, unsigned int offset,
 	} while (bh != head);
 out:
 	if (!partial_page)
-		try_to_release_page(page, 0);
+		filemap_release_folio(folio, 0);
 }
 
 /**
- * gfs2_releasepage - free the metadata associated with a page
- * @page: the page that's being released
+ * gfs2_release_folio - free the metadata associated with a folio
+ * @folio: the folio that's being released
  * @gfp_mask: passed from Linux VFS, ignored by us
  *
- * Calls try_to_free_buffers() to free the buffers and put the page if the
+ * Calls try_to_free_buffers() to free the buffers and put the folio if the
  * buffers can be released.
  *
- * Returns: 1 if the page was put or else 0
+ * Returns: true if the folio was put or else false
  */
 
-int gfs2_releasepage(struct page *page, gfp_t gfp_mask)
+bool gfs2_release_folio(struct folio *folio, gfp_t gfp_mask)
 {
-	struct address_space *mapping = page->mapping;
+	struct address_space *mapping = folio->mapping;
 	struct gfs2_sbd *sdp = gfs2_mapping2sbd(mapping);
 	struct buffer_head *bh, *head;
 	struct gfs2_bufdata *bd;
 
-	if (!page_has_buffers(page))
-		return 0;
+	head = folio_buffers(folio);
+	if (!head)
+		return false;
 
 	/*
-	 * From xfs_vm_releasepage: mm accommodates an old ext3 case where
-	 * clean pages might not have had the dirty bit cleared.  Thus, it can
-	 * send actual dirty pages to ->releasepage() via shrink_active_list().
+	 * mm accommodates an old ext3 case where clean folios might
+	 * not have had the dirty bit cleared.	Thus, it can send actual
+	 * dirty folios to ->release_folio() via shrink_active_list().
 	 *
-	 * As a workaround, we skip pages that contain dirty buffers below.
-	 * Once ->releasepage isn't called on dirty pages anymore, we can warn
-	 * on dirty buffers like we used to here again.
+	 * As a workaround, we skip folios that contain dirty buffers
+	 * below.  Once ->release_folio isn't called on dirty folios
+	 * anymore, we can warn on dirty buffers like we used to here
+	 * again.
 	 */
 
 	gfs2_log_lock(sdp);
-	head = bh = page_buffers(page);
+	bh = head;
 	do {
 		if (atomic_read(&bh->b_count))
 			goto cannot_release;
@@ -744,9 +682,9 @@ int gfs2_releasepage(struct page *page, gfp_t gfp_mask)
 		if (buffer_dirty(bh) || WARN_ON(buffer_pinned(bh)))
 			goto cannot_release;
 		bh = bh->b_this_page;
-	} while(bh != head);
+	} while (bh != head);
 
-	head = bh = page_buffers(page);
+	bh = head;
 	do {
 		bd = bh->b_private;
 		if (bd) {
@@ -767,39 +705,37 @@ int gfs2_releasepage(struct page *page, gfp_t gfp_mask)
 	} while (bh != head);
 	gfs2_log_unlock(sdp);
 
-	return try_to_free_buffers(page);
+	return try_to_free_buffers(folio);
 
 cannot_release:
 	gfs2_log_unlock(sdp);
-	return 0;
+	return false;
 }
 
 static const struct address_space_operations gfs2_aops = {
-	.writepage = gfs2_writepage,
 	.writepages = gfs2_writepages,
-	.readpage = gfs2_readpage,
+	.read_folio = gfs2_read_folio,
 	.readahead = gfs2_readahead,
-	.set_page_dirty = __set_page_dirty_nobuffers,
-	.releasepage = iomap_releasepage,
-	.invalidatepage = iomap_invalidatepage,
+	.dirty_folio = iomap_dirty_folio,
+	.release_folio = iomap_release_folio,
+	.invalidate_folio = iomap_invalidate_folio,
 	.bmap = gfs2_bmap,
-	.direct_IO = noop_direct_IO,
-	.migratepage = iomap_migrate_page,
+	.migrate_folio = filemap_migrate_folio,
 	.is_partially_uptodate = iomap_is_partially_uptodate,
-	.error_remove_page = generic_error_remove_page,
+	.error_remove_folio = generic_error_remove_folio,
 };
 
 static const struct address_space_operations gfs2_jdata_aops = {
-	.writepage = gfs2_jdata_writepage,
 	.writepages = gfs2_jdata_writepages,
-	.readpage = gfs2_readpage,
+	.read_folio = gfs2_read_folio,
 	.readahead = gfs2_readahead,
-	.set_page_dirty = jdata_set_page_dirty,
+	.dirty_folio = gfs2_jdata_dirty_folio,
 	.bmap = gfs2_bmap,
-	.invalidatepage = gfs2_invalidatepage,
-	.releasepage = gfs2_releasepage,
+	.migrate_folio = buffer_migrate_folio,
+	.invalidate_folio = gfs2_invalidate_folio,
+	.release_folio = gfs2_release_folio,
 	.is_partially_uptodate = block_is_partially_uptodate,
-	.error_remove_page = generic_error_remove_page,
+	.error_remove_folio = generic_error_remove_folio,
 };
 
 void gfs2_set_aops(struct inode *inode)

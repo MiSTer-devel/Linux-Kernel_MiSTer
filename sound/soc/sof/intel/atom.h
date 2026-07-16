@@ -3,7 +3,7 @@
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
  *
- * Copyright(c) 2017-2021 Intel Corporation. All rights reserved.
+ * Copyright(c) 2017-2021 Intel Corporation
  *
  * Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
  */
@@ -65,8 +65,8 @@ int atom_run(struct snd_sof_dev *sdev);
 int atom_reset(struct snd_sof_dev *sdev);
 void atom_dump(struct snd_sof_dev *sdev, u32 flags);
 
-void atom_machine_select(struct snd_sof_dev *sdev);
-void atom_set_mach_params(const struct snd_soc_acpi_mach *mach,
+struct snd_soc_acpi_mach *atom_machine_select(struct snd_sof_dev *sdev);
+void atom_set_mach_params(struct snd_soc_acpi_mach *mach,
 			  struct snd_sof_dev *sdev);
 
 extern struct snd_soc_dai_driver atom_dai[];

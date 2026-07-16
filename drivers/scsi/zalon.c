@@ -81,6 +81,7 @@ lasi_scsi_clock(void * hpa, int defaultclock)
 static struct scsi_host_template zalon7xx_template = {
 	.module		= THIS_MODULE,
 	.proc_name	= "zalon7xx",
+	.cmd_size	= sizeof(struct ncr_cmd_priv),
 };
 
 static int __init
@@ -138,7 +139,7 @@ zalon_probe(struct parisc_device *dev)
 		return -ENODEV;
 
 	if (request_irq(dev->irq, ncr53c8xx_intr, IRQF_SHARED, "zalon", host)) {
-	  dev_printk(KERN_ERR, &dev->dev, "irq problem with %d, detaching\n ",
+		dev_printk(KERN_ERR, &dev->dev, "irq problem with %d, detaching\n",
 		     dev->irq);
 		goto fail;
 	}

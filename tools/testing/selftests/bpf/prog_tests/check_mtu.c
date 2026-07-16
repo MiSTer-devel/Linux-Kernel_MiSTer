@@ -59,7 +59,7 @@ static void test_check_mtu_xdp_attach(void)
 
 	memset(&link_info, 0, sizeof(link_info));
 	fd = bpf_link__fd(link);
-	err = bpf_obj_get_info_by_fd(fd, &link_info, &link_info_len);
+	err = bpf_link_get_info_by_fd(fd, &link_info, &link_info_len);
 	if (CHECK(err, "link_info", "failed: %d\n", err))
 		goto out;
 
@@ -79,28 +79,21 @@ static void test_check_mtu_run_xdp(struct test_check_mtu *skel,
 				   struct bpf_program *prog,
 				   __u32 mtu_expect)
 {
-	const char *prog_name = bpf_program__name(prog);
 	int retval_expect = XDP_PASS;
 	__u32 mtu_result = 0;
 	char buf[256] = {};
-	int err;
-	struct bpf_prog_test_run_attr tattr = {
+	int err, prog_fd = bpf_program__fd(prog);
+	LIBBPF_OPTS(bpf_test_run_opts, topts,
 		.repeat = 1,
 		.data_in = &pkt_v4,
 		.data_size_in = sizeof(pkt_v4),
 		.data_out = buf,
 		.data_size_out = sizeof(buf),
-		.prog_fd = bpf_program__fd(prog),
-	};
+	);
 
-	err = bpf_prog_test_run_xattr(&tattr);
-	CHECK_ATTR(err != 0, "bpf_prog_test_run",
-		   "prog_name:%s (err %d errno %d retval %d)\n",
-		   prog_name, err, errno, tattr.retval);
-
-	CHECK(tattr.retval != retval_expect, "retval",
-	      "progname:%s unexpected retval=%d expected=%d\n",
-	      prog_name, tattr.retval, retval_expect);
+	err = bpf_prog_test_run_opts(prog_fd, &topts);
+	ASSERT_OK(err, "test_run");
+	ASSERT_EQ(topts.retval, retval_expect, "retval");
 
 	/* Extract MTU that BPF-prog got */
 	mtu_result = skel->bss->global_bpf_mtu_xdp;
@@ -139,34 +132,47 @@ static void test_check_mtu_run_tc(struct test_check_mtu *skel,
 				  struct bpf_program *prog,
 				  __u32 mtu_expect)
 {
-	const char *prog_name = bpf_program__name(prog);
 	int retval_expect = BPF_OK;
 	__u32 mtu_result = 0;
 	char buf[256] = {};
-	int err;
-	struct bpf_prog_test_run_attr tattr = {
-		.repeat = 1,
+	int err, prog_fd = bpf_program__fd(prog);
+	LIBBPF_OPTS(bpf_test_run_opts, topts,
 		.data_in = &pkt_v4,
 		.data_size_in = sizeof(pkt_v4),
 		.data_out = buf,
 		.data_size_out = sizeof(buf),
-		.prog_fd = bpf_program__fd(prog),
-	};
+		.repeat = 1,
+	);
 
-	err = bpf_prog_test_run_xattr(&tattr);
-	CHECK_ATTR(err != 0, "bpf_prog_test_run",
-		   "prog_name:%s (err %d errno %d retval %d)\n",
-		   prog_name, err, errno, tattr.retval);
-
-	CHECK(tattr.retval != retval_expect, "retval",
-	      "progname:%s unexpected retval=%d expected=%d\n",
-	      prog_name, tattr.retval, retval_expect);
+	err = bpf_prog_test_run_opts(prog_fd, &topts);
+	ASSERT_OK(err, "test_run");
+	ASSERT_EQ(topts.retval, retval_expect, "retval");
 
 	/* Extract MTU that BPF-prog got */
 	mtu_result = skel->bss->global_bpf_mtu_tc;
 	ASSERT_EQ(mtu_result, mtu_expect, "MTU-compare-user");
 }
 
+static void test_chk_segs_flag(struct test_check_mtu *skel, __u32 mtu)
+{
+	int err, prog_fd = bpf_program__fd(skel->progs.tc_chk_segs_flag);
+	struct __sk_buff skb = {
+		.gso_size = 10,
+	};
+	LIBBPF_OPTS(bpf_test_run_opts, topts,
+		    .data_in = &pkt_v4,
+		    .data_size_in = sizeof(pkt_v4),
+		    .ctx_in = &skb,
+		    .ctx_size_in = sizeof(skb),
+	);
+
+	/* Lower the mtu to test the BPF_MTU_CHK_SEGS */
+	SYS_NOFAIL("ip link set dev lo mtu 10");
+	err = bpf_prog_test_run_opts(prog_fd, &topts);
+	SYS_NOFAIL("ip link set dev lo mtu %u", mtu);
+	ASSERT_OK(err, "test_run");
+	ASSERT_EQ(topts.retval, BPF_OK, "retval");
+}
 
 static void test_check_mtu_tc(__u32 mtu, __u32 ifindex)
 {
@@ -191,13 +197,14 @@ static void test_check_mtu_tc(__u32 mtu, __u32 ifindex)
 	test_check_mtu_run_tc(skel, skel->progs.tc_minus_delta, mtu);
 	test_check_mtu_run_tc(skel, skel->progs.tc_input_len, mtu);
 	test_check_mtu_run_tc(skel, skel->progs.tc_input_len_exceed, mtu);
+	test_chk_segs_flag(skel, mtu);
 cleanup:
 	test_check_mtu__destroy(skel);
 }
 
-void test_check_mtu(void)
+void test_ns_check_mtu(void)
 {
-	__u32 mtu_lo;
+	int mtu_lo;
 
 	if (test__start_subtest("bpf_check_mtu XDP-attach"))
 		test_check_mtu_xdp_attach();

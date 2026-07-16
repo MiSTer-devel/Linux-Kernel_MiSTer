@@ -21,6 +21,8 @@
 
 #define MMC_BKOPS_TIMEOUT_MS		(120 * 1000) /* 120s */
 #define MMC_SANITIZE_TIMEOUT_MS		(240 * 1000) /* 240s */
+#define MMC_OP_COND_PERIOD_US		(4 * 1000) /* 4ms */
+#define MMC_OP_COND_TIMEOUT_MS		1000 /* 1s */
 
 static const u8 tuning_blk_pattern_4bit[] = {
 	0xff, 0x0f, 0xff, 0x00, 0xff, 0xcc, 0xc3, 0xcc,
@@ -56,6 +58,12 @@ struct mmc_busy_data {
 	struct mmc_card *card;
 	bool retry_crc_err;
 	enum mmc_busy_cmd busy_cmd;
+};
+
+struct mmc_op_cond_busy_data {
+	struct mmc_host *host;
+	u32 ocr;
+	struct mmc_command *cmd;
 };
 
 int __mmc_send_status(struct mmc_card *card, u32 *status, unsigned int retries)
@@ -136,10 +144,24 @@ int mmc_set_dsr(struct mmc_host *host)
 	return mmc_wait_for_cmd(host, &cmd, MMC_CMD_RETRIES);
 }
 
+int __mmc_go_idle(struct mmc_host *host)
+{
+	struct mmc_command cmd = {};
+	int err;
+
+	cmd.opcode = MMC_GO_IDLE_STATE;
+	cmd.arg = 0;
+	cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_NONE | MMC_CMD_BC;
+
+	err = mmc_wait_for_cmd(host, &cmd, 0);
+	mmc_delay(1);
+
+	return err;
+}
+
 int mmc_go_idle(struct mmc_host *host)
 {
 	int err;
-	struct mmc_command cmd = {};
 
 	/*
 	 * Non-SPI hosts need to prevent chipselect going active during
@@ -155,13 +177,7 @@ int mmc_go_idle(struct mmc_host *host)
 		mmc_delay(1);
 	}
 
-	cmd.opcode = MMC_GO_IDLE_STATE;
-	cmd.arg = 0;
-	cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_NONE | MMC_CMD_BC;
-
-	err = mmc_wait_for_cmd(host, &cmd, 0);
-
-	mmc_delay(1);
+	err = __mmc_go_idle(host);
 
 	if (!mmc_host_is_spi(host)) {
 		mmc_set_chip_select(host, MMC_CS_DONTCARE);
@@ -173,43 +189,64 @@ int mmc_go_idle(struct mmc_host *host)
 	return err;
 }
 
+static int __mmc_send_op_cond_cb(void *cb_data, bool *busy)
+{
+	struct mmc_op_cond_busy_data *data = cb_data;
+	struct mmc_host *host = data->host;
+	struct mmc_command *cmd = data->cmd;
+	u32 ocr = data->ocr;
+	int err = 0;
+
+	err = mmc_wait_for_cmd(host, cmd, 0);
+	if (err)
+		return err;
+
+	if (mmc_host_is_spi(host)) {
+		if (!(cmd->resp[0] & R1_SPI_IDLE)) {
+			*busy = false;
+			return 0;
+		}
+	} else {
+		if (cmd->resp[0] & MMC_CARD_BUSY) {
+			*busy = false;
+			return 0;
+		}
+	}
+
+	*busy = true;
+
+	/*
+	 * According to eMMC specification v5.1 section 6.4.3, we
+	 * should issue CMD1 repeatedly in the idle state until
+	 * the eMMC is ready. Otherwise some eMMC devices seem to enter
+	 * the inactive mode after mmc_init_card() issued CMD0 when
+	 * the eMMC device is busy.
+	 */
+	if (!ocr && !mmc_host_is_spi(host))
+		cmd->arg = cmd->resp[0] | BIT(30);
+
+	return 0;
+}
+
 int mmc_send_op_cond(struct mmc_host *host, u32 ocr, u32 *rocr)
 {
 	struct mmc_command cmd = {};
-	int i, err = 0;
+	int err = 0;
+	struct mmc_op_cond_busy_data cb_data = {
+		.host = host,
+		.ocr = ocr,
+		.cmd = &cmd
+	};
 
 	cmd.opcode = MMC_SEND_OP_COND;
 	cmd.arg = mmc_host_is_spi(host) ? 0 : ocr;
 	cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R3 | MMC_CMD_BCR;
 
-	for (i = 100; i; i--) {
-		err = mmc_wait_for_cmd(host, &cmd, 0);
-		if (err)
-			break;
-
-		/* wait until reset completes */
-		if (mmc_host_is_spi(host)) {
-			if (!(cmd.resp[0] & R1_SPI_IDLE))
-				break;
-		} else {
-			if (cmd.resp[0] & MMC_CARD_BUSY)
-				break;
-		}
-
-		err = -ETIMEDOUT;
-
-		mmc_delay(10);
-
-		/*
-		 * According to eMMC specification v5.1 section 6.4.3, we
-		 * should issue CMD1 repeatedly in the idle state until
-		 * the eMMC is ready. Otherwise some eMMC devices seem to enter
-		 * the inactive mode after mmc_init_card() issued CMD0 when
-		 * the eMMC device is busy.
-		 */
-		if (!ocr && !mmc_host_is_spi(host))
-			cmd.arg = cmd.resp[0] | BIT(30);
-	}
+	err = __mmc_poll_for_busy(host, MMC_OP_COND_PERIOD_US,
+				  MMC_OP_COND_TIMEOUT_MS,
+				  &__mmc_send_op_cond_cb, &cb_data);
+	if (err)
+		return err;
 
 	if (rocr && !mmc_host_is_spi(host))
 		*rocr = cmd.resp[0];
@@ -346,7 +383,7 @@ int mmc_get_ext_csd(struct mmc_card *card, u8 **new_ext_csd)
 	if (!card || !new_ext_csd)
 		return -EINVAL;
 
-	if (!mmc_can_ext_csd(card))
+	if (!mmc_card_can_ext_csd(card))
 		return -EOPNOTSUPP;
 
 	/*
@@ -470,14 +507,14 @@ static int mmc_busy_cb(void *cb_data, bool *busy)
 	return 0;
 }
 
-int __mmc_poll_for_busy(struct mmc_card *card, unsigned int timeout_ms,
+int __mmc_poll_for_busy(struct mmc_host *host, unsigned int period_us,
+			unsigned int timeout_ms,
 			int (*busy_cb)(void *cb_data, bool *busy),
 			void *cb_data)
 {
-	struct mmc_host *host = card->host;
 	int err;
 	unsigned long timeout;
-	unsigned int udelay = 32, udelay_max = 32768;
+	unsigned int udelay = period_us ? period_us : 32, udelay_max = 32768;
 	bool expired = false;
 	bool busy = false;
 
@@ -515,13 +552,14 @@ EXPORT_SYMBOL_GPL(__mmc_poll_for_busy);
 int mmc_poll_for_busy(struct mmc_card *card, unsigned int timeout_ms,
 		      bool retry_crc_err, enum mmc_busy_cmd busy_cmd)
 {
+	struct mmc_host *host = card->host;
 	struct mmc_busy_data cb_data;
 
 	cb_data.card = card;
 	cb_data.retry_crc_err = retry_crc_err;
 	cb_data.busy_cmd = busy_cmd;
 
-	return __mmc_poll_for_busy(card, timeout_ms, &mmc_busy_cb, &cb_data);
+	return __mmc_poll_for_busy(host, 0, timeout_ms, &mmc_busy_cb, &cb_data);
 }
 EXPORT_SYMBOL_GPL(mmc_poll_for_busy);
 
@@ -545,6 +583,7 @@ bool mmc_prepare_busy_cmd(struct mmc_host *host, struct mmc_command *cmd,
 	cmd->busy_timeout = timeout_ms;
 	return true;
 }
+EXPORT_SYMBOL_GPL(mmc_prepare_busy_cmd);
 
 /**
  *	__mmc_switch - modify EXT_CSD register
@@ -905,7 +944,7 @@ out:
 	return err;
 }
 
-int mmc_can_ext_csd(struct mmc_card *card)
+bool mmc_card_can_ext_csd(struct mmc_card *card)
 {
 	return (card && card->csd.mmca_vsn > CSD_SPEC_VER_3);
 }
@@ -1007,7 +1046,7 @@ int mmc_sanitize(struct mmc_card *card, unsigned int timeout_ms)
 	struct mmc_host *host = card->host;
 	int err;
 
-	if (!mmc_can_sanitize(card)) {
+	if (!mmc_card_can_sanitize(card)) {
 		pr_warn("%s: Sanitize not supported\n", mmc_hostname(host));
 		return -EOPNOTSUPP;
 	}
@@ -1038,3 +1077,75 @@ int mmc_sanitize(struct mmc_card *card, unsigned int timeout_ms)
 	return err;
 }
 EXPORT_SYMBOL_GPL(mmc_sanitize);
+
+/**
+ * mmc_read_tuning() - read data blocks from the mmc
+ * @host: mmc host doing the read
+ * @blksz: data block size
+ * @blocks: number of blocks to read
+ *
+ * Read one or more blocks of data from the beginning of the mmc. This is a
+ * low-level helper for tuning operation. It is assumed that CMD23 can be used
+ * for multi-block read if the host supports it.
+ *
+ * Note: Allocate and free a temporary buffer to store the data read. The data
+ * is not available outside of the function, only the status of the read
+ * operation.
+ *
+ * Return: 0 in case of success, otherwise -EIO / -ENOMEM / -E2BIG
+ */
+int mmc_read_tuning(struct mmc_host *host, unsigned int blksz, unsigned int blocks)
+{
+	struct mmc_request mrq = {};
+	struct mmc_command sbc = {};
+	struct mmc_command cmd = {};
+	struct mmc_command stop = {};
+	struct mmc_data data = {};
+	struct scatterlist sg;
+	void *buf;
+	unsigned int len;
+
+	if (blocks > 1) {
+		if (mmc_host_can_cmd23(host)) {
+			mrq.sbc = &sbc;
+			sbc.opcode = MMC_SET_BLOCK_COUNT;
+			sbc.arg = blocks;
+			sbc.flags = MMC_RSP_R1 | MMC_CMD_AC;
+		}
+		cmd.opcode = MMC_READ_MULTIPLE_BLOCK;
+		mrq.stop = &stop;
+		stop.opcode = MMC_STOP_TRANSMISSION;
+		stop.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_AC;
+	} else {
+		cmd.opcode = MMC_READ_SINGLE_BLOCK;
+	}
+
+	mrq.cmd = &cmd;
+	cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_ADTC;
+
+	mrq.data = &data;
+	data.flags = MMC_DATA_READ;
+	data.blksz = blksz;
+	data.blocks = blocks;
+	data.blk_addr = 0;
+	data.sg = &sg;
+	data.sg_len = 1;
+	data.timeout_ns = 1000000000;
+
+	if (check_mul_overflow(blksz, blocks, &len))
+		return -E2BIG;
+	buf = kmalloc(len, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	sg_init_one(&sg, buf, len);
+
+	mmc_wait_for_req(host, &mrq);
+	kfree(buf);
+
+	if (sbc.error || cmd.error || data.error)
+		return -EIO;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mmc_read_tuning);

@@ -9,15 +9,16 @@
  * - Melexis MLX90640 Thermal Cameras
  */
 
+#include <linux/bits.h>
 #include <linux/delay.h>
 #include <linux/freezer.h>
 #include <linux/hwmon.h>
 #include <linux/kthread.h>
 #include <linux/i2c.h>
 #include <linux/list.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/of_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/nvmem-provider.h>
 #include <linux/regmap.h>
@@ -33,6 +34,37 @@
 #include <media/videobuf2-vmalloc.h>
 
 #define VIDEO_I2C_DRIVER	"video-i2c"
+
+/* Power control register */
+#define AMG88XX_REG_PCTL	0x00
+#define AMG88XX_PCTL_NORMAL		0x00
+#define AMG88XX_PCTL_SLEEP		0x10
+
+/* Reset register */
+#define AMG88XX_REG_RST		0x01
+#define AMG88XX_RST_FLAG		0x30
+#define AMG88XX_RST_INIT		0x3f
+
+/* Frame rate register */
+#define AMG88XX_REG_FPSC	0x02
+#define AMG88XX_FPSC_1FPS		BIT(0)
+
+/* Thermistor register */
+#define AMG88XX_REG_TTHL	0x0e
+
+/* Temperature register */
+#define AMG88XX_REG_T01L	0x80
+
+/* RAM */
+#define MLX90640_RAM_START_ADDR		0x0400
+
+/* EEPROM */
+#define MLX90640_EEPROM_START_ADDR	0x2400
+
+/* Control register */
+#define MLX90640_REG_CTL1		0x800d
+#define MLX90640_REG_CTL1_MASK		GENMASK(9, 7)
+#define MLX90640_REG_CTL1_MASK_SHIFT	7
 
 struct video_i2c_chip;
 
@@ -124,7 +156,7 @@ static int mlx90640_nvram_read(void *priv, unsigned int offset, void *val,
 {
 	struct video_i2c_data *data = priv;
 
-	return regmap_bulk_read(data->regmap, 0x2400 + offset, val, bytes);
+	return regmap_bulk_read(data->regmap, MLX90640_EEPROM_START_ADDR + offset, val, bytes);
 }
 
 static struct nvmem_config mlx90640_nvram_config = {
@@ -135,31 +167,6 @@ static struct nvmem_config mlx90640_nvram_config = {
 	.reg_read = mlx90640_nvram_read,
 };
 
-/* Power control register */
-#define AMG88XX_REG_PCTL	0x00
-#define AMG88XX_PCTL_NORMAL		0x00
-#define AMG88XX_PCTL_SLEEP		0x10
-
-/* Reset register */
-#define AMG88XX_REG_RST		0x01
-#define AMG88XX_RST_FLAG		0x30
-#define AMG88XX_RST_INIT		0x3f
-
-/* Frame rate register */
-#define AMG88XX_REG_FPSC	0x02
-#define AMG88XX_FPSC_1FPS		BIT(0)
-
-/* Thermistor register */
-#define AMG88XX_REG_TTHL	0x0e
-
-/* Temperature register */
-#define AMG88XX_REG_T01L	0x80
-
-/* Control register */
-#define MLX90640_REG_CTL1		0x800d
-#define MLX90640_REG_CTL1_MASK		0x0380
-#define MLX90640_REG_CTL1_MASK_SHIFT	7
-
 static int amg88xx_xfer(struct video_i2c_data *data, char *buf)
 {
 	return regmap_bulk_read(data->regmap, AMG88XX_REG_T01L, buf,
@@ -168,7 +175,7 @@ static int amg88xx_xfer(struct video_i2c_data *data, char *buf)
 
 static int mlx90640_xfer(struct video_i2c_data *data, char *buf)
 {
-	return regmap_bulk_read(data->regmap, 0x400, buf,
+	return regmap_bulk_read(data->regmap, MLX90640_RAM_START_ADDR, buf,
 				data->chip->buffer_size);
 }
 
@@ -257,18 +264,8 @@ static int amg88xx_set_power(struct video_i2c_data *data, bool on)
 
 #if IS_REACHABLE(CONFIG_HWMON)
 
-static const u32 amg88xx_temp_config[] = {
-	HWMON_T_INPUT,
-	0
-};
-
-static const struct hwmon_channel_info amg88xx_temp = {
-	.type = hwmon_temp,
-	.config = amg88xx_temp_config,
-};
-
-static const struct hwmon_channel_info *amg88xx_info[] = {
-	&amg88xx_temp,
+static const struct hwmon_channel_info * const amg88xx_info[] = {
+	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT),
 	NULL
 };
 
@@ -291,7 +288,6 @@ static int amg88xx_read(struct device *dev, enum hwmon_sensor_types type,
 		return tmp;
 
 	tmp = regmap_bulk_read(data->regmap, AMG88XX_REG_TTHL, &buf, 2);
-	pm_runtime_mark_last_busy(regmap_get_device(data->regmap));
 	pm_runtime_put_autosuspend(regmap_get_device(data->regmap));
 	if (tmp)
 		return tmp;
@@ -398,9 +394,10 @@ static int queue_setup(struct vb2_queue *vq,
 {
 	struct video_i2c_data *data = vb2_get_drv_priv(vq);
 	unsigned int size = data->chip->buffer_size;
+	unsigned int q_num_bufs = vb2_get_num_buffers(vq);
 
-	if (vq->num_buffers + *nbuffers < 2)
-		*nbuffers = 2;
+	if (q_num_bufs + *nbuffers < 2)
+		*nbuffers = 2 - q_num_bufs;
 
 	if (*nplanes)
 		return sizes[0] < size ? -EINVAL : 0;
@@ -441,14 +438,15 @@ static void buffer_queue(struct vb2_buffer *vb)
 static int video_i2c_thread_vid_cap(void *priv)
 {
 	struct video_i2c_data *data = priv;
-	unsigned int delay = mult_frac(HZ, data->frame_interval.numerator,
-				       data->frame_interval.denominator);
+	u32 delay = mult_frac(1000000UL, data->frame_interval.numerator,
+			       data->frame_interval.denominator);
+	s64 end_us = ktime_to_us(ktime_get());
 
 	set_freezable();
 
 	do {
-		unsigned long start_jiffies = jiffies;
 		struct video_i2c_buffer *vid_cap_buf = NULL;
+		s64 current_us;
 		int schedule_delay;
 
 		try_to_freeze();
@@ -475,12 +473,14 @@ static int video_i2c_thread_vid_cap(void *priv)
 				VB2_BUF_STATE_ERROR : VB2_BUF_STATE_DONE);
 		}
 
-		schedule_delay = delay - (jiffies - start_jiffies);
-
-		if (time_after(jiffies, start_jiffies + delay))
-			schedule_delay = delay;
-
-		schedule_timeout_interruptible(schedule_delay);
+		end_us += delay;
+		current_us = ktime_to_us(ktime_get());
+		if (current_us < end_us) {
+			schedule_delay = end_us - current_us;
+			usleep_range(schedule_delay * 3 / 4, schedule_delay);
+		} else {
+			end_us = current_us;
+		}
 	} while (!kthread_should_stop());
 
 	return 0;
@@ -526,7 +526,6 @@ static int start_streaming(struct vb2_queue *vq, unsigned int count)
 		return 0;
 
 error_rpm_put:
-	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 error_del_list:
 	video_i2c_del_list(vq, VB2_BUF_STATE_QUEUED);
@@ -543,7 +542,6 @@ static void stop_streaming(struct vb2_queue *vq)
 
 	kthread_stop(data->kthread_vid_cap);
 	data->kthread_vid_cap = NULL;
-	pm_runtime_mark_last_busy(regmap_get_device(data->regmap));
 	pm_runtime_put_autosuspend(regmap_get_device(data->regmap));
 
 	video_i2c_del_list(vq, VB2_BUF_STATE_ERROR);
@@ -555,8 +553,6 @@ static const struct vb2_ops video_i2c_video_qops = {
 	.buf_queue		= buffer_queue,
 	.start_streaming	= start_streaming,
 	.stop_streaming		= stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 static int video_i2c_querycap(struct file *file, void  *priv,
@@ -747,8 +743,7 @@ static void video_i2c_release(struct video_device *vdev)
 	kfree(data);
 }
 
-static int video_i2c_probe(struct i2c_client *client,
-			     const struct i2c_device_id *id)
+static int video_i2c_probe(struct i2c_client *client)
 {
 	struct video_i2c_data *data;
 	struct v4l2_device *v4l2_dev;
@@ -759,11 +754,8 @@ static int video_i2c_probe(struct i2c_client *client,
 	if (!data)
 		return -ENOMEM;
 
-	if (dev_fwnode(&client->dev))
-		data->chip = device_get_match_data(&client->dev);
-	else if (id)
-		data->chip = &video_i2c_chip[id->driver_data];
-	else
+	data->chip = i2c_get_match_data(client);
+	if (!data->chip)
 		goto error_free_device;
 
 	data->regmap = regmap_init_i2c(client, data->chip->regmap_config);
@@ -788,16 +780,16 @@ static int video_i2c_probe(struct i2c_client *client,
 	queue->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 	queue->drv_priv = data;
 	queue->buf_struct_size = sizeof(struct video_i2c_buffer);
-	queue->min_buffers_needed = 1;
+	queue->min_queued_buffers = 1;
 	queue->ops = &video_i2c_video_qops;
 	queue->mem_ops = &vb2_vmalloc_memops;
+	queue->lock = &data->queue_lock;
 
 	ret = vb2_queue_init(queue);
 	if (ret < 0)
 		goto error_unregister_device;
 
 	data->vdev.queue = queue;
-	data->vdev.queue->lock = &data->queue_lock;
 
 	snprintf(data->vdev.name, sizeof(data->vdev.name),
 				 "I2C %d-%d Transport Video",
@@ -858,7 +850,6 @@ static int video_i2c_probe(struct i2c_client *client,
 	if (ret < 0)
 		goto error_pm_disable;
 
-	pm_runtime_mark_last_busy(&client->dev);
 	pm_runtime_put_autosuspend(&client->dev);
 
 	return 0;
@@ -885,7 +876,7 @@ error_free_device:
 	return ret;
 }
 
-static int video_i2c_remove(struct i2c_client *client)
+static void video_i2c_remove(struct i2c_client *client)
 {
 	struct video_i2c_data *data = i2c_get_clientdata(client);
 
@@ -898,8 +889,6 @@ static int video_i2c_remove(struct i2c_client *client)
 		data->chip->set_power(data, false);
 
 	video_unregister_device(&data->vdev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -932,8 +921,8 @@ static const struct dev_pm_ops video_i2c_pm_ops = {
 };
 
 static const struct i2c_device_id video_i2c_id_table[] = {
-	{ "amg88xx", AMG88XX },
-	{ "mlx90640", MLX90640 },
+	{ "amg88xx", (kernel_ulong_t)&video_i2c_chip[AMG88XX] },
+	{ "mlx90640", (kernel_ulong_t)&video_i2c_chip[MLX90640] },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, video_i2c_id_table);

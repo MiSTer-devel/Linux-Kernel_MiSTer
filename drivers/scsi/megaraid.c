@@ -44,10 +44,14 @@
 #include <linux/dma-mapping.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
-#include <scsi/scsicam.h>
 
-#include "scsi.h"
+#include <scsi/scsi.h>
+#include <scsi/scsi_cmnd.h>
+#include <scsi/scsi_device.h>
+#include <scsi/scsi_eh.h>
 #include <scsi/scsi_host.h>
+#include <scsi/scsi_tcq.h>
+#include <scsi/scsicam.h>
 
 #include "megaraid.h"
 
@@ -192,23 +196,21 @@ mega_query_adapter(adapter_t *adapter)
 {
 	dma_addr_t	prod_info_dma_handle;
 	mega_inquiry3	*inquiry3;
-	u8	raw_mbox[sizeof(struct mbox_out)];
-	mbox_t	*mbox;
+	struct mbox_out	mbox;
+	u8	*raw_mbox = (u8 *)&mbox;
 	int	retval;
 
 	/* Initialize adapter inquiry mailbox */
 
-	mbox = (mbox_t *)raw_mbox;
-
 	memset((void *)adapter->mega_buffer, 0, MEGA_BUFFER_SIZE);
-	memset(&mbox->m_out, 0, sizeof(raw_mbox));
+	memset(&mbox, 0, sizeof(mbox));
 
 	/*
 	 * Try to issue Inquiry3 command
 	 * if not succeeded, then issue MEGA_MBOXCMD_ADAPTERINQ command and
 	 * update enquiry3 structure
 	 */
-	mbox->m_out.xferaddr = (u32)adapter->buf_dma_handle;
+	mbox.xferaddr = (u32)adapter->buf_dma_handle;
 
 	inquiry3 = (mega_inquiry3 *)adapter->mega_buffer;
 
@@ -217,7 +219,7 @@ mega_query_adapter(adapter_t *adapter)
 	raw_mbox[3] = ENQ3_GET_SOLICITED_FULL;	/* i.e. 0x02 */
 
 	/* Issue a blocking command to the card */
-	if ((retval = issue_scb_block(adapter, raw_mbox))) {
+	if (issue_scb_block(adapter, raw_mbox)) {
 		/* the adapter does not support 40ld */
 
 		mraid_ext_inquiry	*ext_inq;
@@ -232,10 +234,10 @@ mega_query_adapter(adapter_t *adapter)
 
 		inq = &ext_inq->raid_inq;
 
-		mbox->m_out.xferaddr = (u32)dma_handle;
+		mbox.xferaddr = (u32)dma_handle;
 
 		/*issue old 0x04 command to adapter */
-		mbox->m_out.cmd = MEGA_MBOXCMD_ADPEXTINQ;
+		mbox.cmd = MEGA_MBOXCMD_ADPEXTINQ;
 
 		issue_scb_block(adapter, raw_mbox);
 
@@ -262,7 +264,7 @@ mega_query_adapter(adapter_t *adapter)
 						      sizeof(mega_product_info),
 						      DMA_FROM_DEVICE);
 
-		mbox->m_out.xferaddr = prod_info_dma_handle;
+		mbox.xferaddr = prod_info_dma_handle;
 
 		raw_mbox[0] = FC_NEW_CONFIG;	/* i.e. mbox->cmd=0xA1 */
 		raw_mbox[2] = NC_SUBOP_PRODUCT_INFO;	/* i.e. 0x0E */
@@ -370,8 +372,7 @@ mega_runpendq(adapter_t *adapter)
  *
  * The command queuing entry point for the mid-layer.
  */
-static int
-megaraid_queue_lck(struct scsi_cmnd *scmd, void (*done)(struct scsi_cmnd *))
+static int megaraid_queue_lck(struct scsi_cmnd *scmd)
 {
 	adapter_t	*adapter;
 	scb_t	*scb;
@@ -379,9 +380,6 @@ megaraid_queue_lck(struct scsi_cmnd *scmd, void (*done)(struct scsi_cmnd *))
 	unsigned long flags;
 
 	adapter = (adapter_t *)scmd->device->host->hostdata;
-
-	scmd->scsi_done = done;
-
 
 	/*
 	 * Allocate and build a SCB request
@@ -586,7 +584,7 @@ mega_build_cmd(adapter_t *adapter, struct scsi_cmnd *cmd, int *busy)
 		/* have just LUN 0 for each target on virtual channels */
 		if (cmd->device->lun) {
 			cmd->result = (DID_BAD_TARGET << 16);
-			cmd->scsi_done(cmd);
+			scsi_done(cmd);
 			return NULL;
 		}
 
@@ -605,7 +603,7 @@ mega_build_cmd(adapter_t *adapter, struct scsi_cmnd *cmd, int *busy)
 
 		if(ldrv_num > max_ldrv_num ) {
 			cmd->result = (DID_BAD_TARGET << 16);
-			cmd->scsi_done(cmd);
+			scsi_done(cmd);
 			return NULL;
 		}
 
@@ -617,7 +615,7 @@ mega_build_cmd(adapter_t *adapter, struct scsi_cmnd *cmd, int *busy)
 			 * devices
 			 */
 			cmd->result = (DID_BAD_TARGET << 16);
-			cmd->scsi_done(cmd);
+			scsi_done(cmd);
 			return NULL;
 		}
 	}
@@ -637,7 +635,7 @@ mega_build_cmd(adapter_t *adapter, struct scsi_cmnd *cmd, int *busy)
 			 */
 			if( !adapter->has_cluster ) {
 				cmd->result = (DID_OK << 16);
-				cmd->scsi_done(cmd);
+				scsi_done(cmd);
 				return NULL;
 			}
 
@@ -655,7 +653,7 @@ mega_build_cmd(adapter_t *adapter, struct scsi_cmnd *cmd, int *busy)
 			return scb;
 #else
 			cmd->result = (DID_OK << 16);
-			cmd->scsi_done(cmd);
+			scsi_done(cmd);
 			return NULL;
 #endif
 
@@ -670,7 +668,7 @@ mega_build_cmd(adapter_t *adapter, struct scsi_cmnd *cmd, int *busy)
 			kunmap_atomic(buf - sg->offset);
 
 			cmd->result = (DID_OK << 16);
-			cmd->scsi_done(cmd);
+			scsi_done(cmd);
 			return NULL;
 		}
 
@@ -857,8 +855,8 @@ mega_build_cmd(adapter_t *adapter, struct scsi_cmnd *cmd, int *busy)
 			return scb;
 
 #if MEGA_HAVE_CLUSTERING
-		case RESERVE:
-		case RELEASE:
+		case RESERVE_6:
+		case RELEASE_6:
 
 			/*
 			 * Do we support clustering and is the support enabled
@@ -866,7 +864,7 @@ mega_build_cmd(adapter_t *adapter, struct scsi_cmnd *cmd, int *busy)
 			if( ! adapter->has_cluster ) {
 
 				cmd->result = (DID_BAD_TARGET << 16);
-				cmd->scsi_done(cmd);
+				scsi_done(cmd);
 				return NULL;
 			}
 
@@ -877,7 +875,7 @@ mega_build_cmd(adapter_t *adapter, struct scsi_cmnd *cmd, int *busy)
 			}
 
 			scb->raw_mbox[0] = MEGA_CLUSTER_CMD;
-			scb->raw_mbox[2] = ( *cmd->cmnd == RESERVE ) ?
+			scb->raw_mbox[2] = *cmd->cmnd == RESERVE_6 ?
 				MEGA_RESERVE_LD : MEGA_RELEASE_LD;
 
 			scb->raw_mbox[3] = ldrv_num;
@@ -889,7 +887,7 @@ mega_build_cmd(adapter_t *adapter, struct scsi_cmnd *cmd, int *busy)
 
 		default:
 			cmd->result = (DID_BAD_TARGET << 16);
-			cmd->scsi_done(cmd);
+			scsi_done(cmd);
 			return NULL;
 		}
 	}
@@ -1443,6 +1441,7 @@ mega_cmd_done(adapter_t *adapter, u8 completed[], int nstatus, int status)
 		 */
 		if (cmdid == CMDID_INT_CMDS) {
 			scb = &adapter->int_scb;
+			cmd = scb->cmd;
 
 			list_del_init(&scb->list);
 			scb->state = SCB_FREE;
@@ -1619,8 +1618,8 @@ mega_cmd_done(adapter_t *adapter, u8 completed[], int nstatus, int status)
 			 * failed or the input parameter is invalid
 			 */
 			if( status == 1 &&
-				(cmd->cmnd[0] == RESERVE ||
-					 cmd->cmnd[0] == RELEASE) ) {
+			    (cmd->cmnd[0] == RESERVE_6 ||
+			     cmd->cmnd[0] == RELEASE_6) ) {
 
 				cmd->result |= (DID_ERROR << 16) |
 					SAM_STAT_RESERVATION_CONFLICT;
@@ -1646,16 +1645,10 @@ mega_cmd_done(adapter_t *adapter, u8 completed[], int nstatus, int status)
 static void
 mega_rundoneq (adapter_t *adapter)
 {
-	struct scsi_cmnd *cmd;
-	struct list_head *pos;
+	struct megaraid_cmd_priv *cmd_priv;
 
-	list_for_each(pos, &adapter->completed_list) {
-
-		struct scsi_pointer* spos = (struct scsi_pointer *)pos;
-
-		cmd = list_entry(spos, struct scsi_cmnd, SCp);
-		cmd->scsi_done(cmd);
-	}
+	list_for_each_entry(cmd_priv, &adapter->completed_list, entry)
+		scsi_done(megaraid_to_scsi_cmd(cmd_priv));
 
 	INIT_LIST_HEAD(&adapter->completed_list);
 }
@@ -1905,7 +1898,7 @@ megaraid_reset(struct scsi_cmnd *cmd)
 
 	spin_lock_irq(&adapter->lock);
 
-	rval =  megaraid_abort_and_reset(adapter, cmd, SCB_RESET);
+	rval =  megaraid_abort_and_reset(adapter, NULL, SCB_RESET);
 
 	/*
 	 * This is required here to complete any completed requests
@@ -1932,10 +1925,13 @@ megaraid_abort_and_reset(adapter_t *adapter, struct scsi_cmnd *cmd, int aor)
 	struct list_head	*pos, *next;
 	scb_t			*scb;
 
-	dev_warn(&adapter->dev->dev, "%s cmd=%x <c=%d t=%d l=%d>\n",
-	     (aor == SCB_ABORT)? "ABORTING":"RESET",
-	     cmd->cmnd[0], cmd->device->channel,
-	     cmd->device->id, (u32)cmd->device->lun);
+	if (aor == SCB_ABORT)
+		dev_warn(&adapter->dev->dev,
+			 "ABORTING cmd=%x <c=%d t=%d l=%d>\n",
+			 cmd->cmnd[0], cmd->device->channel,
+			 cmd->device->id, (u32)cmd->device->lun);
+	else
+		dev_warn(&adapter->dev->dev, "RESETTING\n");
 
 	if(list_empty(&adapter->pending_list))
 		return FAILED;
@@ -1944,7 +1940,7 @@ megaraid_abort_and_reset(adapter_t *adapter, struct scsi_cmnd *cmd, int aor)
 
 		scb = list_entry(pos, scb_t, list);
 
-		if (scb->cmd == cmd) { /* Found command */
+		if (!cmd || scb->cmd == cmd) { /* Found command */
 
 			scb->state |= aor;
 
@@ -1963,31 +1959,23 @@ megaraid_abort_and_reset(adapter_t *adapter, struct scsi_cmnd *cmd, int aor)
 
 				return FAILED;
 			}
-			else {
+			/*
+			 * Not yet issued! Remove from the pending
+			 * list
+			 */
+			dev_warn(&adapter->dev->dev,
+				 "%s-[%x], driver owner\n",
+				 (cmd) ? "ABORTING":"RESET",
+				 scb->idx);
+			mega_free_scb(adapter, scb);
 
-				/*
-				 * Not yet issued! Remove from the pending
-				 * list
-				 */
-				dev_warn(&adapter->dev->dev,
-					"%s-[%x], driver owner\n",
-					(aor==SCB_ABORT) ? "ABORTING":"RESET",
-					scb->idx);
-
-				mega_free_scb(adapter, scb);
-
-				if( aor == SCB_ABORT ) {
-					cmd->result = (DID_ABORT << 16);
-				}
-				else {
-					cmd->result = (DID_RESET << 16);
-				}
-
+			if (cmd) {
+				cmd->result = (DID_ABORT << 16);
 				list_add_tail(SCSI_LIST(cmd),
-						&adapter->completed_list);
-
-				return SUCCESS;
+					      &adapter->completed_list);
 			}
+
+			return SUCCESS;
 		}
 	}
 
@@ -2792,7 +2780,7 @@ static inline void mega_create_proc_entry(int index, struct proc_dir_entry *pare
  * Return the disk geometry for a particular disk
  */
 static int
-megaraid_biosparam(struct scsi_device *sdev, struct block_device *bdev,
+megaraid_biosparam(struct scsi_device *sdev, struct gendisk *disk,
 		    sector_t capacity, int geom[])
 {
 	adapter_t	*adapter;
@@ -2825,7 +2813,7 @@ megaraid_biosparam(struct scsi_device *sdev, struct block_device *bdev,
 			geom[2] = cylinders;
 	}
 	else {
-		if (scsi_partsize(bdev, capacity, geom))
+		if (scsi_partsize(disk, capacity, geom))
 			return 0;
 
 		dev_info(&adapter->dev->dev,
@@ -3573,16 +3561,14 @@ mega_n_to_m(void __user *arg, megacmd_t *mc)
 static int
 mega_is_bios_enabled(adapter_t *adapter)
 {
-	unsigned char	raw_mbox[sizeof(struct mbox_out)];
-	mbox_t	*mbox;
+	struct mbox_out mbox;
+	unsigned char	*raw_mbox = (u8 *)&mbox;
 
-	mbox = (mbox_t *)raw_mbox;
-
-	memset(&mbox->m_out, 0, sizeof(raw_mbox));
+	memset(&mbox, 0, sizeof(mbox));
 
 	memset((void *)adapter->mega_buffer, 0, MEGA_BUFFER_SIZE);
 
-	mbox->m_out.xferaddr = (u32)adapter->buf_dma_handle;
+	mbox.xferaddr = (u32)adapter->buf_dma_handle;
 
 	raw_mbox[0] = IS_BIOS_ENABLED;
 	raw_mbox[2] = GET_BIOS;
@@ -3604,13 +3590,11 @@ mega_is_bios_enabled(adapter_t *adapter)
 static void
 mega_enum_raid_scsi(adapter_t *adapter)
 {
-	unsigned char raw_mbox[sizeof(struct mbox_out)];
-	mbox_t *mbox;
+	struct mbox_out mbox;
+	unsigned char	*raw_mbox = (u8 *)&mbox;
 	int i;
 
-	mbox = (mbox_t *)raw_mbox;
-
-	memset(&mbox->m_out, 0, sizeof(raw_mbox));
+	memset(&mbox, 0, sizeof(mbox));
 
 	/*
 	 * issue command to find out what channels are raid/scsi
@@ -3620,7 +3604,7 @@ mega_enum_raid_scsi(adapter_t *adapter)
 
 	memset((void *)adapter->mega_buffer, 0, MEGA_BUFFER_SIZE);
 
-	mbox->m_out.xferaddr = (u32)adapter->buf_dma_handle;
+	mbox.xferaddr = (u32)adapter->buf_dma_handle;
 
 	/*
 	 * Non-ROMB firmware fail this command, so all channels
@@ -3659,23 +3643,21 @@ static void
 mega_get_boot_drv(adapter_t *adapter)
 {
 	struct private_bios_data	*prv_bios_data;
-	unsigned char	raw_mbox[sizeof(struct mbox_out)];
-	mbox_t	*mbox;
+	struct mbox_out mbox;
+	unsigned char	*raw_mbox = (u8 *)&mbox;
 	u16	cksum = 0;
 	u8	*cksum_p;
 	u8	boot_pdrv;
 	int	i;
 
-	mbox = (mbox_t *)raw_mbox;
-
-	memset(&mbox->m_out, 0, sizeof(raw_mbox));
+	memset(&mbox, 0, sizeof(mbox));
 
 	raw_mbox[0] = BIOS_PVT_DATA;
 	raw_mbox[2] = GET_BIOS_PVT_DATA;
 
 	memset((void *)adapter->mega_buffer, 0, MEGA_BUFFER_SIZE);
 
-	mbox->m_out.xferaddr = (u32)adapter->buf_dma_handle;
+	mbox.xferaddr = (u32)adapter->buf_dma_handle;
 
 	adapter->boot_ldrv_enabled = 0;
 	adapter->boot_ldrv = 0;
@@ -3725,13 +3707,11 @@ mega_get_boot_drv(adapter_t *adapter)
 static int
 mega_support_random_del(adapter_t *adapter)
 {
-	unsigned char raw_mbox[sizeof(struct mbox_out)];
-	mbox_t *mbox;
+	struct mbox_out mbox;
+	unsigned char	*raw_mbox = (u8 *)&mbox;
 	int rval;
 
-	mbox = (mbox_t *)raw_mbox;
-
-	memset(&mbox->m_out, 0, sizeof(raw_mbox));
+	memset(&mbox, 0, sizeof(mbox));
 
 	/*
 	 * issue command
@@ -3754,13 +3734,11 @@ mega_support_random_del(adapter_t *adapter)
 static int
 mega_support_ext_cdb(adapter_t *adapter)
 {
-	unsigned char raw_mbox[sizeof(struct mbox_out)];
-	mbox_t *mbox;
+	struct mbox_out mbox;
+	unsigned char	*raw_mbox = (u8 *)&mbox;
 	int rval;
 
-	mbox = (mbox_t *)raw_mbox;
-
-	memset(&mbox->m_out, 0, sizeof(raw_mbox));
+	memset(&mbox, 0, sizeof(mbox));
 	/*
 	 * issue command to find out if controller supports extended CDBs.
 	 */
@@ -3869,16 +3847,14 @@ mega_do_del_logdrv(adapter_t *adapter, int logdrv)
 static void
 mega_get_max_sgl(adapter_t *adapter)
 {
-	unsigned char	raw_mbox[sizeof(struct mbox_out)];
-	mbox_t	*mbox;
+	struct mbox_out	mbox;
+	unsigned char	*raw_mbox = (u8 *)&mbox;
 
-	mbox = (mbox_t *)raw_mbox;
-
-	memset(mbox, 0, sizeof(raw_mbox));
+	memset(&mbox, 0, sizeof(mbox));
 
 	memset((void *)adapter->mega_buffer, 0, MEGA_BUFFER_SIZE);
 
-	mbox->m_out.xferaddr = (u32)adapter->buf_dma_handle;
+	mbox.xferaddr = (u32)adapter->buf_dma_handle;
 
 	raw_mbox[0] = MAIN_MISC_OPCODE;
 	raw_mbox[2] = GET_MAX_SG_SUPPORT;
@@ -3892,7 +3868,7 @@ mega_get_max_sgl(adapter_t *adapter)
 	}
 	else {
 		adapter->sglen = *((char *)adapter->mega_buffer);
-		
+
 		/*
 		 * Make sure this is not more than the resources we are
 		 * planning to allocate
@@ -3914,16 +3890,14 @@ mega_get_max_sgl(adapter_t *adapter)
 static int
 mega_support_cluster(adapter_t *adapter)
 {
-	unsigned char	raw_mbox[sizeof(struct mbox_out)];
-	mbox_t	*mbox;
+	struct mbox_out	mbox;
+	unsigned char	*raw_mbox = (u8 *)&mbox;
 
-	mbox = (mbox_t *)raw_mbox;
-
-	memset(mbox, 0, sizeof(raw_mbox));
+	memset(&mbox, 0, sizeof(mbox));
 
 	memset((void *)adapter->mega_buffer, 0, MEGA_BUFFER_SIZE);
 
-	mbox->m_out.xferaddr = (u32)adapter->buf_dma_handle;
+	mbox.xferaddr = (u32)adapter->buf_dma_handle;
 
 	/*
 	 * Try to get the initiator id. This command will succeed iff the
@@ -4122,7 +4096,7 @@ mega_internal_command(adapter_t *adapter, megacmd_t *mc, mega_passthru *pthru)
 	return rval;
 }
 
-static struct scsi_host_template megaraid_template = {
+static const struct scsi_host_template megaraid_template = {
 	.module				= THIS_MODULE,
 	.name				= "MegaRAID",
 	.proc_name			= "megaraid_legacy",
@@ -4135,10 +4109,9 @@ static struct scsi_host_template megaraid_template = {
 	.sg_tablesize			= MAX_SGLIST,
 	.cmd_per_lun			= DEF_CMD_PER_LUN,
 	.eh_abort_handler		= megaraid_abort,
-	.eh_device_reset_handler	= megaraid_reset,
-	.eh_bus_reset_handler		= megaraid_reset,
 	.eh_host_reset_handler		= megaraid_reset,
 	.no_write_same			= 1,
+	.cmd_size			= sizeof(struct megaraid_cmd_priv),
 };
 
 static int
@@ -4578,7 +4551,7 @@ megaraid_shutdown(struct pci_dev *pdev)
 	__megaraid_shutdown(adapter);
 }
 
-static struct pci_device_id megaraid_pci_tbl[] = {
+static const struct pci_device_id megaraid_pci_tbl[] = {
 	{PCI_VENDOR_ID_AMI, PCI_DEVICE_ID_AMI_MEGARAID,
 		PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{PCI_VENDOR_ID_AMI, PCI_DEVICE_ID_AMI_MEGARAID2,
@@ -4628,7 +4601,7 @@ static int __init megaraid_init(void)
 	 * major number allocation.
 	 */
 	major = register_chrdev(0, "megadev_legacy", &megadev_fops);
-	if (!major) {
+	if (major < 0) {
 		printk(KERN_WARNING
 				"megaraid: failed to register char device\n");
 	}

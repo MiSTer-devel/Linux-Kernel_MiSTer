@@ -227,7 +227,7 @@ TRACE_EVENT(oos_sync,
 #define GVT_CMD_STR_LEN 40
 TRACE_EVENT(gvt_command,
 	TP_PROTO(u8 vgpu_id, u8 ring_id, u32 ip_gma, u32 *cmd_va,
-		u32 cmd_len,  u32 buf_type, u32 buf_addr_type,
+		u32 cmd_len, u32 buf_type, u32 buf_addr_type,
 		void *workload, const char *cmd_name),
 
 	TP_ARGS(vgpu_id, ring_id, ip_gma, cmd_va, cmd_len, buf_type,
@@ -377,7 +377,7 @@ TRACE_EVENT(render_mmio,
 
 /* This part must be out of protection */
 #undef TRACE_INCLUDE_PATH
-#define TRACE_INCLUDE_PATH .
 #undef TRACE_INCLUDE_FILE
+#define TRACE_INCLUDE_PATH ../../drivers/gpu/drm/i915/gvt
 #define TRACE_INCLUDE_FILE trace
 #include <trace/define_trace.h>

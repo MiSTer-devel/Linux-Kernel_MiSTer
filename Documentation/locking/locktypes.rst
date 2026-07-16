@@ -204,15 +204,33 @@ per-CPU data structures on a non PREEMPT_RT kernel.
 local_lock is not suitable to protect against preemption or interrupts on a
 PREEMPT_RT kernel due to the PREEMPT_RT specific spinlock_t semantics.
 
+CPU local scope and bottom-half
+-------------------------------
+
+Per-CPU variables that are accessed only in softirq context should not rely on
+the assumption that this context is implicitly protected due to being
+non-preemptible. In a PREEMPT_RT kernel, softirq context is preemptible, and
+synchronizing every bottom-half-disabled section via implicit context results
+in an implicit per-CPU "big kernel lock."
+
+A local_lock_t together with local_lock_nested_bh() and
+local_unlock_nested_bh() for locking operations help to identify the locking
+scope.
+
+When lockdep is enabled, these functions verify that data structure access
+occurs within softirq context.
+Unlike local_lock(), local_unlock_nested_bh() does not disable preemption and
+does not add overhead when used without lockdep.
+
+On a PREEMPT_RT kernel, local_lock_t behaves as a real lock and
+local_unlock_nested_bh() serializes access to the data structure, which allows
+removal of serialization via local_bh_disable().
 
 raw_spinlock_t and spinlock_t
 =============================
 
 raw_spinlock_t
 --------------
-
-raw_spinlock_t is a strict spinning lock implementation regardless of the
-kernel configuration including PREEMPT_RT enabled kernels.
 
 raw_spinlock_t is a strict spinning lock implementation in all kernels,
 including PREEMPT_RT kernels.  Use raw_spinlock_t only in real critical
@@ -247,7 +265,7 @@ based on rt_mutex which changes the semantics:
    Non-PREEMPT_RT kernels disable preemption to get this effect.
 
    PREEMPT_RT kernels use a per-CPU lock for serialization which keeps
-   preemption disabled. The lock disables softirq handlers and also
+   preemption enabled. The lock disables softirq handlers and also
    prevents reentrancy due to task preemption.
 
 PREEMPT_RT kernels preserve all other spinlock_t semantics:
@@ -439,11 +457,9 @@ preemption. The following substitution works on both kernels::
   spin_lock(&p->lock);
   p->count += this_cpu_read(var2);
 
-On a non-PREEMPT_RT kernel migrate_disable() maps to preempt_disable()
-which makes the above code fully equivalent. On a PREEMPT_RT kernel
 migrate_disable() ensures that the task is pinned on the current CPU which
 in turn guarantees that the per-CPU access to var1 and var2 are staying on
-the same CPU.
+the same CPU while the task remains preemptible.
 
 The migrate_disable() substitution is not valid for the following
 scenario::
@@ -456,9 +472,8 @@ scenario::
     p = this_cpu_ptr(&var1);
     p->val = func2();
 
-While correct on a non-PREEMPT_RT kernel, this breaks on PREEMPT_RT because
-here migrate_disable() does not protect against reentrancy from a
-preempting task. A correct substitution for this case is::
+This breaks because migrate_disable() does not protect against reentrancy from
+a preempting task. A correct substitution for this case is::
 
   func()
   {
@@ -506,7 +521,7 @@ caveats also apply to bit spinlocks.
 Some bit spinlocks are replaced with regular spinlock_t for PREEMPT_RT
 using conditional (#ifdef'ed) code changes at the usage site.  In contrast,
 usage-site changes are not needed for the spinlock_t substitution.
-Instead, conditionals in header files and the core locking implemementation
+Instead, conditionals in header files and the core locking implementation
 enable the compiler to do the substitution transparently.
 
 

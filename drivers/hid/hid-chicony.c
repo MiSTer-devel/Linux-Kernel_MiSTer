@@ -88,8 +88,8 @@ static int ch_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 	return 1;
 }
 
-static __u8 *ch_switch12_report_fixup(struct hid_device *hdev, __u8 *rdesc,
-		unsigned int *rsize)
+static const __u8 *ch_switch12_report_fixup(struct hid_device *hdev,
+		__u8 *rdesc, unsigned int *rsize)
 {
 	struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
 	
@@ -113,6 +113,9 @@ static __u8 *ch_switch12_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 static int ch_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
 	int ret;
+
+	if (!hid_is_usb(hdev))
+		return -EINVAL;
 
 	hdev->quirks |= HID_QUIRK_INPUT_PER_APP;
 	ret = hid_parse(hdev);
@@ -149,4 +152,5 @@ static struct hid_driver ch_driver = {
 };
 module_hid_driver(ch_driver);
 
+MODULE_DESCRIPTION("HID driver for some chicony \"special\" devices");
 MODULE_LICENSE("GPL");

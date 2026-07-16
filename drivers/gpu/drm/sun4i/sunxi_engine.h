@@ -7,8 +7,10 @@
 #define _SUNXI_ENGINE_H_
 
 struct drm_plane;
+struct drm_crtc;
 struct drm_device;
 struct drm_crtc_state;
+struct drm_display_mode;
 
 struct sunxi_engine;
 
@@ -58,7 +60,9 @@ struct sunxi_engine_ops {
 	 *
 	 * This function is optional.
 	 */
-	void (*commit)(struct sunxi_engine *engine);
+	void (*commit)(struct sunxi_engine *engine,
+		       struct drm_crtc *crtc,
+		       struct drm_atomic_state *state);
 
 	/**
 	 * @layers_init:
@@ -108,6 +112,17 @@ struct sunxi_engine_ops {
 	 * This function is optional.
 	 */
 	void (*vblank_quirk)(struct sunxi_engine *engine);
+
+	/**
+	 * @mode_set
+	 *
+	 * This callback is used to set mode related parameters
+	 * like interlacing, screen size, etc. once per mode set.
+	 *
+	 * This function is optional.
+	 */
+	void (*mode_set)(struct sunxi_engine *engine,
+			 const struct drm_display_mode *mode);
 };
 
 /**
@@ -132,12 +147,16 @@ struct sunxi_engine {
 /**
  * sunxi_engine_commit() - commit all changes of the engine
  * @engine:	pointer to the engine
+ * @crtc:	pointer to crtc the engine is associated with
+ * @state:	atomic state
  */
 static inline void
-sunxi_engine_commit(struct sunxi_engine *engine)
+sunxi_engine_commit(struct sunxi_engine *engine,
+		    struct drm_crtc *crtc,
+		    struct drm_atomic_state *state)
 {
 	if (engine->ops && engine->ops->commit)
-		engine->ops->commit(engine);
+		engine->ops->commit(engine, crtc, state);
 }
 
 /**
@@ -180,5 +199,20 @@ sunxi_engine_disable_color_correction(struct sunxi_engine *engine)
 {
 	if (engine->ops && engine->ops->disable_color_correction)
 		engine->ops->disable_color_correction(engine);
+}
+
+/**
+ * sunxi_engine_mode_set - Inform engine of a new mode
+ * @engine:	pointer to the engine
+ * @mode:	new mode
+ *
+ * Engine can use this functionality to set specifics once per mode change.
+ */
+static inline void
+sunxi_engine_mode_set(struct sunxi_engine *engine,
+		      const struct drm_display_mode *mode)
+{
+	if (engine->ops && engine->ops->mode_set)
+		engine->ops->mode_set(engine, mode);
 }
 #endif /* _SUNXI_ENGINE_H_ */

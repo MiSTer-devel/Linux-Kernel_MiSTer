@@ -9,22 +9,33 @@
 
 #include <linux/cpu.h>
 #include <linux/stacktrace.h>
-#include <linux/tracehook.h>
+#include <linux/static_call.h>
 #include "core.h"
 #include "patch.h"
 #include "transition.h"
-#include "../sched/sched.h"
 
 #define MAX_STACK_ENTRIES  100
+static DEFINE_PER_CPU(unsigned long[MAX_STACK_ENTRIES], klp_stack_entries);
+
 #define STACK_ERR_BUF_SIZE 128
 
 #define SIGNALS_TIMEOUT 15
 
 struct klp_patch *klp_transition_patch;
 
-static int klp_target_state = KLP_UNDEFINED;
+static int klp_target_state = KLP_TRANSITION_IDLE;
 
 static unsigned int klp_signals_cnt;
+
+/*
+ * When a livepatch is in progress, enable klp stack checking in
+ * schedule().  This helps CPU-bound kthreads get patched.
+ */
+
+DEFINE_STATIC_KEY_FALSE(klp_sched_try_switch_key);
+
+#define klp_resched_enable() static_branch_enable(&klp_sched_try_switch_key)
+#define klp_resched_disable() static_branch_disable(&klp_sched_try_switch_key)
 
 /*
  * This work can be performed periodically to finish patching or unpatching any
@@ -76,16 +87,16 @@ static void klp_complete_transition(void)
 
 	pr_debug("'%s': completing %s transition\n",
 		 klp_transition_patch->mod->name,
-		 klp_target_state == KLP_PATCHED ? "patching" : "unpatching");
+		 klp_target_state == KLP_TRANSITION_PATCHED ? "patching" : "unpatching");
 
-	if (klp_transition_patch->replace && klp_target_state == KLP_PATCHED) {
+	if (klp_transition_patch->replace && klp_target_state == KLP_TRANSITION_PATCHED) {
 		klp_unpatch_replaced_patches(klp_transition_patch);
 		klp_discard_nops(klp_transition_patch);
 	}
 
-	if (klp_target_state == KLP_UNPATCHED) {
+	if (klp_target_state == KLP_TRANSITION_UNPATCHED) {
 		/*
-		 * All tasks have transitioned to KLP_UNPATCHED so we can now
+		 * All tasks have transitioned to KLP_TRANSITION_UNPATCHED so we can now
 		 * remove the new functions from the func_stack.
 		 */
 		klp_unpatch_objects(klp_transition_patch);
@@ -103,36 +114,36 @@ static void klp_complete_transition(void)
 		klp_for_each_func(obj, func)
 			func->transition = false;
 
-	/* Prevent klp_ftrace_handler() from seeing KLP_UNDEFINED state */
-	if (klp_target_state == KLP_PATCHED)
+	/* Prevent klp_ftrace_handler() from seeing KLP_TRANSITION_IDLE state */
+	if (klp_target_state == KLP_TRANSITION_PATCHED)
 		klp_synchronize_transition();
 
 	read_lock(&tasklist_lock);
 	for_each_process_thread(g, task) {
 		WARN_ON_ONCE(test_tsk_thread_flag(task, TIF_PATCH_PENDING));
-		task->patch_state = KLP_UNDEFINED;
+		task->patch_state = KLP_TRANSITION_IDLE;
 	}
 	read_unlock(&tasklist_lock);
 
 	for_each_possible_cpu(cpu) {
 		task = idle_task(cpu);
 		WARN_ON_ONCE(test_tsk_thread_flag(task, TIF_PATCH_PENDING));
-		task->patch_state = KLP_UNDEFINED;
+		task->patch_state = KLP_TRANSITION_IDLE;
 	}
 
 	klp_for_each_object(klp_transition_patch, obj) {
 		if (!klp_is_object_loaded(obj))
 			continue;
-		if (klp_target_state == KLP_PATCHED)
+		if (klp_target_state == KLP_TRANSITION_PATCHED)
 			klp_post_patch_callback(obj);
-		else if (klp_target_state == KLP_UNPATCHED)
+		else if (klp_target_state == KLP_TRANSITION_UNPATCHED)
 			klp_post_unpatch_callback(obj);
 	}
 
 	pr_notice("'%s': %s complete\n", klp_transition_patch->mod->name,
-		  klp_target_state == KLP_PATCHED ? "patching" : "unpatching");
+		  klp_target_state == KLP_TRANSITION_PATCHED ? "patching" : "unpatching");
 
-	klp_target_state = KLP_UNDEFINED;
+	klp_target_state = KLP_TRANSITION_IDLE;
 	klp_transition_patch = NULL;
 }
 
@@ -144,13 +155,13 @@ static void klp_complete_transition(void)
  */
 void klp_cancel_transition(void)
 {
-	if (WARN_ON_ONCE(klp_target_state != KLP_PATCHED))
+	if (WARN_ON_ONCE(klp_target_state != KLP_TRANSITION_PATCHED))
 		return;
 
 	pr_debug("'%s': canceling patching transition, going to unpatch\n",
 		 klp_transition_patch->mod->name);
 
-	klp_target_state = KLP_UNPATCHED;
+	klp_target_state = KLP_TRANSITION_UNPATCHED;
 	klp_complete_transition();
 }
 
@@ -174,8 +185,8 @@ void klp_update_patch_state(struct task_struct *task)
 	 * barrier (smp_rmb) for two cases:
 	 *
 	 * 1) Enforce the order of the TIF_PATCH_PENDING read and the
-	 *    klp_target_state read.  The corresponding write barrier is in
-	 *    klp_init_transition().
+	 *    klp_target_state read.  The corresponding write barriers are in
+	 *    klp_init_transition() and klp_reverse_transition().
 	 *
 	 * 2) Enforce the order of the TIF_PATCH_PENDING read and a future read
 	 *    of func->transition, if klp_ftrace_handler() is called later on
@@ -198,36 +209,36 @@ static int klp_check_stack_func(struct klp_func *func, unsigned long *entries,
 	struct klp_ops *ops;
 	int i;
 
+	if (klp_target_state == KLP_TRANSITION_UNPATCHED) {
+		 /*
+		  * Check for the to-be-unpatched function
+		  * (the func itself).
+		  */
+		func_addr = (unsigned long)func->new_func;
+		func_size = func->new_size;
+	} else {
+		/*
+		 * Check for the to-be-patched function
+		 * (the previous func).
+		 */
+		ops = klp_find_ops(func->old_func);
+
+		if (list_is_singular(&ops->func_stack)) {
+			/* original function */
+			func_addr = (unsigned long)func->old_func;
+			func_size = func->old_size;
+		} else {
+			/* previously patched function */
+			struct klp_func *prev;
+
+			prev = list_next_entry(func, stack_node);
+			func_addr = (unsigned long)prev->new_func;
+			func_size = prev->new_size;
+		}
+	}
+
 	for (i = 0; i < nr_entries; i++) {
 		address = entries[i];
-
-		if (klp_target_state == KLP_UNPATCHED) {
-			 /*
-			  * Check for the to-be-unpatched function
-			  * (the func itself).
-			  */
-			func_addr = (unsigned long)func->new_func;
-			func_size = func->new_size;
-		} else {
-			/*
-			 * Check for the to-be-patched function
-			 * (the previous func).
-			 */
-			ops = klp_find_ops(func->old_func);
-
-			if (list_is_singular(&ops->func_stack)) {
-				/* original function */
-				func_addr = (unsigned long)func->old_func;
-				func_size = func->old_size;
-			} else {
-				/* previously patched function */
-				struct klp_func *prev;
-
-				prev = list_next_entry(func, stack_node);
-				func_addr = (unsigned long)prev->new_func;
-				func_size = prev->new_size;
-			}
-		}
 
 		if (address >= func_addr && address < func_addr + func_size)
 			return -EAGAIN;
@@ -240,20 +251,19 @@ static int klp_check_stack_func(struct klp_func *func, unsigned long *entries,
  * Determine whether it's safe to transition the task to the target patch state
  * by looking for any to-be-patched or to-be-unpatched functions on its stack.
  */
-static int klp_check_stack(struct task_struct *task, char *err_buf)
+static int klp_check_stack(struct task_struct *task, const char **oldname)
 {
-	static unsigned long entries[MAX_STACK_ENTRIES];
+	unsigned long *entries = this_cpu_ptr(klp_stack_entries);
 	struct klp_object *obj;
 	struct klp_func *func;
 	int ret, nr_entries;
 
-	ret = stack_trace_save_tsk_reliable(task, entries, ARRAY_SIZE(entries));
-	if (ret < 0) {
-		snprintf(err_buf, STACK_ERR_BUF_SIZE,
-			 "%s: %s:%d has an unreliable stack\n",
-			 __func__, task->comm, task->pid);
-		return ret;
-	}
+	/* Protect 'klp_stack_entries' */
+	lockdep_assert_preemption_disabled();
+
+	ret = stack_trace_save_tsk_reliable(task, entries, MAX_STACK_ENTRIES);
+	if (ret < 0)
+		return -EINVAL;
 	nr_entries = ret;
 
 	klp_for_each_object(klp_transition_patch, obj) {
@@ -262,15 +272,28 @@ static int klp_check_stack(struct task_struct *task, char *err_buf)
 		klp_for_each_func(obj, func) {
 			ret = klp_check_stack_func(func, entries, nr_entries);
 			if (ret) {
-				snprintf(err_buf, STACK_ERR_BUF_SIZE,
-					 "%s: %s:%d is sleeping on function %s\n",
-					 __func__, task->comm, task->pid,
-					 func->old_name);
-				return ret;
+				*oldname = func->old_name;
+				return -EADDRINUSE;
 			}
 		}
 	}
 
+	return 0;
+}
+
+static int klp_check_and_switch_task(struct task_struct *task, void *arg)
+{
+	int ret;
+
+	if (task_curr(task) && task != current)
+		return -EBUSY;
+
+	ret = klp_check_stack(task, arg);
+	if (ret)
+		return ret;
+
+	clear_tsk_thread_flag(task, TIF_PATCH_PENDING);
+	task->patch_state = klp_target_state;
 	return 0;
 }
 
@@ -281,13 +304,8 @@ static int klp_check_stack(struct task_struct *task, char *err_buf)
  */
 static bool klp_try_switch_task(struct task_struct *task)
 {
-	static char err_buf[STACK_ERR_BUF_SIZE];
-	struct rq *rq;
-	struct rq_flags flags;
+	const char *old_name;
 	int ret;
-	bool success = false;
-
-	err_buf[0] = '\0';
 
 	/* check if this task has already switched over */
 	if (task->patch_state == klp_target_state)
@@ -305,36 +323,61 @@ static bool klp_try_switch_task(struct task_struct *task)
 	 * functions.  If all goes well, switch the task to the target patch
 	 * state.
 	 */
-	rq = task_rq_lock(task, &flags);
+	if (task == current)
+		ret = klp_check_and_switch_task(current, &old_name);
+	else
+		ret = task_call_func(task, klp_check_and_switch_task, &old_name);
 
-	if (task_running(rq, task) && task != current) {
-		snprintf(err_buf, STACK_ERR_BUF_SIZE,
-			 "%s: %s:%d is running\n", __func__, task->comm,
-			 task->pid);
-		goto done;
+	switch (ret) {
+	case 0:		/* success */
+		break;
+
+	case -EBUSY:	/* klp_check_and_switch_task() */
+		pr_debug("%s: %s:%d is running\n",
+			 __func__, task->comm, task->pid);
+		break;
+	case -EINVAL:	/* klp_check_and_switch_task() */
+		pr_debug("%s: %s:%d has an unreliable stack\n",
+			 __func__, task->comm, task->pid);
+		break;
+	case -EADDRINUSE: /* klp_check_and_switch_task() */
+		pr_debug("%s: %s:%d is sleeping on function %s\n",
+			 __func__, task->comm, task->pid, old_name);
+		break;
+
+	default:
+		pr_debug("%s: Unknown error code (%d) when trying to switch %s:%d\n",
+			 __func__, ret, task->comm, task->pid);
+		break;
 	}
 
-	ret = klp_check_stack(task, err_buf);
-	if (ret)
-		goto done;
+	return !ret;
+}
 
-	success = true;
+void __klp_sched_try_switch(void)
+{
+	/*
+	 * This function is called from __schedule() while a context switch is
+	 * about to happen. Preemption is already disabled and klp_mutex
+	 * can't be acquired.
+	 * Disabled preemption is used to prevent racing with other callers of
+	 * klp_try_switch_task(). Thanks to task_call_func() they won't be
+	 * able to switch to this task while it's running.
+	 */
+	lockdep_assert_preemption_disabled();
 
-	clear_tsk_thread_flag(task, TIF_PATCH_PENDING);
-	task->patch_state = klp_target_state;
-
-done:
-	task_rq_unlock(rq, task, &flags);
+	if (likely(!klp_patch_pending(current)))
+		return;
 
 	/*
-	 * Due to console deadlock issues, pr_debug() can't be used while
-	 * holding the task rq lock.  Instead we have to use a temporary buffer
-	 * and print the debug message after releasing the lock.
+	 * Enforce the order of the TIF_PATCH_PENDING read above and the
+	 * klp_target_state read in klp_try_switch_task().  The corresponding
+	 * write barriers are in klp_init_transition() and
+	 * klp_reverse_transition().
 	 */
-	if (err_buf[0] != '\0')
-		pr_debug("%s", err_buf);
+	smp_rmb();
 
-	return success;
+	klp_try_switch_task(current);
 }
 
 /*
@@ -391,7 +434,7 @@ void klp_try_complete_transition(void)
 	struct klp_patch *patch;
 	bool complete = true;
 
-	WARN_ON_ONCE(klp_target_state == KLP_UNDEFINED);
+	WARN_ON_ONCE(klp_target_state == KLP_TRANSITION_IDLE);
 
 	/*
 	 * Try to switch the tasks to the target patch state by walking their
@@ -415,8 +458,11 @@ void klp_try_complete_transition(void)
 	for_each_possible_cpu(cpu) {
 		task = idle_task(cpu);
 		if (cpu_online(cpu)) {
-			if (!klp_try_switch_task(task))
+			if (!klp_try_switch_task(task)) {
 				complete = false;
+				/* Make idle task go through the main loop. */
+				wake_up_if_idle(cpu);
+			}
 		} else if (task->patch_state != klp_target_state) {
 			/* offline idle tasks can be switched immediately */
 			clear_tsk_thread_flag(task, TIF_PATCH_PENDING);
@@ -440,7 +486,8 @@ void klp_try_complete_transition(void)
 		return;
 	}
 
-	/* we're done, now cleanup the data structures */
+	/* Done!  Now cleanup the data structures. */
+	klp_resched_disable();
 	patch = klp_transition_patch;
 	klp_complete_transition();
 
@@ -464,11 +511,11 @@ void klp_start_transition(void)
 	struct task_struct *g, *task;
 	unsigned int cpu;
 
-	WARN_ON_ONCE(klp_target_state == KLP_UNDEFINED);
+	WARN_ON_ONCE(klp_target_state == KLP_TRANSITION_IDLE);
 
 	pr_notice("'%s': starting %s transition\n",
 		  klp_transition_patch->mod->name,
-		  klp_target_state == KLP_PATCHED ? "patching" : "unpatching");
+		  klp_target_state == KLP_TRANSITION_PATCHED ? "patching" : "unpatching");
 
 	/*
 	 * Mark all normal tasks as needing a patch state update.  They'll
@@ -492,6 +539,8 @@ void klp_start_transition(void)
 			set_tsk_thread_flag(task, TIF_PATCH_PENDING);
 	}
 
+	klp_resched_enable();
+
 	klp_signals_cnt = 0;
 }
 
@@ -508,7 +557,7 @@ void klp_init_transition(struct klp_patch *patch, int state)
 	struct klp_func *func;
 	int initial_state = !state;
 
-	WARN_ON_ONCE(klp_target_state != KLP_UNDEFINED);
+	WARN_ON_ONCE(klp_target_state != KLP_TRANSITION_IDLE);
 
 	klp_transition_patch = patch;
 
@@ -519,7 +568,7 @@ void klp_init_transition(struct klp_patch *patch, int state)
 	klp_target_state = state;
 
 	pr_debug("'%s': initializing %s transition\n", patch->mod->name,
-		 klp_target_state == KLP_PATCHED ? "patching" : "unpatching");
+		 klp_target_state == KLP_TRANSITION_PATCHED ? "patching" : "unpatching");
 
 	/*
 	 * Initialize all tasks to the initial patch state to prepare them for
@@ -527,7 +576,7 @@ void klp_init_transition(struct klp_patch *patch, int state)
 	 */
 	read_lock(&tasklist_lock);
 	for_each_process_thread(g, task) {
-		WARN_ON_ONCE(task->patch_state != KLP_UNDEFINED);
+		WARN_ON_ONCE(task->patch_state != KLP_TRANSITION_IDLE);
 		task->patch_state = initial_state;
 	}
 	read_unlock(&tasklist_lock);
@@ -537,18 +586,19 @@ void klp_init_transition(struct klp_patch *patch, int state)
 	 */
 	for_each_possible_cpu(cpu) {
 		task = idle_task(cpu);
-		WARN_ON_ONCE(task->patch_state != KLP_UNDEFINED);
+		WARN_ON_ONCE(task->patch_state != KLP_TRANSITION_IDLE);
 		task->patch_state = initial_state;
 	}
 
 	/*
 	 * Enforce the order of the task->patch_state initializations and the
 	 * func->transition updates to ensure that klp_ftrace_handler() doesn't
-	 * see a func in transition with a task->patch_state of KLP_UNDEFINED.
+	 * see a func in transition with a task->patch_state of KLP_TRANSITION_IDLE.
 	 *
 	 * Also enforce the order of the klp_target_state write and future
-	 * TIF_PATCH_PENDING writes to ensure klp_update_patch_state() doesn't
-	 * set a task->patch_state to KLP_UNDEFINED.
+	 * TIF_PATCH_PENDING writes to ensure klp_update_patch_state() and
+	 * __klp_sched_try_switch() don't set a task->patch_state to
+	 * KLP_TRANSITION_IDLE.
 	 */
 	smp_wmb();
 
@@ -581,17 +631,13 @@ void klp_reverse_transition(void)
 
 	pr_debug("'%s': reversing transition from %s\n",
 		 klp_transition_patch->mod->name,
-		 klp_target_state == KLP_PATCHED ? "patching to unpatching" :
+		 klp_target_state == KLP_TRANSITION_PATCHED ? "patching to unpatching" :
 						   "unpatching to patching");
-
-	klp_transition_patch->enabled = !klp_transition_patch->enabled;
-
-	klp_target_state = !klp_target_state;
 
 	/*
 	 * Clear all TIF_PATCH_PENDING flags to prevent races caused by
-	 * klp_update_patch_state() running in parallel with
-	 * klp_start_transition().
+	 * klp_update_patch_state() or __klp_sched_try_switch() running in
+	 * parallel with the reverse transition.
 	 */
 	read_lock(&tasklist_lock);
 	for_each_process_thread(g, task)
@@ -601,8 +647,27 @@ void klp_reverse_transition(void)
 	for_each_possible_cpu(cpu)
 		clear_tsk_thread_flag(idle_task(cpu), TIF_PATCH_PENDING);
 
-	/* Let any remaining calls to klp_update_patch_state() complete */
+	/*
+	 * Make sure all existing invocations of klp_update_patch_state() and
+	 * __klp_sched_try_switch() see the cleared TIF_PATCH_PENDING before
+	 * starting the reverse transition.
+	 */
 	klp_synchronize_transition();
+
+	/*
+	 * All patching has stopped, now re-initialize the global variables to
+	 * prepare for the reverse transition.
+	 */
+	klp_transition_patch->enabled = !klp_transition_patch->enabled;
+	klp_target_state = !klp_target_state;
+
+	/*
+	 * Enforce the order of the klp_target_state write and the
+	 * TIF_PATCH_PENDING writes in klp_start_transition() to ensure
+	 * klp_update_patch_state() and __klp_sched_try_switch() don't set
+	 * task->patch_state to the wrong value.
+	 */
+	smp_wmb();
 
 	klp_start_transition();
 }
@@ -610,9 +675,23 @@ void klp_reverse_transition(void)
 /* Called from copy_process() during fork */
 void klp_copy_process(struct task_struct *child)
 {
-	child->patch_state = current->patch_state;
 
-	/* TIF_PATCH_PENDING gets copied in setup_thread_stack() */
+	/*
+	 * The parent process may have gone through a KLP transition since
+	 * the thread flag was copied in setup_thread_stack earlier. Bring
+	 * the task flag up to date with the parent here.
+	 *
+	 * The operation is serialized against all klp_*_transition()
+	 * operations by the tasklist_lock. The only exceptions are
+	 * klp_update_patch_state(current) and __klp_sched_try_switch(), but we
+	 * cannot race with them because we are current.
+	 */
+	if (test_tsk_thread_flag(current, TIF_PATCH_PENDING))
+		set_tsk_thread_flag(child, TIF_PATCH_PENDING);
+	else
+		clear_tsk_thread_flag(child, TIF_PATCH_PENDING);
+
+	child->patch_state = current->patch_state;
 }
 
 /*
@@ -640,6 +719,13 @@ void klp_force_transition(void)
 	for_each_possible_cpu(cpu)
 		klp_update_patch_state(idle_task(cpu));
 
-	klp_for_each_patch(patch)
-		patch->forced = true;
+	/* Set forced flag for patches being removed. */
+	if (klp_target_state == KLP_TRANSITION_UNPATCHED)
+		klp_transition_patch->forced = true;
+	else if (klp_transition_patch->replace) {
+		klp_for_each_patch(patch) {
+			if (patch != klp_transition_patch)
+				patch->forced = true;
+		}
+	}
 }

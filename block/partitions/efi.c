@@ -133,7 +133,7 @@ efi_crc32(const void *buf, unsigned long len)
  */
 static u64 last_lba(struct gendisk *disk)
 {
-	return div_u64(disk->part0->bd_inode->i_size,
+	return div_u64(bdev_nr_bytes(disk->part0),
 		       queue_logical_block_size(disk->queue)) - 1ULL;
 }
 
@@ -682,7 +682,7 @@ static void utf16_le_to_7bit(const __le16 *in, unsigned int size, u8 *out)
 	out[size] = 0;
 
 	while (i < size) {
-		u8 c = le16_to_cpu(in[i]) & 0xff;
+		u8 c = le16_to_cpu(in[i]) & 0x7f;
 
 		if (c && !isprint(c))
 			c = '!';

@@ -13,7 +13,7 @@
 #define DRIVER_DESC "WL1273 FM Radio Core"
 
 static const struct i2c_device_id wl1273_driver_id_table[] = {
-	{ WL1273_FM_DRIVER_NAME, 0 },
+	{ WL1273_FM_DRIVER_NAME },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wl1273_driver_id_table);
@@ -156,8 +156,7 @@ static int wl1273_fm_set_volume(struct wl1273_core *core, unsigned int volume)
 	return 0;
 }
 
-static int wl1273_core_probe(struct i2c_client *client,
-				       const struct i2c_device_id *id)
+static int wl1273_core_probe(struct i2c_client *client)
 {
 	struct wl1273_fm_platform_data *pdata = dev_get_platdata(&client->dev);
 	struct wl1273_core *core;

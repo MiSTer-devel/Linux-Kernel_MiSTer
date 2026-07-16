@@ -20,6 +20,7 @@
 #include <asm/cputable.h>
 #include <asm/kvm_ppc.h>
 #include <asm/dbell.h>
+#include <asm/ppc-opcode.h>
 
 #include "booke.h"
 #include "e500.h"
@@ -92,7 +93,11 @@ void kvmppc_e500_tlbil_all(struct kvmppc_vcpu_e500 *vcpu_e500)
 
 	local_irq_save(flags);
 	mtspr(SPRN_MAS5, MAS5_SGS | get_lpid(&vcpu_e500->vcpu));
-	asm volatile("tlbilxlpid");
+	/*
+	 * clang-17 and older could not assemble tlbilxlpid.
+	 * https://github.com/ClangBuiltLinux/linux/issues/1891
+	 */
+	asm volatile (PPC_TLBILX_LPID);
 	mtspr(SPRN_MAS5, 0);
 	local_irq_restore(flags);
 }
@@ -168,7 +173,7 @@ static void kvmppc_core_vcpu_put_e500mc(struct kvm_vcpu *vcpu)
 	kvmppc_booke_vcpu_put(vcpu);
 }
 
-int kvmppc_core_check_processor_compat(void)
+static int kvmppc_e500mc_check_processor_compat(void)
 {
 	int r;
 
@@ -309,7 +314,7 @@ static int kvmppc_core_vcpu_create_e500mc(struct kvm_vcpu *vcpu)
 	BUILD_BUG_ON(offsetof(struct kvmppc_vcpu_e500, vcpu) != 0);
 	vcpu_e500 = to_e500(vcpu);
 
-	/* Invalid PIR value -- this LPID dosn't have valid state on any cpu */
+	/* Invalid PIR value -- this LPID doesn't have valid state on any cpu */
 	vcpu->arch.oldpir = 0xffffffff;
 
 	err = kvmppc_e500_tlb_init(vcpu_e500);
@@ -381,11 +386,16 @@ static struct kvmppc_ops kvm_ops_e500mc = {
 	.emulate_op = kvmppc_core_emulate_op_e500,
 	.emulate_mtspr = kvmppc_core_emulate_mtspr_e500,
 	.emulate_mfspr = kvmppc_core_emulate_mfspr_e500,
+	.create_vcpu_debugfs = kvmppc_create_vcpu_debugfs_e500,
 };
 
 static int __init kvmppc_e500mc_init(void)
 {
 	int r;
+
+	r = kvmppc_e500mc_check_processor_compat();
+	if (r)
+		goto err_out;
 
 	r = kvmppc_booke_init();
 	if (r)
@@ -398,9 +408,8 @@ static int __init kvmppc_e500mc_init(void)
 	 * allocator.
 	 */
 	kvmppc_init_lpid(KVMPPC_NR_LPIDS/threads_per_core);
-	kvmppc_claim_lpid(0); /* host */
 
-	r = kvm_init(NULL, sizeof(struct kvmppc_vcpu_e500), 0, THIS_MODULE);
+	r = kvm_init(sizeof(struct kvmppc_vcpu_e500), 0, THIS_MODULE);
 	if (r)
 		goto err_out;
 	kvm_ops_e500mc.owner = THIS_MODULE;

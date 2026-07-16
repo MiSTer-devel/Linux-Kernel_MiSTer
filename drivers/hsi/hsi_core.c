@@ -30,14 +30,14 @@ static struct attribute *hsi_bus_dev_attrs[] = {
 };
 ATTRIBUTE_GROUPS(hsi_bus_dev);
 
-static int hsi_bus_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int hsi_bus_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
 	add_uevent_var(env, "MODALIAS=hsi:%s", dev_name(dev));
 
 	return 0;
 }
 
-static int hsi_bus_match(struct device *dev, struct device_driver *driver)
+static int hsi_bus_match(struct device *dev, const struct device_driver *driver)
 {
 	if (of_driver_match_device(dev, driver))
 		return true;
@@ -48,7 +48,7 @@ static int hsi_bus_match(struct device *dev, struct device_driver *driver)
 	return false;
 }
 
-static struct bus_type hsi_bus_type = {
+static const struct bus_type hsi_bus_type = {
 	.name		= "hsi",
 	.dev_groups	= hsi_bus_dev_groups,
 	.match		= hsi_bus_match,
@@ -102,6 +102,7 @@ struct hsi_client *hsi_new_client(struct hsi_port *port,
 	if (device_register(&cl->device) < 0) {
 		pr_err("hsi: failed to register client: %s\n", info->name);
 		put_device(&cl->device);
+		goto err;
 	}
 
 	return cl;
@@ -206,7 +207,7 @@ static void hsi_add_client_from_dt(struct hsi_port *port,
 	if (!cl)
 		return;
 
-	err = of_modalias_node(client, name, sizeof(name));
+	err = of_alias_from_compatible(client, name, sizeof(name));
 	if (err)
 		goto err;
 

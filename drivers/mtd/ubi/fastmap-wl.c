@@ -76,7 +76,7 @@ struct ubi_wl_entry *ubi_wl_get_fm_peb(struct ubi_device *ubi, int anchor)
 {
 	struct ubi_wl_entry *e = NULL;
 
-	if (!ubi->free.rb_node || (ubi->free_count - ubi->beb_rsvd_pebs < 1))
+	if (!ubi->free.rb_node)
 		goto out;
 
 	if (anchor)
@@ -97,16 +97,104 @@ out:
 	return e;
 }
 
+/*
+ * wait_free_pebs_for_pool - wait until there enough free pebs
+ * @ubi: UBI device description object
+ *
+ * Wait and execute do_work until there are enough free pebs, fill pool
+ * as much as we can. This will reduce pool refilling times, which can
+ * reduce the fastmap updating frequency.
+ */
+static void wait_free_pebs_for_pool(struct ubi_device *ubi)
+{
+	struct ubi_fm_pool *wl_pool = &ubi->fm_wl_pool;
+	struct ubi_fm_pool *pool = &ubi->fm_pool;
+	int free, expect_free, executed;
+	/*
+	 * There are at least following free pebs which reserved by UBI:
+	 * 1. WL_RESERVED_PEBS[1]
+	 * 2. EBA_RESERVED_PEBS[1]
+	 * 3. fm pebs - 1: Twice fastmap size deducted by fastmap and fm_anchor
+	 * 4. beb_rsvd_pebs: This value should be get under lock ubi->wl_lock
+	 */
+	int reserved = WL_RESERVED_PEBS + EBA_RESERVED_PEBS +
+		       ubi->fm_size / ubi->leb_size - 1 + ubi->fm_pool_rsv_cnt;
+
+	do {
+		spin_lock(&ubi->wl_lock);
+		free = ubi->free_count;
+		free += pool->size - pool->used + wl_pool->size - wl_pool->used;
+		expect_free = reserved + ubi->beb_rsvd_pebs;
+		spin_unlock(&ubi->wl_lock);
+
+		/*
+		 * Break out if there are no works or work is executed failure,
+		 * given the fact that erase_worker will schedule itself when
+		 * -EBUSY is returned from mtd layer caused by system shutdown.
+		 */
+		if (do_work(ubi, &executed) || !executed)
+			break;
+	} while (free < expect_free);
+}
+
+/*
+ * left_free_count - returns the number of free pebs to fill fm pools
+ * @ubi: UBI device description object
+ *
+ * This helper function returns the number of free pebs (deducted
+ * by fastmap pebs) to fill fm_pool and fm_wl_pool.
+ */
+static int left_free_count(struct ubi_device *ubi)
+{
+	int fm_used = 0;	// fastmap non anchor pebs.
+
+	if (!ubi->free.rb_node)
+		return 0;
+
+	if (!ubi->ro_mode && !ubi->fm_disabled)
+		fm_used = ubi->fm_size / ubi->leb_size - 1;
+
+	return ubi->free_count - fm_used;
+}
+
+/*
+ * can_fill_pools - whether free PEBs will be left after filling pools
+ * @ubi: UBI device description object
+ * @free: current number of free PEBs
+ *
+ * Return %1 if there are still left free PEBs after filling pools,
+ * otherwise %0 is returned.
+ */
+static int can_fill_pools(struct ubi_device *ubi, int free)
+{
+	struct ubi_fm_pool *wl_pool = &ubi->fm_wl_pool;
+	struct ubi_fm_pool *pool = &ubi->fm_pool;
+	int pool_need = pool->max_size - pool->size +
+			wl_pool->max_size - wl_pool->size;
+
+	if (free - pool_need < 1)
+		return 0;
+
+	return 1;
+}
+
 /**
- * ubi_refill_pools - refills all fastmap PEB pools.
+ * ubi_refill_pools_and_lock - refills all fastmap PEB pools and takes fm locks.
  * @ubi: UBI device description object
  */
-void ubi_refill_pools(struct ubi_device *ubi)
+void ubi_refill_pools_and_lock(struct ubi_device *ubi)
 {
 	struct ubi_fm_pool *wl_pool = &ubi->fm_wl_pool;
 	struct ubi_fm_pool *pool = &ubi->fm_pool;
 	struct ubi_wl_entry *e;
 	int enough;
+
+	if (!ubi->ro_mode && !ubi->fm_disabled)
+		wait_free_pebs_for_pool(ubi);
+
+	down_write(&ubi->fm_protect);
+	down_write(&ubi->work_sem);
+	down_write(&ubi->fm_eba_sem);
 
 	spin_lock(&ubi->wl_lock);
 
@@ -119,22 +207,20 @@ void ubi_refill_pools(struct ubi_device *ubi)
 	if (ubi->fm_anchor) {
 		wl_tree_add(ubi->fm_anchor, &ubi->free);
 		ubi->free_count++;
-	}
-	if (ubi->fm_next_anchor) {
-		wl_tree_add(ubi->fm_next_anchor, &ubi->free);
-		ubi->free_count++;
+		ubi->fm_anchor = NULL;
 	}
 
-	/* All available PEBs are in ubi->free, now is the time to get
-	 * the best anchor PEBs.
-	 */
-	ubi->fm_anchor = ubi_wl_get_fm_peb(ubi, 1);
-	ubi->fm_next_anchor = ubi_wl_get_fm_peb(ubi, 1);
+	if (!ubi->fm_disabled)
+		/*
+		 * All available PEBs are in ubi->free, now is the time to get
+		 * the best anchor PEBs.
+		 */
+		ubi->fm_anchor = ubi_wl_get_fm_peb(ubi, 1);
 
 	for (;;) {
 		enough = 0;
 		if (pool->size < pool->max_size) {
-			if (!ubi->free.rb_node)
+			if (left_free_count(ubi) <= 0)
 				break;
 
 			e = wl_get_wle(ubi);
@@ -147,11 +233,13 @@ void ubi_refill_pools(struct ubi_device *ubi)
 			enough++;
 
 		if (wl_pool->size < wl_pool->max_size) {
-			if (!ubi->free.rb_node ||
-			   (ubi->free_count - ubi->beb_rsvd_pebs < 5))
+			int left_free = left_free_count(ubi);
+
+			if (left_free <= 0)
 				break;
 
-			e = find_wl_entry(ubi, &ubi->free, WL_FREE_MAX_DIFF);
+			e = find_wl_entry(ubi, &ubi->free, WL_FREE_MAX_DIFF,
+					  !can_fill_pools(ubi, left_free));
 			self_check_in_wl_tree(ubi, e, &ubi->free);
 			rb_erase(&e->u.rb, &ubi->free);
 			ubi->free_count--;
@@ -186,7 +274,7 @@ static int produce_free_peb(struct ubi_device *ubi)
 
 	while (!ubi->free.rb_node && ubi->works_count) {
 		dbg_wl("do one work synchronously");
-		err = do_work(ubi);
+		err = do_work(ubi, NULL);
 
 		if (err)
 			return err;
@@ -253,6 +341,71 @@ out:
 	return ret;
 }
 
+/**
+ * next_peb_for_wl - returns next PEB to be used internally by the
+ * WL sub-system.
+ *
+ * @ubi: UBI device description object
+ * @need_fill: whether to fill wear-leveling pool when no PEBs are found
+ */
+static struct ubi_wl_entry *next_peb_for_wl(struct ubi_device *ubi,
+					    bool need_fill)
+{
+	struct ubi_fm_pool *pool = &ubi->fm_wl_pool;
+	int pnum;
+
+	if (pool->used == pool->size) {
+		if (need_fill && !ubi->fm_work_scheduled) {
+			/*
+			 * We cannot update the fastmap here because this
+			 * function is called in atomic context.
+			 * Let's fail here and refill/update it as soon as
+			 * possible.
+			 */
+			ubi->fm_work_scheduled = 1;
+			schedule_work(&ubi->fm_work);
+		}
+		return NULL;
+	}
+
+	pnum = pool->pebs[pool->used];
+	return ubi->lookuptbl[pnum];
+}
+
+/**
+ * need_wear_leveling - checks whether to trigger a wear leveling work.
+ * UBI fetches free PEB from wl_pool, we check free PEBs from both 'wl_pool'
+ * and 'ubi->free', because free PEB in 'ubi->free' tree maybe moved into
+ * 'wl_pool' by ubi_refill_pools().
+ *
+ * @ubi: UBI device description object
+ */
+static bool need_wear_leveling(struct ubi_device *ubi)
+{
+	int ec;
+	struct ubi_wl_entry *e;
+
+	if (!ubi->used.rb_node)
+		return false;
+
+	e = next_peb_for_wl(ubi, false);
+	if (!e) {
+		if (!ubi->free.rb_node)
+			return false;
+		e = find_wl_entry(ubi, &ubi->free, WL_FREE_MAX_DIFF, 0);
+		ec = e->ec;
+	} else {
+		ec = e->ec;
+		if (ubi->free.rb_node) {
+			e = find_wl_entry(ubi, &ubi->free, WL_FREE_MAX_DIFF, 0);
+			ec = max(ec, e->ec);
+		}
+	}
+	e = rb_entry(rb_first(&ubi->used), struct ubi_wl_entry, u.rb);
+
+	return ec - e->ec >= UBI_WL_THRESHOLD;
+}
+
 /* get_peb_for_wl - returns a PEB to be used internally by the WL sub-system.
  *
  * @ubi: UBI device description object
@@ -286,20 +439,26 @@ static struct ubi_wl_entry *get_peb_for_wl(struct ubi_device *ubi)
 int ubi_ensure_anchor_pebs(struct ubi_device *ubi)
 {
 	struct ubi_work *wrk;
+	struct ubi_wl_entry *anchor;
 
 	spin_lock(&ubi->wl_lock);
 
-	/* Do we have a next anchor? */
-	if (!ubi->fm_next_anchor) {
-		ubi->fm_next_anchor = ubi_wl_get_fm_peb(ubi, 1);
-		if (!ubi->fm_next_anchor)
-			/* Tell wear leveling to produce a new anchor PEB */
-			ubi->fm_do_produce_anchor = 1;
+	/* Do we already have an anchor? */
+	if (ubi->fm_anchor) {
+		spin_unlock(&ubi->wl_lock);
+		return 0;
 	}
 
-	/* Do wear leveling to get a new anchor PEB or check the
-	 * existing next anchor candidate.
-	 */
+	/* See if we can find an anchor PEB on the list of free PEBs */
+	anchor = ubi_wl_get_fm_peb(ubi, 1);
+	if (anchor) {
+		ubi->fm_anchor = anchor;
+		spin_unlock(&ubi->wl_lock);
+		return 0;
+	}
+
+	ubi->fm_do_produce_anchor = 1;
+	/* No luck, trigger wear leveling to produce a new anchor PEB. */
 	if (ubi->wl_scheduled) {
 		spin_unlock(&ubi->wl_lock);
 		return 0;
@@ -381,11 +540,6 @@ static void ubi_fastmap_close(struct ubi_device *ubi)
 		ubi->fm_anchor = NULL;
 	}
 
-	if (ubi->fm_next_anchor) {
-		return_unused_peb(ubi, ubi->fm_next_anchor);
-		ubi->fm_next_anchor = NULL;
-	}
-
 	if (ubi->fm) {
 		for (i = 0; i < ubi->fm->used_blocks; i++)
 			kfree(ubi->fm->e[i]);
@@ -404,7 +558,7 @@ static void ubi_fastmap_close(struct ubi_device *ubi)
 static struct ubi_wl_entry *may_reserve_for_fm(struct ubi_device *ubi,
 					   struct ubi_wl_entry *e,
 					   struct rb_root *root) {
-	if (e && !ubi->fm_disabled && !ubi->fm &&
+	if (e && !ubi->fm_disabled && !ubi->fm && !ubi->fm_anchor &&
 	    e->pnum < UBI_FM_MAX_START)
 		e = rb_entry(rb_next(root->rb_node),
 			     struct ubi_wl_entry, u.rb);

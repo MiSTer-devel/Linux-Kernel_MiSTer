@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  arch/m68k/bvme6000/config.c
  *
@@ -8,10 +9,6 @@
  *  linux/amiga/config.c
  *
  *  Copyright (C) 1993 Hamish Macdonald
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file README.legal in the main directory of this archive
- * for more details.
  */
 
 #include <linux/types.h>
@@ -23,7 +20,6 @@
 #include <linux/linkage.h>
 #include <linux/init.h>
 #include <linux/major.h>
-#include <linux/genhd.h>
 #include <linux/rtc.h>
 #include <linux/interrupt.h>
 #include <linux/bcd.h>
@@ -36,6 +32,7 @@
 #include <asm/traps.h>
 #include <asm/machdep.h>
 #include <asm/bvme6000hw.h>
+#include <asm/config.h>
 
 static void bvme6000_get_model(char *model);
 extern void bvme6000_sched_init(void);
@@ -130,7 +127,7 @@ void __init config_bvme6000(void)
 }
 
 
-irqreturn_t bvme6000_abort_int (int irq, void *dev_id)
+static irqreturn_t bvme6000_abort_int(int irq, void *dev_id)
 {
         unsigned long *new = (unsigned long *)vectors;
         unsigned long *old = (unsigned long *)0xf8000000;

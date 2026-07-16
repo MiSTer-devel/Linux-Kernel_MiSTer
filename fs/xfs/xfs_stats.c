@@ -50,7 +50,12 @@ int xfs_stats_format(struct xfsstats __percpu *stats, char *buf)
 		{ "ibt2",		xfsstats_offset(xs_fibt_2)	},
 		{ "fibt2",		xfsstats_offset(xs_rmap_2)	},
 		{ "rmapbt",		xfsstats_offset(xs_refcbt_2)	},
-		{ "refcntbt",		xfsstats_offset(xs_qm_dqreclaims)},
+		{ "refcntbt",		xfsstats_offset(xs_rmap_mem_2)	},
+		{ "rmapbt_mem",		xfsstats_offset(xs_rcbag_2)	},
+		{ "rcbagbt",		xfsstats_offset(xs_rtrmap_2)	},
+		{ "rtrmapbt",		xfsstats_offset(xs_rtrmap_mem_2)},
+		{ "rtrmapbt_mem",	xfsstats_offset(xs_rtrefcbt_2)	},
+		{ "rtrefcntbt",		xfsstats_offset(xs_qm_dqreclaims)},
 		/* we print both series of quota information together */
 		{ "qm",			xfsstats_offset(xs_xstrat_bytes)},
 	};
@@ -74,7 +79,7 @@ int xfs_stats_format(struct xfsstats __percpu *stats, char *buf)
 		defer_relog += per_cpu_ptr(stats, i)->s.defer_relog;
 	}
 
-	len += scnprintf(buf + len, PATH_MAX-len, "xpc %Lu %Lu %Lu\n",
+	len += scnprintf(buf + len, PATH_MAX-len, "xpc %llu %llu %llu\n",
 			xs_xstrat_bytes, xs_write_bytes, xs_read_bytes);
 	len += scnprintf(buf + len, PATH_MAX-len, "defer_relog %llu\n",
 			defer_relog);
@@ -113,10 +118,11 @@ void xfs_stats_clearall(struct xfsstats __percpu *stats)
 
 static int xqm_proc_show(struct seq_file *m, void *v)
 {
-	/* maximum; incore; ratio free to inuse; freelist */
-	seq_printf(m, "%d\t%d\t%d\t%u\n",
+	/* maximum; incore; ratio free to inuse; freelist; rtquota */
+	seq_printf(m, "%d\t%d\t%d\t%u\t%s\n",
 		   0, counter_val(xfsstats.xs_stats, XFSSTAT_END_XQMSTAT),
-		   0, counter_val(xfsstats.xs_stats, XFSSTAT_END_XQMSTAT + 1));
+		   0, counter_val(xfsstats.xs_stats, XFSSTAT_END_XQMSTAT + 1),
+		   IS_ENABLED(CONFIG_XFS_RT) ? "rtquota" : "quota");
 	return 0;
 }
 
@@ -125,7 +131,7 @@ static int xqmstat_proc_show(struct seq_file *m, void *v)
 {
 	int j;
 
-	seq_printf(m, "qm");
+	seq_puts(m, "qm");
 	for (j = XFSSTAT_START_XQMSTAT; j < XFSSTAT_END_XQMSTAT; j++)
 		seq_printf(m, " %u", counter_val(xfsstats.xs_stats, j));
 	seq_putc(m, '\n');

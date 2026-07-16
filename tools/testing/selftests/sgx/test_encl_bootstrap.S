@@ -12,7 +12,7 @@
 
 	.fill	1, 8, 0			# STATE (set by CPU)
 	.fill	1, 8, 0			# FLAGS
-	.quad	encl_ssa		# OSSA
+	.quad	encl_ssa_tcs1		# OSSA
 	.fill	1, 4, 0			# CSSA (set by CPU)
 	.fill	1, 4, 1			# NSSA
 	.quad	encl_entry		# OENTRY
@@ -23,10 +23,10 @@
 	.fill	1, 4, 0xFFFFFFFF	# GSLIMIT
 	.fill	4024, 1, 0		# Reserved
 
-	# Identical to the previous TCS.
+	# TCS2
 	.fill	1, 8, 0			# STATE (set by CPU)
 	.fill	1, 8, 0			# FLAGS
-	.quad	encl_ssa		# OSSA
+	.quad	encl_ssa_tcs2		# OSSA
 	.fill	1, 4, 0			# CSSA (set by CPU)
 	.fill	1, 4, 1			# NSSA
 	.quad	encl_entry		# OENTRY
@@ -40,32 +40,29 @@
 	.text
 
 encl_entry:
-	# RBX contains the base address for TCS, which is also the first address
-	# inside the enclave. By adding the value of le_stack_end to it, we get
-	# the absolute address for the stack.
-	lea	(encl_stack)(%rbx), %rax
+	# RBX contains the base address for TCS, which is the first address
+	# inside the enclave for TCS #1 and one page into the enclave for
+	# TCS #2. First make it relative by substracting __encl_base and
+	# then add the address of encl_stack to get the address for the stack.
+	lea __encl_base(%rip), %rax
+	sub %rax, %rbx
+	lea encl_stack(%rip), %rax
+	add %rbx, %rax
+	jmp encl_entry_core
+encl_dyn_entry:
+	# Entry point for dynamically created TCS page expected to follow
+	# its stack directly.
+	lea -1(%rbx), %rax
+encl_entry_core:
 	xchg	%rsp, %rax
 	push	%rax
 
 	push	%rcx # push the address after EENTER
-	push	%rbx # push the enclave base address
 
+	# NOTE: as the selftest enclave is *not* intended for production,
+	# simplify the code by not initializing ABI registers on entry or
+	# cleansing caller-save registers on exit.
 	call	encl_body
-
-	pop	%rbx # pop the enclave base address
-
-	/* Clear volatile GPRs, except RAX (EEXIT function). */
-	xor     %rcx, %rcx
-	xor     %rdx, %rdx
-	xor     %rdi, %rdi
-	xor     %rsi, %rsi
-	xor     %r8, %r8
-	xor     %r9, %r9
-	xor     %r10, %r10
-	xor     %r11, %r11
-
-	# Reset status flags.
-	add     %rdx, %rdx # OF = SF = AF = CF = 0; ZF = PF = 1
 
 	# Prepare EEXIT target by popping the address of the instruction after
 	# EENTER to RBX.
@@ -81,9 +78,15 @@ encl_entry:
 
 	.section ".data", "aw"
 
-encl_ssa:
+encl_ssa_tcs1:
+	.space 4096
+encl_ssa_tcs2:
 	.space 4096
 
 	.balign 4096
-	.space 8192
+	# Stack of TCS #1
+	.space 4096
 encl_stack:
+	.balign 4096
+	# Stack of TCS #2
+	.space 4096

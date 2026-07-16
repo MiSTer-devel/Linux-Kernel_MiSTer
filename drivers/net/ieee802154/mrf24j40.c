@@ -388,7 +388,7 @@ static const struct regmap_config mrf24j40_short_regmap = {
 	.pad_bits = 1,
 	.write_flag_mask = MRF24J40_SHORT_WRITE,
 	.read_flag_mask = MRF24J40_SHORT_READ,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.max_register = MRF24J40_SHORT_NUMREGS,
 	.writeable_reg = mrf24j40_short_reg_writeable,
 	.readable_reg = mrf24j40_short_reg_readable,
@@ -495,7 +495,7 @@ static const struct regmap_config mrf24j40_long_regmap = {
 	.pad_bits = 5,
 	.write_flag_mask = MRF24J40_LONG_ACCESS,
 	.read_flag_mask = MRF24J40_LONG_ACCESS,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.max_register = MRF24J40_LONG_NUMREGS,
 	.writeable_reg = mrf24j40_long_reg_writeable,
 	.readable_reg = mrf24j40_long_reg_readable,
@@ -1356,7 +1356,7 @@ err_ret:
 	return ret;
 }
 
-static int mrf24j40_remove(struct spi_device *spi)
+static void mrf24j40_remove(struct spi_device *spi)
 {
 	struct mrf24j40 *devrec = spi_get_drvdata(spi);
 
@@ -1366,8 +1366,6 @@ static int mrf24j40_remove(struct spi_device *spi)
 	ieee802154_free_hw(devrec->hw);
 	/* TODO: Will ieee802154_free_device() wait until ->xmit() is
 	 * complete? */
-
-	return 0;
 }
 
 static const struct of_device_id mrf24j40_of_match[] = {

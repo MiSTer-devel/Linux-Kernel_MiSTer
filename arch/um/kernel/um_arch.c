@@ -3,6 +3,7 @@
  * Copyright (C) 2000 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
  */
 
+#include <linux/cpu.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/mm.h>
@@ -11,16 +12,19 @@
 #include <linux/panic_notifier.h>
 #include <linux/seq_file.h>
 #include <linux/string.h>
+#include <linux/string_choices.h>
 #include <linux/utsname.h>
 #include <linux/sched.h>
 #include <linux/sched/task.h>
 #include <linux/kmsg_dump.h>
 #include <linux/suspend.h>
+#include <linux/random.h>
 
 #include <asm/processor.h>
 #include <asm/cpufeature.h>
 #include <asm/sections.h>
 #include <asm/setup.h>
+#include <asm/text-patching.h>
 #include <as-layout.h>
 #include <arch.h>
 #include <init.h>
@@ -29,8 +33,10 @@
 #include <mem_user.h>
 #include <os.h>
 
+#include "um_arch.h"
+
 #define DEFAULT_COMMAND_LINE_ROOT "root=98:0"
-#define DEFAULT_COMMAND_LINE_CONSOLE "console=tty"
+#define DEFAULT_COMMAND_LINE_CONSOLE "console=tty0"
 
 /* Changed in add_arg and setup_arch, which run before SMP is started */
 static char __initdata command_line[COMMAND_LINE_SIZE] = { 0 };
@@ -48,21 +54,15 @@ static void __init add_arg(char *arg)
 
 /*
  * These fields are initialized at boot time and not changed.
- * XXX This structure is used only in the non-SMP case.  Maybe this
- * should be moved to smp.c.
  */
 struct cpuinfo_um boot_cpu_data = {
 	.loops_per_jiffy	= 0,
-	.ipi_pipe		= { -1, -1 },
 	.cache_alignment	= L1_CACHE_BYTES,
 	.x86_capability		= { 0 }
 };
 
 EXPORT_SYMBOL(boot_cpu_data);
 
-union thread_union cpu0_irqstack
-	__section(".data..init_irqstack") =
-		{ .thread_info = INIT_THREAD_INFO(init_task) };
 
 /* Changed in setup_arch, which is called in early boot */
 static char host_info[(__NEW_UTS_LEN + 1) * 5];
@@ -76,7 +76,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	seq_printf(m, "model name\t: UML\n");
 	seq_printf(m, "mode\t\t: skas\n");
 	seq_printf(m, "host\t\t: %s\n", host_info);
-	seq_printf(m, "fpu\t\t: %s\n", cpu_has(&boot_cpu_data, X86_FEATURE_FPU) ? "yes" : "no");
+	seq_printf(m, "fpu\t\t: %s\n", str_yes_no(cpu_has(&boot_cpu_data, X86_FEATURE_FPU)));
 	seq_printf(m, "flags\t\t:");
 	for (i = 0; i < 32*NCAPINTS; i++)
 		if (cpu_has(&boot_cpu_data, i) && (x86_cap_flags[i] != NULL))
@@ -93,7 +93,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 
 static void *c_start(struct seq_file *m, loff_t *pos)
 {
-	return *pos < NR_CPUS ? cpu_data + *pos : NULL;
+	return *pos < nr_cpu_ids ? &boot_cpu_data + *pos : NULL;
 }
 
 static void *c_next(struct seq_file *m, void *v, loff_t *pos)
@@ -121,15 +121,12 @@ unsigned long uml_reserved; /* Also modified in mem_init */
 unsigned long start_vm;
 unsigned long end_vm;
 
-/* Set in uml_ncpus_setup */
-int ncpus = 1;
-
 /* Set in early boot */
 static int have_root __initdata;
 static int have_console __initdata;
 
 /* Set in uml_mem_setup and modified in linux_main */
-long long physmem_size = 32 * 1024 * 1024;
+unsigned long long physmem_size = 64 * 1024 * 1024;
 EXPORT_SYMBOL(physmem_size);
 
 static const char *usage_string =
@@ -163,19 +160,6 @@ __uml_setup("root=", uml_root_setup,
 "    devices and want to boot off something other than ubd0, you \n"
 "    would use something like:\n"
 "        root=/dev/ubd5\n\n"
-);
-
-static int __init no_skas_debug_setup(char *line, int *add)
-{
-	os_warn("'debug' is not necessary to gdb UML in skas mode - run\n");
-	os_warn("'gdb linux'\n");
-
-	return 0;
-}
-
-__uml_setup("debug", no_skas_debug_setup,
-"debug\n"
-"    this flag is not needed to run gdb on UML in skas mode\n\n"
 );
 
 static int __init uml_console_setup(char *line, int *add)
@@ -244,13 +228,13 @@ static int panic_exit(struct notifier_block *self, unsigned long unused1,
 	bust_spinlocks(0);
 	uml_exitcode = 1;
 	os_dump_core();
-	return 0;
+
+	return NOTIFY_DONE;
 }
 
 static struct notifier_block panic_exit_notifier = {
-	.notifier_call 		= panic_exit,
-	.next 			= NULL,
-	.priority 		= 0
+	.notifier_call	= panic_exit,
+	.priority	= INT_MAX - 1, /* run as 2nd notifier, won't return */
 };
 
 void uml_finishsetup(void)
@@ -276,7 +260,7 @@ EXPORT_SYMBOL(end_iomem);
 
 #define MIN_VMALLOC (32 * 1024 * 1024)
 
-static void parse_host_cpu_flags(char *line)
+static void __init parse_host_cpu_flags(char *line)
 {
 	int i;
 	for (i = 0; i < 32*NCAPINTS; i++) {
@@ -284,7 +268,8 @@ static void parse_host_cpu_flags(char *line)
 			set_cpu_cap(&boot_cpu_data, i);
 	}
 }
-static void parse_cache_line(char *line)
+
+static void __init parse_cache_line(char *line)
 {
 	long res;
 	char *to_parse = strstr(line, ":");
@@ -300,7 +285,24 @@ static void parse_cache_line(char *line)
 	}
 }
 
-int __init linux_main(int argc, char **argv)
+static unsigned long __init get_top_address(char **envp)
+{
+	unsigned long top_addr = (unsigned long) &top_addr;
+	int i;
+
+	/* The earliest variable should be after the program name in ELF */
+	for (i = 0; envp[i]; i++) {
+		if ((unsigned long) envp[i] > top_addr)
+			top_addr = (unsigned long) envp[i];
+	}
+
+	top_addr &= ~(UM_KERN_PAGE_SIZE - 1);
+	top_addr += UM_KERN_PAGE_SIZE;
+
+	return top_addr;
+}
+
+int __init linux_main(int argc, char **argv, char **envp)
 {
 	unsigned long avail, diff;
 	unsigned long virtmem_size, max_physmem;
@@ -322,16 +324,21 @@ int __init linux_main(int argc, char **argv)
 	if (have_console == 0)
 		add_arg(DEFAULT_COMMAND_LINE_CONSOLE);
 
-	host_task_size = os_get_top_address();
-	/* reserve two pages for the stubs */
-	host_task_size -= 2 * PAGE_SIZE;
-	stub_start = host_task_size;
+	host_task_size = get_top_address(envp);
+	/* reserve a few pages for the stubs */
+	stub_start = host_task_size - STUB_SIZE;
+	host_task_size = stub_start;
+
+	/* Limit TASK_SIZE to what is addressable by the page table */
+	task_size = host_task_size;
+	if (task_size > (unsigned long long) PTRS_PER_PGD * PGDIR_SIZE)
+		task_size = PTRS_PER_PGD * PGDIR_SIZE;
 
 	/*
 	 * TASK_SIZE needs to be PGDIR_SIZE aligned or else exit_mmap craps
 	 * out
 	 */
-	task_size = host_task_size & PGDIR_MASK;
+	task_size = task_size & PGDIR_MASK;
 
 	/* OS sanity checks that need to happen before the kernel runs */
 	os_early_checks();
@@ -360,23 +367,18 @@ int __init linux_main(int argc, char **argv)
 
 	setup_machinename(init_utsname()->machine);
 
-	highmem = 0;
+	physmem_size = (physmem_size + PAGE_SIZE - 1) & PAGE_MASK;
 	iomem_size = (iomem_size + PAGE_SIZE - 1) & PAGE_MASK;
-	max_physmem = TASK_SIZE - uml_physmem - iomem_size - MIN_VMALLOC;
 
-	/*
-	 * Zones have to begin on a 1 << MAX_ORDER page boundary,
-	 * so this makes sure that's true for highmem
-	 */
-	max_physmem &= ~((1 << (PAGE_SHIFT + MAX_ORDER)) - 1);
-	if (physmem_size + iomem_size > max_physmem) {
-		highmem = physmem_size + iomem_size - max_physmem;
-		physmem_size -= highmem;
+	max_physmem = TASK_SIZE - uml_physmem - iomem_size - MIN_VMALLOC;
+	if (physmem_size > max_physmem) {
+		physmem_size = max_physmem;
+		os_info("Physical memory size shrunk to %llu bytes\n",
+			physmem_size);
 	}
 
 	high_physmem = uml_physmem + physmem_size;
 	end_iomem = high_physmem + iomem_size;
-	high_memory = (void *) end_iomem;
 
 	start_vm = VMALLOC_START;
 
@@ -392,6 +394,8 @@ int __init linux_main(int argc, char **argv)
 		os_info("Kernel virtual memory size shrunk to %lu bytes\n",
 			virtmem_size);
 
+	arch_task_struct_size = sizeof(struct task_struct) + host_fp_size;
+
 	os_flush_stdout();
 
 	return start_uml();
@@ -404,21 +408,45 @@ int __init __weak read_initrd(void)
 
 void __init setup_arch(char **cmdline_p)
 {
-	stack_protections((unsigned long) &init_thread_info);
-	setup_physmem(uml_physmem, uml_reserved, physmem_size, highmem);
-	mem_total_pages(physmem_size, iomem_size, highmem);
+	u8 rng_seed[32];
+
+	stack_protections((unsigned long) init_task.stack);
+	setup_physmem(uml_physmem, uml_reserved, physmem_size);
+	uml_dtb_init();
 	read_initrd();
 
 	paging_init();
-	strlcpy(boot_command_line, command_line, COMMAND_LINE_SIZE);
+	strscpy(boot_command_line, command_line, COMMAND_LINE_SIZE);
 	*cmdline_p = command_line;
 	setup_hostinfo(host_info, sizeof host_info);
+
+	if (os_getrandom(rng_seed, sizeof(rng_seed), 0) == sizeof(rng_seed)) {
+		add_bootloader_randomness(rng_seed, sizeof(rng_seed));
+		memzero_explicit(rng_seed, sizeof(rng_seed));
+	}
 }
 
-void __init check_bugs(void)
+void __init arch_cpu_finalize_init(void)
 {
 	arch_check_bugs();
 	os_check_bugs();
+}
+
+void apply_seal_endbr(s32 *start, s32 *end)
+{
+}
+
+void apply_retpolines(s32 *start, s32 *end)
+{
+}
+
+void apply_returns(s32 *start, s32 *end)
+{
+}
+
+void apply_fineibt(s32 *start_retpoline, s32 *end_retpoline,
+		   s32 *start_cfi, s32 *end_cfi)
+{
 }
 
 void apply_alternatives(struct alt_instr *start, struct alt_instr *end)
@@ -437,7 +465,12 @@ void *text_poke(void *addr, const void *opcode, size_t len)
 	return memcpy(addr, opcode, len);
 }
 
-void text_poke_sync(void)
+void *text_poke_copy(void *addr, const void *opcode, size_t len)
+{
+	return text_poke(addr, opcode, len);
+}
+
+void smp_text_poke_sync_each_cpu(void)
 {
 }
 

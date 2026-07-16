@@ -2,14 +2,15 @@
 // Copyright (c) 2011-2017, The Linux Foundation. All rights reserved.
 // Copyright (c) 2018, Linaro Limited
 
+#include <dt-bindings/sound/qcom,q6asm.h>
+#include <dt-bindings/sound/qcom,q6afe.h>
 #include <linux/init.h>
 #include <linux/err.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
-#include <linux/of_platform.h>
 #include <linux/bitops.h>
 #include <linux/mutex.h>
-#include <linux/of_device.h>
 #include <linux/slab.h>
 #include <sound/core.h>
 #include <sound/soc.h>
@@ -372,6 +373,12 @@ int q6routing_stream_open(int fedai_id, int perf_mode,
 	}
 
 	session = &routing_data->sessions[stream_id - 1];
+	if (session->port_id < 0) {
+		dev_err(routing_data->dev, "Routing not setup for MultiMedia%d Session\n",
+			session->fedai_id);
+		return -EINVAL;
+	}
+
 	pdata = &routing_data->port_data[session->port_id];
 
 	mutex_lock(&routing_data->lock);
@@ -428,6 +435,7 @@ static struct session_data *get_session_from_id(struct msm_routing_data *data,
 
 	return NULL;
 }
+
 /**
  * q6routing_stream_close() - Deregister a stream
  *
@@ -492,15 +500,24 @@ static int msm_routing_put_audio_mixer(struct snd_kcontrol *kcontrol,
 	struct session_data *session = &data->sessions[session_id];
 
 	if (ucontrol->value.integer.value[0]) {
+		if (session->port_id == be_id)
+			return 0;
+
 		session->port_id = be_id;
 		snd_soc_dapm_mixer_update_power(dapm, kcontrol, 1, update);
 	} else {
+		if (session->port_id == -1 || session->port_id != be_id)
+			return 0;
+
 		session->port_id = -1;
 		snd_soc_dapm_mixer_update_power(dapm, kcontrol, 0, update);
 	}
 
 	return 1;
 }
+
+static const struct snd_kcontrol_new usb_rx_mixer_controls[] = {
+	Q6ROUTING_RX_MIXERS(USB_RX) };
 
 static const struct snd_kcontrol_new hdmi_mixer_controls[] = {
 	Q6ROUTING_RX_MIXERS(HDMI_RX) };
@@ -920,6 +937,9 @@ static const struct snd_soc_dapm_widget msm_qdsp6_widgets[] = {
 	SND_SOC_DAPM_MIXER("RX_CODEC_DMA_RX_7 Audio Mixer", SND_SOC_NOPM, 0, 0,
 		rx_codec_dma_rx_7_mixer_controls,
 		ARRAY_SIZE(rx_codec_dma_rx_7_mixer_controls)),
+	SND_SOC_DAPM_MIXER("USB_RX Audio Mixer", SND_SOC_NOPM, 0, 0,
+			   usb_rx_mixer_controls,
+			   ARRAY_SIZE(usb_rx_mixer_controls)),
 	SND_SOC_DAPM_MIXER("MultiMedia1 Mixer", SND_SOC_NOPM, 0, 0,
 		mmul1_mixer_controls, ARRAY_SIZE(mmul1_mixer_controls)),
 	SND_SOC_DAPM_MIXER("MultiMedia2 Mixer", SND_SOC_NOPM, 0, 0,
@@ -936,7 +956,6 @@ static const struct snd_soc_dapm_widget msm_qdsp6_widgets[] = {
 		mmul7_mixer_controls, ARRAY_SIZE(mmul7_mixer_controls)),
 	SND_SOC_DAPM_MIXER("MultiMedia8 Mixer", SND_SOC_NOPM, 0, 0,
 		mmul8_mixer_controls, ARRAY_SIZE(mmul8_mixer_controls)),
-
 };
 
 static const struct snd_soc_dapm_route intercon[] = {
@@ -1013,6 +1032,7 @@ static const struct snd_soc_dapm_route intercon[] = {
 	Q6ROUTING_RX_DAPM_ROUTE("RX_CODEC_DMA_RX_5 Audio Mixer", "RX_CODEC_DMA_RX_5"),
 	Q6ROUTING_RX_DAPM_ROUTE("RX_CODEC_DMA_RX_6 Audio Mixer", "RX_CODEC_DMA_RX_6"),
 	Q6ROUTING_RX_DAPM_ROUTE("RX_CODEC_DMA_RX_7 Audio Mixer", "RX_CODEC_DMA_RX_7"),
+	Q6ROUTING_RX_DAPM_ROUTE("USB_RX Audio Mixer", "USB_RX"),
 	Q6ROUTING_TX_DAPM_ROUTE("MultiMedia1 Mixer"),
 	Q6ROUTING_TX_DAPM_ROUTE("MultiMedia2 Mixer"),
 	Q6ROUTING_TX_DAPM_ROUTE("MultiMedia3 Mixer"),
@@ -1036,9 +1056,9 @@ static int routing_hw_params(struct snd_soc_component *component,
 			     struct snd_pcm_substream *substream,
 			     struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct msm_routing_data *data = dev_get_drvdata(component->dev);
-	unsigned int be_id = asoc_rtd_to_cpu(rtd, 0)->id;
+	unsigned int be_id = snd_soc_rtd_to_cpu(rtd, 0)->id;
 	struct session_data *session;
 	int path_type;
 
@@ -1128,12 +1148,10 @@ static int q6pcm_routing_probe(struct platform_device *pdev)
 					  NULL, 0);
 }
 
-static int q6pcm_routing_remove(struct platform_device *pdev)
+static void q6pcm_routing_remove(struct platform_device *pdev)
 {
 	kfree(routing_data);
 	routing_data = NULL;
-
-	return 0;
 }
 
 #ifdef CONFIG_OF

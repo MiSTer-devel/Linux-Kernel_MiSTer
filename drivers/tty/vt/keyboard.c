@@ -153,6 +153,7 @@ static int shift_state = 0;
 
 static unsigned int ledstate = -1U;			/* undefined */
 static unsigned char ledioctl;
+static bool vt_switch;
 
 /*
  * Notifier list for console keyboard events
@@ -274,7 +275,7 @@ static DEFINE_TIMER(kd_mksound_timer, kd_nosound);
 
 void kd_mksound(unsigned int hz, unsigned int ticks)
 {
-	del_timer_sync(&kd_mksound_timer);
+	timer_delete_sync(&kd_mksound_timer);
 
 	input_handler_for_each_handle(&kbd_handler, &hz, kd_sound_helper);
 
@@ -324,13 +325,13 @@ int kbd_rate(struct kbd_repeat *rpt)
 static void put_queue(struct vc_data *vc, int ch)
 {
 	tty_insert_flip_char(&vc->port, ch, 0);
-	tty_schedule_flip(&vc->port);
+	tty_flip_buffer_push(&vc->port);
 }
 
 static void puts_queue(struct vc_data *vc, const char *cp)
 {
 	tty_insert_flip_string(&vc->port, cp, strlen(cp));
-	tty_schedule_flip(&vc->port);
+	tty_flip_buffer_push(&vc->port);
 }
 
 static void applkey(struct vc_data *vc, int key, char mode)
@@ -375,6 +376,17 @@ static void to_utf8(struct vc_data *vc, uint c)
 	}
 }
 
+static void put_queue_utf8(struct vc_data *vc, u32 value)
+{
+	if (kbd->kbdmode == VC_UNICODE)
+		to_utf8(vc, value);
+	else {
+		int c = conv_uni_to_8bit(value);
+		if (c != -1)
+			put_queue(vc, c);
+	}
+}
+
 /* FIXME: review locking for vt.c callers */
 static void set_leds(void)
 {
@@ -414,6 +426,12 @@ void vt_set_leds_compute_shiftstate(void)
 {
 	unsigned long flags;
 
+	/*
+	 * When VT is switched, the keyboard led needs to be set once.
+	 * Ensure that after the switch is completed, the state of the
+	 * keyboard LED is consistent with the state of the keyboard lock.
+	 */
+	vt_switch = true;
 	set_leds();
 
 	spin_lock_irqsave(&kbd_event_lock, flags);
@@ -447,13 +465,7 @@ static unsigned int handle_diacr(struct vc_data *vc, unsigned int ch)
 	if (ch == ' ' || ch == (BRL_UC_ROW|0) || ch == d)
 		return d;
 
-	if (kbd->kbdmode == VC_UNICODE)
-		to_utf8(vc, d);
-	else {
-		int c = conv_uni_to_8bit(d);
-		if (c != -1)
-			put_queue(vc, c);
-	}
+	put_queue_utf8(vc, d);
 
 	return ch;
 }
@@ -464,13 +476,7 @@ static unsigned int handle_diacr(struct vc_data *vc, unsigned int ch)
 static void fn_enter(struct vc_data *vc)
 {
 	if (diacr) {
-		if (kbd->kbdmode == VC_UNICODE)
-			to_utf8(vc, diacr);
-		else {
-			int c = conv_uni_to_8bit(diacr);
-			if (c != -1)
-				put_queue(vc, c);
-		}
+		put_queue_utf8(vc, diacr);
 		diacr = 0;
 	}
 
@@ -584,7 +590,7 @@ static void fn_inc_console(struct vc_data *vc)
 static void fn_send_intr(struct vc_data *vc)
 {
 	tty_insert_flip_char(&vc->port, 0, TTY_BREAK);
-	tty_schedule_flip(&vc->port);
+	tty_flip_buffer_push(&vc->port);
 }
 
 static void fn_scroll_forw(struct vc_data *vc)
@@ -599,7 +605,7 @@ static void fn_scroll_back(struct vc_data *vc)
 
 static void fn_show_mem(struct vc_data *vc)
 {
-	show_mem(0, NULL);
+	show_mem();
 }
 
 static void fn_show_state(struct vc_data *vc)
@@ -678,13 +684,7 @@ static void k_unicode(struct vc_data *vc, unsigned int value, char up_flag)
 		diacr = value;
 		return;
 	}
-	if (kbd->kbdmode == VC_UNICODE)
-		to_utf8(vc, value);
-	else {
-		int c = conv_uni_to_8bit(value);
-		if (c != -1)
-			put_queue(vc, c);
-	}
+	put_queue_utf8(vc, value);
 }
 
 /*
@@ -1026,9 +1026,7 @@ static int kbd_led_trigger_activate(struct led_classdev *cdev)
 
 	tasklet_disable(&keyboard_tasklet);
 	if (ledstate != -1U)
-		led_trigger_event(&trigger->trigger,
-				  ledstate & trigger->mask ?
-					LED_FULL : LED_OFF);
+		led_set_brightness(cdev, ledstate & trigger->mask ? LED_FULL : LED_OFF);
 	tasklet_enable(&keyboard_tasklet);
 
 	return 0;
@@ -1255,13 +1253,18 @@ static void kbd_bh(struct tasklet_struct *unused)
 	leds |= (unsigned int)kbd->lockstate << 8;
 	spin_unlock_irqrestore(&led_lock, flags);
 
+	if (vt_switch) {
+		ledstate = ~leds;
+		vt_switch = false;
+	}
+
 	if (leds != ledstate) {
 		kbd_propagate_led_state(ledstate, leds);
 		ledstate = leds;
 	}
 }
 
-#if defined(CONFIG_X86) || defined(CONFIG_IA64) || defined(CONFIG_ALPHA) ||\
+#if defined(CONFIG_X86) || defined(CONFIG_ALPHA) ||\
     defined(CONFIG_MIPS) || defined(CONFIG_PPC) || defined(CONFIG_SPARC) ||\
     defined(CONFIG_PARISC) || defined(CONFIG_SUPERH) ||\
     (defined(CONFIG_ARM) && defined(CONFIG_KEYBOARD_ATKBD) && !defined(CONFIG_ARCH_RPC))
@@ -1484,7 +1487,7 @@ static void kbd_keycode(unsigned int keycode, int down, bool hw_raw)
 		rc = atomic_notifier_call_chain(&keyboard_notifier_list,
 						KBD_UNICODE, &param);
 		if (rc != NOTIFY_STOP)
-			if (down && !raw_mode)
+			if (down && !(raw_mode || kbd->kbdmode == VC_OFF))
 				k_unicode(vc, keysym, !down);
 		return;
 	}
@@ -1509,7 +1512,7 @@ static void kbd_keycode(unsigned int keycode, int down, bool hw_raw)
 	if ((raw_mode || kbd->kbdmode == VC_OFF) && type != KT_SPEC && type != KT_SHIFT)
 		return;
 
-	(*k_handler[type])(vc, keysym & 0xff, !down);
+	(*k_handler[type])(vc, KVAL(keysym), !down);
 
 	param.ledstate = kbd->ledflagstate;
 	atomic_notifier_call_chain(&keyboard_notifier_list, KBD_POST_KEYSYM, &param);
@@ -1760,12 +1763,10 @@ int vt_do_diacrit(unsigned int cmd, void __user *udp, int perm)
 			return -EINVAL;
 
 		if (ct) {
-
-			dia = memdup_user(a->kbdiacr,
-					sizeof(struct kbdiacr) * ct);
+			dia = memdup_array_user(a->kbdiacr,
+						ct, sizeof(struct kbdiacr));
 			if (IS_ERR(dia))
 				return PTR_ERR(dia);
-
 		}
 
 		spin_lock_irqsave(&kbd_event_lock, flags);
@@ -1799,8 +1800,8 @@ int vt_do_diacrit(unsigned int cmd, void __user *udp, int perm)
 			return -EINVAL;
 
 		if (ct) {
-			buf = memdup_user(a->kbdiacruc,
-					  ct * sizeof(struct kbdiacruc));
+			buf = memdup_array_user(a->kbdiacruc,
+						ct, sizeof(struct kbdiacruc));
 			if (IS_ERR(buf))
 				return PTR_ERR(buf);
 		} 
@@ -2067,12 +2068,15 @@ int vt_do_kdgkb_ioctl(int cmd, struct kbsentry __user *user_kdgkb, int perm)
 			return -ENOMEM;
 
 		spin_lock_irqsave(&func_buf_lock, flags);
-		len = strlcpy(kbs, func_table[kb_func] ? : "", len);
+		len = strscpy(kbs, func_table[kb_func] ? : "", len);
 		spin_unlock_irqrestore(&func_buf_lock, flags);
 
+		if (len < 0) {
+			ret = -ENOSPC;
+			break;
+		}
 		ret = copy_to_user(user_kdgkb->kb_string, kbs, len + 1) ?
 			-EFAULT : 0;
-
 		break;
 	}
 	case KDSKBSENT:

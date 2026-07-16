@@ -11,7 +11,6 @@
 #include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
@@ -552,6 +551,11 @@ static const struct of_device_id mxs_mmc_dt_ids[] = {
 };
 MODULE_DEVICE_TABLE(of, mxs_mmc_dt_ids);
 
+static void mxs_mmc_regulator_disable(void *regulator)
+{
+	regulator_disable(regulator);
+}
+
 static int mxs_mmc_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
@@ -565,7 +569,7 @@ static int mxs_mmc_probe(struct platform_device *pdev)
 	if (irq_err < 0)
 		return irq_err;
 
-	mmc = mmc_alloc_host(sizeof(struct mxs_mmc_host), &pdev->dev);
+	mmc = devm_mmc_alloc_host(&pdev->dev, sizeof(*host));
 	if (!mmc)
 		return -ENOMEM;
 
@@ -573,10 +577,8 @@ static int mxs_mmc_probe(struct platform_device *pdev)
 	ssp = &host->ssp;
 	ssp->dev = &pdev->dev;
 	ssp->base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(ssp->base)) {
-		ret = PTR_ERR(ssp->base);
-		goto out_mmc_free;
-	}
+	if (IS_ERR(ssp->base))
+		return PTR_ERR(ssp->base);
 
 	ssp->devid = (enum mxs_ssp_id)of_device_get_match_data(&pdev->dev);
 
@@ -586,21 +588,23 @@ static int mxs_mmc_probe(struct platform_device *pdev)
 	reg_vmmc = devm_regulator_get(&pdev->dev, "vmmc");
 	if (!IS_ERR(reg_vmmc)) {
 		ret = regulator_enable(reg_vmmc);
-		if (ret) {
-			dev_err(&pdev->dev,
-				"Failed to enable vmmc regulator: %d\n", ret);
-			goto out_mmc_free;
-		}
+		if (ret)
+			return dev_err_probe(&pdev->dev, ret,
+					     "Failed to enable vmmc regulator\n");
+
+		ret = devm_add_action_or_reset(&pdev->dev, mxs_mmc_regulator_disable,
+					       reg_vmmc);
+		if (ret)
+			return ret;
 	}
 
 	ssp->clk = devm_clk_get(&pdev->dev, NULL);
-	if (IS_ERR(ssp->clk)) {
-		ret = PTR_ERR(ssp->clk);
-		goto out_mmc_free;
-	}
+	if (IS_ERR(ssp->clk))
+		return PTR_ERR(ssp->clk);
+
 	ret = clk_prepare_enable(ssp->clk);
 	if (ret)
-		goto out_mmc_free;
+		return ret;
 
 	ret = mxs_mmc_reset(host);
 	if (ret) {
@@ -659,12 +663,10 @@ out_free_dma:
 	dma_release_channel(ssp->dmach);
 out_clk_disable:
 	clk_disable_unprepare(ssp->clk);
-out_mmc_free:
-	mmc_free_host(mmc);
 	return ret;
 }
 
-static int mxs_mmc_remove(struct platform_device *pdev)
+static void mxs_mmc_remove(struct platform_device *pdev)
 {
 	struct mmc_host *mmc = platform_get_drvdata(pdev);
 	struct mxs_mmc_host *host = mmc_priv(mmc);
@@ -676,13 +678,8 @@ static int mxs_mmc_remove(struct platform_device *pdev)
 		dma_release_channel(ssp->dmach);
 
 	clk_disable_unprepare(ssp->clk);
-
-	mmc_free_host(mmc);
-
-	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int mxs_mmc_suspend(struct device *dev)
 {
 	struct mmc_host *mmc = dev_get_drvdata(dev);
@@ -701,9 +698,8 @@ static int mxs_mmc_resume(struct device *dev)
 
 	return clk_prepare_enable(ssp->clk);
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(mxs_mmc_pm_ops, mxs_mmc_suspend, mxs_mmc_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(mxs_mmc_pm_ops, mxs_mmc_suspend, mxs_mmc_resume);
 
 static struct platform_driver mxs_mmc_driver = {
 	.probe		= mxs_mmc_probe,
@@ -711,7 +707,7 @@ static struct platform_driver mxs_mmc_driver = {
 	.driver		= {
 		.name	= DRIVER_NAME,
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
-		.pm	= &mxs_mmc_pm_ops,
+		.pm	= pm_sleep_ptr(&mxs_mmc_pm_ops),
 		.of_match_table = mxs_mmc_dt_ids,
 	},
 };

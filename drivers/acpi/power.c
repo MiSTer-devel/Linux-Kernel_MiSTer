@@ -23,11 +23,14 @@
 
 #define pr_fmt(fmt) "ACPI: PM: " fmt
 
+#include <linux/delay.h>
+#include <linux/dmi.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/types.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <linux/pm_runtime.h>
 #include <linux/sysfs.h>
 #include <linux/acpi.h>
@@ -52,7 +55,6 @@ struct acpi_power_resource {
 	u32 order;
 	unsigned int ref_count;
 	u8 state;
-	bool wakeup_enabled;
 	struct mutex resource_lock;
 	struct list_head dependents;
 };
@@ -61,6 +63,9 @@ struct acpi_power_resource_entry {
 	struct list_head node;
 	struct acpi_power_resource *resource;
 };
+
+static bool hp_eb_gp12pxp_quirk;
+static bool unused_power_resources_quirk;
 
 static LIST_HEAD(acpi_power_resource_list);
 static DEFINE_MUTEX(power_resource_list_lock);
@@ -82,9 +87,9 @@ struct acpi_power_resource *to_power_resource(struct acpi_device *device)
 
 static struct acpi_power_resource *acpi_power_get_context(acpi_handle handle)
 {
-	struct acpi_device *device;
+	struct acpi_device *device = acpi_fetch_acpi_dev(handle);
 
-	if (acpi_bus_get_device(handle, &device))
+	if (!device)
 		return NULL;
 
 	return to_power_resource(device);
@@ -197,7 +202,7 @@ static int __get_state(acpi_handle handle, u8 *state)
 	cur_state = sta & ACPI_POWER_RESOURCE_STATE_ON;
 
 	acpi_handle_debug(handle, "Power resource is %s\n",
-			  cur_state ? "on" : "off");
+			  str_on_off(cur_state));
 
 	*state = cur_state;
 	return 0;
@@ -240,7 +245,7 @@ static int acpi_power_get_list_state(struct list_head *list, u8 *state)
 			break;
 	}
 
-	pr_debug("Power resource list is %s\n", cur_state ? "on" : "off");
+	pr_debug("Power resource list is %s\n", str_on_off(cur_state));
 
 	*state = cur_state;
 	return 0;
@@ -615,20 +620,19 @@ int acpi_power_wakeup_list_init(struct list_head *list, int *system_level_p)
 
 	list_for_each_entry(entry, list, node) {
 		struct acpi_power_resource *resource = entry->resource;
-		int result;
 		u8 state;
 
 		mutex_lock(&resource->resource_lock);
 
-		result = acpi_power_get_state(resource, &state);
-		if (result) {
-			mutex_unlock(&resource->resource_lock);
-			return result;
-		}
-		if (state == ACPI_POWER_RESOURCE_STATE_ON) {
-			resource->ref_count++;
-			resource->wakeup_enabled = true;
-		}
+		/*
+		 * Make sure that the power resource state and its reference
+		 * counter value are consistent with each other.
+		 */
+		if (!resource->ref_count &&
+		    !acpi_power_get_state(resource, &state) &&
+		    state == ACPI_POWER_RESOURCE_STATE_ON)
+			__acpi_power_off(resource);
+
 		if (system_level > resource->system_level)
 			system_level = resource->system_level;
 
@@ -711,7 +715,6 @@ int acpi_device_sleep_wake(struct acpi_device *dev,
  */
 int acpi_enable_wakeup_device_power(struct acpi_device *dev, int sleep_state)
 {
-	struct acpi_power_resource_entry *entry;
 	int err = 0;
 
 	if (!dev || !dev->wakeup.flags.valid)
@@ -719,36 +722,31 @@ int acpi_enable_wakeup_device_power(struct acpi_device *dev, int sleep_state)
 
 	mutex_lock(&acpi_device_lock);
 
+	dev_dbg(&dev->dev, "Enabling wakeup power (count %d)\n",
+		dev->wakeup.prepare_count);
+
 	if (dev->wakeup.prepare_count++)
 		goto out;
 
-	list_for_each_entry(entry, &dev->wakeup.resources, node) {
-		struct acpi_power_resource *resource = entry->resource;
-
-		mutex_lock(&resource->resource_lock);
-
-		if (!resource->wakeup_enabled) {
-			err = acpi_power_on_unlocked(resource);
-			if (!err)
-				resource->wakeup_enabled = true;
-		}
-
-		mutex_unlock(&resource->resource_lock);
-
-		if (err) {
-			dev_err(&dev->dev,
-				"Cannot turn wakeup power resources on\n");
-			dev->wakeup.flags.valid = 0;
-			goto out;
-		}
+	err = acpi_power_on_list(&dev->wakeup.resources);
+	if (err) {
+		dev_err(&dev->dev, "Cannot turn on wakeup power resources\n");
+		dev->wakeup.flags.valid = 0;
+		goto out;
 	}
+
 	/*
 	 * Passing 3 as the third argument below means the device may be
 	 * put into arbitrary power state afterward.
 	 */
 	err = acpi_device_sleep_wake(dev, 1, sleep_state, 3);
-	if (err)
+	if (err) {
+		acpi_power_off_list(&dev->wakeup.resources);
 		dev->wakeup.prepare_count = 0;
+		goto out;
+	}
+
+	dev_dbg(&dev->dev, "Wakeup power enabled\n");
 
  out:
 	mutex_unlock(&acpi_device_lock);
@@ -771,40 +769,38 @@ int acpi_disable_wakeup_device_power(struct acpi_device *dev)
 
 	mutex_lock(&acpi_device_lock);
 
-	if (--dev->wakeup.prepare_count > 0)
+	dev_dbg(&dev->dev, "Disabling wakeup power (count %d)\n",
+		dev->wakeup.prepare_count);
+
+	/* Do nothing if wakeup power has not been enabled for this device. */
+	if (dev->wakeup.prepare_count <= 0)
 		goto out;
 
-	/*
-	 * Executing the code below even if prepare_count is already zero when
-	 * the function is called may be useful, for example for initialisation.
-	 */
-	if (dev->wakeup.prepare_count < 0)
-		dev->wakeup.prepare_count = 0;
+	if (--dev->wakeup.prepare_count > 0)
+		goto out;
 
 	err = acpi_device_sleep_wake(dev, 0, 0, 0);
 	if (err)
 		goto out;
 
+	/*
+	 * All of the power resources in the list need to be turned off even if
+	 * there are errors.
+	 */
 	list_for_each_entry(entry, &dev->wakeup.resources, node) {
-		struct acpi_power_resource *resource = entry->resource;
+		int ret;
 
-		mutex_lock(&resource->resource_lock);
-
-		if (resource->wakeup_enabled) {
-			err = acpi_power_off_unlocked(resource);
-			if (!err)
-				resource->wakeup_enabled = false;
-		}
-
-		mutex_unlock(&resource->resource_lock);
-
-		if (err) {
-			dev_err(&dev->dev,
-				"Cannot turn wakeup power resources off\n");
-			dev->wakeup.flags.valid = 0;
-			break;
-		}
+		ret = acpi_power_off(entry->resource);
+		if (ret && !err)
+			err = ret;
 	}
+	if (err) {
+		dev_err(&dev->dev, "Cannot turn off wakeup power resources\n");
+		dev->wakeup.flags.valid = 0;
+		goto out;
+	}
+
+	dev_dbg(&dev->dev, "Wakeup power disabled\n");
 
  out:
 	mutex_unlock(&acpi_device_lock);
@@ -938,14 +934,14 @@ static void acpi_power_add_resource_to_list(struct acpi_power_resource *resource
 
 struct acpi_device *acpi_add_power_resource(acpi_handle handle)
 {
+	struct acpi_device *device = acpi_fetch_acpi_dev(handle);
 	struct acpi_power_resource *resource;
-	struct acpi_device *device = NULL;
 	union acpi_object acpi_object;
 	struct acpi_buffer buffer = { sizeof(acpi_object), &acpi_object };
 	acpi_status status;
+	u8 state_dummy;
 	int result;
 
-	acpi_bus_get_device(handle, &device);
 	if (device)
 		return device;
 
@@ -954,13 +950,15 @@ struct acpi_device *acpi_add_power_resource(acpi_handle handle)
 		return NULL;
 
 	device = &resource->device;
-	acpi_init_device_object(device, handle, ACPI_BUS_TYPE_POWER);
+	acpi_init_device_object(device, handle, ACPI_BUS_TYPE_POWER,
+				acpi_release_power_resource);
 	mutex_init(&resource->resource_lock);
 	INIT_LIST_HEAD(&resource->list_node);
 	INIT_LIST_HEAD(&resource->dependents);
-	strcpy(acpi_device_name(device), ACPI_POWER_DEVICE_NAME);
-	strcpy(acpi_device_class(device), ACPI_POWER_CLASS);
+	strscpy(acpi_device_name(device), ACPI_POWER_DEVICE_NAME);
+	strscpy(acpi_device_class(device), ACPI_POWER_CLASS);
 	device->power.state = ACPI_STATE_UNKNOWN;
+	device->flags.match_driver = true;
 
 	/* Evaluate the object to get the system level and resource order. */
 	status = acpi_evaluate_object(handle, NULL, NULL, &buffer);
@@ -971,10 +969,17 @@ struct acpi_device *acpi_add_power_resource(acpi_handle handle)
 	resource->order = acpi_object.power_resource.resource_order;
 	resource->state = ACPI_POWER_RESOURCE_STATE_UNKNOWN;
 
-	pr_info("%s [%s]\n", acpi_device_name(device), acpi_device_bid(device));
+	/* Get the initial state or just flip it on if that fails. */
+	if (acpi_power_get_state(resource, &state_dummy))
+		__acpi_power_on(resource);
 
-	device->flags.match_driver = true;
-	result = acpi_device_add(device, acpi_release_power_resource);
+	acpi_handle_info(handle, "New power resource\n");
+
+	result = acpi_tie_acpi_dev(device);
+	if (result)
+		goto err;
+
+	result = acpi_device_add(device);
 	if (result)
 		goto err;
 
@@ -986,11 +991,43 @@ struct acpi_device *acpi_add_power_resource(acpi_handle handle)
 	return device;
 
  err:
-	acpi_release_power_resource(&device->dev);
+	acpi_dev_put(device);
 	return NULL;
 }
 
 #ifdef CONFIG_ACPI_SLEEP
+static bool resource_is_gp12pxp(acpi_handle handle)
+{
+	const char *path;
+	bool ret;
+
+	path = acpi_handle_path(handle);
+	ret = path && strcmp(path, "\\_SB_.PCI0.GP12.PXP_") == 0;
+	kfree(path);
+
+	return ret;
+}
+
+static void acpi_resume_on_eb_gp12pxp(struct acpi_power_resource *resource)
+{
+	acpi_handle_notice(resource->device.handle,
+			   "HP EB quirk - turning OFF then ON\n");
+
+	__acpi_power_off(resource);
+	__acpi_power_on(resource);
+
+	/*
+	 * Use the same delay as DSDT uses in modem _RST method.
+	 *
+	 * Otherwise we get "Unable to change power state from unknown to D0,
+	 * device inaccessible" error for the modem PCI device after thaw.
+	 *
+	 * This power resource is normally being enabled only during thaw (once)
+	 * so this wait is not a performance issue.
+	 */
+	msleep(200);
+}
+
 void acpi_resume_power_resources(void)
 {
 	struct acpi_power_resource *resource;
@@ -1012,8 +1049,14 @@ void acpi_resume_power_resources(void)
 
 		if (state == ACPI_POWER_RESOURCE_STATE_OFF
 		    && resource->ref_count) {
-			acpi_handle_debug(resource->device.handle, "Turning ON\n");
-			__acpi_power_on(resource);
+			if (hp_eb_gp12pxp_quirk &&
+			    resource_is_gp12pxp(resource->device.handle)) {
+				acpi_resume_on_eb_gp12pxp(resource);
+			} else {
+				acpi_handle_debug(resource->device.handle,
+						  "Turning ON\n");
+				__acpi_power_on(resource);
+			}
 		}
 
 		mutex_unlock(&resource->resource_lock);
@@ -1023,12 +1066,78 @@ void acpi_resume_power_resources(void)
 }
 #endif
 
+static const struct dmi_system_id dmi_hp_elitebook_gp12pxp_quirk[] = {
+/*
+ * This laptop (and possibly similar models too) has power resource called
+ * "GP12.PXP_" for its WWAN modem.
+ *
+ * For this power resource to turn ON power for the modem it needs certain
+ * internal flag called "ONEN" to be set.
+ * This flag only gets set from this power resource "_OFF" method, while the
+ * actual modem power gets turned off during suspend by "GP12.PTS" method
+ * called from the global "_PTS" (Prepare To Sleep) method.
+ * On the other hand, this power resource "_OFF" method implementation just
+ * sets the aforementioned flag without actually doing anything else (it
+ * doesn't contain any code to actually turn off power).
+ *
+ * The above means that when upon hibernation finish we try to set this
+ * power resource back ON since its "_STA" method returns 0 (while the resource
+ * is still considered in use) its "_ON" method won't do anything since
+ * that "ONEN" flag is not set.
+ * Overall, this means the modem is dead until laptop is rebooted since its
+ * power has been cut by "_PTS" and its PCI configuration was lost and not able
+ * to be restored.
+ *
+ * The easiest way to workaround the issue is to call this power resource
+ * "_OFF" method before calling the "_ON" method to make sure the "ONEN"
+ * flag gets properly set.
+ */
+	{
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "HP EliteBook 855 G7 Notebook PC"),
+		},
+	},
+	{}
+};
+
+static const struct dmi_system_id dmi_leave_unused_power_resources_on[] = {
+	{
+		/*
+		 * The Toshiba Click Mini has a CPR3 power-resource which must
+		 * be on for the touchscreen to work, but which is not in any
+		 * _PR? lists. The other 2 affected power-resources are no-ops.
+		 */
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "TOSHIBA"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "SATELLITE Click Mini L9W-B"),
+		},
+	},
+	{
+		/*
+		 * THUNDEROBOT ZERO laptop: Due to its SSDT table bug, power
+		 * resource 'PXP' will be shut down on initialization, making
+		 * the NVMe #2 and the NVIDIA dGPU both unavailable (they're
+		 * both controlled by 'PXP').
+		 */
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "THUNDEROBOT"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "ZERO"),
+		}
+
+	},
+	{}
+};
+
 /**
  * acpi_turn_off_unused_power_resources - Turn off power resources not in use.
  */
 void acpi_turn_off_unused_power_resources(void)
 {
 	struct acpi_power_resource *resource;
+
+	if (unused_power_resources_quirk)
+		return;
 
 	mutex_lock(&power_resource_list_lock);
 
@@ -1045,4 +1154,11 @@ void acpi_turn_off_unused_power_resources(void)
 	}
 
 	mutex_unlock(&power_resource_list_lock);
+}
+
+void __init acpi_power_resources_init(void)
+{
+	hp_eb_gp12pxp_quirk = dmi_check_system(dmi_hp_elitebook_gp12pxp_quirk);
+	unused_power_resources_quirk =
+		dmi_check_system(dmi_leave_unused_power_resources_on);
 }

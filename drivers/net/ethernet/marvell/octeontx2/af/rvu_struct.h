@@ -33,7 +33,8 @@ enum rvu_block_addr_e {
 	BLKADDR_NDC_NIX1_RX	= 0x10ULL,
 	BLKADDR_NDC_NIX1_TX	= 0x11ULL,
 	BLKADDR_APR		= 0x16ULL,
-	BLK_COUNT		= 0x17ULL,
+	BLKADDR_MBOX		= 0x1bULL,
+	BLK_COUNT		= 0x1cULL,
 };
 
 /* RVU Block Type Enumeration */
@@ -49,7 +50,8 @@ enum rvu_block_type_e {
 	BLKTYPE_TIM  = 0x8,
 	BLKTYPE_CPT  = 0x9,
 	BLKTYPE_NDC  = 0xa,
-	BLKTYPE_MAX  = 0xa,
+	BLKTYPE_MBOX = 0x13,
+	BLKTYPE_MAX  = 0x13,
 };
 
 /* RVU Admin function Interrupt Vector Enumeration */
@@ -60,6 +62,22 @@ enum rvu_af_int_vec_e {
 	RVU_AF_INT_VEC_GEN    = 0x3,
 	RVU_AF_INT_VEC_MBOX   = 0x4,
 	RVU_AF_INT_VEC_CNT    = 0x5,
+};
+
+/* CPT Admin function Interrupt Vector Enumeration */
+enum cpt_af_int_vec_e {
+	CPT_AF_INT_VEC_FLT0	= 0x0,
+	CPT_AF_INT_VEC_FLT1	= 0x1,
+	CPT_AF_INT_VEC_RVU	= 0x2,
+	CPT_AF_INT_VEC_RAS	= 0x3,
+	CPT_AF_INT_VEC_CNT	= 0x4,
+};
+
+enum cpt_cn10k_flt_int_vec_e {
+	CPT_10K_AF_INT_VEC_FLT0	= 0x0,
+	CPT_10K_AF_INT_VEC_FLT1	= 0x1,
+	CPT_10K_AF_INT_VEC_FLT2	= 0x2,
+	CPT_10K_AF_INT_VEC_FLT_MAX = 0x3,
 };
 
 /* NPA Admin function Interrupt Vector Enumeration */
@@ -322,11 +340,12 @@ struct nix_aq_res_s {
 /* NIX Completion queue context structure */
 struct nix_cq_ctx_s {
 	u64 base;
-	u64 rsvd_64_67		: 4;
+	u64 lbp_ena             : 1;
+	u64 lbpid_low           : 3;
 	u64 bp_ena		: 1;
-	u64 rsvd_69_71		: 3;
+	u64 lbpid_med           : 3;
 	u64 bpid		: 9;
-	u64 rsvd_81_83		: 3;
+	u64 lbpid_high          : 3;
 	u64 qint_idx		: 7;
 	u64 cq_err		: 1;
 	u64 cint_idx		: 7;
@@ -340,10 +359,14 @@ struct nix_cq_ctx_s {
 	u64 drop		: 8;
 	u64 drop_ena		: 1;
 	u64 ena			: 1;
-	u64 rsvd_210_211	: 2;
-	u64 substream		: 20;
+	u64 cpt_drop_err_en     : 1;
+	u64 rsvd_211	        : 1;
+	u64 substream           : 12;
+	u64 stash_thresh        : 4;
+	u64 lbp_frac            : 4;
 	u64 caching		: 1;
-	u64 rsvd_233_235	: 3;
+	u64 stashing            : 1;
+	u64 rsvd_234_235	: 2;
 	u64 qsize		: 4;
 	u64 cq_err_int		: 8;
 	u64 cq_err_int_ena	: 8;
@@ -802,4 +825,30 @@ enum nix_tx_vtag_op {
 #define VTAG_STRIP	BIT_ULL(4)
 #define VTAG_CAPTURE	BIT_ULL(5)
 
+/* NIX TX stats */
+enum nix_stat_lf_tx {
+	TX_UCAST	= 0x0,
+	TX_BCAST	= 0x1,
+	TX_MCAST	= 0x2,
+	TX_DROP		= 0x3,
+	TX_OCTS		= 0x4,
+	TX_STATS_ENUM_LAST,
+};
+
+/* NIX RX stats */
+enum nix_stat_lf_rx {
+	RX_OCTS		= 0x0,
+	RX_UCAST	= 0x1,
+	RX_BCAST	= 0x2,
+	RX_MCAST	= 0x3,
+	RX_DROP		= 0x4,
+	RX_DROP_OCTS	= 0x5,
+	RX_FCS		= 0x6,
+	RX_ERR		= 0x7,
+	RX_DRP_BCAST	= 0x8,
+	RX_DRP_MCAST	= 0x9,
+	RX_DRP_L3BCAST	= 0xa,
+	RX_DRP_L3MCAST	= 0xb,
+	RX_STATS_ENUM_LAST,
+};
 #endif /* RVU_STRUCT_H */

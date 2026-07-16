@@ -144,18 +144,19 @@ static struct attribute *elog_default_attrs[] = {
 	&ack_attribute.attr,
 	NULL,
 };
+ATTRIBUTE_GROUPS(elog_default);
 
-static struct kobj_type elog_ktype = {
+static const struct kobj_type elog_ktype = {
 	.sysfs_ops = &elog_sysfs_ops,
 	.release = &elog_release,
-	.default_attrs = elog_default_attrs,
+	.default_groups = elog_default_groups,
 };
 
 /* Maximum size of a single log on FSP is 16KB */
 #define OPAL_MAX_ERRLOG_SIZE	16384
 
 static ssize_t raw_attr_read(struct file *filep, struct kobject *kobj,
-			     struct bin_attribute *bin_attr,
+			     const struct bin_attribute *bin_attr,
 			     char *buffer, loff_t pos, size_t count)
 {
 	int opal_rc;

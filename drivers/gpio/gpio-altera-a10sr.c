@@ -9,7 +9,9 @@
 
 #include <linux/gpio/driver.h>
 #include <linux/mfd/altera-a10sr.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/property.h>
 
 /**
  * struct altr_a10sr_gpio - Altera Max5 GPIO device private data structure
@@ -33,15 +35,15 @@ static int altr_a10sr_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	return !!(val & BIT(offset - ALTR_A10SR_LED_VALID_SHIFT));
 }
 
-static void altr_a10sr_gpio_set(struct gpio_chip *chip, unsigned int offset,
-				int value)
+static int altr_a10sr_gpio_set(struct gpio_chip *chip, unsigned int offset,
+			       int value)
 {
 	struct altr_a10sr_gpio *gpio = gpiochip_get_data(chip);
 
-	regmap_update_bits(gpio->regmap, ALTR_A10SR_LED_REG,
-			   BIT(ALTR_A10SR_LED_VALID_SHIFT + offset),
-			   value ? BIT(ALTR_A10SR_LED_VALID_SHIFT + offset)
-			   : 0);
+	return regmap_update_bits(gpio->regmap, ALTR_A10SR_LED_REG,
+				  BIT(ALTR_A10SR_LED_VALID_SHIFT + offset),
+				  value ?
+				  BIT(ALTR_A10SR_LED_VALID_SHIFT + offset) : 0);
 }
 
 static int altr_a10sr_gpio_direction_input(struct gpio_chip *gc,
@@ -88,7 +90,7 @@ static int altr_a10sr_gpio_probe(struct platform_device *pdev)
 
 	gpio->gp = altr_a10sr_gc;
 	gpio->gp.parent = pdev->dev.parent;
-	gpio->gp.of_node = pdev->dev.of_node;
+	gpio->gp.fwnode = dev_fwnode(&pdev->dev);
 
 	return devm_gpiochip_add_data(&pdev->dev, &gpio->gp, gpio);
 }
@@ -103,7 +105,7 @@ static struct platform_driver altr_a10sr_gpio_driver = {
 	.probe = altr_a10sr_gpio_probe,
 	.driver = {
 		.name	= "altr_a10sr_gpio",
-		.of_match_table = of_match_ptr(altr_a10sr_gpio_of_match),
+		.of_match_table = altr_a10sr_gpio_of_match,
 	},
 };
 module_platform_driver(altr_a10sr_gpio_driver);

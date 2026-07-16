@@ -1,5 +1,5 @@
 /*
- * Copyright 2021 Advanced Micro Devices, Inc.
+ * Copyright 2023 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -20,49 +20,49 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  *
  */
-
 #include "amdgpu.h"
 #include "amdgpu_ras.h"
+#include <uapi/linux/kfd_ioctl.h>
 
-int amdgpu_hdp_ras_late_init(struct amdgpu_device *adev)
+int amdgpu_hdp_ras_sw_init(struct amdgpu_device *adev)
 {
-	int r;
-	struct ras_ih_if ih_info = {
-		.cb = NULL,
-	};
-	struct ras_fs_if fs_info = {
-		.sysfs_name = "hdp_err_count",
-	};
+	int err;
+	struct amdgpu_hdp_ras *ras;
 
-	if (!adev->hdp.ras_if) {
-		adev->hdp.ras_if = kmalloc(sizeof(struct ras_common_if), GFP_KERNEL);
-		if (!adev->hdp.ras_if)
-			return -ENOMEM;
-		adev->hdp.ras_if->block = AMDGPU_RAS_BLOCK__HDP;
-		adev->hdp.ras_if->type = AMDGPU_RAS_ERROR__MULTI_UNCORRECTABLE;
-		adev->hdp.ras_if->sub_block_index = 0;
-	}
-	ih_info.head = fs_info.head = *adev->hdp.ras_if;
-	r = amdgpu_ras_late_init(adev, adev->hdp.ras_if,
-				 &fs_info, &ih_info);
-	if (r || !amdgpu_ras_is_supported(adev, adev->hdp.ras_if->block)) {
-		kfree(adev->hdp.ras_if);
-		adev->hdp.ras_if = NULL;
+	if (!adev->hdp.ras)
+		return 0;
+
+	ras = adev->hdp.ras;
+	err = amdgpu_ras_register_ras_block(adev, &ras->ras_block);
+	if (err) {
+		dev_err(adev->dev, "Failed to register hdp ras block!\n");
+		return err;
 	}
 
-	return r;
+	strcpy(ras->ras_block.ras_comm.name, "hdp");
+	ras->ras_block.ras_comm.block = AMDGPU_RAS_BLOCK__HDP;
+	ras->ras_block.ras_comm.type = AMDGPU_RAS_ERROR__MULTI_UNCORRECTABLE;
+	adev->hdp.ras_if = &ras->ras_block.ras_comm;
+
+	/* hdp ras follows amdgpu_ras_block_late_init_default for late init */
+	return 0;
 }
 
-void amdgpu_hdp_ras_fini(struct amdgpu_device *adev)
+void amdgpu_hdp_generic_flush(struct amdgpu_device *adev,
+			      struct amdgpu_ring *ring)
 {
-	if (amdgpu_ras_is_supported(adev, AMDGPU_RAS_BLOCK__HDP) &&
-	    adev->hdp.ras_if) {
-		struct ras_common_if *ras_if = adev->hdp.ras_if;
-		struct ras_ih_if ih_info = {
-			.cb = NULL,
-		};
-
-		amdgpu_ras_late_fini(adev, ras_if, &ih_info);
-		kfree(ras_if);
+	if (!ring || !ring->funcs->emit_wreg) {
+		WREG32((adev->rmmio_remap.reg_offset +
+			KFD_MMIO_REMAP_HDP_MEM_FLUSH_CNTL) >>
+			       2,
+		       0);
+		if (adev->nbio.funcs->get_memsize)
+			adev->nbio.funcs->get_memsize(adev);
+	} else {
+		amdgpu_ring_emit_wreg(ring,
+				      (adev->rmmio_remap.reg_offset +
+				       KFD_MMIO_REMAP_HDP_MEM_FLUSH_CNTL) >>
+					      2,
+				      0);
 	}
 }

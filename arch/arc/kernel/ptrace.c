@@ -4,11 +4,94 @@
  */
 
 #include <linux/ptrace.h>
-#include <linux/tracehook.h>
 #include <linux/sched/task_stack.h>
 #include <linux/regset.h>
 #include <linux/unistd.h>
 #include <linux/elf.h>
+
+#define CREATE_TRACE_POINTS
+#include <trace/events/syscalls.h>
+
+struct pt_regs_offset {
+	const char *name;
+	int offset;
+};
+
+#define REG_OFFSET_NAME(r) {.name = #r, .offset = offsetof(struct pt_regs, r)}
+#define REG_OFFSET_END {.name = NULL, .offset = 0}
+
+#ifdef CONFIG_ISA_ARCOMPACT
+static const struct pt_regs_offset regoffset_table[] = {
+	REG_OFFSET_NAME(bta),
+	REG_OFFSET_NAME(lp_start),
+	REG_OFFSET_NAME(lp_end),
+	REG_OFFSET_NAME(lp_count),
+	REG_OFFSET_NAME(status32),
+	REG_OFFSET_NAME(ret),
+	REG_OFFSET_NAME(blink),
+	REG_OFFSET_NAME(fp),
+	REG_OFFSET_NAME(r26),
+	REG_OFFSET_NAME(r12),
+	REG_OFFSET_NAME(r11),
+	REG_OFFSET_NAME(r10),
+	REG_OFFSET_NAME(r9),
+	REG_OFFSET_NAME(r8),
+	REG_OFFSET_NAME(r7),
+	REG_OFFSET_NAME(r6),
+	REG_OFFSET_NAME(r5),
+	REG_OFFSET_NAME(r4),
+	REG_OFFSET_NAME(r3),
+	REG_OFFSET_NAME(r2),
+	REG_OFFSET_NAME(r1),
+	REG_OFFSET_NAME(r0),
+	REG_OFFSET_NAME(sp),
+	REG_OFFSET_NAME(orig_r0),
+	REG_OFFSET_NAME(ecr),
+	REG_OFFSET_END,
+};
+
+#else
+
+static const struct pt_regs_offset regoffset_table[] = {
+	REG_OFFSET_NAME(orig_r0),
+	REG_OFFSET_NAME(ecr),
+	REG_OFFSET_NAME(bta),
+	REG_OFFSET_NAME(r26),
+	REG_OFFSET_NAME(fp),
+	REG_OFFSET_NAME(sp),
+	REG_OFFSET_NAME(r12),
+	REG_OFFSET_NAME(r30),
+#ifdef CONFIG_ARC_HAS_ACCL_REGS
+	REG_OFFSET_NAME(r58),
+	REG_OFFSET_NAME(r59),
+#endif
+#ifdef CONFIG_ARC_DSP_SAVE_RESTORE_REGS
+	REG_OFFSET_NAME(DSP_CTRL),
+#endif
+	REG_OFFSET_NAME(r0),
+	REG_OFFSET_NAME(r1),
+	REG_OFFSET_NAME(r2),
+	REG_OFFSET_NAME(r3),
+	REG_OFFSET_NAME(r4),
+	REG_OFFSET_NAME(r5),
+	REG_OFFSET_NAME(r6),
+	REG_OFFSET_NAME(r7),
+	REG_OFFSET_NAME(r8),
+	REG_OFFSET_NAME(r9),
+	REG_OFFSET_NAME(r10),
+	REG_OFFSET_NAME(r11),
+	REG_OFFSET_NAME(blink),
+	REG_OFFSET_NAME(lp_end),
+	REG_OFFSET_NAME(lp_start),
+	REG_OFFSET_NAME(lp_count),
+	REG_OFFSET_NAME(ei),
+	REG_OFFSET_NAME(ldi),
+	REG_OFFSET_NAME(jli),
+	REG_OFFSET_NAME(ret),
+	REG_OFFSET_NAME(status32),
+	REG_OFFSET_END,
+};
+#endif
 
 static struct callee_regs *task_callee_regs(struct task_struct *tsk)
 {
@@ -100,7 +183,7 @@ static int genregs_set(struct task_struct *target,
 
 #define REG_IGNORE_ONE(LOC)		\
 	if (!ret)			\
-		ret = user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf, \
+		user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf, \
 			offsetof(struct user_regs_struct, LOC), \
 			offsetof(struct user_regs_struct, LOC) + 4);
 
@@ -201,7 +284,7 @@ enum arc_getset {
 
 static const struct user_regset arc_regsets[] = {
 	[REGSET_CMN] = {
-	       .core_note_type = NT_PRSTATUS,
+	       USER_REGSET_NOTE_TYPE(PRSTATUS),
 	       .n = ELF_NGREG,
 	       .size = sizeof(unsigned long),
 	       .align = sizeof(unsigned long),
@@ -210,7 +293,7 @@ static const struct user_regset arc_regsets[] = {
 	},
 #ifdef CONFIG_ISA_ARCV2
 	[REGSET_ARCV2] = {
-	       .core_note_type = NT_ARC_V2,
+	       USER_REGSET_NOTE_TYPE(ARC_V2),
 	       .n = ELF_ARCV2REG,
 	       .size = sizeof(unsigned long),
 	       .align = sizeof(unsigned long),
@@ -256,15 +339,63 @@ long arch_ptrace(struct task_struct *child, long request,
 	return ret;
 }
 
-asmlinkage int syscall_trace_entry(struct pt_regs *regs)
+asmlinkage int syscall_trace_enter(struct pt_regs *regs)
 {
-	if (tracehook_report_syscall_entry(regs))
-		return ULONG_MAX;
+	if (test_thread_flag(TIF_SYSCALL_TRACE))
+		if (ptrace_report_syscall_entry(regs))
+			return ULONG_MAX;
+
+#ifdef CONFIG_HAVE_SYSCALL_TRACEPOINTS
+	if (test_thread_flag(TIF_SYSCALL_TRACEPOINT))
+		trace_sys_enter(regs, syscall_get_nr(current, regs));
+#endif
 
 	return regs->r8;
 }
 
 asmlinkage void syscall_trace_exit(struct pt_regs *regs)
 {
-	tracehook_report_syscall_exit(regs, 0);
+	if (test_thread_flag(TIF_SYSCALL_TRACE))
+		ptrace_report_syscall_exit(regs, 0);
+
+#ifdef CONFIG_HAVE_SYSCALL_TRACEPOINTS
+	if (test_thread_flag(TIF_SYSCALL_TRACEPOINT))
+		trace_sys_exit(regs, regs_return_value(regs));
+#endif
+}
+
+int regs_query_register_offset(const char *name)
+{
+	const struct pt_regs_offset *roff;
+
+	for (roff = regoffset_table; roff->name != NULL; roff++)
+		if (!strcmp(roff->name, name))
+			return roff->offset;
+	return -EINVAL;
+}
+
+const char *regs_query_register_name(unsigned int offset)
+{
+	const struct pt_regs_offset *roff;
+	for (roff = regoffset_table; roff->name != NULL; roff++)
+		if (roff->offset == offset)
+			return roff->name;
+	return NULL;
+}
+
+bool regs_within_kernel_stack(struct pt_regs *regs, unsigned long addr)
+{
+	return (addr & ~(THREAD_SIZE - 1))  ==
+		(kernel_stack_pointer(regs) & ~(THREAD_SIZE - 1));
+}
+
+unsigned long regs_get_kernel_stack_nth(struct pt_regs *regs, unsigned int n)
+{
+	unsigned long *addr = (unsigned long *)kernel_stack_pointer(regs);
+
+	addr += n;
+	if (regs_within_kernel_stack(regs, (unsigned long)addr))
+		return *addr;
+	else
+		return 0;
 }

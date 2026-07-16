@@ -262,6 +262,11 @@ static int __init ic_open_devs(void)
 				 dev->name, able, d->xid);
 		}
 	}
+	/* Devices with a complex topology like SFP ethernet interfaces needs
+	 * the rtnl_lock at init. The carrier wait-loop must therefore run
+	 * without holding it.
+	 */
+	rtnl_unlock();
 
 	/* no point in waiting if we could not bring up at least one device */
 	if (!ic_first_dev)
@@ -269,14 +274,18 @@ static int __init ic_open_devs(void)
 
 	/* wait for a carrier on at least one device */
 	start = jiffies;
-	next_msg = start + msecs_to_jiffies(20000);
+	next_msg = start + secs_to_jiffies(20);
 	while (time_before(jiffies, start +
-			   msecs_to_jiffies(carrier_timeout * 1000))) {
+			   secs_to_jiffies(carrier_timeout))) {
 		int wait, elapsed;
 
+		rtnl_lock();
 		for_each_netdev(&init_net, dev)
-			if (ic_is_init_dev(dev) && netif_carrier_ok(dev))
+			if (ic_is_init_dev(dev) && netif_carrier_ok(dev)) {
+				rtnl_unlock();
 				goto have_carrier;
+			}
+		rtnl_unlock();
 
 		msleep(1);
 
@@ -286,10 +295,9 @@ static int __init ic_open_devs(void)
 		elapsed = jiffies_to_msecs(jiffies - start);
 		wait = (carrier_timeout * 1000 - elapsed + 500) / 1000;
 		pr_info("Waiting up to %d more seconds for network.\n", wait);
-		next_msg = jiffies + msecs_to_jiffies(20000);
+		next_msg = jiffies + secs_to_jiffies(20);
 	}
 have_carrier:
-	rtnl_unlock();
 
 	*last = NULL;
 
@@ -657,6 +665,9 @@ static struct packet_type bootp_packet_type __initdata = {
 	.func =	ic_bootp_recv,
 };
 
+/* DHCPACK can overwrite DNS if fallback was set upon first BOOTP reply */
+static int ic_nameservers_fallback __initdata;
+
 /*
  *  Initialize DHCP/BOOTP extension fields in the request.
  */
@@ -930,7 +941,8 @@ static void __init ic_do_bootp_ext(u8 *ext)
 		if (servers > CONF_NAMESERVERS_MAX)
 			servers = CONF_NAMESERVERS_MAX;
 		for (i = 0; i < servers; i++) {
-			if (ic_nameservers[i] == NONE)
+			if (ic_nameservers[i] == NONE ||
+			    ic_nameservers_fallback)
 				memcpy(&ic_nameservers[i], ext+1+4*i, 4);
 		}
 		break;
@@ -1150,8 +1162,10 @@ static int __init ic_bootp_recv(struct sk_buff *skb, struct net_device *dev, str
 	ic_addrservaddr = b->iph.saddr;
 	if (ic_gateway == NONE && b->relay_ip)
 		ic_gateway = b->relay_ip;
-	if (ic_nameservers[0] == NONE)
+	if (ic_nameservers[0] == NONE) {
 		ic_nameservers[0] = ic_servaddr;
+		ic_nameservers_fallback = 1;
+	}
 	ic_got_reply = IC_BOOTP;
 
 drop_unlock:
@@ -1426,6 +1440,7 @@ __be32 __init root_nfs_parse_addr(char *name)
 static int __init wait_for_devices(void)
 {
 	int i;
+	bool try_init_devs = true;
 
 	for (i = 0; i < DEVICE_WAIT_MAX; i++) {
 		struct net_device *dev;
@@ -1444,6 +1459,11 @@ static int __init wait_for_devices(void)
 		rtnl_unlock();
 		if (found)
 			return 0;
+		if (try_init_devs &&
+		    (ROOT_DEV == Root_NFS || ROOT_DEV == Root_CIFS)) {
+			try_init_devs = false;
+			wait_for_init_devices_probe();
+		}
 		ssleep(1);
 	}
 	return -ENODEV;
@@ -1751,15 +1771,15 @@ static int __init ip_auto_config_setup(char *addrs)
 			case 4:
 				if ((dp = strchr(ip, '.'))) {
 					*dp++ = '\0';
-					strlcpy(utsname()->domainname, dp,
+					strscpy(utsname()->domainname, dp,
 						sizeof(utsname()->domainname));
 				}
-				strlcpy(utsname()->nodename, ip,
+				strscpy(utsname()->nodename, ip,
 					sizeof(utsname()->nodename));
 				ic_host_name_set = 1;
 				break;
 			case 5:
-				strlcpy(user_dev_name, ip, sizeof(user_dev_name));
+				strscpy(user_dev_name, ip, sizeof(user_dev_name));
 				break;
 			case 6:
 				if (ic_proto_name(ip) == 0 &&
@@ -1806,7 +1826,7 @@ __setup("nfsaddrs=", nfsaddrs_config_setup);
 
 static int __init vendor_class_identifier_setup(char *addrs)
 {
-	if (strlcpy(vendor_class_identifier, addrs,
+	if (strscpy(vendor_class_identifier, addrs,
 		    sizeof(vendor_class_identifier))
 	    >= sizeof(vendor_class_identifier))
 		pr_warn("DHCP: vendorclass too long, truncated to \"%s\"\n",

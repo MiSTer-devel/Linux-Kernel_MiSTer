@@ -145,7 +145,7 @@ union vsx_reg {
  * otherwise.
  */
 extern int analyse_instr(struct instruction_op *op, const struct pt_regs *regs,
-			 struct ppc_inst instr);
+			 ppc_inst_t instr);
 
 /*
  * Emulate an instruction that can be executed just by updating
@@ -162,7 +162,7 @@ void emulate_update_regs(struct pt_regs *reg, struct instruction_op *op);
  * 0 if it could not be emulated, or -1 for an instruction that
  * should not be emulated (rfid, mtmsrd clearing MSR_RI, etc.).
  */
-extern int emulate_step(struct pt_regs *regs, struct ppc_inst instr);
+int emulate_step(struct pt_regs *regs, ppc_inst_t instr);
 
 /*
  * Emulate a load or store instruction by reading/writing the
@@ -173,9 +173,4 @@ extern int emulate_step(struct pt_regs *regs, struct ppc_inst instr);
  */
 extern int emulate_loadstore(struct pt_regs *regs, struct instruction_op *op);
 
-extern void emulate_vsx_load(struct instruction_op *op, union vsx_reg *reg,
-			     const void *mem, bool cross_endian);
-extern void emulate_vsx_store(struct instruction_op *op,
-			      const union vsx_reg *reg, void *mem,
-			      bool cross_endian);
 extern int emulate_dcbz(unsigned long ea, struct pt_regs *regs);

@@ -10,6 +10,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/spi-mem.h>
+#include <linux/sched/task_stack.h>
 
 #include "internals.h"
 
@@ -160,24 +161,52 @@ static bool spi_mem_check_buswidth(struct spi_mem *mem,
 	return true;
 }
 
-bool spi_mem_dtr_supports_op(struct spi_mem *mem,
-			     const struct spi_mem_op *op)
-{
-	if (op->cmd.nbytes != 2)
-		return false;
-
-	return spi_mem_check_buswidth(mem, op);
-}
-EXPORT_SYMBOL_GPL(spi_mem_dtr_supports_op);
-
 bool spi_mem_default_supports_op(struct spi_mem *mem,
 				 const struct spi_mem_op *op)
 {
-	if (op->cmd.dtr || op->addr.dtr || op->dummy.dtr || op->data.dtr)
+	struct spi_controller *ctlr = mem->spi->controller;
+	bool op_is_dtr =
+		op->cmd.dtr || op->addr.dtr || op->dummy.dtr || op->data.dtr;
+
+	if (op_is_dtr) {
+		if (!spi_mem_controller_is_capable(ctlr, dtr))
+			return false;
+
+		if (op->data.swap16 && !spi_mem_controller_is_capable(ctlr, swap16))
+			return false;
+
+		/* Extra 8D-8D-8D limitations */
+		if (op->cmd.dtr && op->cmd.buswidth == 8) {
+			if (op->cmd.nbytes != 2)
+				return false;
+
+			if ((op->addr.nbytes % 2) ||
+			    (op->dummy.nbytes % 2) ||
+			    (op->data.nbytes % 2)) {
+				dev_err(&ctlr->dev,
+					"Even byte numbers not allowed in octal DTR operations\n");
+				return false;
+			}
+		}
+	} else {
+		if (op->cmd.nbytes != 1)
+			return false;
+	}
+
+	if (op->data.ecc) {
+		if (!spi_mem_controller_is_capable(ctlr, ecc))
+			return false;
+	}
+
+	if (op->max_freq && mem->spi->controller->min_speed_hz &&
+	    op->max_freq < mem->spi->controller->min_speed_hz)
 		return false;
 
-	if (op->cmd.nbytes != 1)
-		return false;
+	if (op->max_freq &&
+	    op->max_freq < mem->spi->max_speed_hz) {
+		if (!spi_mem_controller_is_capable(ctlr, per_op_freq))
+			return false;
+	}
 
 	return spi_mem_check_buswidth(mem, op);
 }
@@ -205,6 +234,15 @@ static int spi_mem_check_op(const struct spi_mem_op *op)
 	    !spi_mem_buswidth_is_valid(op->addr.buswidth) ||
 	    !spi_mem_buswidth_is_valid(op->dummy.buswidth) ||
 	    !spi_mem_buswidth_is_valid(op->data.buswidth))
+		return -EINVAL;
+
+	/* Buffers must be DMA-able. */
+	if (WARN_ON_ONCE(op->data.dir == SPI_MEM_DATA_IN &&
+			 object_is_on_stack(op->data.buf.in)))
+		return -EINVAL;
+
+	if (WARN_ON_ONCE(op->data.dir == SPI_MEM_DATA_OUT &&
+			 object_is_on_stack(op->data.buf.out)))
 		return -EINVAL;
 
 	return 0;
@@ -238,10 +276,20 @@ static bool spi_mem_internal_supports_op(struct spi_mem *mem,
  */
 bool spi_mem_supports_op(struct spi_mem *mem, const struct spi_mem_op *op)
 {
-	if (spi_mem_check_op(op))
+	struct spi_mem_op eval_op = *op;
+
+	/*
+	 * Work on a local copy; this is a pure capability check and must
+	 * not modify the caller's op. Stored templates with max_freq == 0
+	 * must remain unset so their frequency is always re-capped to the
+	 * current device maximum at execution time.
+	 */
+	spi_mem_adjust_op_freq(mem, &eval_op);
+
+	if (spi_mem_check_op(&eval_op))
 		return false;
 
-	return spi_mem_internal_supports_op(mem, op);
+	return spi_mem_internal_supports_op(mem, &eval_op);
 }
 EXPORT_SYMBOL_GPL(spi_mem_supports_op);
 
@@ -258,9 +306,8 @@ static int spi_mem_access_start(struct spi_mem *mem)
 	if (ctlr->auto_runtime_pm) {
 		int ret;
 
-		ret = pm_runtime_get_sync(ctlr->dev.parent);
+		ret = pm_runtime_resume_and_get(ctlr->dev.parent);
 		if (ret < 0) {
-			pm_runtime_put_noidle(ctlr->dev.parent);
 			dev_err(&ctlr->dev, "Failed to power device: %d\n",
 				ret);
 			return ret;
@@ -284,6 +331,49 @@ static void spi_mem_access_end(struct spi_mem *mem)
 		pm_runtime_put(ctlr->dev.parent);
 }
 
+static void spi_mem_add_op_stats(struct spi_statistics __percpu *pcpu_stats,
+				 const struct spi_mem_op *op, int exec_op_ret)
+{
+	struct spi_statistics *stats;
+	u64 len, l2len;
+
+	get_cpu();
+	stats = this_cpu_ptr(pcpu_stats);
+	u64_stats_update_begin(&stats->syncp);
+
+	/*
+	 * We do not have the concept of messages or transfers. Let's consider
+	 * that one operation is equivalent to one message and one transfer.
+	 */
+	u64_stats_inc(&stats->messages);
+	u64_stats_inc(&stats->transfers);
+
+	/* Use the sum of all lengths as bytes count and histogram value. */
+	len = op->cmd.nbytes + op->addr.nbytes;
+	len += op->dummy.nbytes + op->data.nbytes;
+	u64_stats_add(&stats->bytes, len);
+	l2len = min(fls(len), SPI_STATISTICS_HISTO_SIZE) - 1;
+	u64_stats_inc(&stats->transfer_bytes_histo[l2len]);
+
+	/* Only account for data bytes as transferred bytes. */
+	if (op->data.nbytes && op->data.dir == SPI_MEM_DATA_OUT)
+		u64_stats_add(&stats->bytes_tx, op->data.nbytes);
+	if (op->data.nbytes && op->data.dir == SPI_MEM_DATA_IN)
+		u64_stats_add(&stats->bytes_rx, op->data.nbytes);
+
+	/*
+	 * A timeout is not an error, following the same behavior as
+	 * spi_transfer_one_message().
+	 */
+	if (exec_op_ret == -ETIMEDOUT)
+		u64_stats_inc(&stats->timedout);
+	else if (exec_op_ret)
+		u64_stats_inc(&stats->errors);
+
+	u64_stats_update_end(&stats->syncp);
+	put_cpu();
+}
+
 /**
  * spi_mem_exec_op() - Execute a memory operation
  * @mem: the SPI memory
@@ -305,14 +395,28 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 	u8 *tmpbuf;
 	int ret;
 
+	/* Make sure the operation frequency is correct before going futher */
+	spi_mem_adjust_op_freq(mem, (struct spi_mem_op *)op);
+
+	dev_vdbg(&mem->spi->dev, "[cmd: 0x%02x][%dB addr: %#8llx][%2dB dummy][%4dB data %s] %d%c-%d%c-%d%c-%d%c @ %uHz\n",
+		 op->cmd.opcode,
+		 op->addr.nbytes, (op->addr.nbytes ? op->addr.val : 0),
+		 op->dummy.nbytes,
+		 op->data.nbytes, (op->data.nbytes ? (op->data.dir == SPI_MEM_DATA_IN ? " read" : "write") : "     "),
+		 op->cmd.buswidth, op->cmd.dtr ? 'D' : 'S',
+		 op->addr.buswidth, op->addr.dtr ? 'D' : 'S',
+		 op->dummy.buswidth, op->dummy.dtr ? 'D' : 'S',
+		 op->data.buswidth, op->data.dtr ? 'D' : 'S',
+		 op->max_freq ? op->max_freq : mem->spi->max_speed_hz);
+
 	ret = spi_mem_check_op(op);
 	if (ret)
 		return ret;
 
 	if (!spi_mem_internal_supports_op(mem, op))
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 
-	if (ctlr->mem_ops && !mem->spi->cs_gpiod) {
+	if (ctlr->mem_ops && ctlr->mem_ops->exec_op && !spi_get_csgpiod(mem->spi, 0)) {
 		ret = spi_mem_access_start(mem);
 		if (ret)
 			return ret;
@@ -326,8 +430,12 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 		 * read path) and expect the core to use the regular SPI
 		 * interface in other cases.
 		 */
-		if (!ret || ret != -ENOTSUPP)
+		if (!ret || (ret != -ENOTSUPP && ret != -EOPNOTSUPP)) {
+			spi_mem_add_op_stats(ctlr->pcpu_statistics, op, ret);
+			spi_mem_add_op_stats(mem->spi->pcpu_statistics, op, ret);
+
 			return ret;
+		}
 	}
 
 	tmpbufsize = op->cmd.nbytes + op->addr.nbytes + op->dummy.nbytes;
@@ -347,6 +455,7 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 	xfers[xferpos].tx_buf = tmpbuf;
 	xfers[xferpos].len = op->cmd.nbytes;
 	xfers[xferpos].tx_nbits = op->cmd.buswidth;
+	xfers[xferpos].speed_hz = op->max_freq;
 	spi_message_add_tail(&xfers[xferpos], &msg);
 	xferpos++;
 	totalxferlen++;
@@ -361,6 +470,7 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 		xfers[xferpos].tx_buf = tmpbuf + 1;
 		xfers[xferpos].len = op->addr.nbytes;
 		xfers[xferpos].tx_nbits = op->addr.buswidth;
+		xfers[xferpos].speed_hz = op->max_freq;
 		spi_message_add_tail(&xfers[xferpos], &msg);
 		xferpos++;
 		totalxferlen += op->addr.nbytes;
@@ -372,6 +482,7 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 		xfers[xferpos].len = op->dummy.nbytes;
 		xfers[xferpos].tx_nbits = op->dummy.buswidth;
 		xfers[xferpos].dummy_data = 1;
+		xfers[xferpos].speed_hz = op->max_freq;
 		spi_message_add_tail(&xfers[xferpos], &msg);
 		xferpos++;
 		totalxferlen += op->dummy.nbytes;
@@ -387,6 +498,7 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 		}
 
 		xfers[xferpos].len = op->data.nbytes;
+		xfers[xferpos].speed_hz = op->max_freq;
 		spi_message_add_tail(&xfers[xferpos], &msg);
 		xferpos++;
 		totalxferlen += op->data.nbytes;
@@ -465,6 +577,75 @@ int spi_mem_adjust_op_size(struct spi_mem *mem, struct spi_mem_op *op)
 }
 EXPORT_SYMBOL_GPL(spi_mem_adjust_op_size);
 
+/**
+ * spi_mem_adjust_op_freq() - Adjust the frequency of a SPI mem operation to
+ *			      match controller, PCB and chip limitations
+ * @mem: the SPI memory
+ * @op: the operation to adjust
+ *
+ * Some chips have per-op frequency limitations and must adapt the maximum
+ * speed. This function allows SPI mem drivers to set @op->max_freq to the
+ * maximum supported value.
+ */
+void spi_mem_adjust_op_freq(struct spi_mem *mem, struct spi_mem_op *op)
+{
+	if (!op->max_freq || op->max_freq > mem->spi->max_speed_hz)
+		op->max_freq = mem->spi->max_speed_hz;
+}
+EXPORT_SYMBOL_GPL(spi_mem_adjust_op_freq);
+
+/**
+ * spi_mem_calc_op_duration() - Derives the theoretical length (in ns) of an
+ *			        operation. This helps finding the best variant
+ *			        among a list of possible choices.
+ * @mem: the SPI memory
+ * @op: the operation to benchmark
+ *
+ * Some chips have per-op frequency limitations, PCBs usually have their own
+ * limitations as well, and controllers can support dual, quad or even octal
+ * modes, sometimes in DTR. All these combinations make it impossible to
+ * statically list the best combination for all situations. If we want something
+ * accurate, all these combinations should be rated (eg. with a time estimate)
+ * and the best pick should be taken based on these calculations.
+ *
+ * Returns a ns estimate for the time this op would take, except if no
+ * frequency limit has been set, in this case we return the number of
+ * cycles nevertheless to allow callers to distinguish which operation
+ * would be the fastest at iso-frequency.
+ */
+u64 spi_mem_calc_op_duration(struct spi_mem *mem, struct spi_mem_op *op)
+{
+	u64 ncycles = 0;
+	u64 ps_per_cycles, duration;
+
+	spi_mem_adjust_op_freq(mem, op);
+
+	if (op->max_freq) {
+		ps_per_cycles = 1000000000000ULL;
+		do_div(ps_per_cycles, op->max_freq);
+	} else {
+		/* In this case, the unit is no longer a time unit */
+		ps_per_cycles = 1;
+	}
+
+	ncycles += ((op->cmd.nbytes * 8) / op->cmd.buswidth) / (op->cmd.dtr ? 2 : 1);
+	ncycles += ((op->addr.nbytes * 8) / op->addr.buswidth) / (op->addr.dtr ? 2 : 1);
+
+	/* Dummy bytes are optional for some SPI flash memory operations */
+	if (op->dummy.nbytes)
+		ncycles += ((op->dummy.nbytes * 8) / op->dummy.buswidth) / (op->dummy.dtr ? 2 : 1);
+
+	ncycles += ((op->data.nbytes * 8) / op->data.buswidth) / (op->data.dtr ? 2 : 1);
+
+	/* Derive the duration in ps */
+	duration = ncycles * ps_per_cycles;
+	/* Convert into ns */
+	do_div(duration, 1000);
+
+	return duration;
+}
+EXPORT_SYMBOL_GPL(spi_mem_calc_op_duration);
+
 static ssize_t spi_mem_no_dirmap_read(struct spi_mem_dirmap_desc *desc,
 				      u64 offs, size_t len, void *buf)
 {
@@ -540,13 +721,22 @@ spi_mem_dirmap_create(struct spi_mem *mem,
 
 	desc->mem = mem;
 	desc->info = *info;
-	if (ctlr->mem_ops && ctlr->mem_ops->dirmap_create)
+	if (ctlr->mem_ops && ctlr->mem_ops->dirmap_create) {
+		ret = spi_mem_access_start(mem);
+		if (ret) {
+			kfree(desc);
+			return ERR_PTR(ret);
+		}
+
 		ret = ctlr->mem_ops->dirmap_create(desc);
+
+		spi_mem_access_end(mem);
+	}
 
 	if (ret) {
 		desc->nodirmap = true;
 		if (!spi_mem_supports_op(desc->mem, &desc->info.op_tmpl))
-			ret = -ENOTSUPP;
+			ret = -EOPNOTSUPP;
 		else
 			ret = 0;
 	}
@@ -795,7 +985,7 @@ int spi_mem_poll_status(struct spi_mem *mem,
 	    op->data.dir != SPI_MEM_DATA_IN)
 		return -EINVAL;
 
-	if (ctlr->mem_ops && ctlr->mem_ops->poll_status) {
+	if (ctlr->mem_ops && ctlr->mem_ops->poll_status && !spi_get_csgpiod(mem->spi, 0)) {
 		ret = spi_mem_access_start(mem);
 		if (ret)
 			return ret;
@@ -854,15 +1044,13 @@ static int spi_mem_probe(struct spi_device *spi)
 	return memdrv->probe(mem);
 }
 
-static int spi_mem_remove(struct spi_device *spi)
+static void spi_mem_remove(struct spi_device *spi)
 {
 	struct spi_mem_driver *memdrv = to_spi_mem_drv(spi->dev.driver);
 	struct spi_mem *mem = spi_get_drvdata(spi);
 
 	if (memdrv->remove)
-		return memdrv->remove(mem);
-
-	return 0;
+		memdrv->remove(mem);
 }
 
 static void spi_mem_shutdown(struct spi_device *spi)

@@ -255,6 +255,16 @@ int snd_motu_stream_start_duplex(struct snd_motu *motu)
 		if (err < 0)
 			return err;
 
+		if (motu->spec->flags & SND_MOTU_SPEC_REGISTER_DSP) {
+			err = snd_motu_register_dsp_message_parser_init(motu);
+			if (err < 0)
+				return err;
+		} else if (motu->spec->flags & SND_MOTU_SPEC_COMMAND_DSP) {
+			err = snd_motu_command_dsp_message_parser_init(motu, motu->tx_stream.sfc);
+			if (err < 0)
+				return err;
+		}
+
 		err = begin_session(motu);
 		if (err < 0) {
 			dev_err(&motu->unit->device,
@@ -397,32 +407,23 @@ static void motu_lock_changed(struct snd_motu *motu)
 
 int snd_motu_stream_lock_try(struct snd_motu *motu)
 {
-	int err;
+	guard(spinlock_irq)(&motu->lock);
 
-	spin_lock_irq(&motu->lock);
-
-	if (motu->dev_lock_count < 0) {
-		err = -EBUSY;
-		goto out;
-	}
+	if (motu->dev_lock_count < 0)
+		return -EBUSY;
 
 	if (motu->dev_lock_count++ == 0)
 		motu_lock_changed(motu);
-	err = 0;
-out:
-	spin_unlock_irq(&motu->lock);
-	return err;
+	return 0;
 }
 
 void snd_motu_stream_lock_release(struct snd_motu *motu)
 {
-	spin_lock_irq(&motu->lock);
+	guard(spinlock_irq)(&motu->lock);
 
 	if (WARN_ON(motu->dev_lock_count <= 0))
-		goto out;
+		return;
 
 	if (--motu->dev_lock_count == 0)
 		motu_lock_changed(motu);
-out:
-	spin_unlock_irq(&motu->lock);
 }

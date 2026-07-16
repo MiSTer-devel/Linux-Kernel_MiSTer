@@ -8,23 +8,27 @@
  * Copyright (C) 2008 Embedded Alley Solutions, Inc All Rights Reserved.
  */
 
+#include <linux/aperture.h>
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
 #include <linux/io.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/pm_runtime.h>
 
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_connector.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fb_helper.h>
+#include <drm/drm_fbdev_dma.h>
 #include <drm/drm_fourcc.h>
-#include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_mode_config.h>
+#include <drm/drm_module.h>
 #include <drm/drm_of.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
@@ -51,6 +55,7 @@ static const struct mxsfb_devdata mxsfb_devdata[] = {
 		.hs_wdth_shift	= 24,
 		.has_overlay	= false,
 		.has_ctrl2	= false,
+		.has_crc32	= false,
 	},
 	[MXSFB_V4] = {
 		.transfer_count	= LCDC_V4_TRANSFER_COUNT,
@@ -60,6 +65,7 @@ static const struct mxsfb_devdata mxsfb_devdata[] = {
 		.hs_wdth_shift	= 18,
 		.has_overlay	= false,
 		.has_ctrl2	= true,
+		.has_crc32	= true,
 	},
 	[MXSFB_V6] = {
 		.transfer_count	= LCDC_V4_TRANSFER_COUNT,
@@ -69,37 +75,31 @@ static const struct mxsfb_devdata mxsfb_devdata[] = {
 		.hs_wdth_shift	= 18,
 		.has_overlay	= true,
 		.has_ctrl2	= true,
+		.has_crc32	= true,
 	},
 };
 
 void mxsfb_enable_axi_clk(struct mxsfb_drm_private *mxsfb)
 {
-	if (mxsfb->clk_axi)
-		clk_prepare_enable(mxsfb->clk_axi);
+	clk_prepare_enable(mxsfb->clk_axi);
 }
 
 void mxsfb_disable_axi_clk(struct mxsfb_drm_private *mxsfb)
 {
-	if (mxsfb->clk_axi)
-		clk_disable_unprepare(mxsfb->clk_axi);
+	clk_disable_unprepare(mxsfb->clk_axi);
 }
 
 static struct drm_framebuffer *
 mxsfb_fb_create(struct drm_device *dev, struct drm_file *file_priv,
+		const struct drm_format_info *info,
 		const struct drm_mode_fb_cmd2 *mode_cmd)
 {
-	const struct drm_format_info *info;
-
-	info = drm_get_format_info(dev, mode_cmd);
-	if (!info)
-		return ERR_PTR(-EINVAL);
-
 	if (mode_cmd->width * info->cpp[0] != mode_cmd->pitches[0]) {
 		dev_dbg(dev->dev, "Invalid pitch: fb width must match pitch\n");
 		return ERR_PTR(-EINVAL);
 	}
 
-	return drm_gem_fb_create(dev, file_priv, mode_cmd);
+	return drm_gem_fb_create(dev, file_priv, info, mode_cmd);
 }
 
 static const struct drm_mode_config_funcs mxsfb_mode_config_funcs = {
@@ -156,12 +156,19 @@ static irqreturn_t mxsfb_irq_handler(int irq, void *data)
 {
 	struct drm_device *drm = data;
 	struct mxsfb_drm_private *mxsfb = drm->dev_private;
-	u32 reg;
+	u32 reg, crc;
+	u64 vbc;
 
 	reg = readl(mxsfb->base + LCDC_CTRL1);
 
-	if (reg & CTRL1_CUR_FRAME_DONE_IRQ)
+	if (reg & CTRL1_CUR_FRAME_DONE_IRQ) {
 		drm_crtc_handle_vblank(&mxsfb->crtc);
+		if (mxsfb->crc_active) {
+			crc = readl(mxsfb->base + LCDC_V4_CRC_STAT);
+			vbc = drm_crtc_accurate_vblank_count(&mxsfb->crtc);
+			drm_crtc_add_crc_entry(&mxsfb->crtc, true, vbc, &crc);
+		}
+	}
 
 	writel(CTRL1_CUR_FRAME_DONE_IRQ, mxsfb->base + LCDC_CTRL1 + REG_CLR);
 
@@ -204,7 +211,6 @@ static int mxsfb_load(struct drm_device *drm,
 {
 	struct platform_device *pdev = to_platform_device(drm->dev);
 	struct mxsfb_drm_private *mxsfb;
-	struct resource *res;
 	int ret;
 
 	mxsfb = devm_kzalloc(&pdev->dev, sizeof(*mxsfb), GFP_KERNEL);
@@ -215,8 +221,7 @@ static int mxsfb_load(struct drm_device *drm,
 	drm->dev_private = mxsfb;
 	mxsfb->devdata = devdata;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	mxsfb->base = devm_ioremap_resource(drm->dev, res);
+	mxsfb->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(mxsfb->base))
 		return PTR_ERR(mxsfb->base);
 
@@ -224,9 +229,9 @@ static int mxsfb_load(struct drm_device *drm,
 	if (IS_ERR(mxsfb->clk))
 		return PTR_ERR(mxsfb->clk);
 
-	mxsfb->clk_axi = devm_clk_get(drm->dev, "axi");
+	mxsfb->clk_axi = devm_clk_get_optional(drm->dev, "axi");
 	if (IS_ERR(mxsfb->clk_axi))
-		mxsfb->clk_axi = NULL;
+		return PTR_ERR(mxsfb->clk_axi);
 
 	mxsfb->clk_disp_axi = devm_clk_get(drm->dev, "disp_axi");
 	if (IS_ERR(mxsfb->clk_disp_axi))
@@ -239,7 +244,11 @@ static int mxsfb_load(struct drm_device *drm,
 	pm_runtime_enable(drm->dev);
 
 	/* Modeset init */
-	drm_mode_config_init(drm);
+	ret = drmm_mode_config_init(drm);
+	if (ret) {
+		dev_err(drm->dev, "Failed to initialize mode config\n");
+		goto err_vblank;
+	}
 
 	ret = mxsfb_kms_init(mxsfb);
 	if (ret < 0) {
@@ -258,8 +267,7 @@ static int mxsfb_load(struct drm_device *drm,
 
 	ret = mxsfb_attach_bridge(mxsfb);
 	if (ret) {
-		if (ret != -EPROBE_DEFER)
-			dev_err(drm->dev, "Cannot connect bridge: %d\n", ret);
+		dev_err_probe(drm->dev, ret, "Cannot connect bridge\n");
 		goto err_vblank;
 	}
 
@@ -303,7 +311,6 @@ err_vblank:
 static void mxsfb_unload(struct drm_device *drm)
 {
 	drm_kms_helper_poll_fini(drm);
-	drm_mode_config_cleanup(drm);
 
 	pm_runtime_get_sync(drm->dev);
 	mxsfb_irq_uninstall(drm);
@@ -314,15 +321,15 @@ static void mxsfb_unload(struct drm_device *drm)
 	pm_runtime_disable(drm->dev);
 }
 
-DEFINE_DRM_GEM_CMA_FOPS(fops);
+DEFINE_DRM_GEM_DMA_FOPS(fops);
 
 static const struct drm_driver mxsfb_driver = {
 	.driver_features	= DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
-	DRM_GEM_CMA_DRIVER_OPS,
+	DRM_GEM_DMA_DRIVER_OPS,
+	DRM_FBDEV_DMA_DRIVER_OPS,
 	.fops	= &fops,
 	.name	= "mxsfb-drm",
 	.desc	= "MXSFB Controller DRM",
-	.date	= "20160824",
 	.major	= 1,
 	.minor	= 0,
 };
@@ -338,26 +345,30 @@ MODULE_DEVICE_TABLE(of, mxsfb_dt_ids);
 static int mxsfb_probe(struct platform_device *pdev)
 {
 	struct drm_device *drm;
-	const struct of_device_id *of_id =
-			of_match_device(mxsfb_dt_ids, &pdev->dev);
 	int ret;
-
-	if (!pdev->dev.of_node)
-		return -ENODEV;
 
 	drm = drm_dev_alloc(&mxsfb_driver, &pdev->dev);
 	if (IS_ERR(drm))
 		return PTR_ERR(drm);
 
-	ret = mxsfb_load(drm, of_id->data);
+	ret = mxsfb_load(drm, device_get_match_data(&pdev->dev));
 	if (ret)
 		goto err_free;
+
+	/*
+	 * Remove early framebuffers (ie. simplefb). The framebuffer can be
+	 * located anywhere in RAM
+	 */
+	ret = aperture_remove_all_conflicting_devices(mxsfb_driver.name);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+				     "can't kick out existing framebuffers\n");
 
 	ret = drm_dev_register(drm, 0);
 	if (ret)
 		goto err_unload;
 
-	drm_fbdev_generic_setup(drm, 32);
+	drm_client_setup(drm, NULL);
 
 	return 0;
 
@@ -369,15 +380,21 @@ err_free:
 	return ret;
 }
 
-static int mxsfb_remove(struct platform_device *pdev)
+static void mxsfb_remove(struct platform_device *pdev)
 {
 	struct drm_device *drm = platform_get_drvdata(pdev);
 
 	drm_dev_unregister(drm);
+	drm_atomic_helper_shutdown(drm);
 	mxsfb_unload(drm);
 	drm_dev_put(drm);
+}
 
-	return 0;
+static void mxsfb_shutdown(struct platform_device *pdev)
+{
+	struct drm_device *drm = platform_get_drvdata(pdev);
+
+	drm_atomic_helper_shutdown(drm);
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -403,6 +420,7 @@ static const struct dev_pm_ops mxsfb_pm_ops = {
 static struct platform_driver mxsfb_platform_driver = {
 	.probe		= mxsfb_probe,
 	.remove		= mxsfb_remove,
+	.shutdown	= mxsfb_shutdown,
 	.driver	= {
 		.name		= "mxsfb",
 		.of_match_table	= mxsfb_dt_ids,
@@ -410,7 +428,7 @@ static struct platform_driver mxsfb_platform_driver = {
 	},
 };
 
-module_platform_driver(mxsfb_platform_driver);
+drm_module_platform_driver(mxsfb_platform_driver);
 
 MODULE_AUTHOR("Marek Vasut <marex@denx.de>");
 MODULE_DESCRIPTION("Freescale MXS DRM/KMS driver");

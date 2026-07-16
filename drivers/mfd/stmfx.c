@@ -53,7 +53,7 @@ static const struct regmap_config stmfx_regmap_config = {
 	.max_register	= STMFX_REG_MAX,
 	.volatile_reg	= stmfx_reg_volatile,
 	.writeable_reg	= stmfx_reg_writeable,
-	.cache_type	= REGCACHE_RBTREE,
+	.cache_type	= REGCACHE_MAPLE,
 };
 
 static const struct resource stmfx_pinctrl_resources[] = {
@@ -269,9 +269,8 @@ static int stmfx_irq_init(struct i2c_client *client)
 	u32 irqoutpin = 0, irqtrigger;
 	int ret;
 
-	stmfx->irq_domain = irq_domain_add_simple(stmfx->dev->of_node,
-						  STMFX_REG_IRQ_SRC_MAX, 0,
-						  &stmfx_irq_ops, stmfx);
+	stmfx->irq_domain = irq_domain_create_simple(dev_fwnode(stmfx->dev), STMFX_REG_IRQ_SRC_MAX,
+						     0, &stmfx_irq_ops, stmfx);
 	if (!stmfx->irq_domain) {
 		dev_err(stmfx->dev, "Failed to create IRQ domain\n");
 		return -EINVAL;
@@ -330,9 +329,8 @@ static int stmfx_chip_init(struct i2c_client *client)
 	stmfx->vdd = devm_regulator_get_optional(&client->dev, "vdd");
 	ret = PTR_ERR_OR_ZERO(stmfx->vdd);
 	if (ret) {
-		if (ret == -ENODEV)
-			stmfx->vdd = NULL;
-		else
+		stmfx->vdd = NULL;
+		if (ret != -ENODEV)
 			return dev_err_probe(&client->dev, ret, "Failed to get VDD regulator\n");
 	}
 
@@ -387,26 +385,30 @@ static int stmfx_chip_init(struct i2c_client *client)
 
 err:
 	if (stmfx->vdd)
-		return regulator_disable(stmfx->vdd);
+		regulator_disable(stmfx->vdd);
 
 	return ret;
 }
 
-static int stmfx_chip_exit(struct i2c_client *client)
+static void stmfx_chip_exit(struct i2c_client *client)
 {
 	struct stmfx *stmfx = i2c_get_clientdata(client);
 
 	regmap_write(stmfx->map, STMFX_REG_IRQ_SRC_EN, 0);
 	regmap_write(stmfx->map, STMFX_REG_SYS_CTRL, 0);
 
-	if (stmfx->vdd)
-		return regulator_disable(stmfx->vdd);
+	if (stmfx->vdd) {
+		int ret;
 
-	return 0;
+		ret = regulator_disable(stmfx->vdd);
+		if (ret)
+			dev_err(&client->dev,
+				"Failed to disable vdd regulator: %pe\n",
+				ERR_PTR(ret));
+	}
 }
 
-static int stmfx_probe(struct i2c_client *client,
-		       const struct i2c_device_id *id)
+static int stmfx_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct stmfx *stmfx;
@@ -462,14 +464,13 @@ err_chip_exit:
 	return ret;
 }
 
-static int stmfx_remove(struct i2c_client *client)
+static void stmfx_remove(struct i2c_client *client)
 {
 	stmfx_irq_exit(client);
 
-	return stmfx_chip_exit(client);
+	stmfx_chip_exit(client);
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int stmfx_suspend(struct device *dev)
 {
 	struct stmfx *stmfx = dev_get_drvdata(dev);
@@ -535,9 +536,8 @@ static int stmfx_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(stmfx_dev_pm_ops, stmfx_suspend, stmfx_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(stmfx_dev_pm_ops, stmfx_suspend, stmfx_resume);
 
 static const struct of_device_id stmfx_of_match[] = {
 	{ .compatible = "st,stmfx-0300", },
@@ -549,7 +549,7 @@ static struct i2c_driver stmfx_driver = {
 	.driver = {
 		.name = "stmfx-core",
 		.of_match_table = stmfx_of_match,
-		.pm = &stmfx_dev_pm_ops,
+		.pm = pm_sleep_ptr(&stmfx_dev_pm_ops),
 	},
 	.probe = stmfx_probe,
 	.remove = stmfx_remove,

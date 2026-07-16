@@ -85,15 +85,15 @@ accepted by this input device. Our example device can only generate EV_KEY
 type events, and from those only BTN_0 event code. Thus we only set these
 two bits. We could have used::
 
-	set_bit(EV_KEY, button_dev.evbit);
-	set_bit(BTN_0, button_dev.keybit);
+	set_bit(EV_KEY, button_dev->evbit);
+	set_bit(BTN_0, button_dev->keybit);
 
 as well, but with more than single bits the first approach tends to be
 shorter.
 
 Then the example driver registers the input device structure by calling::
 
-	input_register_device(&button_dev);
+	input_register_device(button_dev);
 
 This adds the button_dev structure to linked lists of the input driver and
 calls device handler modules _connect functions to tell them a new input
@@ -346,3 +346,22 @@ driver can handle these events, it has to set the respective bits in evbit,
 
 This callback routine can be called from an interrupt or a BH (although that
 isn't a rule), and thus must not sleep, and must not take too long to finish.
+
+Polled input devices
+~~~~~~~~~~~~~~~~~~~~
+
+Input polling is set up by passing an input device struct and a callback to
+the function::
+
+    int input_setup_polling(struct input_dev *dev,
+        void (*poll_fn)(struct input_dev *dev))
+
+Within the callback, devices should use the regular input_report_* functions
+and input_sync as is used by other devices.
+
+There is also the function::
+
+    void input_set_poll_interval(struct input_dev *dev, unsigned int interval)
+
+which is used to configure the interval, in milliseconds, that the device will
+be polled at.

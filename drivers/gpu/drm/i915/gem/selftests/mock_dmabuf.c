@@ -4,6 +4,7 @@
  * Copyright © 2016 Intel Corporation
  */
 
+#include <linux/vmalloc.h>
 #include "mock_dmabuf.h"
 
 static struct sg_table *mock_map_dma_buf(struct dma_buf_attachment *attachment,
@@ -61,7 +62,7 @@ static void mock_dmabuf_release(struct dma_buf *dma_buf)
 	kfree(mock);
 }
 
-static int mock_dmabuf_vmap(struct dma_buf *dma_buf, struct dma_buf_map *map)
+static int mock_dmabuf_vmap(struct dma_buf *dma_buf, struct iosys_map *map)
 {
 	struct mock_dmabuf *mock = to_mock(dma_buf);
 	void *vaddr;
@@ -69,12 +70,12 @@ static int mock_dmabuf_vmap(struct dma_buf *dma_buf, struct dma_buf_map *map)
 	vaddr = vm_map_ram(mock->pages, mock->npages, 0);
 	if (!vaddr)
 		return -ENOMEM;
-	dma_buf_map_set_vaddr(map, vaddr);
+	iosys_map_set_vaddr(map, vaddr);
 
 	return 0;
 }
 
-static void mock_dmabuf_vunmap(struct dma_buf *dma_buf, struct dma_buf_map *map)
+static void mock_dmabuf_vunmap(struct dma_buf *dma_buf, struct iosys_map *map)
 {
 	struct mock_dmabuf *mock = to_mock(dma_buf);
 
@@ -102,8 +103,7 @@ static struct dma_buf *mock_dmabuf(int npages)
 	struct dma_buf *dmabuf;
 	int i;
 
-	mock = kmalloc(sizeof(*mock) + npages * sizeof(struct page *),
-		       GFP_KERNEL);
+	mock = kmalloc(struct_size(mock, pages, npages), GFP_KERNEL);
 	if (!mock)
 		return ERR_PTR(-ENOMEM);
 

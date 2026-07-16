@@ -18,7 +18,7 @@
 #include <linux/slab.h>
 #include <linux/sysfs.h>
 #include <linux/regulator/consumer.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -115,13 +115,13 @@ struct ad5064_state {
 	struct mutex lock;
 
 	/*
-	 * DMA (thus cache coherency maintenance) requires the
+	 * DMA (thus cache coherency maintenance) may require the
 	 * transfer buffers to live in their own cache lines.
 	 */
 	union {
 		u8 i2c[3];
 		__be32 spi;
-	} data ____cacheline_aligned;
+	} data __aligned(IIO_DMA_MINALIGN);
 };
 
 enum ad5064_type {
@@ -288,7 +288,7 @@ static ssize_t ad5064_write_dac_powerdown(struct iio_dev *indio_dev,
 	bool pwr_down;
 	int ret;
 
-	ret = strtobool(buf, &pwr_down);
+	ret = kstrtobool(buf, &pwr_down);
 	if (ret)
 		return ret;
 
@@ -377,8 +377,8 @@ static const struct iio_chan_spec_ext_info ad5064_ext_info[] = {
 		.shared = IIO_SEPARATE,
 	},
 	IIO_ENUM("powerdown_mode", IIO_SEPARATE, &ad5064_powerdown_mode_enum),
-	IIO_ENUM_AVAILABLE("powerdown_mode", &ad5064_powerdown_mode_enum),
-	{ },
+	IIO_ENUM_AVAILABLE("powerdown_mode", IIO_SHARED_BY_TYPE, &ad5064_powerdown_mode_enum),
+	{ }
 };
 
 static const struct iio_chan_spec_ext_info ltc2617_ext_info[] = {
@@ -389,8 +389,8 @@ static const struct iio_chan_spec_ext_info ltc2617_ext_info[] = {
 		.shared = IIO_SEPARATE,
 	},
 	IIO_ENUM("powerdown_mode", IIO_SEPARATE, &ltc2617_powerdown_mode_enum),
-	IIO_ENUM_AVAILABLE("powerdown_mode", &ltc2617_powerdown_mode_enum),
-	{ },
+	IIO_ENUM_AVAILABLE("powerdown_mode", IIO_SHARED_BY_TYPE, &ltc2617_powerdown_mode_enum),
+	{ }
 };
 
 #define AD5064_CHANNEL(chan, addr, bits, _shift, _ext_info) {		\
@@ -843,6 +843,13 @@ static int ad5064_request_vref(struct ad5064_state *st, struct device *dev)
 	return ret;
 }
 
+static void ad5064_bulk_reg_disable(void *data)
+{
+	struct ad5064_state *st = data;
+
+	regulator_bulk_disable(ad5064_num_vref(st), st->vref_reg);
+}
+
 static int ad5064_probe(struct device *dev, enum ad5064_type type,
 			const char *name, ad5064_write_func write)
 {
@@ -858,7 +865,6 @@ static int ad5064_probe(struct device *dev, enum ad5064_type type,
 
 	st = iio_priv(indio_dev);
 	mutex_init(&st->lock);
-	dev_set_drvdata(dev, indio_dev);
 
 	st->chip_info = &ad5064_chip_info_tbl[type];
 	st->dev = dev;
@@ -870,6 +876,10 @@ static int ad5064_probe(struct device *dev, enum ad5064_type type,
 
 	if (!st->use_internal_vref) {
 		ret = regulator_bulk_enable(ad5064_num_vref(st), st->vref_reg);
+		if (ret)
+			return ret;
+
+		ret = devm_add_action_or_reset(dev, ad5064_bulk_reg_disable, st);
 		if (ret)
 			return ret;
 	}
@@ -887,30 +897,7 @@ static int ad5064_probe(struct device *dev, enum ad5064_type type,
 		st->dac_cache[i] = midscale;
 	}
 
-	ret = iio_device_register(indio_dev);
-	if (ret)
-		goto error_disable_reg;
-
-	return 0;
-
-error_disable_reg:
-	if (!st->use_internal_vref)
-		regulator_bulk_disable(ad5064_num_vref(st), st->vref_reg);
-
-	return ret;
-}
-
-static int ad5064_remove(struct device *dev)
-{
-	struct iio_dev *indio_dev = dev_get_drvdata(dev);
-	struct ad5064_state *st = iio_priv(indio_dev);
-
-	iio_device_unregister(indio_dev);
-
-	if (!st->use_internal_vref)
-		regulator_bulk_disable(ad5064_num_vref(st), st->vref_reg);
-
-	return 0;
+	return devm_iio_device_register(dev, indio_dev);
 }
 
 #if IS_ENABLED(CONFIG_SPI_MASTER)
@@ -932,11 +919,6 @@ static int ad5064_spi_probe(struct spi_device *spi)
 				ad5064_spi_write);
 }
 
-static int ad5064_spi_remove(struct spi_device *spi)
-{
-	return ad5064_remove(&spi->dev);
-}
-
 static const struct spi_device_id ad5064_spi_ids[] = {
 	{"ad5024", ID_AD5024},
 	{"ad5025", ID_AD5025},
@@ -954,7 +936,7 @@ static const struct spi_device_id ad5064_spi_ids[] = {
 	{"ad5668-1", ID_AD5668_1},
 	{"ad5668-2", ID_AD5668_2},
 	{"ad5668-3", ID_AD5668_2}, /* similar enough to ad5668-2 */
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad5064_spi_ids);
 
@@ -963,7 +945,6 @@ static struct spi_driver ad5064_spi_driver = {
 		   .name = "ad5064",
 	},
 	.probe = ad5064_spi_probe,
-	.remove = ad5064_spi_remove,
 	.id_table = ad5064_spi_ids,
 };
 
@@ -1012,16 +993,11 @@ static int ad5064_i2c_write(struct ad5064_state *st, unsigned int cmd,
 	return 0;
 }
 
-static int ad5064_i2c_probe(struct i2c_client *i2c,
-	const struct i2c_device_id *id)
+static int ad5064_i2c_probe(struct i2c_client *i2c)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(i2c);
 	return ad5064_probe(&i2c->dev, id->driver_data, id->name,
 						ad5064_i2c_write);
-}
-
-static int ad5064_i2c_remove(struct i2c_client *i2c)
-{
-	return ad5064_remove(&i2c->dev);
 }
 
 static const struct i2c_device_id ad5064_i2c_ids[] = {
@@ -1072,7 +1048,7 @@ static const struct i2c_device_id ad5064_i2c_ids[] = {
 	{"ltc2635-h10", ID_LTC2635_H10},
 	{"ltc2635-l8", ID_LTC2635_L8},
 	{"ltc2635-h8", ID_LTC2635_H8},
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ad5064_i2c_ids);
 
@@ -1081,7 +1057,6 @@ static struct i2c_driver ad5064_i2c_driver = {
 		   .name = "ad5064",
 	},
 	.probe = ad5064_i2c_probe,
-	.remove = ad5064_i2c_remove,
 	.id_table = ad5064_i2c_ids,
 };
 

@@ -24,8 +24,6 @@
 #define DAY_IN_SEC			(60*60*24)
 #define TEN_DAYS_IN_SEC			(10*DAY_IN_SEC)
 
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
-
 static int child_ns, parent_ns;
 
 static int switch_ns(int fd)
@@ -181,6 +179,8 @@ static int check_stat_btime(void)
 int main(int argc, char *argv[])
 {
 	int ret = 0;
+
+	ksft_print_header();
 
 	nscheck();
 

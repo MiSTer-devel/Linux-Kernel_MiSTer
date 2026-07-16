@@ -47,29 +47,31 @@ enum {
 	__LOCKF(USED_READ)
 };
 
+enum {
 #define LOCKDEP_STATE(__STATE)	LOCKF_ENABLED_##__STATE |
-static const unsigned long LOCKF_ENABLED_IRQ =
+	LOCKF_ENABLED_IRQ =
 #include "lockdep_states.h"
-	0;
+	0,
 #undef LOCKDEP_STATE
 
 #define LOCKDEP_STATE(__STATE)	LOCKF_USED_IN_##__STATE |
-static const unsigned long LOCKF_USED_IN_IRQ =
+	LOCKF_USED_IN_IRQ =
 #include "lockdep_states.h"
-	0;
+	0,
 #undef LOCKDEP_STATE
 
 #define LOCKDEP_STATE(__STATE)	LOCKF_ENABLED_##__STATE##_READ |
-static const unsigned long LOCKF_ENABLED_IRQ_READ =
+	LOCKF_ENABLED_IRQ_READ =
 #include "lockdep_states.h"
-	0;
+	0,
 #undef LOCKDEP_STATE
 
 #define LOCKDEP_STATE(__STATE)	LOCKF_USED_IN_##__STATE##_READ |
-static const unsigned long LOCKF_USED_IN_IRQ_READ =
+	LOCKF_USED_IN_IRQ_READ =
 #include "lockdep_states.h"
-	0;
+	0,
 #undef LOCKDEP_STATE
+};
 
 #define LOCKF_ENABLED_IRQ_ALL (LOCKF_ENABLED_IRQ | LOCKF_ENABLED_IRQ_READ)
 #define LOCKF_USED_IN_IRQ_ALL (LOCKF_USED_IN_IRQ | LOCKF_USED_IN_IRQ_READ)
@@ -119,9 +121,9 @@ static const unsigned long LOCKF_USED_IN_IRQ_READ =
 
 #define MAX_LOCKDEP_CHAINS	(1UL << MAX_LOCKDEP_CHAINS_BITS)
 
-#define MAX_LOCKDEP_CHAIN_HLOCKS (MAX_LOCKDEP_CHAINS*5)
+#define AVG_LOCKDEP_CHAIN_DEPTH		5
+#define MAX_LOCKDEP_CHAIN_HLOCKS (MAX_LOCKDEP_CHAINS * AVG_LOCKDEP_CHAIN_DEPTH)
 
-extern struct list_head all_lock_classes;
 extern struct lock_chain lock_chains[];
 
 #define LOCK_USAGE_CHARS (2*XXX_LOCK_USAGE_STATES + 1)
@@ -138,6 +140,7 @@ extern unsigned long nr_lock_classes;
 extern unsigned long nr_zapped_classes;
 extern unsigned long nr_zapped_lock_chains;
 extern unsigned long nr_list_entries;
+extern unsigned long nr_dynamic_keys;
 long lockdep_next_lockchain(long i);
 unsigned long lock_chain_count(void);
 extern unsigned long nr_stack_trace_entries;
@@ -151,6 +154,10 @@ extern unsigned int nr_large_chain_blocks;
 
 extern unsigned int max_lockdep_depth;
 extern unsigned int max_bfs_queue_depth;
+extern unsigned long max_lock_class_idx;
+
+extern struct lock_class lock_classes[MAX_LOCKDEP_KEYS];
+extern unsigned long lock_classes_in_use[];
 
 #ifdef CONFIG_PROVE_LOCKING
 extern unsigned long lockdep_count_forward_deps(struct lock_class *);
@@ -205,7 +212,6 @@ struct lockdep_stats {
 };
 
 DECLARE_PER_CPU(struct lockdep_stats, lockdep_stats);
-extern struct lock_class lock_classes[MAX_LOCKDEP_KEYS];
 
 #define __debug_atomic_inc(ptr)					\
 	this_cpu_inc(lockdep_stats.ptr);

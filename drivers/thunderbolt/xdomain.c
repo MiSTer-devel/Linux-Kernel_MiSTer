@@ -13,22 +13,49 @@
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/prandom.h>
+#include <linux/string_helpers.h>
 #include <linux/utsname.h>
 #include <linux/uuid.h>
 #include <linux/workqueue.h>
 
 #include "tb.h"
 
-#define XDOMAIN_DEFAULT_TIMEOUT			1000 /* ms */
-#define XDOMAIN_UUID_RETRIES			10
-#define XDOMAIN_PROPERTIES_RETRIES		10
-#define XDOMAIN_PROPERTIES_CHANGED_RETRIES	10
-#define XDOMAIN_BONDING_WAIT			100  /* ms */
+#define XDOMAIN_SHORT_TIMEOUT			100	/* ms */
+#define XDOMAIN_DEFAULT_TIMEOUT			1000	/* ms */
+#define XDOMAIN_BONDING_TIMEOUT			10000	/* ms */
+#define XDOMAIN_RETRIES				10
 #define XDOMAIN_DEFAULT_MAX_HOPID		15
+
+enum {
+	XDOMAIN_STATE_INIT,
+	XDOMAIN_STATE_UUID,
+	XDOMAIN_STATE_LINK_STATUS,
+	XDOMAIN_STATE_LINK_STATE_CHANGE,
+	XDOMAIN_STATE_LINK_STATUS2,
+	XDOMAIN_STATE_BONDING_UUID_LOW,
+	XDOMAIN_STATE_BONDING_UUID_HIGH,
+	XDOMAIN_STATE_PROPERTIES,
+	XDOMAIN_STATE_ENUMERATED,
+	XDOMAIN_STATE_ERROR,
+};
+
+static const char * const state_names[] = {
+	[XDOMAIN_STATE_INIT] = "INIT",
+	[XDOMAIN_STATE_UUID] = "UUID",
+	[XDOMAIN_STATE_LINK_STATUS] = "LINK_STATUS",
+	[XDOMAIN_STATE_LINK_STATE_CHANGE] = "LINK_STATE_CHANGE",
+	[XDOMAIN_STATE_LINK_STATUS2] = "LINK_STATUS2",
+	[XDOMAIN_STATE_BONDING_UUID_LOW] = "BONDING_UUID_LOW",
+	[XDOMAIN_STATE_BONDING_UUID_HIGH] = "BONDING_UUID_HIGH",
+	[XDOMAIN_STATE_PROPERTIES] = "PROPERTIES",
+	[XDOMAIN_STATE_ENUMERATED] = "ENUMERATED",
+	[XDOMAIN_STATE_ERROR] = "ERROR",
+};
 
 struct xdomain_request_work {
 	struct work_struct work;
 	struct tb_xdp_header *pkg;
+	size_t pkg_len;
 	struct tb *tb;
 };
 
@@ -96,7 +123,9 @@ static bool tb_xdomain_match(const struct tb_cfg_request *req,
 static bool tb_xdomain_copy(struct tb_cfg_request *req,
 			    const struct ctl_pkg *pkg)
 {
-	memcpy(req->response, pkg->buffer, req->response_size);
+	size_t len = min_t(size_t, pkg->frame.size, req->response_size);
+
+	memcpy(req->response, pkg->buffer, len);
 	req->result.err = 0;
 	return true;
 }
@@ -134,7 +163,7 @@ static int __tb_xdomain_response(struct tb_ctl *ctl, const void *response,
  * This can be used to send a XDomain response message to the other
  * domain. No response for the message is expected.
  *
- * Return: %0 in case of success and negative errno in case of failure
+ * Return: %0 on success, negative errno otherwise.
  */
 int tb_xdomain_response(struct tb_xdomain *xd, const void *response,
 			size_t size, enum tb_cfg_pkg_type type)
@@ -186,7 +215,7 @@ static int __tb_xdomain_request(struct tb_ctl *ctl, const void *request,
  * the other domain. The function waits until the response is received
  * or when timeout triggers. Whichever comes first.
  *
- * Return: %0 in case of success and negative errno in case of failure
+ * Return: %0 on success, negative errno otherwise.
  */
 int tb_xdomain_request(struct tb_xdomain *xd, const void *request,
 	size_t request_size, enum tb_cfg_pkg_type request_type,
@@ -214,21 +243,17 @@ static inline void tb_xdp_fill_header(struct tb_xdp_header *hdr, u64 route,
 	memcpy(&hdr->uuid, &tb_xdp_uuid, sizeof(tb_xdp_uuid));
 }
 
-static int tb_xdp_handle_error(const struct tb_xdp_header *hdr)
+static int tb_xdp_handle_error(const struct tb_xdp_error_response *res)
 {
-	const struct tb_xdp_error_response *error;
-
-	if (hdr->type != ERROR_RESPONSE)
+	if (res->hdr.type != ERROR_RESPONSE)
 		return 0;
 
-	error = (const struct tb_xdp_error_response *)hdr;
-
-	switch (error->error) {
+	switch (res->error) {
 	case ERROR_UNKNOWN_PACKET:
 	case ERROR_UNKNOWN_DOMAIN:
 		return -EIO;
 	case ERROR_NOT_SUPPORTED:
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 	case ERROR_NOT_READY:
 		return -EAGAIN;
 	default:
@@ -239,7 +264,7 @@ static int tb_xdp_handle_error(const struct tb_xdp_header *hdr)
 }
 
 static int tb_xdp_uuid_request(struct tb_ctl *ctl, u64 route, int retry,
-			       uuid_t *uuid)
+			       uuid_t *uuid, u64 *remote_route)
 {
 	struct tb_xdp_uuid_response res;
 	struct tb_xdp_uuid req;
@@ -257,11 +282,13 @@ static int tb_xdp_uuid_request(struct tb_ctl *ctl, u64 route, int retry,
 	if (ret)
 		return ret;
 
-	ret = tb_xdp_handle_error(&res.hdr);
+	ret = tb_xdp_handle_error(&res.err);
 	if (ret)
 		return ret;
 
 	uuid_copy(uuid, &res.src_uuid);
+	*remote_route = (u64)res.src_route_hi << 32 | res.src_route_lo;
+
 	return 0;
 }
 
@@ -318,7 +345,6 @@ static int tb_xdp_properties_request(struct tb_ctl *ctl, u64 route,
 	memcpy(&req.src_uuid, src_uuid, sizeof(*src_uuid));
 	memcpy(&req.dst_uuid, dst_uuid, sizeof(*dst_uuid));
 
-	len = 0;
 	data_len = 0;
 
 	do {
@@ -329,7 +355,7 @@ static int tb_xdp_properties_request(struct tb_ctl *ctl, u64 route,
 		if (ret)
 			goto err;
 
-		ret = tb_xdp_handle_error(&res->hdr);
+		ret = tb_xdp_handle_error(&res->err);
 		if (ret)
 			goto err;
 
@@ -370,6 +396,8 @@ static int tb_xdp_properties_request(struct tb_ctl *ctl, u64 route,
 			}
 		}
 
+		if (req.offset + len > data_len)
+			len = data_len - req.offset;
 		memcpy(data + req.offset, res->data, len * 4);
 		req.offset += len;
 	} while (!data_len || req.offset < data_len);
@@ -462,7 +490,7 @@ static int tb_xdp_properties_changed_request(struct tb_ctl *ctl, u64 route,
 	if (ret)
 		return ret;
 
-	return tb_xdp_handle_error(&res.hdr);
+	return tb_xdp_handle_error(&res.err);
 }
 
 static int
@@ -477,6 +505,111 @@ tb_xdp_properties_changed_response(struct tb_ctl *ctl, u64 route, u8 sequence)
 				     TB_CFG_PKG_XDOMAIN_RESP);
 }
 
+static int tb_xdp_link_state_status_request(struct tb_ctl *ctl, u64 route,
+					    u8 sequence, u8 *slw, u8 *tlw,
+					    u8 *sls, u8 *tls)
+{
+	struct tb_xdp_link_state_status_response res;
+	struct tb_xdp_link_state_status req;
+	int ret;
+
+	memset(&req, 0, sizeof(req));
+	tb_xdp_fill_header(&req.hdr, route, sequence, LINK_STATE_STATUS_REQUEST,
+			   sizeof(req));
+
+	memset(&res, 0, sizeof(res));
+	ret = __tb_xdomain_request(ctl, &req, sizeof(req), TB_CFG_PKG_XDOMAIN_REQ,
+				   &res, sizeof(res), TB_CFG_PKG_XDOMAIN_RESP,
+				   XDOMAIN_DEFAULT_TIMEOUT);
+	if (ret)
+		return ret;
+
+	ret = tb_xdp_handle_error(&res.err);
+	if (ret)
+		return ret;
+
+	if (res.status != 0)
+		return -EREMOTEIO;
+
+	*slw = res.slw;
+	*tlw = res.tlw;
+	*sls = res.sls;
+	*tls = res.tls;
+
+	return 0;
+}
+
+static int tb_xdp_link_state_status_response(struct tb *tb, struct tb_ctl *ctl,
+					     struct tb_xdomain *xd, u8 sequence)
+{
+	struct tb_xdp_link_state_status_response res;
+	struct tb_port *port = tb_xdomain_downstream_port(xd);
+	u32 val[2];
+	int ret;
+
+	memset(&res, 0, sizeof(res));
+	tb_xdp_fill_header(&res.hdr, xd->route, sequence,
+			   LINK_STATE_STATUS_RESPONSE, sizeof(res));
+
+	ret = tb_port_read(port, val, TB_CFG_PORT,
+			   port->cap_phy + LANE_ADP_CS_0, ARRAY_SIZE(val));
+	if (ret)
+		return ret;
+
+	res.slw = (val[0] & LANE_ADP_CS_0_SUPPORTED_WIDTH_MASK) >>
+			LANE_ADP_CS_0_SUPPORTED_WIDTH_SHIFT;
+	res.sls = (val[0] & LANE_ADP_CS_0_SUPPORTED_SPEED_MASK) >>
+			LANE_ADP_CS_0_SUPPORTED_SPEED_SHIFT;
+	res.tls = val[1] & LANE_ADP_CS_1_TARGET_SPEED_MASK;
+	res.tlw = (val[1] & LANE_ADP_CS_1_TARGET_WIDTH_MASK) >>
+			LANE_ADP_CS_1_TARGET_WIDTH_SHIFT;
+
+	return __tb_xdomain_response(ctl, &res, sizeof(res),
+				     TB_CFG_PKG_XDOMAIN_RESP);
+}
+
+static int tb_xdp_link_state_change_request(struct tb_ctl *ctl, u64 route,
+					    u8 sequence, u8 tlw, u8 tls)
+{
+	struct tb_xdp_link_state_change_response res;
+	struct tb_xdp_link_state_change req;
+	int ret;
+
+	memset(&req, 0, sizeof(req));
+	tb_xdp_fill_header(&req.hdr, route, sequence, LINK_STATE_CHANGE_REQUEST,
+			   sizeof(req));
+	req.tlw = tlw;
+	req.tls = tls;
+
+	memset(&res, 0, sizeof(res));
+	ret = __tb_xdomain_request(ctl, &req, sizeof(req), TB_CFG_PKG_XDOMAIN_REQ,
+				   &res, sizeof(res), TB_CFG_PKG_XDOMAIN_RESP,
+				   XDOMAIN_DEFAULT_TIMEOUT);
+	if (ret)
+		return ret;
+
+	ret = tb_xdp_handle_error(&res.err);
+	if (ret)
+		return ret;
+
+	return res.status != 0 ? -EREMOTEIO : 0;
+}
+
+static int tb_xdp_link_state_change_response(struct tb_ctl *ctl, u64 route,
+					     u8 sequence, u32 status)
+{
+	struct tb_xdp_link_state_change_response res;
+
+	memset(&res, 0, sizeof(res));
+	tb_xdp_fill_header(&res.hdr, route, sequence, LINK_STATE_CHANGE_RESPONSE,
+			   sizeof(res));
+
+	res.status = status;
+
+	return __tb_xdomain_response(ctl, &res, sizeof(res),
+				     TB_CFG_PKG_XDOMAIN_RESP);
+}
+
 /**
  * tb_register_protocol_handler() - Register protocol handler
  * @handler: Handler to register
@@ -485,6 +618,8 @@ tb_xdp_properties_changed_response(struct tb_ctl *ctl, u64 route, u8 sequence)
  * messages. After this function is called the service driver needs to
  * be able to handle calls to callback whenever a package with the
  * registered protocol is received.
+ *
+ * Return: %0 on success, negative errno otherwise.
  */
 int tb_register_protocol_handler(struct tb_protocol_handler *handler)
 {
@@ -575,11 +710,33 @@ out_unlock:
 	mutex_unlock(&xdomain_lock);
 }
 
+static void start_handshake(struct tb_xdomain *xd)
+{
+	xd->state = XDOMAIN_STATE_INIT;
+	queue_delayed_work(xd->tb->wq, &xd->state_work,
+			   msecs_to_jiffies(XDOMAIN_SHORT_TIMEOUT));
+}
+
+/* Can be called from state_work */
+static void __stop_handshake(struct tb_xdomain *xd)
+{
+	cancel_delayed_work_sync(&xd->properties_changed_work);
+	xd->properties_changed_retries = 0;
+	xd->state_retries = 0;
+}
+
+static void stop_handshake(struct tb_xdomain *xd)
+{
+	cancel_delayed_work_sync(&xd->state_work);
+	__stop_handshake(xd);
+}
+
 static void tb_xdp_handle_request(struct work_struct *work)
 {
 	struct xdomain_request_work *xw = container_of(work, typeof(*xw), work);
 	const struct tb_xdp_header *pkg = xw->pkg;
 	const struct tb_xdomain_header *xhdr = &pkg->xd_hdr;
+	size_t pkg_len = xw->pkg_len;
 	struct tb *tb = xw->tb;
 	struct tb_ctl *ctl = tb->ctl;
 	struct tb_xdomain *xd;
@@ -604,21 +761,23 @@ static void tb_xdp_handle_request(struct work_struct *work)
 		goto out;
 	}
 
-	tb_dbg(tb, "%llx: received XDomain request %#x\n", route, pkg->type);
-
 	xd = tb_xdomain_find_by_route_locked(tb, route);
 	if (xd)
 		update_property_block(xd);
 
 	switch (pkg->type) {
 	case PROPERTIES_REQUEST:
-		if (xd) {
+		tb_dbg(tb, "%llx: received XDomain properties request\n", route);
+		if (xd && pkg_len >= sizeof(struct tb_xdp_properties)) {
 			ret = tb_xdp_properties_response(tb, ctl, xd, sequence,
 				(const struct tb_xdp_properties *)pkg);
 		}
 		break;
 
 	case PROPERTIES_CHANGED_REQUEST:
+		tb_dbg(tb, "%llx: received XDomain properties changed request\n",
+		       route);
+
 		ret = tb_xdp_properties_changed_response(ctl, route, sequence);
 
 		/*
@@ -626,18 +785,61 @@ static void tb_xdp_handle_request(struct work_struct *work)
 		 * the xdomain related to this connection as well in
 		 * case there is a change in services it offers.
 		 */
-		if (xd && device_is_registered(&xd->dev)) {
-			queue_delayed_work(tb->wq, &xd->get_properties_work,
-					   msecs_to_jiffies(50));
-		}
+		if (xd && device_is_registered(&xd->dev))
+			queue_delayed_work(tb->wq, &xd->state_work,
+					   msecs_to_jiffies(XDOMAIN_SHORT_TIMEOUT));
 		break;
 
 	case UUID_REQUEST_OLD:
 	case UUID_REQUEST:
+		tb_dbg(tb, "%llx: received XDomain UUID request\n", route);
 		ret = tb_xdp_uuid_response(ctl, route, sequence, uuid);
+		/*
+		 * If we've stopped the discovery with an error such as
+		 * timing out, we will restart the handshake now that we
+		 * received UUID request from the remote host.
+		 */
+		if (!ret && xd && xd->state == XDOMAIN_STATE_ERROR) {
+			dev_dbg(&xd->dev, "restarting handshake\n");
+			start_handshake(xd);
+		}
+		break;
+
+	case LINK_STATE_STATUS_REQUEST:
+		tb_dbg(tb, "%llx: received XDomain link state status request\n",
+		       route);
+
+		if (xd) {
+			ret = tb_xdp_link_state_status_response(tb, ctl, xd,
+								sequence);
+		} else {
+			tb_xdp_error_response(ctl, route, sequence,
+					      ERROR_NOT_READY);
+		}
+		break;
+
+	case LINK_STATE_CHANGE_REQUEST:
+		tb_dbg(tb, "%llx: received XDomain link state change request\n",
+		       route);
+
+		if (xd && xd->state == XDOMAIN_STATE_BONDING_UUID_HIGH &&
+		    pkg_len >= sizeof(struct tb_xdp_link_state_change)) {
+			const struct tb_xdp_link_state_change *lsc =
+				(const struct tb_xdp_link_state_change *)pkg;
+
+			ret = tb_xdp_link_state_change_response(ctl, route,
+								sequence, 0);
+			xd->target_link_width = lsc->tlw;
+			queue_delayed_work(tb->wq, &xd->state_work,
+					   msecs_to_jiffies(XDOMAIN_SHORT_TIMEOUT));
+		} else {
+			tb_xdp_error_response(ctl, route, sequence,
+					      ERROR_NOT_READY);
+		}
 		break;
 
 	default:
+		tb_dbg(tb, "%llx: unknown XDomain request %#x\n", route, pkg->type);
 		tb_xdp_error_response(ctl, route, sequence,
 				      ERROR_NOT_SUPPORTED);
 		break;
@@ -673,6 +875,7 @@ tb_xdp_schedule_request(struct tb *tb, const struct tb_xdp_header *hdr,
 		kfree(xw);
 		return false;
 	}
+	xw->pkg_len = size;
 	xw->tb = tb_domain_get(tb);
 
 	schedule_work(&xw->work);
@@ -684,6 +887,8 @@ tb_xdp_schedule_request(struct tb *tb, const struct tb_xdp_header *hdr,
  * @drv: Driver to register
  *
  * Registers new service driver from @drv to the bus.
+ *
+ * Return: %0 on success, negative errno otherwise.
  */
 int tb_register_service_driver(struct tb_service_driver *drv)
 {
@@ -713,11 +918,11 @@ static ssize_t key_show(struct device *dev, struct device_attribute *attr,
 	 * It should be null terminated but anything else is pretty much
 	 * allowed.
 	 */
-	return sprintf(buf, "%*pE\n", (int)strlen(svc->key), svc->key);
+	return sysfs_emit(buf, "%*pE\n", (int)strlen(svc->key), svc->key);
 }
 static DEVICE_ATTR_RO(key);
 
-static int get_modalias(struct tb_service *svc, char *buf, size_t size)
+static int get_modalias(const struct tb_service *svc, char *buf, size_t size)
 {
 	return snprintf(buf, size, "tbsvc:k%sp%08Xv%08Xr%08X", svc->key,
 			svc->prtcid, svc->prtcvers, svc->prtcrevs);
@@ -730,7 +935,7 @@ static ssize_t modalias_show(struct device *dev, struct device_attribute *attr,
 
 	/* Full buffer size except new line and null termination */
 	get_modalias(svc, buf, PAGE_SIZE - 2);
-	return sprintf(buf, "%s\n", buf);
+	return strlen(strcat(buf, "\n"));
 }
 static DEVICE_ATTR_RO(modalias);
 
@@ -739,7 +944,7 @@ static ssize_t prtcid_show(struct device *dev, struct device_attribute *attr,
 {
 	struct tb_service *svc = container_of(dev, struct tb_service, dev);
 
-	return sprintf(buf, "%u\n", svc->prtcid);
+	return sysfs_emit(buf, "%u\n", svc->prtcid);
 }
 static DEVICE_ATTR_RO(prtcid);
 
@@ -748,7 +953,7 @@ static ssize_t prtcvers_show(struct device *dev, struct device_attribute *attr,
 {
 	struct tb_service *svc = container_of(dev, struct tb_service, dev);
 
-	return sprintf(buf, "%u\n", svc->prtcvers);
+	return sysfs_emit(buf, "%u\n", svc->prtcvers);
 }
 static DEVICE_ATTR_RO(prtcvers);
 
@@ -757,7 +962,7 @@ static ssize_t prtcrevs_show(struct device *dev, struct device_attribute *attr,
 {
 	struct tb_service *svc = container_of(dev, struct tb_service, dev);
 
-	return sprintf(buf, "%u\n", svc->prtcrevs);
+	return sysfs_emit(buf, "%u\n", svc->prtcrevs);
 }
 static DEVICE_ATTR_RO(prtcrevs);
 
@@ -766,7 +971,7 @@ static ssize_t prtcstns_show(struct device *dev, struct device_attribute *attr,
 {
 	struct tb_service *svc = container_of(dev, struct tb_service, dev);
 
-	return sprintf(buf, "0x%08x\n", svc->prtcstns);
+	return sysfs_emit(buf, "0x%08x\n", svc->prtcstns);
 }
 static DEVICE_ATTR_RO(prtcstns);
 
@@ -789,9 +994,9 @@ static const struct attribute_group *tb_service_attr_groups[] = {
 	NULL,
 };
 
-static int tb_service_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int tb_service_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct tb_service *svc = container_of(dev, struct tb_service, dev);
+	const struct tb_service *svc = container_of_const(dev, struct tb_service, dev);
 	char modalias[64];
 
 	get_modalias(svc, modalias, sizeof(modalias));
@@ -804,12 +1009,12 @@ static void tb_service_release(struct device *dev)
 	struct tb_xdomain *xd = tb_service_parent(svc);
 
 	tb_service_debugfs_remove(svc);
-	ida_simple_remove(&xd->service_ids, svc->id);
+	ida_free(&xd->service_ids, svc->id);
 	kfree(svc->key);
 	kfree(svc);
 }
 
-struct device_type tb_service_type = {
+const struct device_type tb_service_type = {
 	.name = "thunderbolt_service",
 	.groups = tb_service_attr_groups,
 	.uevent = tb_service_uevent,
@@ -833,7 +1038,7 @@ static int remove_missing_service(struct device *dev, void *data)
 	return 0;
 }
 
-static int find_service(struct device *dev, void *data)
+static int find_service(struct device *dev, const void *data)
 {
 	const struct tb_property *p = data;
 	struct tb_service *svc;
@@ -906,7 +1111,7 @@ static void enumerate_services(struct tb_xdomain *xd)
 			break;
 		}
 
-		id = ida_simple_get(&xd->service_ids, 0, 0, GFP_KERNEL);
+		id = ida_alloc(&xd->service_ids, GFP_KERNEL);
 		if (id < 0) {
 			kfree(svc->key);
 			kfree(svc);
@@ -967,18 +1172,13 @@ static int populate_properties(struct tb_xdomain *xd,
 	return 0;
 }
 
-static inline struct tb_switch *tb_xdomain_parent(struct tb_xdomain *xd)
-{
-	return tb_to_switch(xd->dev.parent);
-}
-
 static int tb_xdomain_update_link_attributes(struct tb_xdomain *xd)
 {
 	bool change = false;
 	struct tb_port *port;
 	int ret;
 
-	port = tb_port_at(xd->route, tb_xdomain_parent(xd));
+	port = tb_xdomain_downstream_port(xd);
 
 	ret = tb_port_get_link_speed(port);
 	if (ret < 0)
@@ -1004,32 +1204,37 @@ static int tb_xdomain_update_link_attributes(struct tb_xdomain *xd)
 	return 0;
 }
 
-static void tb_xdomain_get_uuid(struct work_struct *work)
+static int tb_xdomain_get_uuid(struct tb_xdomain *xd)
 {
-	struct tb_xdomain *xd = container_of(work, typeof(*xd),
-					     get_uuid_work.work);
 	struct tb *tb = xd->tb;
 	uuid_t uuid;
+	u64 route;
 	int ret;
 
 	dev_dbg(&xd->dev, "requesting remote UUID\n");
 
-	ret = tb_xdp_uuid_request(tb->ctl, xd->route, xd->uuid_retries, &uuid);
+	ret = tb_xdp_uuid_request(tb->ctl, xd->route, xd->state_retries, &uuid,
+				  &route);
 	if (ret < 0) {
-		if (xd->uuid_retries-- > 0) {
+		if (xd->state_retries-- > 0) {
 			dev_dbg(&xd->dev, "failed to request UUID, retrying\n");
-			queue_delayed_work(xd->tb->wq, &xd->get_uuid_work,
-					   msecs_to_jiffies(100));
-		} else {
-			dev_dbg(&xd->dev, "failed to read remote UUID\n");
+			return -EAGAIN;
 		}
-		return;
+		dev_dbg(&xd->dev, "failed to read remote UUID\n");
+		return ret;
 	}
 
 	dev_dbg(&xd->dev, "got remote UUID %pUb\n", &uuid);
 
-	if (uuid_equal(&uuid, xd->local_uuid))
-		dev_dbg(&xd->dev, "intra-domain loop detected\n");
+	if (uuid_equal(&uuid, xd->local_uuid)) {
+		if (route == xd->route)
+			dev_dbg(&xd->dev, "loop back detected\n");
+		else
+			dev_dbg(&xd->dev, "intra-domain loop detected\n");
+
+		/* Don't bond lanes automatically for loops */
+		xd->bonding_possible = false;
+	}
 
 	/*
 	 * If the UUID is different, there is another domain connected
@@ -1039,27 +1244,155 @@ static void tb_xdomain_get_uuid(struct work_struct *work)
 	if (xd->remote_uuid && !uuid_equal(&uuid, xd->remote_uuid)) {
 		dev_dbg(&xd->dev, "remote UUID is different, unplugging\n");
 		xd->is_unplugged = true;
-		return;
+		return -ENODEV;
 	}
 
 	/* First time fill in the missing UUID */
 	if (!xd->remote_uuid) {
 		xd->remote_uuid = kmemdup(&uuid, sizeof(uuid_t), GFP_KERNEL);
 		if (!xd->remote_uuid)
-			return;
+			return -ENOMEM;
 	}
 
-	/* Now we can start the normal properties exchange */
-	queue_delayed_work(xd->tb->wq, &xd->properties_changed_work,
-			   msecs_to_jiffies(100));
-	queue_delayed_work(xd->tb->wq, &xd->get_properties_work,
-			   msecs_to_jiffies(1000));
+	return 0;
 }
 
-static void tb_xdomain_get_properties(struct work_struct *work)
+static int tb_xdomain_get_link_status(struct tb_xdomain *xd)
 {
-	struct tb_xdomain *xd = container_of(work, typeof(*xd),
-					     get_properties_work.work);
+	struct tb *tb = xd->tb;
+	u8 slw, tlw, sls, tls;
+	int ret;
+
+	dev_dbg(&xd->dev, "sending link state status request to %pUb\n",
+		xd->remote_uuid);
+
+	ret = tb_xdp_link_state_status_request(tb->ctl, xd->route,
+					       xd->state_retries, &slw, &tlw, &sls,
+					       &tls);
+	if (ret) {
+		if (ret != -EOPNOTSUPP && xd->state_retries-- > 0) {
+			dev_dbg(&xd->dev,
+				"failed to request remote link status, retrying\n");
+			return -EAGAIN;
+		}
+		dev_dbg(&xd->dev, "failed to receive remote link status\n");
+		return ret;
+	}
+
+	dev_dbg(&xd->dev, "remote link supports width %#x speed %#x\n", slw, sls);
+
+	if (slw < LANE_ADP_CS_0_SUPPORTED_WIDTH_DUAL) {
+		dev_dbg(&xd->dev, "remote adapter is single lane only\n");
+		return -EOPNOTSUPP;
+	}
+
+	return 0;
+}
+
+static int tb_xdomain_link_state_change(struct tb_xdomain *xd,
+					unsigned int width)
+{
+	struct tb_port *port = tb_xdomain_downstream_port(xd);
+	struct tb *tb = xd->tb;
+	u8 tlw, tls;
+	u32 val;
+	int ret;
+
+	if (width == 2)
+		tlw = LANE_ADP_CS_1_TARGET_WIDTH_DUAL;
+	else if (width == 1)
+		tlw = LANE_ADP_CS_1_TARGET_WIDTH_SINGLE;
+	else
+		return -EINVAL;
+
+	/* Use the current target speed */
+	ret = tb_port_read(port, &val, TB_CFG_PORT, port->cap_phy + LANE_ADP_CS_1, 1);
+	if (ret)
+		return ret;
+	tls = val & LANE_ADP_CS_1_TARGET_SPEED_MASK;
+
+	dev_dbg(&xd->dev, "sending link state change request with width %#x speed %#x\n",
+		tlw, tls);
+
+	ret = tb_xdp_link_state_change_request(tb->ctl, xd->route,
+					       xd->state_retries, tlw, tls);
+	if (ret) {
+		if (ret != -EOPNOTSUPP && xd->state_retries-- > 0) {
+			dev_dbg(&xd->dev,
+				"failed to change remote link state, retrying\n");
+			return -EAGAIN;
+		}
+		dev_err(&xd->dev, "failed request link state change, aborting\n");
+		return ret;
+	}
+
+	dev_dbg(&xd->dev, "received link state change response\n");
+	return 0;
+}
+
+static int tb_xdomain_bond_lanes_uuid_high(struct tb_xdomain *xd)
+{
+	unsigned int width, width_mask;
+	struct tb_port *port;
+	int ret;
+
+	if (xd->target_link_width == LANE_ADP_CS_1_TARGET_WIDTH_SINGLE) {
+		width = TB_LINK_WIDTH_SINGLE;
+		width_mask = width;
+	} else if (xd->target_link_width == LANE_ADP_CS_1_TARGET_WIDTH_DUAL) {
+		width = TB_LINK_WIDTH_DUAL;
+		width_mask = width | TB_LINK_WIDTH_ASYM_TX | TB_LINK_WIDTH_ASYM_RX;
+	} else {
+		if (xd->state_retries-- > 0) {
+			dev_dbg(&xd->dev,
+				"link state change request not received yet, retrying\n");
+			return -EAGAIN;
+		}
+		dev_dbg(&xd->dev, "timeout waiting for link change request\n");
+		return -ETIMEDOUT;
+	}
+
+	port = tb_xdomain_downstream_port(xd);
+
+	/*
+	 * We can't use tb_xdomain_lane_bonding_enable() here because it
+	 * is the other side that initiates lane bonding. So here we
+	 * just set the width to both lane adapters and wait for the
+	 * link to transition bonded.
+	 */
+	ret = tb_port_set_link_width(port->dual_link_port, width);
+	if (ret) {
+		tb_port_warn(port->dual_link_port,
+			     "failed to set link width to %d\n", width);
+		return ret;
+	}
+
+	ret = tb_port_set_link_width(port, width);
+	if (ret) {
+		tb_port_warn(port, "failed to set link width to %d\n", width);
+		return ret;
+	}
+
+	ret = tb_port_wait_for_link_width(port, width_mask,
+					  XDOMAIN_BONDING_TIMEOUT);
+	if (ret) {
+		dev_warn(&xd->dev, "error waiting for link width to become %d\n",
+			 width_mask);
+		return ret;
+	}
+
+	port->bonded = width > TB_LINK_WIDTH_SINGLE;
+	port->dual_link_port->bonded = width > TB_LINK_WIDTH_SINGLE;
+
+	tb_port_update_credits(port);
+	tb_xdomain_update_link_attributes(xd);
+
+	dev_dbg(&xd->dev, "lane bonding %s\n", str_enabled_disabled(width == 2));
+	return 0;
+}
+
+static int tb_xdomain_get_properties(struct tb_xdomain *xd)
+{
 	struct tb_property_dir *dir;
 	struct tb *tb = xd->tb;
 	bool update = false;
@@ -1070,34 +1403,33 @@ static void tb_xdomain_get_properties(struct work_struct *work)
 	dev_dbg(&xd->dev, "requesting remote properties\n");
 
 	ret = tb_xdp_properties_request(tb->ctl, xd->route, xd->local_uuid,
-					xd->remote_uuid, xd->properties_retries,
+					xd->remote_uuid, xd->state_retries,
 					&block, &gen);
 	if (ret < 0) {
-		if (xd->properties_retries-- > 0) {
+		if (xd->state_retries-- > 0) {
 			dev_dbg(&xd->dev,
 				"failed to request remote properties, retrying\n");
-			queue_delayed_work(xd->tb->wq, &xd->get_properties_work,
-					   msecs_to_jiffies(1000));
-		} else {
-			/* Give up now */
-			dev_err(&xd->dev,
-				"failed read XDomain properties from %pUb\n",
-				xd->remote_uuid);
+			return -EAGAIN;
 		}
-		return;
-	}
+		/* Give up now */
+		dev_err(&xd->dev, "failed read XDomain properties from %pUb\n",
+			xd->remote_uuid);
 
-	xd->properties_retries = XDOMAIN_PROPERTIES_RETRIES;
+		return ret;
+	}
 
 	mutex_lock(&xd->lock);
 
 	/* Only accept newer generation properties */
-	if (xd->remote_properties && gen <= xd->remote_property_block_gen)
+	if (xd->remote_properties && gen <= xd->remote_property_block_gen) {
+		ret = 0;
 		goto err_free_block;
+	}
 
 	dir = tb_property_parse_dir(block, ret);
 	if (!dir) {
 		dev_err(&xd->dev, "failed to parse XDomain properties\n");
+		ret = -ENOMEM;
 		goto err_free_block;
 	}
 
@@ -1128,27 +1460,237 @@ static void tb_xdomain_get_properties(struct work_struct *work)
 	 * registered, we notify the userspace that it has changed.
 	 */
 	if (!update) {
+		/*
+		 * Now disable lane 1 if bonding was not enabled. Do
+		 * this only if bonding was possible at the beginning
+		 * (that is we are the connection manager and there are
+		 * two lanes).
+		 */
+		if (xd->bonding_possible) {
+			struct tb_port *port;
+
+			port = tb_xdomain_downstream_port(xd);
+			if (!port->bonded)
+				tb_port_disable(port->dual_link_port);
+		}
+
+		dev_dbg(&xd->dev, "current link speed %u.0 Gb/s\n",
+			xd->link_speed);
+		dev_dbg(&xd->dev, "current link width %s\n",
+			tb_width_name(xd->link_width));
+
 		if (device_add(&xd->dev)) {
 			dev_err(&xd->dev, "failed to add XDomain device\n");
-			return;
+			return -ENODEV;
 		}
 		dev_info(&xd->dev, "new host found, vendor=%#x device=%#x\n",
 			 xd->vendor, xd->device);
 		if (xd->vendor_name && xd->device_name)
 			dev_info(&xd->dev, "%s %s\n", xd->vendor_name,
 				 xd->device_name);
+
+		tb_xdomain_debugfs_init(xd);
 	} else {
 		kobject_uevent(&xd->dev.kobj, KOBJ_CHANGE);
 	}
 
 	enumerate_services(xd);
-	return;
+	return 0;
 
 err_free_dir:
 	tb_property_free_dir(dir);
 err_free_block:
 	kfree(block);
 	mutex_unlock(&xd->lock);
+
+	return ret;
+}
+
+static void tb_xdomain_queue_uuid(struct tb_xdomain *xd)
+{
+	xd->state = XDOMAIN_STATE_UUID;
+	xd->state_retries = XDOMAIN_RETRIES;
+	queue_delayed_work(xd->tb->wq, &xd->state_work,
+			   msecs_to_jiffies(XDOMAIN_SHORT_TIMEOUT));
+}
+
+static void tb_xdomain_queue_link_status(struct tb_xdomain *xd)
+{
+	xd->state = XDOMAIN_STATE_LINK_STATUS;
+	xd->state_retries = XDOMAIN_RETRIES;
+	queue_delayed_work(xd->tb->wq, &xd->state_work,
+			   msecs_to_jiffies(XDOMAIN_DEFAULT_TIMEOUT));
+}
+
+static void tb_xdomain_queue_link_status2(struct tb_xdomain *xd)
+{
+	xd->state = XDOMAIN_STATE_LINK_STATUS2;
+	xd->state_retries = XDOMAIN_RETRIES;
+	queue_delayed_work(xd->tb->wq, &xd->state_work,
+			   msecs_to_jiffies(XDOMAIN_DEFAULT_TIMEOUT));
+}
+
+static void tb_xdomain_queue_bonding(struct tb_xdomain *xd)
+{
+	if (memcmp(xd->local_uuid, xd->remote_uuid, UUID_SIZE) > 0) {
+		dev_dbg(&xd->dev, "we have higher UUID, other side bonds the lanes\n");
+		xd->state = XDOMAIN_STATE_BONDING_UUID_HIGH;
+	} else {
+		dev_dbg(&xd->dev, "we have lower UUID, bonding lanes\n");
+		xd->state = XDOMAIN_STATE_LINK_STATE_CHANGE;
+	}
+
+	xd->state_retries = XDOMAIN_RETRIES;
+	queue_delayed_work(xd->tb->wq, &xd->state_work,
+			   msecs_to_jiffies(XDOMAIN_DEFAULT_TIMEOUT));
+}
+
+static void tb_xdomain_queue_bonding_uuid_low(struct tb_xdomain *xd)
+{
+	xd->state = XDOMAIN_STATE_BONDING_UUID_LOW;
+	xd->state_retries = XDOMAIN_RETRIES;
+	queue_delayed_work(xd->tb->wq, &xd->state_work,
+			   msecs_to_jiffies(XDOMAIN_DEFAULT_TIMEOUT));
+}
+
+static void tb_xdomain_queue_properties(struct tb_xdomain *xd)
+{
+	xd->state = XDOMAIN_STATE_PROPERTIES;
+	xd->state_retries = XDOMAIN_RETRIES;
+	queue_delayed_work(xd->tb->wq, &xd->state_work,
+			   msecs_to_jiffies(XDOMAIN_DEFAULT_TIMEOUT));
+}
+
+static void tb_xdomain_queue_properties_changed(struct tb_xdomain *xd)
+{
+	xd->properties_changed_retries = XDOMAIN_RETRIES;
+	queue_delayed_work(xd->tb->wq, &xd->properties_changed_work,
+			   msecs_to_jiffies(XDOMAIN_SHORT_TIMEOUT));
+}
+
+static void tb_xdomain_failed(struct tb_xdomain *xd)
+{
+	xd->state = XDOMAIN_STATE_ERROR;
+	queue_delayed_work(xd->tb->wq, &xd->state_work,
+			   msecs_to_jiffies(XDOMAIN_DEFAULT_TIMEOUT));
+}
+
+static void tb_xdomain_state_work(struct work_struct *work)
+{
+	struct tb_xdomain *xd = container_of(work, typeof(*xd), state_work.work);
+	int ret, state = xd->state;
+
+	if (WARN_ON_ONCE(state < XDOMAIN_STATE_INIT ||
+			 state > XDOMAIN_STATE_ERROR))
+		return;
+
+	dev_dbg(&xd->dev, "running state %s\n", state_names[state]);
+
+	switch (state) {
+	case XDOMAIN_STATE_INIT:
+		if (xd->needs_uuid) {
+			tb_xdomain_queue_uuid(xd);
+		} else {
+			tb_xdomain_queue_properties_changed(xd);
+			tb_xdomain_queue_properties(xd);
+		}
+		break;
+
+	case XDOMAIN_STATE_UUID:
+		ret = tb_xdomain_get_uuid(xd);
+		if (ret) {
+			if (ret == -EAGAIN)
+				goto retry_state;
+			tb_xdomain_failed(xd);
+		} else {
+			tb_xdomain_queue_properties_changed(xd);
+			if (xd->bonding_possible)
+				tb_xdomain_queue_link_status(xd);
+			else
+				tb_xdomain_queue_properties(xd);
+		}
+		break;
+
+	case XDOMAIN_STATE_LINK_STATUS:
+		ret = tb_xdomain_get_link_status(xd);
+		if (ret) {
+			if (ret == -EAGAIN)
+				goto retry_state;
+
+			/*
+			 * If any of the lane bonding states fail we skip
+			 * bonding completely and try to continue from
+			 * reading properties.
+			 */
+			tb_xdomain_queue_properties(xd);
+		} else {
+			tb_xdomain_queue_bonding(xd);
+		}
+		break;
+
+	case XDOMAIN_STATE_LINK_STATE_CHANGE:
+		ret = tb_xdomain_link_state_change(xd, 2);
+		if (ret) {
+			if (ret == -EAGAIN)
+				goto retry_state;
+			tb_xdomain_queue_properties(xd);
+		} else {
+			tb_xdomain_queue_link_status2(xd);
+		}
+		break;
+
+	case XDOMAIN_STATE_LINK_STATUS2:
+		ret = tb_xdomain_get_link_status(xd);
+		if (ret) {
+			if (ret == -EAGAIN)
+				goto retry_state;
+			tb_xdomain_queue_properties(xd);
+		} else {
+			tb_xdomain_queue_bonding_uuid_low(xd);
+		}
+		break;
+
+	case XDOMAIN_STATE_BONDING_UUID_LOW:
+		tb_xdomain_lane_bonding_enable(xd);
+		tb_xdomain_queue_properties(xd);
+		break;
+
+	case XDOMAIN_STATE_BONDING_UUID_HIGH:
+		if (tb_xdomain_bond_lanes_uuid_high(xd) == -EAGAIN)
+			goto retry_state;
+		tb_xdomain_queue_properties(xd);
+		break;
+
+	case XDOMAIN_STATE_PROPERTIES:
+		ret = tb_xdomain_get_properties(xd);
+		if (ret) {
+			if (ret == -EAGAIN)
+				goto retry_state;
+			tb_xdomain_failed(xd);
+		} else {
+			xd->state = XDOMAIN_STATE_ENUMERATED;
+		}
+		break;
+
+	case XDOMAIN_STATE_ENUMERATED:
+		tb_xdomain_queue_properties(xd);
+		break;
+
+	case XDOMAIN_STATE_ERROR:
+		dev_dbg(&xd->dev, "discovery failed, stopping handshake\n");
+		__stop_handshake(xd);
+		break;
+
+	default:
+		dev_warn(&xd->dev, "unexpected state %d\n", state);
+		break;
+	}
+
+	return;
+
+retry_state:
+	queue_delayed_work(xd->tb->wq, &xd->state_work,
+			   msecs_to_jiffies(XDOMAIN_DEFAULT_TIMEOUT));
 }
 
 static void tb_xdomain_properties_changed(struct work_struct *work)
@@ -1167,13 +1709,13 @@ static void tb_xdomain_properties_changed(struct work_struct *work)
 				"failed to send properties changed notification, retrying\n");
 			queue_delayed_work(xd->tb->wq,
 					   &xd->properties_changed_work,
-					   msecs_to_jiffies(1000));
+					   msecs_to_jiffies(XDOMAIN_DEFAULT_TIMEOUT));
 		}
 		dev_err(&xd->dev, "failed to send properties changed notification\n");
 		return;
 	}
 
-	xd->properties_changed_retries = XDOMAIN_PROPERTIES_CHANGED_RETRIES;
+	xd->properties_changed_retries = XDOMAIN_RETRIES;
 }
 
 static ssize_t device_show(struct device *dev, struct device_attribute *attr,
@@ -1181,7 +1723,7 @@ static ssize_t device_show(struct device *dev, struct device_attribute *attr,
 {
 	struct tb_xdomain *xd = container_of(dev, struct tb_xdomain, dev);
 
-	return sprintf(buf, "%#x\n", xd->device);
+	return sysfs_emit(buf, "%#x\n", xd->device);
 }
 static DEVICE_ATTR_RO(device);
 
@@ -1193,7 +1735,7 @@ device_name_show(struct device *dev, struct device_attribute *attr, char *buf)
 
 	if (mutex_lock_interruptible(&xd->lock))
 		return -ERESTARTSYS;
-	ret = sprintf(buf, "%s\n", xd->device_name ? xd->device_name : "");
+	ret = sysfs_emit(buf, "%s\n", xd->device_name ?: "");
 	mutex_unlock(&xd->lock);
 
 	return ret;
@@ -1205,7 +1747,7 @@ static ssize_t maxhopid_show(struct device *dev, struct device_attribute *attr,
 {
 	struct tb_xdomain *xd = container_of(dev, struct tb_xdomain, dev);
 
-	return sprintf(buf, "%d\n", xd->remote_max_hopid);
+	return sysfs_emit(buf, "%d\n", xd->remote_max_hopid);
 }
 static DEVICE_ATTR_RO(maxhopid);
 
@@ -1214,7 +1756,7 @@ static ssize_t vendor_show(struct device *dev, struct device_attribute *attr,
 {
 	struct tb_xdomain *xd = container_of(dev, struct tb_xdomain, dev);
 
-	return sprintf(buf, "%#x\n", xd->vendor);
+	return sysfs_emit(buf, "%#x\n", xd->vendor);
 }
 static DEVICE_ATTR_RO(vendor);
 
@@ -1226,7 +1768,7 @@ vendor_name_show(struct device *dev, struct device_attribute *attr, char *buf)
 
 	if (mutex_lock_interruptible(&xd->lock))
 		return -ERESTARTSYS;
-	ret = sprintf(buf, "%s\n", xd->vendor_name ? xd->vendor_name : "");
+	ret = sysfs_emit(buf, "%s\n", xd->vendor_name ?: "");
 	mutex_unlock(&xd->lock);
 
 	return ret;
@@ -1238,7 +1780,7 @@ static ssize_t unique_id_show(struct device *dev, struct device_attribute *attr,
 {
 	struct tb_xdomain *xd = container_of(dev, struct tb_xdomain, dev);
 
-	return sprintf(buf, "%pUb\n", xd->remote_uuid);
+	return sysfs_emit(buf, "%pUb\n", xd->remote_uuid);
 }
 static DEVICE_ATTR_RO(unique_id);
 
@@ -1247,22 +1789,63 @@ static ssize_t speed_show(struct device *dev, struct device_attribute *attr,
 {
 	struct tb_xdomain *xd = container_of(dev, struct tb_xdomain, dev);
 
-	return sprintf(buf, "%u.0 Gb/s\n", xd->link_speed);
+	return sysfs_emit(buf, "%u.0 Gb/s\n", xd->link_speed);
 }
 
 static DEVICE_ATTR(rx_speed, 0444, speed_show, NULL);
 static DEVICE_ATTR(tx_speed, 0444, speed_show, NULL);
 
-static ssize_t lanes_show(struct device *dev, struct device_attribute *attr,
-			  char *buf)
+static ssize_t rx_lanes_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
 {
 	struct tb_xdomain *xd = container_of(dev, struct tb_xdomain, dev);
+	unsigned int width;
 
-	return sprintf(buf, "%u\n", xd->link_width);
+	switch (xd->link_width) {
+	case TB_LINK_WIDTH_SINGLE:
+	case TB_LINK_WIDTH_ASYM_TX:
+		width = 1;
+		break;
+	case TB_LINK_WIDTH_DUAL:
+		width = 2;
+		break;
+	case TB_LINK_WIDTH_ASYM_RX:
+		width = 3;
+		break;
+	default:
+		WARN_ON_ONCE(1);
+		return -EINVAL;
+	}
+
+	return sysfs_emit(buf, "%u\n", width);
 }
+static DEVICE_ATTR(rx_lanes, 0444, rx_lanes_show, NULL);
 
-static DEVICE_ATTR(rx_lanes, 0444, lanes_show, NULL);
-static DEVICE_ATTR(tx_lanes, 0444, lanes_show, NULL);
+static ssize_t tx_lanes_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	struct tb_xdomain *xd = container_of(dev, struct tb_xdomain, dev);
+	unsigned int width;
+
+	switch (xd->link_width) {
+	case TB_LINK_WIDTH_SINGLE:
+	case TB_LINK_WIDTH_ASYM_RX:
+		width = 1;
+		break;
+	case TB_LINK_WIDTH_DUAL:
+		width = 2;
+		break;
+	case TB_LINK_WIDTH_ASYM_TX:
+		width = 3;
+		break;
+	default:
+		WARN_ON_ONCE(1);
+		return -EINVAL;
+	}
+
+	return sysfs_emit(buf, "%u\n", width);
+}
+static DEVICE_ATTR(tx_lanes, 0444, tx_lanes_show, NULL);
 
 static struct attribute *xdomain_attrs[] = {
 	&dev_attr_device.attr,
@@ -1306,35 +1889,6 @@ static void tb_xdomain_release(struct device *dev)
 	kfree(xd);
 }
 
-static void start_handshake(struct tb_xdomain *xd)
-{
-	xd->uuid_retries = XDOMAIN_UUID_RETRIES;
-	xd->properties_retries = XDOMAIN_PROPERTIES_RETRIES;
-	xd->properties_changed_retries = XDOMAIN_PROPERTIES_CHANGED_RETRIES;
-
-	if (xd->needs_uuid) {
-		queue_delayed_work(xd->tb->wq, &xd->get_uuid_work,
-				   msecs_to_jiffies(100));
-	} else {
-		/* Start exchanging properties with the other host */
-		queue_delayed_work(xd->tb->wq, &xd->properties_changed_work,
-				   msecs_to_jiffies(100));
-		queue_delayed_work(xd->tb->wq, &xd->get_properties_work,
-				   msecs_to_jiffies(1000));
-	}
-}
-
-static void stop_handshake(struct tb_xdomain *xd)
-{
-	xd->uuid_retries = 0;
-	xd->properties_retries = 0;
-	xd->properties_changed_retries = 0;
-
-	cancel_delayed_work_sync(&xd->get_uuid_work);
-	cancel_delayed_work_sync(&xd->get_properties_work);
-	cancel_delayed_work_sync(&xd->properties_changed_work);
-}
-
 static int __maybe_unused tb_xdomain_suspend(struct device *dev)
 {
 	stop_handshake(tb_to_xdomain(dev));
@@ -1351,12 +1905,56 @@ static const struct dev_pm_ops tb_xdomain_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(tb_xdomain_suspend, tb_xdomain_resume)
 };
 
-struct device_type tb_xdomain_type = {
+const struct device_type tb_xdomain_type = {
 	.name = "thunderbolt_xdomain",
 	.release = tb_xdomain_release,
 	.pm = &tb_xdomain_pm_ops,
 };
 EXPORT_SYMBOL_GPL(tb_xdomain_type);
+
+static void tb_xdomain_link_init(struct tb_xdomain *xd, struct tb_port *down)
+{
+	if (!down->dual_link_port)
+		return;
+
+	/*
+	 * Gen 4 links come up already as bonded so only update the port
+	 * structures here.
+	 */
+	if (tb_port_get_link_generation(down) >= 4) {
+		down->bonded = true;
+		down->dual_link_port->bonded = true;
+	} else {
+		xd->bonding_possible = true;
+	}
+}
+
+static void tb_xdomain_link_exit(struct tb_xdomain *xd)
+{
+	struct tb_port *down = tb_xdomain_downstream_port(xd);
+
+	if (!down->dual_link_port)
+		return;
+
+	if (tb_port_get_link_generation(down) >= 4) {
+		down->bonded = false;
+		down->dual_link_port->bonded = false;
+	} else if (xd->link_width > TB_LINK_WIDTH_SINGLE) {
+		/*
+		 * Just return port structures back to way they were and
+		 * update credits. No need to update userspace because
+		 * the XDomain is removed soon anyway.
+		 */
+		tb_port_lane_bonding_disable(down);
+		tb_port_update_credits(down);
+	} else if (down->dual_link_port) {
+		/*
+		 * Re-enable the lane 1 adapter we disabled at the end
+		 * of tb_xdomain_get_properties().
+		 */
+		tb_port_enable(down->dual_link_port);
+	}
+}
 
 /**
  * tb_xdomain_alloc() - Allocate new XDomain object
@@ -1369,6 +1967,8 @@ EXPORT_SYMBOL_GPL(tb_xdomain_type);
  *
  * Allocates new XDomain structure and returns pointer to that. The
  * object must be released by calling tb_xdomain_put().
+ *
+ * Return: Pointer to &struct tb_xdomain, %NULL in case of failure.
  */
 struct tb_xdomain *tb_xdomain_alloc(struct tb *tb, struct device *parent,
 				    u64 route, const uuid_t *local_uuid,
@@ -1393,8 +1993,7 @@ struct tb_xdomain *tb_xdomain_alloc(struct tb *tb, struct device *parent,
 	ida_init(&xd->in_hopids);
 	ida_init(&xd->out_hopids);
 	mutex_init(&xd->lock);
-	INIT_DELAYED_WORK(&xd->get_uuid_work, tb_xdomain_get_uuid);
-	INIT_DELAYED_WORK(&xd->get_properties_work, tb_xdomain_get_properties);
+	INIT_DELAYED_WORK(&xd->state_work, tb_xdomain_state_work);
 	INIT_DELAYED_WORK(&xd->properties_changed_work,
 			  tb_xdomain_properties_changed);
 
@@ -1409,6 +2008,8 @@ struct tb_xdomain *tb_xdomain_alloc(struct tb *tb, struct device *parent,
 			goto err_free_local_uuid;
 	} else {
 		xd->needs_uuid = true;
+
+		tb_xdomain_link_init(xd, down);
 	}
 
 	device_initialize(&xd->dev);
@@ -1471,9 +2072,13 @@ static int unregister_service(struct device *dev, void *data)
  */
 void tb_xdomain_remove(struct tb_xdomain *xd)
 {
+	tb_xdomain_debugfs_remove(xd);
+
 	stop_handshake(xd);
 
 	device_for_each_child_reverse(&xd->dev, xd, unregister_service);
+
+	tb_xdomain_link_exit(xd);
 
 	/*
 	 * Undo runtime PM here explicitly because it is possible that
@@ -1500,14 +2105,15 @@ void tb_xdomain_remove(struct tb_xdomain *xd)
  * to enable bonding by first enabling the port and waiting for the CL0
  * state.
  *
- * Return: %0 in case of success and negative errno in case of error.
+ * Return: %0 on success, negative errno otherwise.
  */
 int tb_xdomain_lane_bonding_enable(struct tb_xdomain *xd)
 {
+	unsigned int width_mask;
 	struct tb_port *port;
 	int ret;
 
-	port = tb_port_at(xd->route, tb_xdomain_parent(xd));
+	port = tb_xdomain_downstream_port(xd);
 	if (!port->dual_link_port)
 		return -ENODEV;
 
@@ -1527,9 +2133,14 @@ int tb_xdomain_lane_bonding_enable(struct tb_xdomain *xd)
 		return ret;
 	}
 
-	ret = tb_port_wait_for_link_width(port, 2, 100);
+	/* Any of the widths are all bonded */
+	width_mask = TB_LINK_WIDTH_DUAL | TB_LINK_WIDTH_ASYM_TX |
+		     TB_LINK_WIDTH_ASYM_RX;
+
+	ret = tb_port_wait_for_link_width(port, width_mask,
+					  XDOMAIN_BONDING_TIMEOUT);
 	if (ret) {
-		tb_port_warn(port, "timeout enabling lane bonding\n");
+		tb_port_warn(port, "failed to enable lane bonding\n");
 		return ret;
 	}
 
@@ -1552,10 +2163,13 @@ void tb_xdomain_lane_bonding_disable(struct tb_xdomain *xd)
 {
 	struct tb_port *port;
 
-	port = tb_port_at(xd->route, tb_xdomain_parent(xd));
+	port = tb_xdomain_downstream_port(xd);
 	if (port->dual_link_port) {
+		int ret;
+
 		tb_port_lane_bonding_disable(port);
-		if (tb_port_wait_for_link_width(port, 1, 100) == -ETIMEDOUT)
+		ret = tb_port_wait_for_link_width(port, TB_LINK_WIDTH_SINGLE, 100);
+		if (ret == -ETIMEDOUT)
 			tb_port_warn(port, "timeout disabling lane bonding\n");
 		tb_port_disable(port->dual_link_port);
 		tb_port_update_credits(port);
@@ -1571,10 +2185,14 @@ EXPORT_SYMBOL_GPL(tb_xdomain_lane_bonding_disable);
  * @xd: XDomain connection
  * @hopid: Preferred HopID or %-1 for next available
  *
- * Returns allocated HopID or negative errno. Specifically returns
- * %-ENOSPC if there are no more available HopIDs. Returned HopID is
- * guaranteed to be within range supported by the input lane adapter.
+ * Returned HopID is guaranteed to be within range supported by the input
+ * lane adapter.
  * Call tb_xdomain_release_in_hopid() to release the allocated HopID.
+ *
+ * Return:
+ * * Allocated HopID - On success.
+ * * %-ENOSPC - If there are no more available HopIDs.
+ * * Negative errno - Another error occurred.
  */
 int tb_xdomain_alloc_in_hopid(struct tb_xdomain *xd, int hopid)
 {
@@ -1593,10 +2211,14 @@ EXPORT_SYMBOL_GPL(tb_xdomain_alloc_in_hopid);
  * @xd: XDomain connection
  * @hopid: Preferred HopID or %-1 for next available
  *
- * Returns allocated HopID or negative errno. Specifically returns
- * %-ENOSPC if there are no more available HopIDs. Returned HopID is
- * guaranteed to be within range supported by the output lane adapter.
- * Call tb_xdomain_release_in_hopid() to release the allocated HopID.
+ * Returned HopID is guaranteed to be within range supported by the
+ * output lane adapter.
+ * Call tb_xdomain_release_out_hopid() to release the allocated HopID.
+ *
+ * Return:
+ * * Allocated HopID - On success.
+ * * %-ENOSPC - If there are no more available HopIDs.
+ * * Negative errno - Another error occurred.
  */
 int tb_xdomain_alloc_out_hopid(struct tb_xdomain *xd, int hopid)
 {
@@ -1645,7 +2267,7 @@ EXPORT_SYMBOL_GPL(tb_xdomain_release_out_hopid);
  * path. If a transmit or receive path is not needed, pass %-1 for those
  * parameters.
  *
- * Return: %0 in case of success and negative errno in case of error
+ * Return: %0 on success, negative errno otherwise.
  */
 int tb_xdomain_enable_paths(struct tb_xdomain *xd, int transmit_path,
 			    int transmit_ring, int receive_path,
@@ -1670,7 +2292,7 @@ EXPORT_SYMBOL_GPL(tb_xdomain_enable_paths);
  * as path/ring parameter means don't care. Normally the callers should
  * pass the same values here as they do when paths are enabled.
  *
- * Return: %0 in case of success and negative errno in case of error
+ * Return: %0 on success, negative errno otherwise.
  */
 int tb_xdomain_disable_paths(struct tb_xdomain *xd, int transmit_path,
 			     int transmit_ring, int receive_path,
@@ -1704,13 +2326,12 @@ static struct tb_xdomain *switch_find_xdomain(struct tb_switch *sw,
 				if (xd->remote_uuid &&
 				    uuid_equal(xd->remote_uuid, lookup->uuid))
 					return xd;
-			} else if (lookup->link &&
-				   lookup->link == xd->link &&
-				   lookup->depth == xd->depth) {
-				return xd;
-			} else if (lookup->route &&
-				   lookup->route == xd->route) {
-				return xd;
+			} else {
+				if (lookup->link && lookup->link == xd->link &&
+				    lookup->depth == xd->depth)
+					return xd;
+				if (lookup->route && lookup->route == xd->route)
+					return xd;
 			}
 		} else if (tb_port_has_remote(port)) {
 			xd = switch_find_xdomain(port->remote->sw, lookup);
@@ -1736,6 +2357,8 @@ static struct tb_xdomain *switch_find_xdomain(struct tb_switch *sw,
  * to the bus (handshake is still in progress).
  *
  * The caller needs to hold @tb->lock.
+ *
+ * Return: Pointer to &struct tb_xdomain or %NULL if not found.
  */
 struct tb_xdomain *tb_xdomain_find_by_uuid(struct tb *tb, const uuid_t *uuid)
 {
@@ -1765,6 +2388,8 @@ EXPORT_SYMBOL_GPL(tb_xdomain_find_by_uuid);
  * to the bus (handshake is still in progress).
  *
  * The caller needs to hold @tb->lock.
+ *
+ * Return: Pointer to &struct tb_xdomain or %NULL if not found.
  */
 struct tb_xdomain *tb_xdomain_find_by_link_depth(struct tb *tb, u8 link,
 						 u8 depth)
@@ -1794,6 +2419,8 @@ struct tb_xdomain *tb_xdomain_find_by_link_depth(struct tb *tb, u8 link,
  * to the bus (handshake is still in progress).
  *
  * The caller needs to hold @tb->lock.
+ *
+ * Return: Pointer to &struct tb_xdomain or %NULL if not found.
  */
 struct tb_xdomain *tb_xdomain_find_by_route(struct tb *tb, u64 route)
 {
@@ -1892,7 +2519,7 @@ static bool remove_directory(const char *key, const struct tb_property_dir *dir)
  * notified so they can re-read properties of this host if they are
  * interested.
  *
- * Return: %0 on success and negative errno on failure
+ * Return: %0 on success, negative errno otherwise.
  */
 int tb_register_property_dir(const char *key, struct tb_property_dir *dir)
 {
@@ -1963,13 +2590,12 @@ int tb_xdomain_init(void)
 	 * Rest of the properties are filled dynamically based on these
 	 * when the P2P connection is made.
 	 */
-	tb_property_add_immediate(xdomain_property_dir, "vendorid",
-				  PCI_VENDOR_ID_INTEL);
-	tb_property_add_text(xdomain_property_dir, "vendorid", "Intel Corp.");
-	tb_property_add_immediate(xdomain_property_dir, "deviceid", 0x1);
+	tb_property_add_immediate(xdomain_property_dir, "vendorid", 0x1d6b);
+	tb_property_add_text(xdomain_property_dir, "vendorid", "Linux");
+	tb_property_add_immediate(xdomain_property_dir, "deviceid", 0x0004);
 	tb_property_add_immediate(xdomain_property_dir, "devicerv", 0x80000100);
 
-	xdomain_property_block_gen = prandom_u32();
+	xdomain_property_block_gen = get_random_u32();
 	return 0;
 }
 

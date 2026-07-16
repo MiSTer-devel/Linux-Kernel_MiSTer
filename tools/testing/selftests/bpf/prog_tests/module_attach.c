@@ -2,52 +2,35 @@
 /* Copyright (c) 2020 Facebook */
 
 #include <test_progs.h>
+#include <stdbool.h>
 #include "test_module_attach.skel.h"
+#include "testing_helpers.h"
 
 static int duration;
 
-static int trigger_module_test_read(int read_sz)
+static int trigger_module_test_writable(int *val)
 {
 	int fd, err;
+	char buf[65];
+	ssize_t rd;
 
-	fd = open("/sys/kernel/bpf_testmod", O_RDONLY);
+	fd = open(BPF_TESTMOD_TEST_FILE, O_RDONLY);
 	err = -errno;
-	if (CHECK(fd < 0, "testmod_file_open", "failed: %d\n", err))
+	if (!ASSERT_GE(fd, 0, "testmode_file_open"))
 		return err;
 
-	read(fd, NULL, read_sz);
-	close(fd);
-
-	return 0;
-}
-
-static int trigger_module_test_write(int write_sz)
-{
-	int fd, err;
-	char *buf = malloc(write_sz);
-
-	if (!buf)
-		return -ENOMEM;
-
-	memset(buf, 'a', write_sz);
-	buf[write_sz-1] = '\0';
-
-	fd = open("/sys/kernel/bpf_testmod", O_WRONLY);
+	rd = read(fd, buf, sizeof(buf) - 1);
 	err = -errno;
-	if (CHECK(fd < 0, "testmod_file_open", "failed: %d\n", err)) {
-		free(buf);
+	if (!ASSERT_GT(rd, 0, "testmod_file_rd_val")) {
+		close(fd);
 		return err;
 	}
 
-	write(fd, buf, write_sz);
+	buf[rd] = '\0';
+	*val = strtol(buf, NULL, 0);
 	close(fd);
-	free(buf);
-	return 0;
-}
 
-static int delete_module(const char *name, int flags)
-{
-	return syscall(__NR_delete_module, name, flags);
+	return 0;
 }
 
 void test_module_attach(void)
@@ -58,6 +41,7 @@ void test_module_attach(void)
 	struct test_module_attach__bss *bss;
 	struct bpf_link *link;
 	int err;
+	int writable_val = 0;
 
 	skel = test_module_attach__open();
 	if (CHECK(!skel, "skel_open", "failed to open skeleton\n"))
@@ -66,6 +50,10 @@ void test_module_attach(void)
 	err = bpf_program__set_attach_target(skel->progs.handle_fentry_manual,
 					     0, "bpf_testmod_test_read");
 	ASSERT_OK(err, "set_attach_target");
+
+	err = bpf_program__set_attach_target(skel->progs.handle_fentry_explicit_manual,
+					     0, "bpf_testmod:bpf_testmod_test_read");
+	ASSERT_OK(err, "set_attach_target_explicit");
 
 	err = test_module_attach__load(skel);
 	if (CHECK(err, "skel_load", "failed to load skeleton\n"))
@@ -86,25 +74,42 @@ void test_module_attach(void)
 	ASSERT_EQ(bss->tp_btf_read_sz, READ_SZ, "tp_btf");
 	ASSERT_EQ(bss->fentry_read_sz, READ_SZ, "fentry");
 	ASSERT_EQ(bss->fentry_manual_read_sz, READ_SZ, "fentry_manual");
+	ASSERT_EQ(bss->fentry_explicit_read_sz, READ_SZ, "fentry_explicit");
+	ASSERT_EQ(bss->fentry_explicit_manual_read_sz, READ_SZ, "fentry_explicit_manual");
 	ASSERT_EQ(bss->fexit_read_sz, READ_SZ, "fexit");
 	ASSERT_EQ(bss->fexit_ret, -EIO, "fexit_tet");
 	ASSERT_EQ(bss->fmod_ret_read_sz, READ_SZ, "fmod_ret");
 
+	bss->raw_tp_writable_bare_early_ret = true;
+	bss->raw_tp_writable_bare_out_val = 0xf1f2f3f4;
+	ASSERT_OK(trigger_module_test_writable(&writable_val),
+		  "trigger_writable");
+	ASSERT_EQ(bss->raw_tp_writable_bare_in_val, 1024, "writable_test_in");
+	ASSERT_EQ(bss->raw_tp_writable_bare_out_val, writable_val,
+		  "writable_test_out");
+
 	test_module_attach__detach(skel);
 
-	/* attach fentry/fexit and make sure it get's module reference */
+	/* attach fentry/fexit and make sure it gets module reference */
 	link = bpf_program__attach(skel->progs.handle_fentry);
 	if (!ASSERT_OK_PTR(link, "attach_fentry"))
 		goto cleanup;
 
-	ASSERT_ERR(delete_module("bpf_testmod", 0), "delete_module");
+	ASSERT_ERR(unload_bpf_testmod(false), "unload_bpf_testmod");
 	bpf_link__destroy(link);
 
 	link = bpf_program__attach(skel->progs.handle_fexit);
 	if (!ASSERT_OK_PTR(link, "attach_fexit"))
 		goto cleanup;
 
-	ASSERT_ERR(delete_module("bpf_testmod", 0), "delete_module");
+	ASSERT_ERR(unload_bpf_testmod(false), "unload_bpf_testmod");
+	bpf_link__destroy(link);
+
+	link = bpf_program__attach(skel->progs.kprobe_multi);
+	if (!ASSERT_OK_PTR(link, "attach_kprobe_multi"))
+		goto cleanup;
+
+	ASSERT_ERR(unload_bpf_testmod(false), "unload_bpf_testmod");
 	bpf_link__destroy(link);
 
 cleanup:

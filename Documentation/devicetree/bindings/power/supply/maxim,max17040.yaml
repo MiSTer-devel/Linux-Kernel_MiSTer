@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0
 %YAML 1.2
 ---
-$id: "http://devicetree.org/schemas/power/supply/maxim,max17040.yaml#"
-$schema: "http://devicetree.org/meta-schemas/core.yaml#"
+$id: http://devicetree.org/schemas/power/supply/maxim,max17040.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
 
 title: Maxim 17040 fuel gauge series
 
@@ -44,7 +44,9 @@ properties:
       SoC == State of Charge == Capacity.
 
   maxim,rcomp:
-    $ref: /schemas/types.yaml#/definitions/uint32
+    $ref: /schemas/types.yaml#/definitions/uint8-array
+    minItems: 1
+    maxItems: 2
     description: |
       A value to compensate readings for various battery chemistries and operating temperatures.
       max17040,41 have 2 byte rcomp, default to 0x97 0x00.
@@ -52,6 +54,14 @@ properties:
 
   interrupts:
     maxItems: 1
+
+  io-channels:
+    items:
+      - description: battery temperature
+
+  io-channel-names:
+    items:
+      - const: temp
 
   wakeup-source:
     type: boolean
@@ -62,11 +72,11 @@ required:
   - compatible
   - reg
 
-additionalProperties: false
+unevaluatedProperties: false
 
 examples:
   - |
-    i2c0 {
+    i2c {
       #address-cells = <1>;
       #size-cells = <0>;
 
@@ -80,7 +90,7 @@ examples:
     };
   - |
     #include <dt-bindings/interrupt-controller/irq.h>
-    i2c0 {
+    i2c {
       #address-cells = <1>;
       #size-cells = <0>;
 
@@ -90,6 +100,29 @@ examples:
         maxim,alert-low-soc-level = <10>;
         interrupt-parent = <&gpio7>;
         interrupts = <2 IRQ_TYPE_LEVEL_LOW>;
+        wakeup-source;
+      };
+    };
+  - |
+    #include <dt-bindings/interrupt-controller/irq.h>
+    i2c {
+      #address-cells = <1>;
+      #size-cells = <0>;
+
+      fuel-gauge@36 {
+        compatible = "maxim,max17043";
+        reg = <0x36>;
+
+        interrupt-parent = <&gpio>;
+        interrupts = <144 IRQ_TYPE_EDGE_FALLING>;
+
+        monitored-battery = <&battery>;
+        power-supplies = <&charger>;
+
+        io-channels = <&adc 8>;
+        io-channel-names = "temp";
+
+        maxim,alert-low-soc-level = <10>;
         wakeup-source;
       };
     };

@@ -11,6 +11,7 @@
 #include <linux/interrupt.h>
 #include <linux/completion.h>
 #include <linux/clk.h>
+#include <linux/property.h>
 #include <linux/spi/spi.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/buffer.h>
@@ -37,15 +38,13 @@ enum {
 struct adc12138 {
 	struct spi_device *spi;
 	unsigned int id;
-	/* conversion clock */
-	struct clk *cclk;
 	/* positive analog voltage reference */
 	struct regulator *vref_p;
 	/* negative analog voltage reference */
 	struct regulator *vref_n;
 	struct mutex lock;
 	struct completion complete;
-	/* The number of cclk periods for the S/H's acquisition time */
+	/* The number of conversion clock periods for the S/H's acquisition time */
 	unsigned int acquisition_time;
 	/*
 	 * Maximum size needed: 16x 2 bytes ADC data + 8 bytes timestamp.
@@ -54,7 +53,7 @@ struct adc12138 {
 	 */
 	__be16 data[20] __aligned(8);
 
-	u8 tx_buf[2] ____cacheline_aligned;
+	u8 tx_buf[2] __aligned(IIO_DMA_MINALIGN);
 	u8 rx_buf[2];
 };
 
@@ -239,7 +238,8 @@ static int adc12138_read_raw(struct iio_dev *iio,
 		if (ret)
 			return ret;
 
-		*value = sign_extend32(be16_to_cpu(data) >> 3, 12);
+		*value = sign_extend32(be16_to_cpu(data) >> channel->scan_type.shift,
+				       channel->scan_type.realbits - 1);
 
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SCALE:
@@ -342,8 +342,7 @@ static irqreturn_t adc12138_trigger_handler(int irq, void *p)
 
 	mutex_lock(&adc->lock);
 
-	for_each_set_bit(scan_index, indio_dev->active_scan_mask,
-			 indio_dev->masklength) {
+	iio_for_each_active_channel(indio_dev, scan_index) {
 		const struct iio_chan_spec *scan_chan =
 				&indio_dev->channels[scan_index];
 
@@ -375,8 +374,8 @@ static irqreturn_t adc12138_trigger_handler(int irq, void *p)
 		}
 	}
 
-	iio_push_to_buffers_with_timestamp(indio_dev, adc->data,
-					   iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_ts(indio_dev, adc->data, sizeof(adc->data),
+				    iio_get_time_ns(indio_dev));
 out:
 	mutex_unlock(&adc->lock);
 
@@ -399,6 +398,7 @@ static int adc12138_probe(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev;
 	struct adc12138 *adc;
+	struct clk *cclk;
 	int ret;
 
 	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*adc));
@@ -429,14 +429,19 @@ static int adc12138_probe(struct spi_device *spi)
 		return -EINVAL;
 	}
 
-	ret = of_property_read_u32(spi->dev.of_node, "ti,acquisition-time",
-				   &adc->acquisition_time);
+	ret = device_property_read_u32(&spi->dev, "ti,acquisition-time",
+				       &adc->acquisition_time);
 	if (ret)
 		adc->acquisition_time = 10;
 
-	adc->cclk = devm_clk_get(&spi->dev, NULL);
-	if (IS_ERR(adc->cclk))
-		return PTR_ERR(adc->cclk);
+	ret = devm_request_irq(&spi->dev, spi->irq, adc12138_eoc_handler,
+			       IRQF_TRIGGER_RISING, indio_dev->name, indio_dev);
+	if (ret)
+		return ret;
+
+	cclk = devm_clk_get_enabled(&spi->dev, NULL);
+	if (IS_ERR(cclk))
+		return PTR_ERR(cclk);
 
 	adc->vref_p = devm_regulator_get(&spi->dev, "vref-p");
 	if (IS_ERR(adc->vref_p))
@@ -453,18 +458,9 @@ static int adc12138_probe(struct spi_device *spi)
 			return ret;
 	}
 
-	ret = devm_request_irq(&spi->dev, spi->irq, adc12138_eoc_handler,
-			       IRQF_TRIGGER_RISING, indio_dev->name, indio_dev);
-	if (ret)
-		return ret;
-
-	ret = clk_prepare_enable(adc->cclk);
-	if (ret)
-		return ret;
-
 	ret = regulator_enable(adc->vref_p);
 	if (ret)
-		goto err_clk_disable;
+		return ret;
 
 	if (!IS_ERR(adc->vref_n)) {
 		ret = regulator_enable(adc->vref_n);
@@ -495,13 +491,11 @@ err_vref_n_disable:
 		regulator_disable(adc->vref_n);
 err_vref_p_disable:
 	regulator_disable(adc->vref_p);
-err_clk_disable:
-	clk_disable_unprepare(adc->cclk);
 
 	return ret;
 }
 
-static int adc12138_remove(struct spi_device *spi)
+static void adc12138_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct adc12138 *adc = iio_priv(indio_dev);
@@ -511,35 +505,28 @@ static int adc12138_remove(struct spi_device *spi)
 	if (!IS_ERR(adc->vref_n))
 		regulator_disable(adc->vref_n);
 	regulator_disable(adc->vref_p);
-	clk_disable_unprepare(adc->cclk);
-
-	return 0;
 }
-
-#ifdef CONFIG_OF
 
 static const struct of_device_id adc12138_dt_ids[] = {
 	{ .compatible = "ti,adc12130", },
 	{ .compatible = "ti,adc12132", },
 	{ .compatible = "ti,adc12138", },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, adc12138_dt_ids);
-
-#endif
 
 static const struct spi_device_id adc12138_id[] = {
 	{ "adc12130", adc12130 },
 	{ "adc12132", adc12132 },
 	{ "adc12138", adc12138 },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, adc12138_id);
 
 static struct spi_driver adc12138_driver = {
 	.driver = {
 		.name = "adc12138",
-		.of_match_table = of_match_ptr(adc12138_dt_ids),
+		.of_match_table = adc12138_dt_ids,
 	},
 	.probe = adc12138_probe,
 	.remove = adc12138_remove,

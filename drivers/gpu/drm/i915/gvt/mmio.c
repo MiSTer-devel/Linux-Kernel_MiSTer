@@ -33,8 +33,15 @@
  *
  */
 
+#include <linux/vmalloc.h>
 #include "i915_drv.h"
+#include "i915_reg.h"
+#include "display/intel_display_regs.h"
 #include "gvt.h"
+
+#include "display/bxt_dpio_phy_regs.h"
+#include "display/intel_dpio_phy.h"
+#include "gt/intel_gt_regs.h"
 
 /**
  * intel_vgpu_gpa_to_mmio_offset - translate a GPA to MMIO offset
@@ -136,7 +143,7 @@ int intel_vgpu_emulate_mmio_read(struct intel_vgpu *vgpu, u64 pa,
 	}
 
 	if (drm_WARN_ON_ONCE(&i915->drm, !reg_is_mmio(gvt, offset))) {
-		ret = intel_gvt_hypervisor_read_gpa(vgpu, pa, p_data, bytes);
+		ret = intel_gvt_read_gpa(vgpu, pa, p_data, bytes);
 		goto out;
 	}
 
@@ -212,7 +219,7 @@ int intel_vgpu_emulate_mmio_write(struct intel_vgpu *vgpu, u64 pa,
 	}
 
 	if (drm_WARN_ON_ONCE(&i915->drm, !reg_is_mmio(gvt, offset))) {
-		ret = intel_gvt_hypervisor_write_gpa(vgpu, pa, p_data, bytes);
+		ret = intel_gvt_write_gpa(vgpu, pa, p_data, bytes);
 		goto out;
 	}
 

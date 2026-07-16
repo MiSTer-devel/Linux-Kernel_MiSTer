@@ -15,6 +15,7 @@
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/seq_file.h>
+#include <linux/string_choices.h>
 
 /*
  * Whiskey Cove PMIC has 13 physical GPIO pins divided into 3 banks:
@@ -104,7 +105,7 @@ static inline int to_reg(int gpio, enum ctrl_register type)
 	unsigned int reg = type == CTRL_IN ? GPIO_IN_CTRL_BASE : GPIO_OUT_CTRL_BASE;
 
 	if (gpio >= WCOVE_GPIO_NUM)
-		return -EOPNOTSUPP;
+		return -ENOTSUPP;
 
 	return reg + gpio;
 }
@@ -199,18 +200,15 @@ static int wcove_gpio_get(struct gpio_chip *chip, unsigned int gpio)
 	return val & 0x1;
 }
 
-static void wcove_gpio_set(struct gpio_chip *chip, unsigned int gpio, int value)
+static int wcove_gpio_set(struct gpio_chip *chip, unsigned int gpio, int value)
 {
 	struct wcove_gpio *wg = gpiochip_get_data(chip);
 	int reg = to_reg(gpio, CTRL_OUT);
 
 	if (reg < 0)
-		return;
+		return 0;
 
-	if (value)
-		regmap_set_bits(wg->regmap, reg, 1);
-	else
-		regmap_clear_bits(wg->regmap, reg, 1);
+	return regmap_assign_bits(wg->regmap, reg, 1, value);
 }
 
 static int wcove_gpio_set_config(struct gpio_chip *chip, unsigned int gpio,
@@ -299,6 +297,8 @@ static void wcove_irq_unmask(struct irq_data *data)
 	if (gpio >= WCOVE_GPIO_NUM)
 		return;
 
+	gpiochip_enable_irq(chip, gpio);
+
 	wg->set_irq_mask = false;
 	wg->update |= UPDATE_IRQ_MASK;
 }
@@ -314,15 +314,19 @@ static void wcove_irq_mask(struct irq_data *data)
 
 	wg->set_irq_mask = true;
 	wg->update |= UPDATE_IRQ_MASK;
+
+	gpiochip_disable_irq(chip, gpio);
 }
 
-static struct irq_chip wcove_irqchip = {
+static const struct irq_chip wcove_irqchip = {
 	.name			= "Whiskey Cove",
 	.irq_mask		= wcove_irq_mask,
 	.irq_unmask		= wcove_irq_unmask,
 	.irq_set_type		= wcove_irq_type,
 	.irq_bus_lock		= wcove_bus_lock,
 	.irq_bus_sync_unlock	= wcove_bus_sync_unlock,
+	.flags			= IRQCHIP_IMMUTABLE,
+	GPIOCHIP_IRQ_RESOURCE_HELPERS,
 };
 
 static irqreturn_t wcove_gpio_irq_handler(int irq, void *data)
@@ -387,7 +391,7 @@ static void wcove_gpio_dbg_show(struct seq_file *s, struct gpio_chip *chip)
 
 		seq_printf(s, " gpio-%-2d %s %s %s %s ctlo=%2x,%s %s\n",
 			   gpio, ctlo & CTLO_DIR_OUT ? "out" : "in ",
-			   ctli & 0x1 ? "hi" : "lo",
+			   str_hi_lo(ctli & 0x1),
 			   ctli & CTLI_INTCNT_NE ? "fall" : "    ",
 			   ctli & CTLI_INTCNT_PE ? "rise" : "    ",
 			   ctlo,
@@ -452,7 +456,7 @@ static int wcove_gpio_probe(struct platform_device *pdev)
 	}
 
 	girq = &wg->chip.irq;
-	girq->chip = &wcove_irqchip;
+	gpio_irq_chip_set_chip(girq, &wcove_irqchip);
 	/* This will let us handle the parent IRQ in the driver */
 	girq->parent_handler = NULL;
 	girq->num_parents = 0;

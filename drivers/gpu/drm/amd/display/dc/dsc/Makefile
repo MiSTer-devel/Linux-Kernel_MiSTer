@@ -1,37 +1,39 @@
 # SPDX-License-Identifier: MIT
-#
-# Makefile for the 'dsc' sub-component of DAL.
+# Copyright © 2019-2024 Advanced Micro Devices, Inc. All rights reserved.
 
-ifdef CONFIG_X86
-dsc_ccflags := -mhard-float -msse
-endif
+ifdef CONFIG_DRM_AMD_DC_FP
 
-ifdef CONFIG_PPC64
-dsc_ccflags := -mhard-float -maltivec
-endif
+###############################################################################
+# DCN20
+###############################################################################
+DSC_DCN20 = dcn20_dsc.o
 
-ifdef CONFIG_CC_IS_GCC
-ifeq ($(call cc-ifversion, -lt, 0701, y), y)
-IS_OLD_GCC = 1
-endif
-endif
+AMD_DISPLAY_FILES += $(addprefix $(AMDDALPATH)/dc/dsc/dcn20/,$(DSC_DCN20))
 
-ifdef CONFIG_X86
-ifdef IS_OLD_GCC
-# Stack alignment mismatch, proceed with caution.
-# GCC < 7.1 cannot compile code using `double` and -mpreferred-stack-boundary=3
-# (8B stack alignment).
-dsc_ccflags += -mpreferred-stack-boundary=4
-else
-dsc_ccflags += -msse2
-endif
-endif
 
-CFLAGS_$(AMDDALPATH)/dc/dsc/rc_calc.o := $(dsc_ccflags)
-CFLAGS_REMOVE_$(AMDDALPATH)/dc/dsc/rc_calc.o := $(dsc_rcflags)
+
+
+###############################################################################
+# DCN35
+###############################################################################
+
+DSC_DCN35 = dcn35_dsc.o
+
+AMD_DISPLAY_FILES += $(addprefix $(AMDDALPATH)/dc/dsc/dcn35/,$(DSC_DCN35))
+
+###############################################################################
+# DCN401
+###############################################################################
+
+DSC_DCN401 += dcn401_dsc.o
+
+AMD_DISPLAY_FILES += $(addprefix $(AMDDALPATH)/dc/dsc/dcn401/,$(DSC_DCN401))
+
+endif
 
 DSC = dc_dsc.o rc_calc.o rc_calc_dpi.o
 
 AMD_DAL_DSC = $(addprefix $(AMDDALPATH)/dc/dsc/,$(DSC))
 
 AMD_DISPLAY_FILES += $(AMD_DAL_DSC)
+

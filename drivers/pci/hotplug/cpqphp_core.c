@@ -328,7 +328,7 @@ get_slot_mapping(struct pci_bus *bus, u8 bus_num, u8 dev_num, u8 *slot)
 		} else {
 			/* Did not get a match on the target PCI device. Check
 			 * if the current IRQ table entry is a PCI-to-PCI
-			 * bridge device.  If so, and it's secondary bus
+			 * bridge device.  If so, and its secondary bus
 			 * matches the bus number for the target device, I need
 			 * to save the bridge's slot number.  If I can not find
 			 * an entry for the target device, I will have to
@@ -1254,7 +1254,7 @@ static void __exit unload_cpqphpd(void)
 	struct pci_resource *res;
 	struct pci_resource *tres;
 
-	rc = compaq_nvram_store(cpqhp_rom_start);
+	compaq_nvram_store(cpqhp_rom_start);
 
 	ctrl = cpqhp_ctrl_list;
 

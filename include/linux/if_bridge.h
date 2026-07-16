@@ -58,15 +58,16 @@ struct br_ip_list {
 #define BR_MRP_LOST_CONT	BIT(18)
 #define BR_MRP_LOST_IN_CONT	BIT(19)
 #define BR_TX_FWD_OFFLOAD	BIT(20)
+#define BR_PORT_LOCKED		BIT(21)
+#define BR_PORT_MAB		BIT(22)
+#define BR_NEIGH_VLAN_SUPPRESS	BIT(23)
 
 #define BR_DEFAULT_AGEING_TIME	(300 * HZ)
 
 struct net_bridge;
-void brioctl_set(int (*hook)(struct net *net, struct net_bridge *br,
-			     unsigned int cmd, struct ifreq *ifr,
+void brioctl_set(int (*hook)(struct net *net, unsigned int cmd,
 			     void __user *uarg));
-int br_ioctl_call(struct net *net, struct net_bridge *br, unsigned int cmd,
-		  struct ifreq *ifr, void __user *uarg);
+int br_ioctl_call(struct net *net, unsigned int cmd, void __user *uarg);
 
 #if IS_ENABLED(CONFIG_BRIDGE) && IS_ENABLED(CONFIG_BRIDGE_IGMP_SNOOPING)
 int br_multicast_list_adjacent(struct net_device *dev,
@@ -118,6 +119,9 @@ int br_vlan_get_info(const struct net_device *dev, u16 vid,
 		     struct bridge_vlan_info *p_vinfo);
 int br_vlan_get_info_rcu(const struct net_device *dev, u16 vid,
 			 struct bridge_vlan_info *p_vinfo);
+bool br_mst_enabled(const struct net_device *dev);
+int br_mst_get_info(const struct net_device *dev, u16 msti, unsigned long *vids);
+int br_mst_get_state(const struct net_device *dev, u16 msti, u8 *state);
 #else
 static inline bool br_vlan_enabled(const struct net_device *dev)
 {
@@ -147,6 +151,22 @@ static inline int br_vlan_get_info(const struct net_device *dev, u16 vid,
 
 static inline int br_vlan_get_info_rcu(const struct net_device *dev, u16 vid,
 				       struct bridge_vlan_info *p_vinfo)
+{
+	return -EINVAL;
+}
+
+static inline bool br_mst_enabled(const struct net_device *dev)
+{
+	return false;
+}
+
+static inline int br_mst_get_info(const struct net_device *dev, u16 msti,
+				  unsigned long *vids)
+{
+	return -EINVAL;
+}
+static inline int br_mst_get_state(const struct net_device *dev, u16 msti,
+				   u8 *state)
 {
 	return -EINVAL;
 }

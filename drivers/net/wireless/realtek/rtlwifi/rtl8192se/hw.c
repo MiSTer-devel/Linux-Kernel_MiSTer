@@ -731,12 +731,12 @@ static void _rtl92se_macconfig_before_fwdownload(struct ieee80211_hw *hw)
 	/* After MACIO reset,we must refresh LED state. */
 	if ((ppsc->rfoff_reason == RF_CHANGE_BY_IPS) ||
 	   (ppsc->rfoff_reason == 0)) {
-		struct rtl_led *pled0 = &rtlpriv->ledctl.sw_led0;
+		enum rtl_led_pin pin0 = rtlpriv->ledctl.sw_led0;
 		enum rf_pwrstate rfpwr_state_toset;
 		rfpwr_state_toset = _rtl92se_rf_onoff_detect(hw);
 
 		if (rfpwr_state_toset == ERFON)
-			rtl92se_sw_led_on(hw, pled0);
+			rtl92se_sw_led_on(hw, pin0);
 	}
 }
 
@@ -1302,7 +1302,7 @@ static void _rtl92s_phy_set_rfhalt(struct ieee80211_hw *hw)
 	struct rtl_ps_ctl *ppsc = rtl_psc(rtl_priv(hw));
 	u8 u1btmp;
 
-	if (rtlhal->driver_going2unload)
+	if (rtlhal->driver_is_goingto_unload)
 		rtl_write_byte(rtlpriv, 0x560, 0x0);
 
 	/* Power save for BB/RF */
@@ -1323,7 +1323,7 @@ static void _rtl92s_phy_set_rfhalt(struct ieee80211_hw *hw)
 	rtl_write_word(rtlpriv, CMDR, 0x57FC);
 	rtl_write_word(rtlpriv, CMDR, 0x0000);
 
-	if (rtlhal->driver_going2unload) {
+	if (rtlhal->driver_is_goingto_unload) {
 		u1btmp = rtl_read_byte(rtlpriv, (REG_SYS_FUNC_EN + 1));
 		u1btmp &= ~(BIT(0));
 		rtl_write_byte(rtlpriv, REG_SYS_FUNC_EN + 1, u1btmp);
@@ -1345,7 +1345,7 @@ static void _rtl92s_phy_set_rfhalt(struct ieee80211_hw *hw)
 
 	/* Power save for MAC */
 	if (ppsc->rfoff_reason == RF_CHANGE_BY_IPS  &&
-		!rtlhal->driver_going2unload) {
+		!rtlhal->driver_is_goingto_unload) {
 		/* enable LED function */
 		rtl_write_byte(rtlpriv, 0x03, 0xF9);
 	/* SW/HW radio off or halt adapter!! For example S3/S4 */
@@ -1371,15 +1371,15 @@ static void _rtl92se_gen_refreshledstate(struct ieee80211_hw *hw)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_pci *rtlpci = rtl_pcidev(rtl_pcipriv(hw));
-	struct rtl_led *pled0 = &rtlpriv->ledctl.sw_led0;
+	enum rtl_led_pin pin0 = rtlpriv->ledctl.sw_led0;
 
 	if (rtlpci->up_first_time)
 		return;
 
 	if (rtlpriv->psc.rfoff_reason == RF_CHANGE_BY_IPS)
-		rtl92se_sw_led_on(hw, pled0);
+		rtl92se_sw_led_on(hw, pin0);
 	else
-		rtl92se_sw_led_off(hw, pled0);
+		rtl92se_sw_led_off(hw, pin0);
 }
 
 
@@ -1407,7 +1407,7 @@ static void _rtl92se_power_domain_init(struct ieee80211_hw *hw)
 	tmpu1b = rtl_read_byte(rtlpriv, REG_SYS_FUNC_EN + 1);
 
 	/* If IPS we need to turn LED on. So we not
-	 * not disable BIT 3/7 of reg3. */
+	 * disable BIT 3/7 of reg3. */
 	if (rtlpriv->psc.rfoff_reason & (RF_CHANGE_BY_IPS | RF_CHANGE_BY_HW))
 		tmpu1b &= 0xFB;
 	else
@@ -1552,8 +1552,6 @@ void rtl92se_set_beacon_related_registers(struct ieee80211_hw *hw)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_mac *mac = rtl_mac(rtl_priv(hw));
-	u16 bcntime_cfg = 0;
-	u16 bcn_cw = 6, bcn_ifs = 0xf;
 	u16 atim_window = 2;
 
 	/* ATIM Window (in unit of TU). */
@@ -1575,13 +1573,6 @@ void rtl92se_set_beacon_related_registers(struct ieee80211_hw *hw)
 	 * after receiving beacon frame from
 	 * other ad hoc STA */
 	rtl_write_byte(rtlpriv, BCN_ERR_THRESH, 100);
-
-	/* Beacon Time Configuration */
-	if (mac->opmode == NL80211_IFTYPE_ADHOC)
-		bcntime_cfg |= (bcn_cw << BCN_TCFG_CW_SHIFT);
-
-	/* TODO: bcn_ifs may required to be changed on ASIC */
-	bcntime_cfg |= bcn_ifs << BCN_TCFG_IFS;
 
 	/*for beacon changed */
 	rtl92s_phy_set_beacon_hwreg(hw, mac->beacon_interval);
@@ -2017,20 +2008,20 @@ static void rtl92se_update_hal_rate_table(struct ieee80211_hw *hw,
 	u16 shortgi_rate = 0;
 	u32 tmp_ratr_value = 0;
 	u8 curtxbw_40mhz = mac->bw_40;
-	u8 curshortgi_40mhz = (sta->ht_cap.cap & IEEE80211_HT_CAP_SGI_40) ?
+	u8 curshortgi_40mhz = (sta->deflink.ht_cap.cap & IEEE80211_HT_CAP_SGI_40) ?
 				1 : 0;
-	u8 curshortgi_20mhz = (sta->ht_cap.cap & IEEE80211_HT_CAP_SGI_20) ?
+	u8 curshortgi_20mhz = (sta->deflink.ht_cap.cap & IEEE80211_HT_CAP_SGI_20) ?
 				1 : 0;
 	enum wireless_mode wirelessmode = mac->mode;
 
 	if (rtlhal->current_bandtype == BAND_ON_5G)
-		ratr_value = sta->supp_rates[1] << 4;
+		ratr_value = sta->deflink.supp_rates[1] << 4;
 	else
-		ratr_value = sta->supp_rates[0];
+		ratr_value = sta->deflink.supp_rates[0];
 	if (mac->opmode == NL80211_IFTYPE_ADHOC)
 		ratr_value = 0xfff;
-	ratr_value |= (sta->ht_cap.mcs.rx_mask[1] << 20 |
-			sta->ht_cap.mcs.rx_mask[0] << 12);
+	ratr_value |= (sta->deflink.ht_cap.mcs.rx_mask[1] << 20 |
+			sta->deflink.ht_cap.mcs.rx_mask[0] << 12);
 	switch (wirelessmode) {
 	case WIRELESS_MODE_B:
 		ratr_value &= 0x0000000D;
@@ -2115,10 +2106,10 @@ static void rtl92se_update_hal_rate_mask(struct ieee80211_hw *hw,
 	struct rtl_sta_info *sta_entry = NULL;
 	u32 ratr_bitmap;
 	u8 ratr_index = 0;
-	u8 curtxbw_40mhz = (sta->bandwidth >= IEEE80211_STA_RX_BW_40) ? 1 : 0;
-	u8 curshortgi_40mhz = (sta->ht_cap.cap & IEEE80211_HT_CAP_SGI_40) ?
+	u8 curtxbw_40mhz = (sta->deflink.bandwidth >= IEEE80211_STA_RX_BW_40) ? 1 : 0;
+	u8 curshortgi_40mhz = (sta->deflink.ht_cap.cap & IEEE80211_HT_CAP_SGI_40) ?
 				1 : 0;
-	u8 curshortgi_20mhz = (sta->ht_cap.cap & IEEE80211_HT_CAP_SGI_20) ?
+	u8 curshortgi_20mhz = (sta->deflink.ht_cap.cap & IEEE80211_HT_CAP_SGI_20) ?
 				1 : 0;
 	enum wireless_mode wirelessmode = 0;
 	bool shortgi = false;
@@ -2139,13 +2130,13 @@ static void rtl92se_update_hal_rate_mask(struct ieee80211_hw *hw,
 		macid = sta->aid + 1;
 
 	if (rtlhal->current_bandtype == BAND_ON_5G)
-		ratr_bitmap = sta->supp_rates[1] << 4;
+		ratr_bitmap = sta->deflink.supp_rates[1] << 4;
 	else
-		ratr_bitmap = sta->supp_rates[0];
+		ratr_bitmap = sta->deflink.supp_rates[0];
 	if (mac->opmode == NL80211_IFTYPE_ADHOC)
 		ratr_bitmap = 0xfff;
-	ratr_bitmap |= (sta->ht_cap.mcs.rx_mask[1] << 20 |
-			sta->ht_cap.mcs.rx_mask[0] << 12);
+	ratr_bitmap |= (sta->deflink.ht_cap.mcs.rx_mask[1] << 20 |
+			sta->deflink.ht_cap.mcs.rx_mask[0] << 12);
 	switch (wirelessmode) {
 	case WIRELESS_MODE_B:
 		band |= WIRELESS_11B;

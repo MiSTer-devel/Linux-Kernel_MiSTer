@@ -51,7 +51,6 @@ static inline unsigned long page_to_phys(struct page *page)
 
 #define page_to_pfn(page) ((unsigned long)(page) / PAGE_SIZE)
 #define pfn_to_page(pfn) (void *)((pfn) * PAGE_SIZE)
-#define nth_page(page,n) pfn_to_page(page_to_pfn((page)) + (n))
 
 #define __min(t1, t2, min1, min2, x, y) ({              \
 	t1 min1 = (x);                                  \
@@ -74,7 +73,7 @@ static inline unsigned long page_to_phys(struct page *page)
 	      __UNIQUE_ID(min1_), __UNIQUE_ID(min2_),   \
 	      x, y)
 
-#define preemptible() (1)
+#define pagefault_disabled() (0)
 
 static inline void *kmap(struct page *page)
 {
@@ -127,6 +126,7 @@ kmalloc_array(unsigned int n, unsigned int size, unsigned int flags)
 #define kmemleak_free(a)
 
 #define PageSlab(p) (0)
+#define flush_dcache_page(p)
 
 #define MAX_ERRNO	4095
 

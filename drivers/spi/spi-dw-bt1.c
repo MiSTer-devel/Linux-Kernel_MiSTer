@@ -55,13 +55,15 @@ static int dw_spi_bt1_dirmap_create(struct spi_mem_dirmap_desc *desc)
 	    !dwsbt1->dws.mem_ops.supports_op(desc->mem, &desc->info.op_tmpl))
 		return -EOPNOTSUPP;
 
+	if (desc->info.op_tmpl.data.dir != SPI_MEM_DATA_IN)
+		return -EOPNOTSUPP;
+
 	/*
 	 * Make sure the requested region doesn't go out of the physically
-	 * mapped flash memory bounds and the operation is read-only.
+	 * mapped flash memory bounds.
 	 */
-	if (desc->info.offset + desc->info.length > dwsbt1->map_len ||
-	    desc->info.op_tmpl.data.dir != SPI_MEM_DATA_IN)
-		return -EOPNOTSUPP;
+	if (desc->info.offset + desc->info.length > dwsbt1->map_len)
+		return -EINVAL;
 
 	return 0;
 }
@@ -123,7 +125,7 @@ static ssize_t dw_spi_bt1_dirmap_read(struct spi_mem_dirmap_desc *desc,
 	len = min_t(size_t, len, dwsbt1->map_len - offs);
 
 	/* Collect the controller configuration required by the operation */
-	cfg.tmode = SPI_TMOD_EPROMREAD;
+	cfg.tmode = DW_SPI_CTRLR0_TMOD_EPROMREAD;
 	cfg.dfs = 8;
 	cfg.ndf = 4;
 	cfg.freq = mem->spi->max_speed_hz;
@@ -131,13 +133,13 @@ static ssize_t dw_spi_bt1_dirmap_read(struct spi_mem_dirmap_desc *desc,
 	/* Make sure the corresponding CS is de-asserted on transmission */
 	dw_spi_set_cs(mem->spi, false);
 
-	spi_enable_chip(dws, 0);
+	dw_spi_enable_chip(dws, 0);
 
 	dw_spi_update_config(dws, mem->spi, &cfg);
 
-	spi_umask_intr(dws, SPI_INT_RXFI);
+	dw_spi_umask_intr(dws, DW_SPI_INT_RXFI);
 
-	spi_enable_chip(dws, 1);
+	dw_spi_enable_chip(dws, 1);
 
 	/*
 	 * Enable the transparent mode of the System Boot Controller.
@@ -269,54 +271,41 @@ static int dw_spi_bt1_probe(struct platform_device *pdev)
 
 	dws->paddr = mem->start;
 
-	dwsbt1->clk = devm_clk_get(&pdev->dev, NULL);
+	dwsbt1->clk = devm_clk_get_enabled(&pdev->dev, NULL);
 	if (IS_ERR(dwsbt1->clk))
 		return PTR_ERR(dwsbt1->clk);
-
-	ret = clk_prepare_enable(dwsbt1->clk);
-	if (ret)
-		return ret;
 
 	dws->bus_num = pdev->id;
 	dws->reg_io_width = 4;
 	dws->max_freq = clk_get_rate(dwsbt1->clk);
-	if (!dws->max_freq) {
-		ret = -EINVAL;
-		goto err_disable_clk;
-	}
+	if (!dws->max_freq)
+		return -EINVAL;
 
 	init_func = device_get_match_data(&pdev->dev);
 	ret = init_func(pdev, dwsbt1);
 	if (ret)
-		goto err_disable_clk;
+		return ret;
 
 	pm_runtime_enable(&pdev->dev);
 
 	ret = dw_spi_add_host(&pdev->dev, dws);
-	if (ret)
-		goto err_disable_clk;
+	if (ret) {
+		pm_runtime_disable(&pdev->dev);
+		return ret;
+	}
 
 	platform_set_drvdata(pdev, dwsbt1);
 
 	return 0;
-
-err_disable_clk:
-	clk_disable_unprepare(dwsbt1->clk);
-
-	return ret;
 }
 
-static int dw_spi_bt1_remove(struct platform_device *pdev)
+static void dw_spi_bt1_remove(struct platform_device *pdev)
 {
 	struct dw_spi_bt1 *dwsbt1 = platform_get_drvdata(pdev);
 
 	dw_spi_remove_host(&dwsbt1->dws);
 
 	pm_runtime_disable(&pdev->dev);
-
-	clk_disable_unprepare(dwsbt1->clk);
-
-	return 0;
 }
 
 static const struct of_device_id dw_spi_bt1_of_match[] = {
@@ -328,7 +317,7 @@ MODULE_DEVICE_TABLE(of, dw_spi_bt1_of_match);
 
 static struct platform_driver dw_spi_bt1_driver = {
 	.probe	= dw_spi_bt1_probe,
-	.remove	= dw_spi_bt1_remove,
+	.remove = dw_spi_bt1_remove,
 	.driver	= {
 		.name		= "bt1-sys-ssi",
 		.of_match_table	= dw_spi_bt1_of_match,
@@ -339,3 +328,4 @@ module_platform_driver(dw_spi_bt1_driver);
 MODULE_AUTHOR("Serge Semin <Sergey.Semin@baikalelectronics.ru>");
 MODULE_DESCRIPTION("Baikal-T1 System Boot SPI Controller driver");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS("SPI_DW_CORE");

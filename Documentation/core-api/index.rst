@@ -18,9 +18,13 @@ it.
 
    kernel-api
    workqueue
+   watch_queue
    printk-basics
    printk-formats
+   printk-index
    symbol-namespaces
+   asm-annotations
+   real-time/index
 
 Data structures and low-level utilities
 =======================================
@@ -32,17 +36,34 @@ Library functionality that is used throughout the kernel.
 
    kobject
    kref
+   cleanup
    assoc_array
+   folio_queue
    xarray
+   maple_tree
    idr
    circular-buffers
    rbtree
    generic-radix-tree
    packing
-   bus-virt-phys-mapping
    this_cpu_ops
    timekeeping
    errseq
+   wrappers/atomic_t
+   wrappers/atomic_bitops
+   floating-point
+   union_find
+   min_heap
+   parser
+   list
+
+Low level entry and exit
+========================
+
+.. toctree::
+   :maxdepth: 1
+
+   entry
 
 Concurrency primitives
 ======================
@@ -58,6 +79,7 @@ Documentation/locking/index.rst for more related documentation.
    local_ops
    padata
    ../RCU/index
+   wrappers/memory-barriers.rst
 
 Low-level hardware management
 =============================
@@ -77,7 +99,7 @@ Memory management
 =================
 
 How to allocate and use memory in the kernel.  Note that there is a lot
-more memory-management documentation in Documentation/vm/index.rst.
+more memory-management documentation in Documentation/mm/index.rst.
 
 .. toctree::
    :maxdepth: 1
@@ -88,11 +110,14 @@ more memory-management documentation in Documentation/vm/index.rst.
    dma-api-howto
    dma-attributes
    dma-isa-lpc
+   swiotlb
    mm-api
+   cgroup
    genalloc
    pin_user_pages
    boot-time-mm
    gfp_mask-from-fs-io
+   kho/index
 
 Interfaces for kernel debugging
 ===============================
@@ -113,6 +138,7 @@ Documents that don't fit elsewhere or which have yet to be categorized.
    :maxdepth: 1
 
    librs
+   netlink
 
 .. only:: subproject and html
 

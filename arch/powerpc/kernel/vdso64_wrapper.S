@@ -2,12 +2,12 @@
 #include <linux/linkage.h>
 #include <asm/page.h>
 
-	__PAGE_ALIGNED_DATA
+	.section ".data..ro_after_init", "aw"
 
 	.globl vdso64_start, vdso64_end
 	.balign PAGE_SIZE
 vdso64_start:
-	.incbin "arch/powerpc/kernel/vdso64/vdso64.so.dbg"
+	.incbin "arch/powerpc/kernel/vdso/vdso64.so.dbg"
 	.balign PAGE_SIZE
 vdso64_end:
 

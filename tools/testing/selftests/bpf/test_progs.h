@@ -1,9 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __TEST_PROGS_H
+#define __TEST_PROGS_H
+
 #include <stdio.h>
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
 #include <assert.h>
+#include <regex.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <time.h>
@@ -25,6 +29,7 @@ typedef __u16 __sum16;
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <sys/param.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <linux/bpf.h>
@@ -37,7 +42,6 @@ typedef __u16 __sum16;
 #include <bpf/bpf_endian.h>
 #include "trace_helpers.h"
 #include "testing_helpers.h"
-#include "flow_dissector_load.h"
 
 enum verbosity {
 	VERBOSE_NONE,
@@ -46,22 +50,61 @@ enum verbosity {
 	VERBOSE_SUPER,
 };
 
-struct str_set {
-	const char **strs;
+struct test_filter {
+	char *name;
+	char **subtests;
+	int subtest_cnt;
+};
+
+struct test_filter_set {
+	struct test_filter *tests;
 	int cnt;
 };
 
 struct test_selector {
-	struct str_set whitelist;
-	struct str_set blacklist;
+	struct test_filter_set whitelist;
+	struct test_filter_set blacklist;
 	bool *num_set;
 	int num_set_len;
 };
 
+struct subtest_state {
+	char *name;
+	size_t log_cnt;
+	char *log_buf;
+	int error_cnt;
+	bool skipped;
+	bool filtered;
+	bool should_tmon;
+
+	FILE *stdout_saved;
+};
+
+struct test_state {
+	bool tested;
+	bool force_log;
+
+	int error_cnt;
+	int skip_cnt;
+	int sub_succ_cnt;
+
+	struct subtest_state *subtest_states;
+	int subtest_num;
+
+	size_t log_cnt;
+	char *log_buf;
+
+	FILE *stdout_saved;
+};
+
+extern int env_verbosity;
+
 struct test_env {
 	struct test_selector test_selector;
 	struct test_selector subtest_selector;
+	struct test_selector tmon_selector;
 	bool verifier_stats;
+	bool debug;
 	enum verbosity verbosity;
 
 	bool jit_enabled;
@@ -69,12 +112,14 @@ struct test_env {
 	bool get_test_cnt;
 	bool list_test_names;
 
-	struct prog_test_def *test;
-	FILE *stdout;
-	FILE *stderr;
-	char *log_buf;
-	size_t log_cnt;
+	struct prog_test_def *test; /* current running test */
+	struct test_state *test_state; /* current running test state */
+	struct subtest_state *subtest_state; /* current running subtest state */
+
+	FILE *stdout_saved;
+	FILE *stderr_saved;
 	int nr_cpus;
+	FILE *json;
 
 	int succ_cnt; /* successful tests */
 	int sub_succ_cnt; /* successful sub-tests */
@@ -82,15 +127,66 @@ struct test_env {
 	int skip_cnt; /* skipped tests */
 
 	int saved_netns_fd;
+	int workers; /* number of worker process */
+	int worker_id; /* id number of current worker, main process is -1 */
+	pid_t *worker_pids; /* array of worker pids */
+	int *worker_socks; /* array of worker socks */
+	int *worker_current_test; /* array of current running test for each worker */
+
+	pthread_t main_thread;
+	int secs_till_notify;
+	int secs_till_kill;
+	timer_t watchdog; /* watch for stalled tests/subtests */
+	enum { WD_NOTIFY, WD_KILL } watchdog_state;
+};
+
+#define MAX_LOG_TRUNK_SIZE 8192
+#define MAX_SUBTEST_NAME 1024
+enum msg_type {
+	MSG_DO_TEST = 0,
+	MSG_TEST_DONE = 1,
+	MSG_TEST_LOG = 2,
+	MSG_SUBTEST_DONE = 3,
+	MSG_EXIT = 255,
+};
+struct msg {
+	enum msg_type type;
+	union {
+		struct {
+			int num;
+		} do_test;
+		struct {
+			int num;
+			int sub_succ_cnt;
+			int error_cnt;
+			int skip_cnt;
+			bool have_log;
+			int subtest_num;
+		} test_done;
+		struct {
+			char log_buf[MAX_LOG_TRUNK_SIZE + 1];
+			bool is_last;
+		} test_log;
+		struct {
+			int num;
+			char name[MAX_SUBTEST_NAME + 1];
+			int error_cnt;
+			bool skipped;
+			bool filtered;
+			bool have_log;
+		} subtest_done;
+	};
 };
 
 extern struct test_env env;
 
-extern void test__force_log();
-extern bool test__start_subtest(const char *name);
-extern void test__skip(void);
-extern void test__fail(void);
-extern int test__join_cgroup(const char *path);
+void test__force_log(void);
+bool test__start_subtest(const char *name);
+void test__end_subtest(void);
+void test__skip(void);
+void test__fail(void);
+int test__join_cgroup(const char *path);
+void hexdump(const char *prefix, const void *buf, size_t len);
 
 #define PRINT_FAIL(format...)                                                  \
 	({                                                                     \
@@ -129,6 +225,12 @@ extern int test__join_cgroup(const char *path);
 	_CHECK(condition, tag, duration, format)
 #define CHECK_ATTR(condition, tag, format...) \
 	_CHECK(condition, tag, tattr.duration, format)
+
+#define ASSERT_FAIL(fmt, args...) ({					\
+	static int duration = 0;					\
+	CHECK(false, "", fmt"\n", ##args);				\
+	false;								\
+})
 
 #define ASSERT_TRUE(actual, name) ({					\
 	static int duration = 0;					\
@@ -233,6 +335,31 @@ extern int test__join_cgroup(const char *path);
 	___ok;								\
 })
 
+#define ASSERT_HAS_SUBSTR(str, substr, name) ({				\
+	static int duration = 0;					\
+	const char *___str = str;					\
+	const char *___substr = substr;					\
+	bool ___ok = strstr(___str, ___substr) != NULL;			\
+	CHECK(!___ok, (name),						\
+	      "unexpected %s: '%s' is not a substring of '%s'\n",	\
+	      (name), ___substr, ___str);				\
+	___ok;								\
+})
+
+#define ASSERT_MEMEQ(actual, expected, len, name) ({			\
+	static int duration = 0;					\
+	const void *__act = actual;					\
+	const void *__exp = expected;					\
+	int __len = len;						\
+	bool ___ok = memcmp(__act, __exp, __len) == 0;			\
+	CHECK(!___ok, (name), "unexpected memory mismatch\n");		\
+	fprintf(stdout, "actual:\n");					\
+	hexdump("\t", __act, __len);					\
+	fprintf(stdout, "expected:\n");					\
+	hexdump("\t", __exp, __len);					\
+	___ok;								\
+})
+
 #define ASSERT_OK(res, name) ({						\
 	static int duration = 0;					\
 	long long ___res = (res);					\
@@ -276,6 +403,54 @@ extern int test__join_cgroup(const char *path);
 	___ok;								\
 })
 
+#define ASSERT_OK_FD(fd, name) ({					\
+	static int duration = 0;					\
+	int ___fd = (fd);						\
+	bool ___ok = ___fd >= 0;					\
+	CHECK(!___ok, (name), "unexpected fd: %d (errno %d)\n",		\
+	      ___fd, errno);						\
+	___ok;								\
+})
+
+#define ASSERT_ERR_FD(fd, name) ({					\
+	static int duration = 0;					\
+	int ___fd = (fd);						\
+	bool ___ok = ___fd < 0;						\
+	CHECK(!___ok, (name), "unexpected fd: %d\n", ___fd);		\
+	___ok;								\
+})
+
+#define SYS(goto_label, fmt, ...)					\
+	({								\
+		char cmd[1024];						\
+		snprintf(cmd, sizeof(cmd), fmt, ##__VA_ARGS__);		\
+		if (!ASSERT_OK(system(cmd), cmd))			\
+			goto goto_label;				\
+	})
+
+#define SYS_FAIL(goto_label, fmt, ...)					\
+	({								\
+		char cmd[1024];						\
+		snprintf(cmd, sizeof(cmd), fmt, ##__VA_ARGS__);		\
+		if (!ASSERT_NEQ(0, system(cmd), cmd))			\
+			goto goto_label;				\
+	})
+
+#define ALL_TO_DEV_NULL " >/dev/null 2>&1"
+
+#define SYS_NOFAIL(fmt, ...)						\
+	({								\
+		char cmd[1024];						\
+		int n;							\
+		n = snprintf(cmd, sizeof(cmd), fmt, ##__VA_ARGS__);	\
+		if (n < sizeof(cmd) && sizeof(cmd) - n >= sizeof(ALL_TO_DEV_NULL)) \
+			strcat(cmd, ALL_TO_DEV_NULL);			\
+		system(cmd);						\
+	})
+
+int start_libbpf_log_capture(void);
+char *stop_libbpf_log_capture(void);
+
 static inline __u64 ptr_to_u64(const void *ptr)
 {
 	return (__u64) (unsigned long) ptr;
@@ -286,16 +461,106 @@ static inline void *u64_to_ptr(__u64 ptr)
 	return (void *) (unsigned long) ptr;
 }
 
+static inline __u32 id_from_prog_fd(int fd)
+{
+	struct bpf_prog_info prog_info = {};
+	__u32 prog_info_len = sizeof(prog_info);
+	int err;
+
+	err = bpf_obj_get_info_by_fd(fd, &prog_info, &prog_info_len);
+	if (!ASSERT_OK(err, "id_from_prog_fd"))
+		return 0;
+
+	ASSERT_NEQ(prog_info.id, 0, "prog_info.id");
+	return prog_info.id;
+}
+
+static inline __u32 id_from_link_fd(int fd)
+{
+	struct bpf_link_info link_info = {};
+	__u32 link_info_len = sizeof(link_info);
+	int err;
+
+	err = bpf_link_get_info_by_fd(fd, &link_info, &link_info_len);
+	if (!ASSERT_OK(err, "id_from_link_fd"))
+		return 0;
+
+	ASSERT_NEQ(link_info.id, 0, "link_info.id");
+	return link_info.id;
+}
+
 int bpf_find_map(const char *test, struct bpf_object *obj, const char *name);
 int compare_map_keys(int map1_fd, int map2_fd);
 int compare_stack_ips(int smap_fd, int amap_fd, int stack_trace_len);
-int extract_build_id(char *build_id, size_t size);
-int kern_sync_rcu(void);
+int trigger_module_test_read(int read_sz);
+int trigger_module_test_write(int write_sz);
+int write_sysctl(const char *sysctl, const char *value);
+int get_bpf_max_tramp_links_from(struct btf *btf);
+int get_bpf_max_tramp_links(void);
+
+struct netns_obj;
+struct netns_obj *netns_new(const char *name, bool open);
+void netns_free(struct netns_obj *netns);
 
 #ifdef __x86_64__
 #define SYS_NANOSLEEP_KPROBE_NAME "__x64_sys_nanosleep"
 #elif defined(__s390x__)
 #define SYS_NANOSLEEP_KPROBE_NAME "__s390x_sys_nanosleep"
+#elif defined(__aarch64__)
+#define SYS_NANOSLEEP_KPROBE_NAME "__arm64_sys_nanosleep"
+#elif defined(__riscv)
+#define SYS_NANOSLEEP_KPROBE_NAME "__riscv_sys_nanosleep"
 #else
 #define SYS_NANOSLEEP_KPROBE_NAME "sys_nanosleep"
 #endif
+
+#define BPF_TESTMOD_TEST_FILE "/sys/kernel/bpf_testmod"
+
+typedef int (*pre_execution_cb)(struct bpf_object *obj);
+
+struct test_loader {
+	char *log_buf;
+	size_t log_buf_sz;
+	pre_execution_cb pre_execution_cb;
+
+	struct bpf_object *obj;
+};
+
+static inline void test_loader__set_pre_execution_cb(struct test_loader *tester,
+						     pre_execution_cb cb)
+{
+	tester->pre_execution_cb = cb;
+}
+
+typedef const void *(*skel_elf_bytes_fn)(size_t *sz);
+
+extern void test_loader__run_subtests(struct test_loader *tester,
+				      const char *skel_name,
+				      skel_elf_bytes_fn elf_bytes_factory);
+
+extern void test_loader_fini(struct test_loader *tester);
+
+#define RUN_TESTS(skel) ({						       \
+	struct test_loader tester = {};					       \
+									       \
+	test_loader__run_subtests(&tester, #skel, skel##__elf_bytes);	       \
+	test_loader_fini(&tester);					       \
+})
+
+struct expect_msg {
+	const char *substr; /* substring match */
+	regex_t regex;
+	bool is_regex;
+	bool on_next_line;
+	bool negative;
+};
+
+struct expected_msgs {
+	struct expect_msg *patterns;
+	size_t cnt;
+};
+
+void validate_msgs(const char *log_buf, struct expected_msgs *msgs,
+		   void (*emit_fn)(const char *buf, bool force));
+
+#endif /* __TEST_PROGS_H */

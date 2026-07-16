@@ -124,7 +124,8 @@ static void asm_emit_cell(void *e, cell_t val)
 {
 	FILE *f = e;
 
-	fprintf(f, "\t.byte 0x%02x; .byte 0x%02x; .byte 0x%02x; .byte 0x%02x\n",
+	fprintf(f, "\t.byte\t0x%02x\n" "\t.byte\t0x%02x\n"
+		"\t.byte\t0x%02x\n" "\t.byte\t0x%02x\n",
 		(val >> 24) & 0xff, (val >> 16) & 0xff,
 		(val >> 8) & 0xff, val & 0xff);
 }
@@ -134,9 +135,9 @@ static void asm_emit_string(void *e, const char *str, int len)
 	FILE *f = e;
 
 	if (len != 0)
-		fprintf(f, "\t.string\t\"%.*s\"\n", len, str);
+		fprintf(f, "\t.asciz\t\"%.*s\"\n", len, str);
 	else
-		fprintf(f, "\t.string\t\"%s\"\n", str);
+		fprintf(f, "\t.asciz\t\"%s\"\n", str);
 }
 
 static void asm_emit_align(void *e, int a)
@@ -295,7 +296,7 @@ static struct data flatten_reserve_list(struct reserve_info *reservelist,
 {
 	struct reserve_info *re;
 	struct data d = empty_data;
-	int    j;
+	unsigned int j;
 
 	for (re = reservelist; re; re = re->next) {
 		d = data_append_re(d, re->address, re->size);
@@ -438,7 +439,7 @@ static void dump_stringtable_asm(FILE *f, struct data strbuf)
 
 	while (p < (strbuf.val + strbuf.len)) {
 		len = strlen(p);
-		fprintf(f, "\t.string \"%s\"\n", p);
+		fprintf(f, "\t.asciz \"%s\"\n", p);
 		p += len+1;
 	}
 }
@@ -502,7 +503,7 @@ void dt_to_asm(FILE *f, struct dt_info *dti, int version)
 	 * Reserve map entries.
 	 * Align the reserve map to a doubleword boundary.
 	 * Each entry is an (address, size) pair of u64 values.
-	 * Always supply a zero-sized temination entry.
+	 * Always supply a zero-sized termination entry.
 	 */
 	asm_emit_align(f, 8);
 	emit_label(f, symprefix, "reserve_map");
@@ -603,11 +604,11 @@ static void flat_realign(struct inbuf *inb, int align)
 		die("Premature end of data parsing flat device tree\n");
 }
 
-static char *flat_read_string(struct inbuf *inb)
+static const char *flat_read_string(struct inbuf *inb)
 {
 	int len = 0;
 	const char *p = inb->ptr;
-	char *str;
+	const char *str;
 
 	do {
 		if (p >= inb->limit)
@@ -615,7 +616,7 @@ static char *flat_read_string(struct inbuf *inb)
 		len++;
 	} while ((*p++) != '\0');
 
-	str = xstrdup(inb->ptr);
+	str = inb->ptr;
 
 	inb->ptr += len;
 
@@ -710,7 +711,7 @@ static struct reserve_info *flat_read_mem_reserve(struct inbuf *inb)
 }
 
 
-static char *nodename_from_path(const char *ppath, const char *cpath)
+static const char *nodename_from_path(const char *ppath, const char *cpath)
 {
 	int plen;
 
@@ -724,7 +725,7 @@ static char *nodename_from_path(const char *ppath, const char *cpath)
 	if (!streq(ppath, "/"))
 		plen++;
 
-	return xstrdup(cpath + plen);
+	return cpath + plen;
 }
 
 static struct node *unflatten_tree(struct inbuf *dtbuf,
@@ -732,7 +733,7 @@ static struct node *unflatten_tree(struct inbuf *dtbuf,
 				   const char *parent_flatname, int flags)
 {
 	struct node *node;
-	char *flatname;
+	const char *flatname;
 	uint32_t val;
 
 	node = build_node(NULL, NULL, NULL);
@@ -740,9 +741,10 @@ static struct node *unflatten_tree(struct inbuf *dtbuf,
 	flatname = flat_read_string(dtbuf);
 
 	if (flags & FTF_FULLPATH)
-		node->name = nodename_from_path(parent_flatname, flatname);
+		node->name = xstrdup(nodename_from_path(parent_flatname,
+							flatname));
 	else
-		node->name = flatname;
+		node->name = xstrdup(flatname);
 
 	do {
 		struct property *prop;
@@ -783,10 +785,6 @@ static struct node *unflatten_tree(struct inbuf *dtbuf,
 			    val);
 		}
 	} while (val != FDT_END_NODE);
-
-	if (node->name != flatname) {
-		free(flatname);
-	}
 
 	return node;
 }

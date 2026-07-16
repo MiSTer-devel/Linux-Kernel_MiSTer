@@ -107,7 +107,7 @@ struct gl518_data {
 	enum chips type;
 
 	struct mutex update_lock;
-	char valid;		/* !=0 if following fields are valid */
+	bool valid;		/* true if following fields are valid */
 	unsigned long last_updated;	/* In jiffies */
 
 	u8 voltage_in[4];	/* Register values; [0] = VDD */
@@ -211,7 +211,7 @@ static struct gl518_data *gl518_update_device(struct device *dev)
 		    gl518_read_value(client, GL518_REG_VIN3);
 
 		data->last_updated = jiffies;
-		data->valid = 1;
+		data->valid = true;
 	}
 
 	mutex_unlock(&data->update_lock);
@@ -586,7 +586,7 @@ static int gl518_detect(struct i2c_client *client, struct i2c_board_info *info)
 	if (rev != 0x00 && rev != 0x80)
 		return -ENODEV;
 
-	strlcpy(info->type, "gl518sm", I2C_NAME_SIZE);
+	strscpy(info->type, "gl518sm", I2C_NAME_SIZE);
 
 	return 0;
 }
@@ -642,7 +642,7 @@ static int gl518_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id gl518_id[] = {
-	{ "gl518sm", 0 },
+	{ "gl518sm" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, gl518_id);
@@ -652,7 +652,7 @@ static struct i2c_driver gl518_driver = {
 	.driver = {
 		.name	= "gl518sm",
 	},
-	.probe_new	= gl518_probe,
+	.probe		= gl518_probe,
 	.id_table	= gl518_id,
 	.detect		= gl518_detect,
 	.address_list	= normal_i2c,

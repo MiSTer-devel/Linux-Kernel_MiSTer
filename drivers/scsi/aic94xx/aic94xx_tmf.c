@@ -31,7 +31,7 @@ static int asd_enqueue_internal(struct asd_ascb *ascb,
 
 	res = asd_post_ascb_list(ascb->ha, ascb, 1);
 	if (unlikely(res))
-		del_timer(&ascb->timer);
+		timer_delete(&ascb->timer);
 	return res;
 }
 
@@ -58,7 +58,7 @@ static void asd_clear_nexus_tasklet_complete(struct asd_ascb *ascb,
 {
 	struct tasklet_completion_status *tcs = ascb->uldd_task;
 	ASD_DPRINTK("%s: here\n", __func__);
-	if (!del_timer(&ascb->timer)) {
+	if (!timer_delete(&ascb->timer)) {
 		ASD_DPRINTK("%s: couldn't delete timer\n", __func__);
 		return;
 	}
@@ -70,7 +70,7 @@ static void asd_clear_nexus_tasklet_complete(struct asd_ascb *ascb,
 
 static void asd_clear_nexus_timedout(struct timer_list *t)
 {
-	struct asd_ascb *ascb = from_timer(ascb, t, timer);
+	struct asd_ascb *ascb = timer_container_of(ascb, t, timer);
 	struct tasklet_completion_status *tcs = ascb->uldd_task;
 
 	ASD_DPRINTK("%s: here\n", __func__);
@@ -244,7 +244,7 @@ static int asd_clear_nexus_index(struct sas_task *task)
 
 static void asd_tmf_timedout(struct timer_list *t)
 {
-	struct asd_ascb *ascb = from_timer(ascb, t, timer);
+	struct asd_ascb *ascb = timer_container_of(ascb, t, timer);
 	struct tasklet_completion_status *tcs = ascb->uldd_task;
 
 	ASD_DPRINTK("tmf timed out\n");
@@ -287,7 +287,7 @@ static int asd_get_tmf_resp_tasklet(struct asd_ascb *ascb,
 	fh = edb->vaddr + 16;
 	ru = edb->vaddr + 16 + sizeof(*fh);
 	res = ru->status;
-	if (ru->datapres == 1)	  /* Response data present */
+	if (ru->datapres == SAS_DATAPRES_RESPONSE_DATA)
 		res = ru->resp_data[3];
 #if 0
 	ascb->tag = fh->tag;
@@ -303,7 +303,7 @@ static void asd_tmf_tasklet_complete(struct asd_ascb *ascb,
 {
 	struct tasklet_completion_status *tcs;
 
-	if (!del_timer(&ascb->timer))
+	if (!timer_delete(&ascb->timer))
 		return;
 
 	tcs = ascb->uldd_task;
@@ -638,15 +638,6 @@ out_err:
 int asd_abort_task_set(struct domain_device *dev, u8 *lun)
 {
 	int res = asd_initiate_ssp_tmf(dev, lun, TMF_ABORT_TASK_SET, 0);
-
-	if (res == TMF_RESP_FUNC_COMPLETE)
-		asd_clear_nexus_I_T_L(dev, lun);
-	return res;
-}
-
-int asd_clear_aca(struct domain_device *dev, u8 *lun)
-{
-	int res = asd_initiate_ssp_tmf(dev, lun, TMF_CLEAR_ACA, 0);
 
 	if (res == TMF_RESP_FUNC_COMPLETE)
 		asd_clear_nexus_I_T_L(dev, lun);

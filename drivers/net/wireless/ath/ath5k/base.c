@@ -59,7 +59,7 @@
 #include <net/cfg80211.h>
 #include <net/ieee80211_radiotap.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <net/mac80211.h>
 #include "base.h"
@@ -230,13 +230,13 @@ ath5k_chip_name(enum ath5k_srev_type type, u_int16_t val)
 }
 static unsigned int ath5k_ioread32(void *hw_priv, u32 reg_offset)
 {
-	struct ath5k_hw *ah = (struct ath5k_hw *) hw_priv;
+	struct ath5k_hw *ah = hw_priv;
 	return ath5k_hw_reg_read(ah, reg_offset);
 }
 
 static void ath5k_iowrite32(void *hw_priv, u32 val, u32 reg_offset)
 {
-	struct ath5k_hw *ah = (struct ath5k_hw *) hw_priv;
+	struct ath5k_hw *ah = hw_priv;
 	ath5k_hw_reg_write(ah, val, reg_offset);
 }
 
@@ -727,6 +727,43 @@ ath5k_get_rate_hw_value(const struct ieee80211_hw *hw,
 	return hw_rate;
 }
 
+static bool ath5k_merge_ratetbl(struct ieee80211_sta *sta,
+				struct ath5k_buf *bf,
+				struct ieee80211_tx_info *tx_info)
+{
+	struct ieee80211_sta_rates *ratetbl;
+	u8 i;
+
+	if (!sta)
+		return false;
+
+	ratetbl = rcu_dereference(sta->rates);
+	if (!ratetbl)
+		return false;
+
+	if (tx_info->control.rates[0].idx < 0 ||
+	    tx_info->control.rates[0].count == 0)
+	{
+		i = 0;
+	} else {
+		bf->rates[0] = tx_info->control.rates[0];
+		i = 1;
+	}
+
+	for ( ; i < IEEE80211_TX_MAX_RATES; i++) {
+		bf->rates[i].idx = ratetbl->rate[i].idx;
+		bf->rates[i].flags = ratetbl->rate[i].flags;
+		if (tx_info->control.use_rts)
+			bf->rates[i].count = ratetbl->rate[i].count_rts;
+		else if (tx_info->control.use_cts_prot)
+			bf->rates[i].count = ratetbl->rate[i].count_cts;
+		else
+			bf->rates[i].count = ratetbl->rate[i].count;
+	}
+
+	return true;
+}
+
 static int
 ath5k_txbuf_setup(struct ath5k_hw *ah, struct ath5k_buf *bf,
 		  struct ath5k_txq *txq, int padsize,
@@ -737,6 +774,7 @@ ath5k_txbuf_setup(struct ath5k_hw *ah, struct ath5k_buf *bf,
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 	unsigned int pktlen, flags, keyidx = AR5K_TXKEYIX_INVALID;
 	struct ieee80211_rate *rate;
+	struct ieee80211_sta *sta;
 	unsigned int mrr_rate[3], mrr_tries[3];
 	int i, ret;
 	u16 hw_rate;
@@ -753,8 +791,16 @@ ath5k_txbuf_setup(struct ath5k_hw *ah, struct ath5k_buf *bf,
 	if (dma_mapping_error(ah->dev, bf->skbaddr))
 		return -ENOSPC;
 
-	ieee80211_get_tx_rates(info->control.vif, (control) ? control->sta : NULL, skb, bf->rates,
-			       ARRAY_SIZE(bf->rates));
+	if (control)
+		sta = control->sta;
+	else
+		sta = NULL;
+
+	if (!ath5k_merge_ratetbl(sta, bf, info)) {
+		ieee80211_get_tx_rates(info->control.vif,
+				       sta, skb, bf->rates,
+				       ARRAY_SIZE(bf->rates));
+	}
 
 	rate = ath5k_get_rate(ah->hw, info, bf, 0);
 
@@ -1692,7 +1738,8 @@ ath5k_tx_frame_completed(struct ath5k_hw *ah, struct sk_buff *skb,
 	}
 
 	info->status.rates[ts->ts_final_idx].count = ts->ts_final_retry;
-	info->status.rates[ts->ts_final_idx + 1].idx = -1;
+	if (ts->ts_final_idx + 1 < IEEE80211_TX_MAX_RATES)
+		info->status.rates[ts->ts_final_idx + 1].idx = -1;
 
 	if (unlikely(ts->ts_status)) {
 		ah->stats.ack_fail++;
@@ -1724,7 +1771,7 @@ ath5k_tx_frame_completed(struct ath5k_hw *ah, struct sk_buff *skb,
 		ah->stats.antenna_tx[0]++; /* invalid */
 
 	trace_ath5k_tx_complete(ah, skb, txq, ts);
-	ieee80211_tx_status(ah->hw, skb);
+	ieee80211_tx_status_skb(ah->hw, skb);
 }
 
 static void
@@ -1900,7 +1947,7 @@ ath5k_beacon_update(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 		goto out;
 	}
 
-	skb = ieee80211_beacon_get(hw, vif);
+	skb = ieee80211_beacon_get(hw, vif, 0);
 
 	if (!skb) {
 		ret = -ENOMEM;
@@ -1936,7 +1983,7 @@ ath5k_beacon_send(struct ath5k_hw *ah)
 
 	/*
 	 * Check if the previous beacon has gone out.  If
-	 * not, don't don't try to post another: skip this
+	 * not, don't try to post another: skip this
 	 * period and wait for the next.  Missed beacons
 	 * indicate a problem and should not occur.  If we
 	 * miss too many consecutive beacons reset the device.
@@ -2801,7 +2848,7 @@ static void ath5k_stop_tasklets(struct ath5k_hw *ah)
  * if another thread does a system call and the thread doing the
  * stop is preempted).
  */
-void ath5k_stop(struct ieee80211_hw *hw)
+void ath5k_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct ath5k_hw *ah = hw->priv;
 	int ret;

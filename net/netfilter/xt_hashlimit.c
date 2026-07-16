@@ -15,7 +15,6 @@
 #include <linux/random.h>
 #include <linux/jhash.h>
 #include <linux/slab.h>
-#include <linux/vmalloc.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/list.h>
@@ -294,8 +293,7 @@ static int htable_create(struct net *net, struct hashlimit_cfg3 *cfg,
 		if (size < 16)
 			size = 16;
 	}
-	/* FIXME: don't use vmalloc() here or anywhere else -HW */
-	hinfo = vmalloc(struct_size(hinfo, hash, size));
+	hinfo = kvmalloc(struct_size(hinfo, hash, size), GFP_KERNEL);
 	if (hinfo == NULL)
 		return -ENOMEM;
 	*out_hinfo = hinfo;
@@ -303,7 +301,7 @@ static int htable_create(struct net *net, struct hashlimit_cfg3 *cfg,
 	/* copy match config into hashtable config */
 	ret = cfg_copy(&hinfo->cfg, (void *)cfg, 3);
 	if (ret) {
-		vfree(hinfo);
+		kvfree(hinfo);
 		return ret;
 	}
 
@@ -322,7 +320,7 @@ static int htable_create(struct net *net, struct hashlimit_cfg3 *cfg,
 	hinfo->rnd_initialized = false;
 	hinfo->name = kstrdup(name, GFP_KERNEL);
 	if (!hinfo->name) {
-		vfree(hinfo);
+		kvfree(hinfo);
 		return -ENOMEM;
 	}
 	spin_lock_init(&hinfo->lock);
@@ -344,7 +342,7 @@ static int htable_create(struct net *net, struct hashlimit_cfg3 *cfg,
 		ops, hinfo);
 	if (hinfo->pde == NULL) {
 		kfree(hinfo->name);
-		vfree(hinfo);
+		kvfree(hinfo);
 		return -ENOMEM;
 	}
 	hinfo->net = net;
@@ -363,11 +361,15 @@ static void htable_selective_cleanup(struct xt_hashlimit_htable *ht, bool select
 	unsigned int i;
 
 	for (i = 0; i < ht->cfg.size; i++) {
+		struct hlist_head *head = &ht->hash[i];
 		struct dsthash_ent *dh;
 		struct hlist_node *n;
 
+		if (hlist_empty(head))
+			continue;
+
 		spin_lock_bh(&ht->lock);
-		hlist_for_each_entry_safe(dh, n, &ht->hash[i], node) {
+		hlist_for_each_entry_safe(dh, n, head, node) {
 			if (time_after_eq(jiffies, dh->expires) || select_all)
 				dsthash_free(ht, dh);
 		}
@@ -429,7 +431,7 @@ static void htable_put(struct xt_hashlimit_htable *hinfo)
 		cancel_delayed_work_sync(&hinfo->gc_work);
 		htable_selective_cleanup(hinfo, true);
 		kfree(hinfo->name);
-		vfree(hinfo);
+		kvfree(hinfo);
 	}
 }
 
@@ -1052,7 +1054,7 @@ static struct xt_match hashlimit_mt_reg[] __read_mostly = {
 static void *dl_seq_start(struct seq_file *s, loff_t *pos)
 	__acquires(htable->lock)
 {
-	struct xt_hashlimit_htable *htable = PDE_DATA(file_inode(s->file));
+	struct xt_hashlimit_htable *htable = pde_data(file_inode(s->file));
 	unsigned int *bucket;
 
 	spin_lock_bh(&htable->lock);
@@ -1069,7 +1071,7 @@ static void *dl_seq_start(struct seq_file *s, loff_t *pos)
 
 static void *dl_seq_next(struct seq_file *s, void *v, loff_t *pos)
 {
-	struct xt_hashlimit_htable *htable = PDE_DATA(file_inode(s->file));
+	struct xt_hashlimit_htable *htable = pde_data(file_inode(s->file));
 	unsigned int *bucket = v;
 
 	*pos = ++(*bucket);
@@ -1083,7 +1085,7 @@ static void *dl_seq_next(struct seq_file *s, void *v, loff_t *pos)
 static void dl_seq_stop(struct seq_file *s, void *v)
 	__releases(htable->lock)
 {
-	struct xt_hashlimit_htable *htable = PDE_DATA(file_inode(s->file));
+	struct xt_hashlimit_htable *htable = pde_data(file_inode(s->file));
 	unsigned int *bucket = v;
 
 	if (!IS_ERR(bucket))
@@ -1125,7 +1127,7 @@ static void dl_seq_print(struct dsthash_ent *ent, u_int8_t family,
 static int dl_seq_real_show_v2(struct dsthash_ent *ent, u_int8_t family,
 			       struct seq_file *s)
 {
-	struct xt_hashlimit_htable *ht = PDE_DATA(file_inode(s->file));
+	struct xt_hashlimit_htable *ht = pde_data(file_inode(s->file));
 
 	spin_lock(&ent->lock);
 	/* recalculate to show accurate numbers */
@@ -1140,7 +1142,7 @@ static int dl_seq_real_show_v2(struct dsthash_ent *ent, u_int8_t family,
 static int dl_seq_real_show_v1(struct dsthash_ent *ent, u_int8_t family,
 			       struct seq_file *s)
 {
-	struct xt_hashlimit_htable *ht = PDE_DATA(file_inode(s->file));
+	struct xt_hashlimit_htable *ht = pde_data(file_inode(s->file));
 
 	spin_lock(&ent->lock);
 	/* recalculate to show accurate numbers */
@@ -1155,7 +1157,7 @@ static int dl_seq_real_show_v1(struct dsthash_ent *ent, u_int8_t family,
 static int dl_seq_real_show(struct dsthash_ent *ent, u_int8_t family,
 			    struct seq_file *s)
 {
-	struct xt_hashlimit_htable *ht = PDE_DATA(file_inode(s->file));
+	struct xt_hashlimit_htable *ht = pde_data(file_inode(s->file));
 
 	spin_lock(&ent->lock);
 	/* recalculate to show accurate numbers */
@@ -1169,7 +1171,7 @@ static int dl_seq_real_show(struct dsthash_ent *ent, u_int8_t family,
 
 static int dl_seq_show_v2(struct seq_file *s, void *v)
 {
-	struct xt_hashlimit_htable *htable = PDE_DATA(file_inode(s->file));
+	struct xt_hashlimit_htable *htable = pde_data(file_inode(s->file));
 	unsigned int *bucket = (unsigned int *)v;
 	struct dsthash_ent *ent;
 
@@ -1183,7 +1185,7 @@ static int dl_seq_show_v2(struct seq_file *s, void *v)
 
 static int dl_seq_show_v1(struct seq_file *s, void *v)
 {
-	struct xt_hashlimit_htable *htable = PDE_DATA(file_inode(s->file));
+	struct xt_hashlimit_htable *htable = pde_data(file_inode(s->file));
 	unsigned int *bucket = v;
 	struct dsthash_ent *ent;
 
@@ -1197,7 +1199,7 @@ static int dl_seq_show_v1(struct seq_file *s, void *v)
 
 static int dl_seq_show(struct seq_file *s, void *v)
 {
-	struct xt_hashlimit_htable *htable = PDE_DATA(file_inode(s->file));
+	struct xt_hashlimit_htable *htable = pde_data(file_inode(s->file));
 	unsigned int *bucket = v;
 	struct dsthash_ent *ent;
 

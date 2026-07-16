@@ -78,7 +78,6 @@ static int tmff_play(struct input_dev *dev, void *data,
 	struct hid_field *ff_field = tmff->ff_field;
 	int x, y;
 	int left, right;	/* Rumbling */
-	int motor_swap;
 
 	switch (effect->type) {
 	case FF_CONSTANT:
@@ -104,11 +103,8 @@ static int tmff_play(struct input_dev *dev, void *data,
 					ff_field->logical_maximum);
 
 		/* 2-in-1 strong motor is left */
-		if (hid->product == THRUSTMASTER_DEVICE_ID_2_IN_1_DT) {
-			motor_swap = left;
-			left = right;
-			right = motor_swap;
-		}
+		if (hid->product == THRUSTMASTER_DEVICE_ID_2_IN_1_DT)
+			swap(left, right);
 
 		dbg_hid("(left,right)=(%08x, %08x)\n", left, right);
 		ff_field->value[0] = left;
@@ -269,4 +265,5 @@ static struct hid_driver tm_driver = {
 };
 module_hid_driver(tm_driver);
 
+MODULE_DESCRIPTION("Force feedback support for various HID compliant devices by ThrustMaster");
 MODULE_LICENSE("GPL");

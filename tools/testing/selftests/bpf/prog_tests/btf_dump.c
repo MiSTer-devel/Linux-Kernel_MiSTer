@@ -13,30 +13,28 @@ static struct btf_dump_test_case {
 	const char *name;
 	const char *file;
 	bool known_ptr_sz;
-	struct btf_dump_opts opts;
 } btf_dump_test_cases[] = {
-	{"btf_dump: syntax", "btf_dump_test_case_syntax", true, {}},
-	{"btf_dump: ordering", "btf_dump_test_case_ordering", false, {}},
-	{"btf_dump: padding", "btf_dump_test_case_padding", true, {}},
-	{"btf_dump: packing", "btf_dump_test_case_packing", true, {}},
-	{"btf_dump: bitfields", "btf_dump_test_case_bitfields", true, {}},
-	{"btf_dump: multidim", "btf_dump_test_case_multidim", false, {}},
-	{"btf_dump: namespacing", "btf_dump_test_case_namespacing", false, {}},
+	{"btf_dump: syntax", "btf_dump_test_case_syntax", true},
+	{"btf_dump: ordering", "btf_dump_test_case_ordering", false},
+	{"btf_dump: padding", "btf_dump_test_case_padding", true},
+	{"btf_dump: packing", "btf_dump_test_case_packing", true},
+	{"btf_dump: bitfields", "btf_dump_test_case_bitfields", true},
+	{"btf_dump: multidim", "btf_dump_test_case_multidim", false},
+	{"btf_dump: namespacing", "btf_dump_test_case_namespacing", false},
 };
 
-static int btf_dump_all_types(const struct btf *btf,
-			      const struct btf_dump_opts *opts)
+static int btf_dump_all_types(const struct btf *btf, void *ctx)
 {
-	size_t type_cnt = btf__get_nr_types(btf);
+	size_t type_cnt = btf__type_cnt(btf);
 	struct btf_dump *d;
 	int err = 0, id;
 
-	d = btf_dump__new(btf, NULL, opts, btf_dump_printf);
+	d = btf_dump__new(btf, btf_dump_printf, ctx, NULL);
 	err = libbpf_get_error(d);
 	if (err)
 		return err;
 
-	for (id = 1; id <= type_cnt; id++) {
+	for (id = 1; id < type_cnt; id++) {
 		err = btf_dump__dump_type(d, id);
 		if (err)
 			goto done;
@@ -54,7 +52,7 @@ static int test_btf_dump_case(int n, struct btf_dump_test_case *t)
 	int err = 0, fd = -1;
 	FILE *f = NULL;
 
-	snprintf(test_file, sizeof(test_file), "%s.o", t->file);
+	snprintf(test_file, sizeof(test_file), "%s.bpf.o", t->file);
 
 	btf = btf__parse_elf(test_file, NULL);
 	if (!ASSERT_OK_PTR(btf, "btf_parse_elf")) {
@@ -65,7 +63,7 @@ static int test_btf_dump_case(int n, struct btf_dump_test_case *t)
 
 	/* tests with t->known_ptr_sz have no "long" or "unsigned long" type,
 	 * so it's impossible to determine correct pointer size; but if they
-	 * do, it should be 8 regardless of host architecture, becaues BPF
+	 * do, it should be 8 regardless of host architecture, because BPF
 	 * target is always 64-bit
 	 */
 	if (!t->known_ptr_sz) {
@@ -88,8 +86,7 @@ static int test_btf_dump_case(int n, struct btf_dump_test_case *t)
 		goto done;
 	}
 
-	t->opts.ctx = f;
-	err = btf_dump_all_types(btf, &t->opts);
+	err = btf_dump_all_types(btf, f);
 	fclose(f);
 	close(fd);
 	if (CHECK(err, "btf_dump", "failure during C dumping: %d\n", err)) {
@@ -129,59 +126,117 @@ done:
 	return err;
 }
 
-static char *dump_buf;
-static size_t dump_buf_sz;
-static FILE *dump_buf_file;
+struct test_ctx {
+	struct btf *btf;
+	struct btf_dump *d;
+	char *dump_buf;
+	size_t dump_buf_sz;
+	FILE *dump_buf_file;
+};
 
-void test_btf_dump_incremental(void)
+static void test_ctx__free(struct test_ctx *t)
 {
-	struct btf *btf = NULL;
-	struct btf_dump *d = NULL;
-	struct btf_dump_opts opts;
-	int id, err, i;
+	fclose(t->dump_buf_file);
+	free(t->dump_buf);
+	btf_dump__free(t->d);
+	btf__free(t->btf);
+}
 
-	dump_buf_file = open_memstream(&dump_buf, &dump_buf_sz);
-	if (!ASSERT_OK_PTR(dump_buf_file, "dump_memstream"))
+static int test_ctx__init(struct test_ctx *t)
+{
+	t->dump_buf_file = open_memstream(&t->dump_buf, &t->dump_buf_sz);
+	if (!ASSERT_OK_PTR(t->dump_buf_file, "dump_memstream"))
+		return -1;
+	t->btf = btf__new_empty();
+	if (!ASSERT_OK_PTR(t->btf, "new_empty"))
+		goto err_out;
+	t->d = btf_dump__new(t->btf, btf_dump_printf, t->dump_buf_file, NULL);
+	if (!ASSERT_OK(libbpf_get_error(t->d), "btf_dump__new"))
+		goto err_out;
+
+	return 0;
+
+err_out:
+	test_ctx__free(t);
+	return -1;
+}
+
+static void test_ctx__dump_and_compare(struct test_ctx *t,
+				       const char *expected_output,
+				       const char *message)
+{
+	int i, err;
+
+	for (i = 1; i < btf__type_cnt(t->btf); i++) {
+		err = btf_dump__dump_type(t->d, i);
+		ASSERT_OK(err, "dump_type_ok");
+	}
+
+	fflush(t->dump_buf_file);
+	t->dump_buf[t->dump_buf_sz] = 0; /* some libc implementations don't do this */
+
+	ASSERT_STREQ(t->dump_buf, expected_output, message);
+}
+
+static void test_btf_dump_incremental(void)
+{
+	struct test_ctx t = {};
+	struct btf *btf;
+	int id, err;
+
+	if (test_ctx__init(&t))
 		return;
-	btf = btf__new_empty();
-	if (!ASSERT_OK_PTR(btf, "new_empty"))
-		goto err_out;
-	opts.ctx = dump_buf_file;
-	d = btf_dump__new(btf, NULL, &opts, btf_dump_printf);
-	if (!ASSERT_OK(libbpf_get_error(d), "btf_dump__new"))
-		goto err_out;
+
+	btf = t.btf;
 
 	/* First, generate BTF corresponding to the following C code:
 	 *
-	 * enum { VAL = 1 };
+	 * enum x;
+	 *
+	 * enum x { X = 1 };
+	 *
+	 * enum { Y = 1 };
+	 *
+	 * struct s;
 	 *
 	 * struct s { int x; };
 	 *
 	 */
+	id = btf__add_enum(btf, "x", 4);
+	ASSERT_EQ(id, 1, "enum_declaration_id");
+	id = btf__add_enum(btf, "x", 4);
+	ASSERT_EQ(id, 2, "named_enum_id");
+	err = btf__add_enum_value(btf, "X", 1);
+	ASSERT_OK(err, "named_enum_val_ok");
+
 	id = btf__add_enum(btf, NULL, 4);
-	ASSERT_EQ(id, 1, "enum_id");
-	err = btf__add_enum_value(btf, "VAL", 1);
-	ASSERT_OK(err, "enum_val_ok");
+	ASSERT_EQ(id, 3, "anon_enum_id");
+	err = btf__add_enum_value(btf, "Y", 1);
+	ASSERT_OK(err, "anon_enum_val_ok");
 
 	id = btf__add_int(btf, "int", 4, BTF_INT_SIGNED);
-	ASSERT_EQ(id, 2, "int_id");
+	ASSERT_EQ(id, 4, "int_id");
+
+	id = btf__add_fwd(btf, "s", BTF_FWD_STRUCT);
+	ASSERT_EQ(id, 5, "fwd_id");
 
 	id = btf__add_struct(btf, "s", 4);
-	ASSERT_EQ(id, 3, "struct_id");
-	err = btf__add_field(btf, "x", 2, 0, 0);
+	ASSERT_EQ(id, 6, "struct_id");
+	err = btf__add_field(btf, "x", 4, 0, 0);
 	ASSERT_OK(err, "field_ok");
 
-	for (i = 1; i <= btf__get_nr_types(btf); i++) {
-		err = btf_dump__dump_type(d, i);
-		ASSERT_OK(err, "dump_type_ok");
-	}
-
-	fflush(dump_buf_file);
-	dump_buf[dump_buf_sz] = 0; /* some libc implementations don't do this */
-	ASSERT_STREQ(dump_buf,
-"enum {\n"
-"	VAL = 1,\n"
+	test_ctx__dump_and_compare(&t,
+"enum x;\n"
+"\n"
+"enum x {\n"
+"	X = 1,\n"
 "};\n"
+"\n"
+"enum {\n"
+"	Y = 1,\n"
+"};\n"
+"\n"
+"struct s;\n"
 "\n"
 "struct s {\n"
 "	int x;\n"
@@ -201,35 +256,73 @@ void test_btf_dump_incremental(void)
 	 * enum values don't conflict;
 	 *
 	 */
-	fseek(dump_buf_file, 0, SEEK_SET);
+	fseek(t.dump_buf_file, 0, SEEK_SET);
 
 	id = btf__add_struct(btf, "s", 4);
-	ASSERT_EQ(id, 4, "struct_id");
-	err = btf__add_field(btf, "x", 1, 0, 0);
+	ASSERT_EQ(id, 7, "struct_id");
+	err = btf__add_field(btf, "x", 2, 0, 0);
 	ASSERT_OK(err, "field_ok");
-	err = btf__add_field(btf, "s", 3, 32, 0);
+	err = btf__add_field(btf, "y", 3, 32, 0);
+	ASSERT_OK(err, "field_ok");
+	err = btf__add_field(btf, "s", 6, 64, 0);
 	ASSERT_OK(err, "field_ok");
 
-	for (i = 1; i <= btf__get_nr_types(btf); i++) {
-		err = btf_dump__dump_type(d, i);
-		ASSERT_OK(err, "dump_type_ok");
-	}
-
-	fflush(dump_buf_file);
-	dump_buf[dump_buf_sz] = 0; /* some libc implementations don't do this */
-	ASSERT_STREQ(dump_buf,
+	test_ctx__dump_and_compare(&t,
 "struct s___2 {\n"
+"	enum x x;\n"
 "	enum {\n"
-"		VAL___2 = 1,\n"
-"	} x;\n"
+"		Y___2 = 1,\n"
+"	} y;\n"
 "	struct s s;\n"
 "};\n\n" , "c_dump1");
 
-err_out:
-	fclose(dump_buf_file);
-	free(dump_buf);
-	btf_dump__free(d);
-	btf__free(btf);
+	test_ctx__free(&t);
+}
+
+static void test_btf_dump_type_tags(void)
+{
+	struct test_ctx t = {};
+	struct btf *btf;
+	int id, err;
+
+	if (test_ctx__init(&t))
+		return;
+
+	btf = t.btf;
+
+	/* Generate BTF corresponding to the following C code:
+	 *
+	 * struct s {
+	 *   void __attribute__((btf_type_tag(\"void_tag\"))) *p1;
+	 *   void __attribute__((void_attr)) *p2;
+	 * };
+	 *
+	 */
+
+	id = btf__add_type_tag(btf, "void_tag", 0);
+	ASSERT_EQ(id, 1, "type_tag_id");
+	id = btf__add_ptr(btf, id);
+	ASSERT_EQ(id, 2, "void_ptr_id1");
+
+	id = btf__add_type_attr(btf, "void_attr", 0);
+	ASSERT_EQ(id, 3, "type_attr_id");
+	id = btf__add_ptr(btf, id);
+	ASSERT_EQ(id, 4, "void_ptr_id2");
+
+	id = btf__add_struct(btf, "s", 8);
+	ASSERT_EQ(id, 5, "struct_id");
+	err = btf__add_field(btf, "p1", 2, 0, 0);
+	ASSERT_OK(err, "field_ok1");
+	err = btf__add_field(btf, "p2", 4, 0, 0);
+	ASSERT_OK(err, "field_ok2");
+
+	test_ctx__dump_and_compare(&t,
+"struct s {\n"
+"	void __attribute__((btf_type_tag(\"void_tag\"))) *p1;\n"
+"	void __attribute__((void_attr)) *p2;\n"
+"};\n\n", "dump_and_compare");
+
+	test_ctx__free(&t);
 }
 
 #define STRSIZE				4096
@@ -328,7 +421,7 @@ static void test_btf_dump_int_data(struct btf *btf, struct btf_dump *d,
 				   char *str)
 {
 #ifdef __SIZEOF_INT128__
-	__int128 i = 0xffffffffffffffff;
+	unsigned __int128 i = 0xffffffffffffffff;
 
 	/* this dance is required because we cannot directly initialize
 	 * a 128-bit value to anything larger than a 64-bit value.
@@ -358,12 +451,27 @@ static void test_btf_dump_int_data(struct btf *btf, struct btf_dump *d,
 	TEST_BTF_DUMP_DATA_OVER(btf, d, NULL, str, int, sizeof(int)-1, "", 1);
 
 #ifdef __SIZEOF_INT128__
-	TEST_BTF_DUMP_DATA(btf, d, NULL, str, __int128, BTF_F_COMPACT,
-			   "(__int128)0xffffffffffffffff",
-			   0xffffffffffffffff);
-	ASSERT_OK(btf_dump_data(btf, d, "__int128", NULL, 0, &i, 16, str,
-				"(__int128)0xfffffffffffffffffffffffffffffffe"),
-		  "dump __int128");
+	/* gcc encode unsigned __int128 type with name "__int128 unsigned" in dwarf,
+	 * and clang encode it with name "unsigned __int128" in dwarf.
+	 * Do an availability test for either variant before doing actual test.
+	 */
+	if (btf__find_by_name(btf, "unsigned __int128") > 0) {
+		TEST_BTF_DUMP_DATA(btf, d, NULL, str, unsigned __int128, BTF_F_COMPACT,
+				   "(unsigned __int128)0xffffffffffffffff",
+				   0xffffffffffffffff);
+		ASSERT_OK(btf_dump_data(btf, d, "unsigned __int128", NULL, 0, &i, 16, str,
+					"(unsigned __int128)0xfffffffffffffffffffffffffffffffe"),
+			  "dump unsigned __int128");
+	} else if (btf__find_by_name(btf, "__int128 unsigned") > 0) {
+		TEST_BTF_DUMP_DATA(btf, d, NULL, str, __int128 unsigned, BTF_F_COMPACT,
+				   "(__int128 unsigned)0xffffffffffffffff",
+				   0xffffffffffffffff);
+		ASSERT_OK(btf_dump_data(btf, d, "__int128 unsigned", NULL, 0, &i, 16, str,
+					"(__int128 unsigned)0xfffffffffffffffffffffffffffffffe"),
+			  "dump unsigned __int128");
+	} else {
+		ASSERT_TRUE(false, "unsigned_int128_not_found");
+	}
 #endif
 }
 
@@ -615,7 +723,7 @@ static void test_btf_dump_struct_data(struct btf *btf, struct btf_dump *d,
 		cmpstr =
 "(struct file_operations){\n"
 "	.owner = (struct module *)0xffffffffffffffff,\n"
-"	.llseek = (loff_t (*)(struct file *, loff_t, int))0xffffffffffffffff,";
+"	.fop_flags = (fop_flags_t)4294967295,";
 
 		ASSERT_STRNEQ(str, cmpstr, strlen(cmpstr), "file_operations");
 	}
@@ -726,8 +834,8 @@ static void test_btf_dump_struct_data(struct btf *btf, struct btf_dump *d,
 
 	/* union with nested struct */
 	TEST_BTF_DUMP_DATA(btf, d, "union", str, union bpf_iter_link_info, BTF_F_COMPACT,
-			   "(union bpf_iter_link_info){.map = (struct){.map_fd = (__u32)1,},}",
-			   { .map = { .map_fd = 1 }});
+			   "(union bpf_iter_link_info){.map = (struct){.map_fd = (__u32)1,},.cgroup = (struct){.order = (enum bpf_cgroup_iter_order)BPF_CGROUP_ITER_SELF_ONLY,.cgroup_fd = (__u32)1,},.task = (struct){.tid = (__u32)1,.pid = (__u32)1,},}",
+			   { .cgroup = { .order = 1, .cgroup_fd = 1, }});
 
 	/* struct skb with nested structs/unions; because type output is so
 	 * complex, we don't do a string comparison, just verify we return
@@ -746,27 +854,145 @@ static void test_btf_dump_struct_data(struct btf *btf, struct btf_dump *d,
 	/* overflow bpf_sock_ops struct with final element nonzero/zero.
 	 * Regardless of the value of the final field, we don't have all the
 	 * data we need to display it, so we should trigger an overflow.
-	 * In other words oveflow checking should trump "is field zero?"
+	 * In other words overflow checking should trump "is field zero?"
 	 * checks because if we've overflowed, it shouldn't matter what the
 	 * field is - we can't trust its value so shouldn't display it.
 	 */
 	TEST_BTF_DUMP_DATA_OVER(btf, d, "struct", str, struct bpf_sock_ops,
 				sizeof(struct bpf_sock_ops) - 1,
 				"(struct bpf_sock_ops){\n\t.op = (__u32)1,\n",
-				{ .op = 1, .skb_tcp_flags = 2});
+				{ .op = 1, .skb_hwtstamp = 2});
 	TEST_BTF_DUMP_DATA_OVER(btf, d, "struct", str, struct bpf_sock_ops,
 				sizeof(struct bpf_sock_ops) - 1,
 				"(struct bpf_sock_ops){\n\t.op = (__u32)1,\n",
-				{ .op = 1, .skb_tcp_flags = 0});
+				{ .op = 1, .skb_hwtstamp = 0});
 }
 
 static void test_btf_dump_var_data(struct btf *btf, struct btf_dump *d,
 				   char *str)
 {
+#if 0
 	TEST_BTF_DUMP_VAR(btf, d, NULL, str, "cpu_number", int, BTF_F_COMPACT,
 			  "int cpu_number = (int)100", 100);
-	TEST_BTF_DUMP_VAR(btf, d, NULL, str, "cpu_profile_flip", int, BTF_F_COMPACT,
-			  "static int cpu_profile_flip = (int)2", 2);
+#endif
+	TEST_BTF_DUMP_VAR(btf, d, NULL, str, "bpf_cgrp_storage_busy", int, BTF_F_COMPACT,
+			  "static int bpf_cgrp_storage_busy = (int)2", 2);
+}
+
+struct btf_dump_string_ctx {
+	struct btf *btf;
+	struct btf_dump *d;
+	char *str;
+	struct btf_dump_type_data_opts *opts;
+	int array_id;
+};
+
+static int btf_dump_one_string(struct btf_dump_string_ctx *ctx,
+			       char *ptr, size_t ptr_sz,
+			       const char *expected_val)
+{
+	size_t type_sz;
+	int ret;
+
+	ctx->str[0] = '\0';
+	type_sz = btf__resolve_size(ctx->btf, ctx->array_id);
+	ret = btf_dump__dump_type_data(ctx->d, ctx->array_id, ptr, ptr_sz, ctx->opts);
+	if (type_sz <= ptr_sz) {
+		if (!ASSERT_EQ(ret, type_sz, "failed/unexpected type_sz"))
+			return -EINVAL;
+	}
+	if (!ASSERT_STREQ(ctx->str, expected_val, "ensure expected/actual match"))
+		return -EFAULT;
+	return 0;
+}
+
+static void btf_dump_strings(struct btf_dump_string_ctx *ctx)
+{
+	struct btf_dump_type_data_opts *opts = ctx->opts;
+
+	opts->emit_strings = true;
+
+	opts->compact = true;
+	opts->emit_zeroes = false;
+
+	opts->skip_names = false;
+	btf_dump_one_string(ctx, "foo", 4, "(char[4])\"foo\"");
+
+	opts->skip_names = true;
+	btf_dump_one_string(ctx, "foo", 4, "\"foo\"");
+
+	/* This should have no effect. */
+	opts->emit_zeroes = false;
+	btf_dump_one_string(ctx, "foo", 4, "\"foo\"");
+
+	/* This should have no effect. */
+	opts->compact = false;
+	btf_dump_one_string(ctx, "foo", 4, "\"foo\"");
+
+	/* Non-printable characters come out as hex. */
+	btf_dump_one_string(ctx, "fo\xff", 4, "\"fo\\xff\"");
+	btf_dump_one_string(ctx, "fo\x7", 4, "\"fo\\x07\"");
+
+	/*
+	 * Strings that are too long for the specified type ("char[4]")
+	 * should fall back to the current behavior.
+	 */
+	opts->compact = true;
+	btf_dump_one_string(ctx, "abcde", 6, "['a','b','c','d',]");
+
+	/*
+	 * Strings that are too short for the specified type ("char[4]")
+	 * should work normally.
+	 */
+	btf_dump_one_string(ctx, "ab", 3, "\"ab\"");
+
+	/* Non-NUL-terminated arrays don't get printed as strings. */
+	char food[4] = { 'f', 'o', 'o', 'd' };
+	char bye[3] = { 'b', 'y', 'e' };
+
+	btf_dump_one_string(ctx, food, 4, "['f','o','o','d',]");
+	btf_dump_one_string(ctx, bye, 3, "['b','y','e',]");
+
+	/* The embedded NUL should terminate the string. */
+	char embed[4] = { 'f', 'o', '\0', 'd' };
+
+	btf_dump_one_string(ctx, embed, 4, "\"fo\"");
+}
+
+static void test_btf_dump_string_data(void)
+{
+	struct test_ctx t = {};
+	char str[STRSIZE];
+	struct btf_dump *d;
+	DECLARE_LIBBPF_OPTS(btf_dump_type_data_opts, opts);
+	struct btf_dump_string_ctx ctx;
+	int char_id, int_id, array_id;
+
+	if (test_ctx__init(&t))
+		return;
+
+	d = btf_dump__new(t.btf, btf_dump_snprintf, str, NULL);
+	if (!ASSERT_OK_PTR(d, "could not create BTF dump"))
+		return;
+
+	/* Generate BTF for a four-element char array. */
+	char_id = btf__add_int(t.btf, "char", 1, BTF_INT_CHAR);
+	ASSERT_EQ(char_id, 1, "char_id");
+	int_id = btf__add_int(t.btf, "int", 4, BTF_INT_SIGNED);
+	ASSERT_EQ(int_id, 2, "int_id");
+	array_id = btf__add_array(t.btf, int_id, char_id, 4);
+	ASSERT_EQ(array_id, 3, "array_id");
+
+	ctx.btf = t.btf;
+	ctx.d = d;
+	ctx.str = str;
+	ctx.opts = &opts;
+	ctx.array_id = array_id;
+
+	btf_dump_strings(&ctx);
+
+	btf_dump__free(d);
+	test_ctx__free(&t);
 }
 
 static void test_btf_datasec(struct btf *btf, struct btf_dump *d, char *str,
@@ -797,26 +1023,28 @@ static void test_btf_datasec(struct btf *btf, struct btf_dump *d, char *str,
 
 static void test_btf_dump_datasec_data(char *str)
 {
-	struct btf *btf = btf__parse("xdping_kern.o", NULL);
-	struct btf_dump_opts opts = { .ctx = str };
+	struct btf *btf;
 	char license[4] = "GPL";
 	struct btf_dump *d;
 
-	if (!ASSERT_OK_PTR(btf, "xdping_kern.o BTF not found"))
+	btf = btf__parse("xdping_kern.bpf.o", NULL);
+	if (!ASSERT_OK_PTR(btf, "xdping_kern.bpf.o BTF not found"))
 		return;
 
-	d = btf_dump__new(btf, NULL, &opts, btf_dump_snprintf);
+	d = btf_dump__new(btf, btf_dump_snprintf, str, NULL);
 	if (!ASSERT_OK_PTR(d, "could not create BTF dump"))
-		return;
+		goto out;
 
 	test_btf_datasec(btf, d, str, "license",
 			 "SEC(\"license\") char[4] _license = (char[4])['G','P','L',];",
 			 license, sizeof(license));
+out:
+	btf_dump__free(d);
+	btf__free(btf);
 }
 
 void test_btf_dump() {
 	char str[STRSIZE];
-	struct btf_dump_opts opts = { .ctx = str };
 	struct btf_dump *d;
 	struct btf *btf;
 	int i;
@@ -832,11 +1060,14 @@ void test_btf_dump() {
 	if (test__start_subtest("btf_dump: incremental"))
 		test_btf_dump_incremental();
 
+	if (test__start_subtest("btf_dump: type_tags"))
+		test_btf_dump_type_tags();
+
 	btf = libbpf_find_kernel_btf();
 	if (!ASSERT_OK_PTR(btf, "no kernel BTF found"))
 		return;
 
-	d = btf_dump__new(btf, NULL, &opts, btf_dump_snprintf);
+	d = btf_dump__new(btf, btf_dump_snprintf, str, NULL);
 	if (!ASSERT_OK_PTR(d, "could not create BTF dump"))
 		return;
 
@@ -855,6 +1086,8 @@ void test_btf_dump() {
 		test_btf_dump_struct_data(btf, d, str);
 	if (test__start_subtest("btf_dump: var_data"))
 		test_btf_dump_var_data(btf, d, str);
+	if (test__start_subtest("btf_dump: string_data"))
+		test_btf_dump_string_data();
 	btf_dump__free(d);
 	btf__free(btf);
 

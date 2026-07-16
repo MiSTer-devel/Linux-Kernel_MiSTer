@@ -8,10 +8,20 @@
 #ifdef CONFIG_ARCH_HAS_SET_MEMORY
 #include <asm/set_memory.h>
 #else
-static inline int set_memory_ro(unsigned long addr, int numpages) { return 0; }
-static inline int set_memory_rw(unsigned long addr, int numpages) { return 0; }
-static inline int set_memory_x(unsigned long addr,  int numpages) { return 0; }
-static inline int set_memory_nx(unsigned long addr, int numpages) { return 0; }
+static inline int __must_check set_memory_ro(unsigned long addr, int numpages) { return 0; }
+static inline int __must_check set_memory_rw(unsigned long addr, int numpages) { return 0; }
+static inline int __must_check set_memory_x(unsigned long addr,  int numpages) { return 0; }
+static inline int __must_check set_memory_nx(unsigned long addr, int numpages) { return 0; }
+#endif
+
+#ifndef set_memory_rox
+static inline int set_memory_rox(unsigned long addr, int numpages)
+{
+	int ret = set_memory_ro(addr, numpages);
+	if (ret)
+		return ret;
+	return set_memory_x(addr, numpages);
+}
 #endif
 
 #ifndef CONFIG_ARCH_HAS_SET_DIRECT_MAP
@@ -20,6 +30,12 @@ static inline int set_direct_map_invalid_noflush(struct page *page)
 	return 0;
 }
 static inline int set_direct_map_default_noflush(struct page *page)
+{
+	return 0;
+}
+
+static inline int set_direct_map_valid_noflush(struct page *page,
+					       unsigned nr, bool valid)
 {
 	return 0;
 }
@@ -42,14 +58,14 @@ static inline bool can_set_direct_map(void)
 #endif
 #endif /* CONFIG_ARCH_HAS_SET_DIRECT_MAP */
 
-#ifndef set_mce_nospec
-static inline int set_mce_nospec(unsigned long pfn, bool unmap)
+#ifdef CONFIG_X86_64
+int set_mce_nospec(unsigned long pfn);
+int clear_mce_nospec(unsigned long pfn);
+#else
+static inline int set_mce_nospec(unsigned long pfn)
 {
 	return 0;
 }
-#endif
-
-#ifndef clear_mce_nospec
 static inline int clear_mce_nospec(unsigned long pfn)
 {
 	return 0;

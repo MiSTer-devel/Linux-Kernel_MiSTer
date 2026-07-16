@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #ifndef _IA_CSS_DEBUG_H_
@@ -20,6 +11,7 @@
 
 #include <type_support.h>
 #include <linux/stdarg.h>
+#include <linux/bits.h>
 #include "ia_css_types.h"
 #include "ia_css_binary.h"
 #include "ia_css_frame_public.h"
@@ -53,21 +45,21 @@ extern int dbg_level;
  *  Values can be combined to dump a combination of sets.
  */
 enum ia_css_debug_enable_param_dump {
-	IA_CSS_DEBUG_DUMP_FPN = 1 << 0, /** FPN table */
-	IA_CSS_DEBUG_DUMP_OB = 1 << 1,  /** OB table */
-	IA_CSS_DEBUG_DUMP_SC = 1 << 2,  /** Shading table */
-	IA_CSS_DEBUG_DUMP_WB = 1 << 3,  /** White balance */
-	IA_CSS_DEBUG_DUMP_DP = 1 << 4,  /** Defect Pixel */
-	IA_CSS_DEBUG_DUMP_BNR = 1 << 5,  /** Bayer Noise Reductions */
-	IA_CSS_DEBUG_DUMP_S3A = 1 << 6,  /** 3A Statistics */
-	IA_CSS_DEBUG_DUMP_DE = 1 << 7,  /** De Mosaicing */
-	IA_CSS_DEBUG_DUMP_YNR = 1 << 8,  /** Luma Noise Reduction */
-	IA_CSS_DEBUG_DUMP_CSC = 1 << 9,  /** Color Space Conversion */
-	IA_CSS_DEBUG_DUMP_GC = 1 << 10,  /** Gamma Correction */
-	IA_CSS_DEBUG_DUMP_TNR = 1 << 11,  /** Temporal Noise Reduction */
-	IA_CSS_DEBUG_DUMP_ANR = 1 << 12,  /** Advanced Noise Reduction */
-	IA_CSS_DEBUG_DUMP_CE = 1 << 13,  /** Chroma Enhancement */
-	IA_CSS_DEBUG_DUMP_ALL = 1 << 14  /** Dump all device parameters */
+	IA_CSS_DEBUG_DUMP_FPN = BIT(0),  /** FPN table */
+	IA_CSS_DEBUG_DUMP_OB  = BIT(1),  /** OB table */
+	IA_CSS_DEBUG_DUMP_SC  = BIT(2),  /** Shading table */
+	IA_CSS_DEBUG_DUMP_WB  = BIT(3),  /** White balance */
+	IA_CSS_DEBUG_DUMP_DP  = BIT(4),  /** Defect Pixel */
+	IA_CSS_DEBUG_DUMP_BNR = BIT(5),  /** Bayer Noise Reductions */
+	IA_CSS_DEBUG_DUMP_S3A = BIT(6),  /** 3A Statistics */
+	IA_CSS_DEBUG_DUMP_DE  = BIT(7),  /** De Mosaicing */
+	IA_CSS_DEBUG_DUMP_YNR = BIT(8),  /** Luma Noise Reduction */
+	IA_CSS_DEBUG_DUMP_CSC = BIT(9),  /** Color Space Conversion */
+	IA_CSS_DEBUG_DUMP_GC  = BIT(10), /** Gamma Correction */
+	IA_CSS_DEBUG_DUMP_TNR = BIT(11), /** Temporal Noise Reduction */
+	IA_CSS_DEBUG_DUMP_ANR = BIT(12), /** Advanced Noise Reduction */
+	IA_CSS_DEBUG_DUMP_CE  = BIT(13), /** Chroma Enhancement */
+	IA_CSS_DEBUG_DUMP_ALL = BIT(14), /** Dump all device parameters */
 };
 
 #define IA_CSS_ERROR(fmt, ...) \
@@ -140,12 +132,6 @@ static inline void __printf(2, 0) ia_css_debug_vdtrace(unsigned int level,
 __printf(2, 3) void ia_css_debug_dtrace(unsigned int level,
 					const char *fmt, ...);
 
-/*! @brief Dump sp thread's stack contents
- * SP thread's stack contents are set to 0xcafecafe. This function dumps the
- * stack to inspect if the stack's boundaries are compromised.
- * @return	None
- */
-void ia_css_debug_dump_sp_stack_info(void);
 
 /*! @brief Function to set the global dtrace verbosity level.
  * @param[in]	trace_level	Maximum level of the messages to be traced.
@@ -159,18 +145,6 @@ void ia_css_debug_set_dtrace_level(
  */
 unsigned int ia_css_debug_get_dtrace_level(void);
 
-/*! @brief Dump isp hardware state.
- * Dumps the isp hardware state to tracing output.
- * @return	None
- */
-void ia_css_debug_dump_isp_state(void);
-
-/*! @brief Dump sp hardware state.
- * Dumps the sp hardware state to tracing output.
- * @return	None
- */
-void ia_css_debug_dump_sp_state(void);
-
 /* ISP2401 */
 /*! @brief Dump GAC hardware state.
  * Dumps the GAC ACB hardware registers. may be useful for
@@ -179,24 +153,11 @@ void ia_css_debug_dump_sp_state(void);
  */
 void ia_css_debug_dump_gac_state(void);
 
-/*! @brief Dump dma controller state.
- * Dumps the dma controller state to tracing output.
- * @return	None
- */
-void ia_css_debug_dump_dma_state(void);
-
 /*! @brief Dump internal sp software state.
  * Dumps the sp software state to tracing output.
  * @return	None
  */
 void ia_css_debug_dump_sp_sw_debug_info(void);
-
-/*! @brief Dump all related hardware state to the trace output
- * @param[in]  context	String to identify context in output.
- * @return	None
- */
-void ia_css_debug_dump_debug_info(
-    const char	*context);
 
 #if SP_DEBUG != SP_DEBUG_NONE
 void ia_css_debug_print_sp_debug_state(
@@ -211,24 +172,6 @@ void ia_css_debug_binary_print(
     const struct ia_css_binary *bi);
 
 void ia_css_debug_sp_dump_mipi_fifo_high_water(void);
-
-/*! @brief Dump isp gdc fifo state to the trace output
- * Dumps the isp gdc fifo state to tracing output.
- * @return	None
- */
-void ia_css_debug_dump_isp_gdc_fifo_state(void);
-
-/*! @brief Dump dma isp fifo state
- * Dumps the dma isp fifo state to tracing output.
- * @return	None
- */
-void ia_css_debug_dump_dma_isp_fifo_state(void);
-
-/*! @brief Dump dma sp fifo state
- * Dumps the dma sp fifo state to tracing output.
- * @return	None
- */
-void ia_css_debug_dump_dma_sp_fifo_state(void);
 
 /*! \brief Dump pif A isp fifo state
  * Dumps the primary input formatter state to tracing output.
@@ -248,29 +191,11 @@ void ia_css_debug_dump_pif_b_isp_fifo_state(void);
  */
 void ia_css_debug_dump_str2mem_sp_fifo_state(void);
 
-/*! @brief Dump isp sp fifo state
- * Dumps the isp sp fifo state to tracing output.
- * @return	None
- */
-void ia_css_debug_dump_isp_sp_fifo_state(void);
-
 /*! @brief Dump all fifo state info to the output
  * Dumps all fifo state to tracing output.
  * @return	None
  */
 void ia_css_debug_dump_all_fifo_state(void);
-
-/*! @brief Dump the rx state to the output
- * Dumps the rx state to tracing output.
- * @return	None
- */
-void ia_css_debug_dump_rx_state(void);
-
-/*! @brief Dump the input system state to the output
- * Dumps the input system state to tracing output.
- * @return	None
- */
-void ia_css_debug_dump_isys_state(void);
 
 /*! @brief Dump the frame info to the trace output
  * Dumps the frame info to tracing output.
@@ -304,18 +229,6 @@ void ia_css_debug_wake_up_sp(void);
  */
 void ia_css_debug_dump_isp_params(struct ia_css_stream *stream,
 				  unsigned int enable);
-
-/*! @brief Function to dump some sp performance counters.
- * Dump sp performance counters, currently input system errors.
- * @return	None
- */
-void ia_css_debug_dump_perf_counters(void);
-
-#ifdef HAS_WATCHDOG_SP_THREAD_DEBUG
-void sh_css_dump_thread_wait_info(void);
-void sh_css_dump_pipe_stage_info(void);
-void sh_css_dump_pipe_stripe_info(void);
-#endif
 
 void ia_css_debug_dump_isp_binary(void);
 
@@ -398,12 +311,6 @@ void ia_css_debug_dump_metadata_config(
 void ia_css_debug_dump_stream_config(
     const struct ia_css_stream_config *config,
     int num_pipes);
-
-/*! @brief Dump the state of the SP tagger
- * Dumps the internal state of the SP tagger
- * @return	None
- */
-void ia_css_debug_tagger_state(void);
 
 /**
  * @brief Initialize the debug mode.

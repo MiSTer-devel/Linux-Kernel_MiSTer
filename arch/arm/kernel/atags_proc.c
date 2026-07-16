@@ -7,13 +7,13 @@
 
 struct buffer {
 	size_t size;
-	char data[];
+	char data[] __counted_by(size);
 };
 
 static ssize_t atags_read(struct file *file, char __user *buf,
 			  size_t count, loff_t *ppos)
 {
-	struct buffer *b = PDE_DATA(file_inode(file));
+	struct buffer *b = pde_data(file_inode(file));
 	return simple_read_from_buffer(buf, count, ppos, b->data, b->size);
 }
 
@@ -54,7 +54,7 @@ static int __init init_atags_procfs(void)
 
 	WARN_ON(tag->hdr.tag != ATAG_NONE);
 
-	b = kmalloc(sizeof(*b) + size, GFP_KERNEL);
+	b = kmalloc(struct_size(b, data, size), GFP_KERNEL);
 	if (!b)
 		goto nomem;
 

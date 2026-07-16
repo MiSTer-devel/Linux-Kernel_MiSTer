@@ -5,6 +5,7 @@
  *  Copyright (C) 1997-1999 Russell King
  */
 #include <linux/buffer_head.h>
+#include <linux/mpage.h>
 #include <linux/writeback.h>
 #include "adfs.h"
 
@@ -33,14 +34,15 @@ abort_toobig:
 	return 0;
 }
 
-static int adfs_writepage(struct page *page, struct writeback_control *wbc)
+static int adfs_writepages(struct address_space *mapping,
+		struct writeback_control *wbc)
 {
-	return block_write_full_page(page, adfs_get_block, wbc);
+	return mpage_writepages(mapping, wbc, adfs_get_block);
 }
 
-static int adfs_readpage(struct file *file, struct page *page)
+static int adfs_read_folio(struct file *file, struct folio *folio)
 {
-	return block_read_full_page(page, adfs_get_block);
+	return block_read_full_folio(folio, adfs_get_block);
 }
 
 static void adfs_write_failed(struct address_space *mapping, loff_t to)
@@ -51,14 +53,14 @@ static void adfs_write_failed(struct address_space *mapping, loff_t to)
 		truncate_pagecache(inode, inode->i_size);
 }
 
-static int adfs_write_begin(struct file *file, struct address_space *mapping,
-			loff_t pos, unsigned len, unsigned flags,
-			struct page **pagep, void **fsdata)
+static int adfs_write_begin(const struct kiocb *iocb,
+			    struct address_space *mapping,
+			    loff_t pos, unsigned len,
+			    struct folio **foliop, void **fsdata)
 {
 	int ret;
 
-	*pagep = NULL;
-	ret = cont_write_begin(file, mapping, pos, len, flags, pagep, fsdata,
+	ret = cont_write_begin(iocb, mapping, pos, len, foliop, fsdata,
 				adfs_get_block,
 				&ADFS_I(mapping->host)->mmu_private);
 	if (unlikely(ret))
@@ -73,12 +75,14 @@ static sector_t _adfs_bmap(struct address_space *mapping, sector_t block)
 }
 
 static const struct address_space_operations adfs_aops = {
-	.set_page_dirty	= __set_page_dirty_buffers,
-	.readpage	= adfs_readpage,
-	.writepage	= adfs_writepage,
+	.dirty_folio	= block_dirty_folio,
+	.invalidate_folio = block_invalidate_folio,
+	.read_folio	= adfs_read_folio,
+	.writepages	= adfs_writepages,
 	.write_begin	= adfs_write_begin,
 	.write_end	= generic_write_end,
-	.bmap		= _adfs_bmap
+	.migrate_folio	= buffer_migrate_folio,
+	.bmap		= _adfs_bmap,
 };
 
 /*
@@ -241,6 +245,7 @@ struct inode *
 adfs_iget(struct super_block *sb, struct object_info *obj)
 {
 	struct inode *inode;
+	struct timespec64 ts;
 
 	inode = new_inode(sb);
 	if (!inode)
@@ -267,9 +272,10 @@ adfs_iget(struct super_block *sb, struct object_info *obj)
 	ADFS_I(inode)->attr      = obj->attr;
 
 	inode->i_mode	 = adfs_atts2mode(sb, inode);
-	adfs_adfs2unix_time(&inode->i_mtime, inode);
-	inode->i_atime = inode->i_mtime;
-	inode->i_ctime = inode->i_mtime;
+	adfs_adfs2unix_time(&ts, inode);
+	inode_set_atime_to_ts(inode, ts);
+	inode_set_mtime_to_ts(inode, ts);
+	inode_set_ctime_to_ts(inode, ts);
 
 	if (S_ISDIR(inode->i_mode)) {
 		inode->i_op	= &adfs_dir_inode_operations;
@@ -293,7 +299,7 @@ out:
  * later.
  */
 int
-adfs_notify_change(struct user_namespace *mnt_userns, struct dentry *dentry,
+adfs_notify_change(struct mnt_idmap *idmap, struct dentry *dentry,
 		   struct iattr *attr)
 {
 	struct inode *inode = d_inode(dentry);
@@ -301,7 +307,7 @@ adfs_notify_change(struct user_namespace *mnt_userns, struct dentry *dentry,
 	unsigned int ia_valid = attr->ia_valid;
 	int error;
 	
-	error = setattr_prepare(&init_user_ns, dentry, attr);
+	error = setattr_prepare(&nop_mnt_idmap, dentry, attr);
 
 	/*
 	 * we can't change the UID or GID of any file -
@@ -320,7 +326,8 @@ adfs_notify_change(struct user_namespace *mnt_userns, struct dentry *dentry,
 
 	if (ia_valid & ATTR_MTIME && adfs_inode_is_stamped(inode)) {
 		adfs_unix2adfs_time(inode, &attr->ia_mtime);
-		adfs_adfs2unix_time(&inode->i_mtime, inode);
+		adfs_adfs2unix_time(&attr->ia_mtime, inode);
+		inode_set_mtime_to_ts(inode, attr->ia_mtime);
 	}
 
 	/*
@@ -328,9 +335,9 @@ adfs_notify_change(struct user_namespace *mnt_userns, struct dentry *dentry,
 	 * have the ability to represent them in our filesystem?
 	 */
 	if (ia_valid & ATTR_ATIME)
-		inode->i_atime = attr->ia_atime;
+		inode_set_atime_to_ts(inode, attr->ia_atime);
 	if (ia_valid & ATTR_CTIME)
-		inode->i_ctime = attr->ia_ctime;
+		inode_set_ctime_to_ts(inode, attr->ia_ctime);
 	if (ia_valid & ATTR_MODE) {
 		ADFS_I(inode)->attr = adfs_mode2atts(sb, inode, attr->ia_mode);
 		inode->i_mode = adfs_atts2mode(sb, inode);
@@ -355,7 +362,6 @@ int adfs_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
 	struct super_block *sb = inode->i_sb;
 	struct object_info obj;
-	int ret;
 
 	obj.indaddr	= ADFS_I(inode)->indaddr;
 	obj.name_len	= 0;
@@ -365,6 +371,5 @@ int adfs_write_inode(struct inode *inode, struct writeback_control *wbc)
 	obj.attr	= ADFS_I(inode)->attr;
 	obj.size	= inode->i_size;
 
-	ret = adfs_dir_update(sb, &obj, wbc->sync_mode == WB_SYNC_ALL);
-	return ret;
+	return adfs_dir_update(sb, &obj, wbc->sync_mode == WB_SYNC_ALL);
 }

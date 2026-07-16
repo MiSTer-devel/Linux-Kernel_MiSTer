@@ -128,7 +128,7 @@ void local_flush_tlb_mm(struct mm_struct *mm)
 
 	/* Was seeing bugs with the mm struct passed to us. Scrapped most of
 	   this function. */
-	/* Several architctures do this */
+	/* Several architectures do this */
 	local_flush_tlb_all();
 }
 
@@ -181,13 +181,4 @@ void destroy_context(struct mm_struct *mm)
 {
 	flush_tlb_mm(mm);
 
-}
-
-/* called once during VM initialization, from init.c */
-
-void __init tlb_init(void)
-{
-	/* Do nothing... */
-	/* invalidate the entire TLB */
-	/* flush_tlb_all(); */
 }

@@ -83,7 +83,7 @@ static int disconnect(const struct path *path, char *buf, char **name,
  *
  * Returns: %0 else error code if path lookup fails
  *          When no error the path name is returned in @name which points to
- *          to a position in @buf
+ *          a position in @buf
  */
 static int d_namespace_path(const struct path *path, char *buf, char **name,
 			    int flags, const char *disconnected)
@@ -130,7 +130,7 @@ static int d_namespace_path(const struct path *path, char *buf, char **name,
 	/* handle error conditions - and still allow a partial path to
 	 * be returned.
 	 */
-	if (!res || IS_ERR(res)) {
+	if (IS_ERR_OR_NULL(res)) {
 		if (PTR_ERR(res) == -ENAMETOOLONG) {
 			error = -ENAMETOOLONG;
 			*name = buf;

@@ -22,10 +22,18 @@ static const struct of_device_id pcm186x_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, pcm186x_of_match);
 
-static int pcm186x_i2c_probe(struct i2c_client *i2c,
-			     const struct i2c_device_id *id)
+static const struct i2c_device_id pcm186x_i2c_id[] = {
+	{ "pcm1862", PCM1862 },
+	{ "pcm1863", PCM1863 },
+	{ "pcm1864", PCM1864 },
+	{ "pcm1865", PCM1865 },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, pcm186x_i2c_id);
+
+static int pcm186x_i2c_probe(struct i2c_client *i2c)
 {
-	const enum pcm186x_type type = (enum pcm186x_type)id->driver_data;
+	const enum pcm186x_type type = (uintptr_t)i2c_get_match_data(i2c);
 	int irq = i2c->irq;
 	struct regmap *regmap;
 
@@ -35,15 +43,6 @@ static int pcm186x_i2c_probe(struct i2c_client *i2c,
 
 	return pcm186x_probe(&i2c->dev, type, irq, regmap);
 }
-
-static const struct i2c_device_id pcm186x_i2c_id[] = {
-	{ "pcm1862", PCM1862 },
-	{ "pcm1863", PCM1863 },
-	{ "pcm1864", PCM1864 },
-	{ "pcm1865", PCM1865 },
-	{ }
-};
-MODULE_DEVICE_TABLE(i2c, pcm186x_i2c_id);
 
 static struct i2c_driver pcm186x_i2c_driver = {
 	.probe		= pcm186x_i2c_probe,

@@ -47,7 +47,7 @@ static int mctp_neigh_add(struct mctp_dev *mdev, mctp_eid_t eid,
 	}
 	INIT_LIST_HEAD(&neigh->list);
 	neigh->dev = mdev;
-	dev_hold(neigh->dev->dev);
+	mctp_dev_hold(neigh->dev);
 	neigh->eid = eid;
 	neigh->source = source;
 	memcpy(neigh->ha, lladdr, lladdr_len);
@@ -63,7 +63,7 @@ static void __mctp_neigh_free(struct rcu_head *rcu)
 {
 	struct mctp_neigh *neigh = container_of(rcu, struct mctp_neigh, rcu);
 
-	dev_put(neigh->dev->dev);
+	mctp_dev_put(neigh->dev);
 	kfree(neigh);
 }
 
@@ -85,8 +85,8 @@ void mctp_neigh_remove_dev(struct mctp_dev *mdev)
 	mutex_unlock(&net->mctp.neigh_lock);
 }
 
-// TODO: add a "source" flag so netlink can only delete static neighbours?
-static int mctp_neigh_remove(struct mctp_dev *mdev, mctp_eid_t eid)
+static int mctp_neigh_remove(struct mctp_dev *mdev, mctp_eid_t eid,
+			     enum mctp_neigh_source source)
 {
 	struct net *net = dev_net(mdev->dev);
 	struct mctp_neigh *neigh, *tmp;
@@ -94,7 +94,8 @@ static int mctp_neigh_remove(struct mctp_dev *mdev, mctp_eid_t eid)
 
 	mutex_lock(&net->mctp.neigh_lock);
 	list_for_each_entry_safe(neigh, tmp, &net->mctp.neighbours, list) {
-		if (neigh->dev == mdev && neigh->eid == eid) {
+		if (neigh->dev == mdev && neigh->eid == eid &&
+		    neigh->source == source) {
 			list_del_rcu(&neigh->list);
 			/* TODO: immediate RTM_DELNEIGH */
 			call_rcu(&neigh->rcu, __mctp_neigh_free);
@@ -142,7 +143,7 @@ static int mctp_rtm_newneigh(struct sk_buff *skb, struct nlmsghdr *nlh,
 	}
 
 	eid = nla_get_u8(tb[NDA_DST]);
-	if (!mctp_address_ok(eid)) {
+	if (!mctp_address_unicast(eid)) {
 		NL_SET_ERR_MSG(extack, "Invalid neighbour EID");
 		return -EINVAL;
 	}
@@ -202,7 +203,7 @@ static int mctp_rtm_delneigh(struct sk_buff *skb, struct nlmsghdr *nlh,
 	if (!mdev)
 		return -ENODEV;
 
-	return mctp_neigh_remove(mdev, eid);
+	return mctp_neigh_remove(mdev, eid, MCTP_NEIGH_STATIC);
 }
 
 static int mctp_fill_neigh(struct sk_buff *skb, u32 portid, u32 seq, int event,
@@ -217,6 +218,7 @@ static int mctp_fill_neigh(struct sk_buff *skb, u32 portid, u32 seq, int event,
 		return -EMSGSIZE;
 
 	hdr = nlmsg_data(nlh);
+	memset(hdr, 0, sizeof(*hdr));
 	hdr->ndm_family = AF_MCTP;
 	hdr->ndm_ifindex = dev->ifindex;
 	hdr->ndm_state = 0; // TODO other state bits?
@@ -249,7 +251,10 @@ static int mctp_rtm_getneigh(struct sk_buff *skb, struct netlink_callback *cb)
 		int idx;
 	} *cbctx = (void *)cb->ctx;
 
-	ndmsg = nlmsg_data(cb->nlh);
+	ndmsg = nlmsg_payload(cb->nlh, sizeof(*ndmsg));
+	if (!ndmsg)
+		return -EINVAL;
+
 	req_ifindex = ndmsg->ndm_ifindex;
 
 	idx = 0;
@@ -321,22 +326,29 @@ static struct pernet_operations mctp_net_ops = {
 	.exit = mctp_neigh_net_exit,
 };
 
+static const struct rtnl_msg_handler mctp_neigh_rtnl_msg_handlers[] = {
+	{THIS_MODULE, PF_MCTP, RTM_NEWNEIGH, mctp_rtm_newneigh, NULL, 0},
+	{THIS_MODULE, PF_MCTP, RTM_DELNEIGH, mctp_rtm_delneigh, NULL, 0},
+	{THIS_MODULE, PF_MCTP, RTM_GETNEIGH, NULL, mctp_rtm_getneigh, 0},
+};
+
 int __init mctp_neigh_init(void)
 {
-	rtnl_register_module(THIS_MODULE, PF_MCTP, RTM_NEWNEIGH,
-			     mctp_rtm_newneigh, NULL, 0);
-	rtnl_register_module(THIS_MODULE, PF_MCTP, RTM_DELNEIGH,
-			     mctp_rtm_delneigh, NULL, 0);
-	rtnl_register_module(THIS_MODULE, PF_MCTP, RTM_GETNEIGH,
-			     NULL, mctp_rtm_getneigh, 0);
+	int err;
 
-	return register_pernet_subsys(&mctp_net_ops);
+	err = register_pernet_subsys(&mctp_net_ops);
+	if (err)
+		return err;
+
+	err = rtnl_register_many(mctp_neigh_rtnl_msg_handlers);
+	if (err)
+		unregister_pernet_subsys(&mctp_net_ops);
+
+	return err;
 }
 
-void __exit mctp_neigh_exit(void)
+void mctp_neigh_exit(void)
 {
+	rtnl_unregister_many(mctp_neigh_rtnl_msg_handlers);
 	unregister_pernet_subsys(&mctp_net_ops);
-	rtnl_unregister(PF_MCTP, RTM_GETNEIGH);
-	rtnl_unregister(PF_MCTP, RTM_DELNEIGH);
-	rtnl_unregister(PF_MCTP, RTM_NEWNEIGH);
 }

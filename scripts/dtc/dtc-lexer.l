@@ -39,8 +39,6 @@ extern bool treesource_error;
 #define DPRINT(fmt, ...)	do { } while (0)
 #endif
 
-static int dts_version = 1;
-
 #define BEGIN_DEFAULT()		DPRINT("<V1>\n"); \
 				BEGIN(V1); \
 
@@ -57,7 +55,7 @@ static void PRINTF(1, 2) lexical_error(const char *fmt, ...);
 			push_input_file(name);
 		}
 
-<*>^"#"(line)?[ \t]+[0-9]+[ \t]+{STRING}([ \t]+[0-9]+)? {
+<*>^"#"(line)?[ \t]+[0-9]+[ \t]+{STRING}([ \t]+[0-9]+)* {
 			char *line, *fnstart, *fnend;
 			struct data fn;
 			/* skip text before line # */
@@ -101,7 +99,6 @@ static void PRINTF(1, 2) lexical_error(const char *fmt, ...);
 
 <*>"/dts-v1/"	{
 			DPRINT("Keyword: /dts-v1/\n");
-			dts_version = 1;
 			BEGIN_DEFAULT();
 			return DT_V1;
 		}
@@ -149,6 +146,21 @@ static void PRINTF(1, 2) lexical_error(const char *fmt, ...);
 			yylval.labelref = xstrdup(yytext);
 			yylval.labelref[yyleng-1] = '\0';
 			return DT_LABEL;
+		}
+
+<V1>{LABEL} 	{
+			/* Missed includes or macro definitions while
+			 * preprocessing can lead to unexpected identifiers in
+			 * the input. Report a slightly more informative error
+			 * in this case */
+
+			lexical_error("Unexpected '%s'", yytext);
+
+			/* Treat it as a literal which often generates further
+			 * useful error messages */
+
+			yylval.integer = 0;
+			return DT_LITERAL;
 		}
 
 <V1>([0-9]+|0[xX][0-9a-fA-F]+)(U|L|UL|LL|ULL)? {
@@ -200,7 +212,7 @@ static void PRINTF(1, 2) lexical_error(const char *fmt, ...);
 			return DT_LABEL_REF;
 		}
 
-<*>"&{/"{PATHCHAR}*\}	{	/* new-style path reference */
+<*>"&{"{PATHCHAR}*\}	{	/* new-style path reference */
 			yytext[yyleng-1] = '\0';
 			DPRINT("Ref: %s\n", yytext+2);
 			yylval.labelref = xstrdup(yytext+2);

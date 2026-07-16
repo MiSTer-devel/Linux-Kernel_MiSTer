@@ -137,6 +137,7 @@ module_param(backplane, int, 0);
 module_param(clockp, int, 0);
 module_param(clockm, int, 0);
 
+MODULE_DESCRIPTION("ARCnet COM20020 chipset ISA driver");
 MODULE_LICENSE("GPL");
 
 static struct net_device *my_dev;
@@ -151,7 +152,7 @@ static int __init com20020_init(void)
 		return -ENOMEM;
 
 	if (node && node != 0xff)
-		dev->dev_addr[0] = node;
+		arcnet_set_addr(dev, node);
 
 	dev->netdev_ops = &com20020_netdev_ops;
 

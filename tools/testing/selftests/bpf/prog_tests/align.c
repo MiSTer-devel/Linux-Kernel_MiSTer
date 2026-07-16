@@ -2,10 +2,11 @@
 #include <test_progs.h>
 
 #define MAX_INSNS	512
-#define MAX_MATCHES	16
+#define MAX_MATCHES	24
 
 struct bpf_reg_match {
 	unsigned int line;
+	const char *reg;
 	const char *match;
 };
 
@@ -39,13 +40,13 @@ static struct bpf_align_test tests[] = {
 		},
 		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 		.matches = {
-			{1, "R1=ctx(id=0,off=0,imm=0)"},
-			{1, "R10=fp0"},
-			{1, "R3_w=inv2"},
-			{2, "R3_w=inv4"},
-			{3, "R3_w=inv8"},
-			{4, "R3_w=inv16"},
-			{5, "R3_w=inv32"},
+			{0, "R1", "ctx()"},
+			{0, "R10", "fp0"},
+			{0, "R3", "2"},
+			{1, "R3", "4"},
+			{2, "R3", "8"},
+			{3, "R3", "16"},
+			{4, "R3", "32"},
 		},
 	},
 	{
@@ -67,19 +68,19 @@ static struct bpf_align_test tests[] = {
 		},
 		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 		.matches = {
-			{1, "R1=ctx(id=0,off=0,imm=0)"},
-			{1, "R10=fp0"},
-			{1, "R3_w=inv1"},
-			{2, "R3_w=inv2"},
-			{3, "R3_w=inv4"},
-			{4, "R3_w=inv8"},
-			{5, "R3_w=inv16"},
-			{6, "R3_w=inv1"},
-			{7, "R4_w=inv32"},
-			{8, "R4_w=inv16"},
-			{9, "R4_w=inv8"},
-			{10, "R4_w=inv4"},
-			{11, "R4_w=inv2"},
+			{0, "R1", "ctx()"},
+			{0, "R10", "fp0"},
+			{0, "R3", "1"},
+			{1, "R3", "2"},
+			{2, "R3", "4"},
+			{3, "R3", "8"},
+			{4, "R3", "16"},
+			{5, "R3", "1"},
+			{6, "R4", "32"},
+			{7, "R4", "16"},
+			{8, "R4", "8"},
+			{9, "R4", "4"},
+			{10, "R4", "2"},
 		},
 	},
 	{
@@ -96,14 +97,14 @@ static struct bpf_align_test tests[] = {
 		},
 		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 		.matches = {
-			{1, "R1=ctx(id=0,off=0,imm=0)"},
-			{1, "R10=fp0"},
-			{1, "R3_w=inv4"},
-			{2, "R3_w=inv8"},
-			{3, "R3_w=inv10"},
-			{4, "R4_w=inv8"},
-			{5, "R4_w=inv12"},
-			{6, "R4_w=inv14"},
+			{0, "R1", "ctx()"},
+			{0, "R10", "fp0"},
+			{0, "R3", "4"},
+			{1, "R3", "8"},
+			{2, "R3", "10"},
+			{3, "R4", "8"},
+			{4, "R4", "12"},
+			{5, "R4", "14"},
 		},
 	},
 	{
@@ -118,12 +119,12 @@ static struct bpf_align_test tests[] = {
 		},
 		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 		.matches = {
-			{1, "R1=ctx(id=0,off=0,imm=0)"},
-			{1, "R10=fp0"},
-			{1, "R3_w=inv7"},
-			{2, "R3_w=inv7"},
-			{3, "R3_w=inv14"},
-			{4, "R3_w=inv56"},
+			{0, "R1", "ctx()"},
+			{0, "R10", "fp0"},
+			{0, "R3", "7"},
+			{1, "R3", "7"},
+			{2, "R3", "14"},
+			{3, "R3", "56"},
 		},
 	},
 
@@ -161,19 +162,19 @@ static struct bpf_align_test tests[] = {
 		},
 		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 		.matches = {
-			{7, "R0_w=pkt(id=0,off=8,r=8,imm=0)"},
-			{7, "R3_w=inv(id=0,umax_value=255,var_off=(0x0; 0xff))"},
-			{8, "R3_w=inv(id=0,umax_value=510,var_off=(0x0; 0x1fe))"},
-			{9, "R3_w=inv(id=0,umax_value=1020,var_off=(0x0; 0x3fc))"},
-			{10, "R3_w=inv(id=0,umax_value=2040,var_off=(0x0; 0x7f8))"},
-			{11, "R3_w=inv(id=0,umax_value=4080,var_off=(0x0; 0xff0))"},
-			{18, "R3=pkt_end(id=0,off=0,imm=0)"},
-			{18, "R4_w=inv(id=0,umax_value=255,var_off=(0x0; 0xff))"},
-			{19, "R4_w=inv(id=0,umax_value=8160,var_off=(0x0; 0x1fe0))"},
-			{20, "R4_w=inv(id=0,umax_value=4080,var_off=(0x0; 0xff0))"},
-			{21, "R4_w=inv(id=0,umax_value=2040,var_off=(0x0; 0x7f8))"},
-			{22, "R4_w=inv(id=0,umax_value=1020,var_off=(0x0; 0x3fc))"},
-			{23, "R4_w=inv(id=0,umax_value=510,var_off=(0x0; 0x1fe))"},
+			{6, "R0", "pkt(off=8,r=8)"},
+			{6, "R3", "var_off=(0x0; 0xff)"},
+			{7, "R3", "var_off=(0x0; 0x1fe)"},
+			{8, "R3", "var_off=(0x0; 0x3fc)"},
+			{9, "R3", "var_off=(0x0; 0x7f8)"},
+			{10, "R3", "var_off=(0x0; 0xff0)"},
+			{12, "R3", "pkt_end()"},
+			{17, "R4", "var_off=(0x0; 0xff)"},
+			{18, "R4", "var_off=(0x0; 0x1fe0)"},
+			{19, "R4", "var_off=(0x0; 0xff0)"},
+			{20, "R4", "var_off=(0x0; 0x7f8)"},
+			{21, "R4", "var_off=(0x0; 0x3fc)"},
+			{22, "R4", "var_off=(0x0; 0x1fe)"},
 		},
 	},
 	{
@@ -194,16 +195,16 @@ static struct bpf_align_test tests[] = {
 		},
 		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 		.matches = {
-			{7, "R3_w=inv(id=0,umax_value=255,var_off=(0x0; 0xff))"},
-			{8, "R4_w=inv(id=1,umax_value=255,var_off=(0x0; 0xff))"},
-			{9, "R4_w=inv(id=0,umax_value=255,var_off=(0x0; 0xff))"},
-			{10, "R4_w=inv(id=1,umax_value=255,var_off=(0x0; 0xff))"},
-			{11, "R4_w=inv(id=0,umax_value=510,var_off=(0x0; 0x1fe))"},
-			{12, "R4_w=inv(id=1,umax_value=255,var_off=(0x0; 0xff))"},
-			{13, "R4_w=inv(id=0,umax_value=1020,var_off=(0x0; 0x3fc))"},
-			{14, "R4_w=inv(id=1,umax_value=255,var_off=(0x0; 0xff))"},
-			{15, "R4_w=inv(id=0,umax_value=2040,var_off=(0x0; 0x7f8))"},
-			{16, "R4_w=inv(id=0,umax_value=4080,var_off=(0x0; 0xff0))"},
+			{6, "R3", "var_off=(0x0; 0xff)"},
+			{7, "R4", "var_off=(0x0; 0xff)"},
+			{8, "R4", "var_off=(0x0; 0xff)"},
+			{9, "R4", "var_off=(0x0; 0xff)"},
+			{10, "R4", "var_off=(0x0; 0x1fe)"},
+			{11, "R4", "var_off=(0x0; 0xff)"},
+			{12, "R4", "var_off=(0x0; 0x3fc)"},
+			{13, "R4", "var_off=(0x0; 0xff)"},
+			{14, "R4", "var_off=(0x0; 0x7f8)"},
+			{15, "R4", "var_off=(0x0; 0xff0)"},
 		},
 	},
 	{
@@ -234,14 +235,14 @@ static struct bpf_align_test tests[] = {
 		},
 		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 		.matches = {
-			{4, "R5_w=pkt(id=0,off=0,r=0,imm=0)"},
-			{5, "R5_w=pkt(id=0,off=14,r=0,imm=0)"},
-			{6, "R4_w=pkt(id=0,off=14,r=0,imm=0)"},
-			{10, "R2=pkt(id=0,off=0,r=18,imm=0)"},
-			{10, "R5=pkt(id=0,off=14,r=18,imm=0)"},
-			{10, "R4_w=inv(id=0,umax_value=255,var_off=(0x0; 0xff))"},
-			{14, "R4_w=inv(id=0,umax_value=65535,var_off=(0x0; 0xffff))"},
-			{15, "R4_w=inv(id=0,umax_value=65535,var_off=(0x0; 0xffff))"},
+			{2, "R5", "pkt(r=0)"},
+			{4, "R5", "pkt(off=14,r=0)"},
+			{5, "R4", "pkt(off=14,r=0)"},
+			{9, "R2", "pkt(r=18)"},
+			{10, "R5", "pkt(off=14,r=18)"},
+			{10, "R4", "var_off=(0x0; 0xff)"},
+			{13, "R4", "var_off=(0x0; 0xffff)"},
+			{14, "R4", "var_off=(0x0; 0xffff)"},
 		},
 	},
 	{
@@ -267,6 +268,7 @@ static struct bpf_align_test tests[] = {
 			 */
 			BPF_MOV64_REG(BPF_REG_5, BPF_REG_2),
 			BPF_ALU64_REG(BPF_ADD, BPF_REG_5, BPF_REG_6),
+			BPF_MOV64_REG(BPF_REG_4, BPF_REG_5),
 			BPF_ALU64_IMM(BPF_ADD, BPF_REG_5, 14),
 			BPF_MOV64_REG(BPF_REG_4, BPF_REG_5),
 			BPF_ALU64_IMM(BPF_ADD, BPF_REG_4, 4),
@@ -280,6 +282,7 @@ static struct bpf_align_test tests[] = {
 			BPF_MOV64_REG(BPF_REG_5, BPF_REG_2),
 			BPF_ALU64_IMM(BPF_ADD, BPF_REG_5, 14),
 			BPF_ALU64_REG(BPF_ADD, BPF_REG_5, BPF_REG_6),
+			BPF_MOV64_REG(BPF_REG_4, BPF_REG_5),
 			BPF_ALU64_IMM(BPF_ADD, BPF_REG_5, 4),
 			BPF_ALU64_REG(BPF_ADD, BPF_REG_5, BPF_REG_6),
 			BPF_MOV64_REG(BPF_REG_4, BPF_REG_5),
@@ -296,59 +299,67 @@ static struct bpf_align_test tests[] = {
 			/* Calculated offset in R6 has unknown value, but known
 			 * alignment of 4.
 			 */
-			{8, "R2_w=pkt(id=0,off=0,r=8,imm=0)"},
-			{8, "R6_w=inv(id=0,umax_value=1020,var_off=(0x0; 0x3fc))"},
+			{6, "R2", "pkt(r=8)"},
+			{7, "R6", "var_off=(0x0; 0x3fc)"},
 			/* Offset is added to packet pointer R5, resulting in
 			 * known fixed offset, and variable offset from R6.
 			 */
-			{11, "R5_w=pkt(id=1,off=14,r=0,umax_value=1020,var_off=(0x0; 0x3fc))"},
+			{11, "R5", "pkt(id=1,off=14,"},
 			/* At the time the word size load is performed from R5,
 			 * it's total offset is NET_IP_ALIGN + reg->off (0) +
 			 * reg->aux_off (14) which is 16.  Then the variable
 			 * offset is considered using reg->aux_off_align which
 			 * is 4 and meets the load's requirements.
 			 */
-			{15, "R4=pkt(id=1,off=18,r=18,umax_value=1020,var_off=(0x0; 0x3fc))"},
-			{15, "R5=pkt(id=1,off=14,r=18,umax_value=1020,var_off=(0x0; 0x3fc))"},
+			{15, "R4", "var_off=(0x0; 0x3fc)"},
+			{15, "R5", "var_off=(0x0; 0x3fc)"},
 			/* Variable offset is added to R5 packet pointer,
-			 * resulting in auxiliary alignment of 4.
+			 * resulting in auxiliary alignment of 4. To avoid BPF
+			 * verifier's precision backtracking logging
+			 * interfering we also have a no-op R4 = R5
+			 * instruction to validate R5 state. We also check
+			 * that R4 is what it should be in such case.
 			 */
-			{18, "R5_w=pkt(id=2,off=0,r=0,umax_value=1020,var_off=(0x0; 0x3fc))"},
+			{18, "R4", "var_off=(0x0; 0x3fc)"},
+			{18, "R5", "var_off=(0x0; 0x3fc)"},
 			/* Constant offset is added to R5, resulting in
 			 * reg->off of 14.
 			 */
-			{19, "R5_w=pkt(id=2,off=14,r=0,umax_value=1020,var_off=(0x0; 0x3fc))"},
+			{19, "R5", "pkt(id=2,off=14,"},
 			/* At the time the word size load is performed from R5,
 			 * its total fixed offset is NET_IP_ALIGN + reg->off
 			 * (14) which is 16.  Then the variable offset is 4-byte
 			 * aligned, so the total offset is 4-byte aligned and
 			 * meets the load's requirements.
 			 */
-			{23, "R4=pkt(id=2,off=18,r=18,umax_value=1020,var_off=(0x0; 0x3fc))"},
-			{23, "R5=pkt(id=2,off=14,r=18,umax_value=1020,var_off=(0x0; 0x3fc))"},
+			{24, "R4", "var_off=(0x0; 0x3fc)"},
+			{24, "R5", "var_off=(0x0; 0x3fc)"},
 			/* Constant offset is added to R5 packet pointer,
 			 * resulting in reg->off value of 14.
 			 */
-			{26, "R5_w=pkt(id=0,off=14,r=8"},
+			{26, "R5", "pkt(off=14,r=8)"},
 			/* Variable offset is added to R5, resulting in a
-			 * variable offset of (4n).
+			 * variable offset of (4n). See comment for insn #18
+			 * for R4 = R5 trick.
 			 */
-			{27, "R5_w=pkt(id=3,off=14,r=0,umax_value=1020,var_off=(0x0; 0x3fc))"},
+			{28, "R4", "var_off=(0x0; 0x3fc)"},
+			{28, "R5", "var_off=(0x0; 0x3fc)"},
 			/* Constant is added to R5 again, setting reg->off to 18. */
-			{28, "R5_w=pkt(id=3,off=18,r=0,umax_value=1020,var_off=(0x0; 0x3fc))"},
+			{29, "R5", "pkt(id=3,off=18,"},
 			/* And once more we add a variable; resulting var_off
 			 * is still (4n), fixed offset is not changed.
 			 * Also, we create a new reg->id.
 			 */
-			{29, "R5_w=pkt(id=4,off=18,r=0,umax_value=2040,var_off=(0x0; 0x7fc)"},
+			{31, "R4", "var_off=(0x0; 0x7fc)"},
+			{31, "R5", "var_off=(0x0; 0x7fc)"},
 			/* At the time the word size load is performed from R5,
 			 * its total fixed offset is NET_IP_ALIGN + reg->off (18)
 			 * which is 20.  Then the variable offset is (4n), so
 			 * the total offset is 4-byte aligned and meets the
 			 * load's requirements.
 			 */
-			{33, "R4=pkt(id=4,off=22,r=22,umax_value=2040,var_off=(0x0; 0x7fc)"},
-			{33, "R5=pkt(id=4,off=18,r=22,umax_value=2040,var_off=(0x0; 0x7fc)"},
+			{35, "R4", "var_off=(0x0; 0x7fc)"},
+			{35, "R5", "var_off=(0x0; 0x7fc)"},
 		},
 	},
 	{
@@ -386,36 +397,36 @@ static struct bpf_align_test tests[] = {
 			/* Calculated offset in R6 has unknown value, but known
 			 * alignment of 4.
 			 */
-			{8, "R2_w=pkt(id=0,off=0,r=8,imm=0)"},
-			{8, "R6_w=inv(id=0,umax_value=1020,var_off=(0x0; 0x3fc))"},
+			{6, "R2", "pkt(r=8)"},
+			{7, "R6", "var_off=(0x0; 0x3fc)"},
 			/* Adding 14 makes R6 be (4n+2) */
-			{9, "R6_w=inv(id=0,umin_value=14,umax_value=1034,var_off=(0x2; 0x7fc))"},
+			{8, "R6", "var_off=(0x2; 0x7fc)"},
 			/* Packet pointer has (4n+2) offset */
-			{11, "R5_w=pkt(id=1,off=0,r=0,umin_value=14,umax_value=1034,var_off=(0x2; 0x7fc)"},
-			{13, "R4=pkt(id=1,off=4,r=0,umin_value=14,umax_value=1034,var_off=(0x2; 0x7fc)"},
+			{11, "R5", "var_off=(0x2; 0x7fc)"},
+			{12, "R4", "var_off=(0x2; 0x7fc)"},
 			/* At the time the word size load is performed from R5,
 			 * its total fixed offset is NET_IP_ALIGN + reg->off (0)
 			 * which is 2.  Then the variable offset is (4n+2), so
 			 * the total offset is 4-byte aligned and meets the
 			 * load's requirements.
 			 */
-			{15, "R5=pkt(id=1,off=0,r=4,umin_value=14,umax_value=1034,var_off=(0x2; 0x7fc)"},
+			{15, "R5", "var_off=(0x2; 0x7fc)"},
 			/* Newly read value in R6 was shifted left by 2, so has
 			 * known alignment of 4.
 			 */
-			{18, "R6_w=inv(id=0,umax_value=1020,var_off=(0x0; 0x3fc))"},
+			{17, "R6", "var_off=(0x0; 0x3fc)"},
 			/* Added (4n) to packet pointer's (4n+2) var_off, giving
 			 * another (4n+2).
 			 */
-			{19, "R5_w=pkt(id=2,off=0,r=0,umin_value=14,umax_value=2054,var_off=(0x2; 0xffc)"},
-			{21, "R4=pkt(id=2,off=4,r=0,umin_value=14,umax_value=2054,var_off=(0x2; 0xffc)"},
+			{19, "R5", "var_off=(0x2; 0xffc)"},
+			{20, "R4", "var_off=(0x2; 0xffc)"},
 			/* At the time the word size load is performed from R5,
 			 * its total fixed offset is NET_IP_ALIGN + reg->off (0)
 			 * which is 2.  Then the variable offset is (4n+2), so
 			 * the total offset is 4-byte aligned and meets the
 			 * load's requirements.
 			 */
-			{23, "R5=pkt(id=2,off=0,r=4,umin_value=14,umax_value=2054,var_off=(0x2; 0xffc)"},
+			{23, "R5", "var_off=(0x2; 0xffc)"},
 		},
 	},
 	{
@@ -448,18 +459,18 @@ static struct bpf_align_test tests[] = {
 		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 		.result = REJECT,
 		.matches = {
-			{4, "R5_w=pkt_end(id=0,off=0,imm=0)"},
+			{3, "R5", "pkt_end()"},
 			/* (ptr - ptr) << 2 == unknown, (4n) */
-			{6, "R5_w=inv(id=0,smax_value=9223372036854775804,umax_value=18446744073709551612,var_off=(0x0; 0xfffffffffffffffc)"},
+			{5, "R5", "var_off=(0x0; 0xfffffffffffffffc)"},
 			/* (4n) + 14 == (4n+2).  We blow our bounds, because
 			 * the add could overflow.
 			 */
-			{7, "R5_w=inv(id=0,smin_value=-9223372036854775806,smax_value=9223372036854775806,umin_value=2,umax_value=18446744073709551614,var_off=(0x2; 0xfffffffffffffffc)"},
+			{6, "R5", "var_off=(0x2; 0xfffffffffffffffc)"},
 			/* Checked s>=0 */
-			{9, "R5=inv(id=0,umin_value=2,umax_value=9223372036854775806,var_off=(0x2; 0x7ffffffffffffffc)"},
+			{9, "R5", "var_off=(0x2; 0x7ffffffffffffffc)"},
 			/* packet pointer + nonnegative (4n+2) */
-			{11, "R6_w=pkt(id=1,off=0,r=0,umin_value=2,umax_value=9223372036854775806,var_off=(0x2; 0x7ffffffffffffffc)"},
-			{13, "R4_w=pkt(id=1,off=4,r=0,umin_value=2,umax_value=9223372036854775806,var_off=(0x2; 0x7ffffffffffffffc)"},
+			{11, "R6", "var_off=(0x2; 0x7ffffffffffffffc)"},
+			{12, "R4", "var_off=(0x2; 0x7ffffffffffffffc)"},
 			/* NET_IP_ALIGN + (4n+2) == (4n), alignment is fine.
 			 * We checked the bounds, but it might have been able
 			 * to overflow if the packet pointer started in the
@@ -467,7 +478,7 @@ static struct bpf_align_test tests[] = {
 			 * So we did not get a 'range' on R6, and the access
 			 * attempt will fail.
 			 */
-			{15, "R6_w=pkt(id=1,off=0,r=0,umin_value=2,umax_value=9223372036854775806,var_off=(0x2; 0x7ffffffffffffffc)"},
+			{15, "R6", "var_off=(0x2; 0x7ffffffffffffffc)"},
 		}
 	},
 	{
@@ -502,24 +513,23 @@ static struct bpf_align_test tests[] = {
 			/* Calculated offset in R6 has unknown value, but known
 			 * alignment of 4.
 			 */
-			{7, "R2_w=pkt(id=0,off=0,r=8,imm=0)"},
-			{9, "R6_w=inv(id=0,umax_value=1020,var_off=(0x0; 0x3fc))"},
+			{6, "R2", "pkt(r=8)"},
+			{8, "R6", "var_off=(0x0; 0x3fc)"},
 			/* Adding 14 makes R6 be (4n+2) */
-			{10, "R6_w=inv(id=0,umin_value=14,umax_value=1034,var_off=(0x2; 0x7fc))"},
+			{9, "R6", "var_off=(0x2; 0x7fc)"},
 			/* New unknown value in R7 is (4n) */
-			{11, "R7_w=inv(id=0,umax_value=1020,var_off=(0x0; 0x3fc))"},
+			{10, "R7", "var_off=(0x0; 0x3fc)"},
 			/* Subtracting it from R6 blows our unsigned bounds */
-			{12, "R6=inv(id=0,smin_value=-1006,smax_value=1034,umin_value=2,umax_value=18446744073709551614,var_off=(0x2; 0xfffffffffffffffc)"},
+			{11, "R6", "var_off=(0x2; 0xfffffffffffffffc)"},
 			/* Checked s>= 0 */
-			{14, "R6=inv(id=0,umin_value=2,umax_value=1034,var_off=(0x2; 0x7fc))"},
+			{14, "R6", "var_off=(0x2; 0x7fc)"},
 			/* At the time the word size load is performed from R5,
 			 * its total fixed offset is NET_IP_ALIGN + reg->off (0)
 			 * which is 2.  Then the variable offset is (4n+2), so
 			 * the total offset is 4-byte aligned and meets the
 			 * load's requirements.
 			 */
-			{20, "R5=pkt(id=2,off=0,r=4,umin_value=2,umax_value=1034,var_off=(0x2; 0x7fc)"},
-
+			{20, "R5", "var_off=(0x2; 0x7fc)"},
 		},
 	},
 	{
@@ -556,23 +566,23 @@ static struct bpf_align_test tests[] = {
 			/* Calculated offset in R6 has unknown value, but known
 			 * alignment of 4.
 			 */
-			{7, "R2_w=pkt(id=0,off=0,r=8,imm=0)"},
-			{10, "R6_w=inv(id=0,umax_value=60,var_off=(0x0; 0x3c))"},
+			{6, "R2", "pkt(r=8)"},
+			{9, "R6", "var_off=(0x0; 0x3c)"},
 			/* Adding 14 makes R6 be (4n+2) */
-			{11, "R6_w=inv(id=0,umin_value=14,umax_value=74,var_off=(0x2; 0x7c))"},
+			{10, "R6", "var_off=(0x2; 0x7c)"},
 			/* Subtracting from packet pointer overflows ubounds */
-			{13, "R5_w=pkt(id=2,off=0,r=8,umin_value=18446744073709551542,umax_value=18446744073709551602,var_off=(0xffffffffffffff82; 0x7c)"},
+			{13, "R5", "var_off=(0xffffffffffffff82; 0x7c)"},
 			/* New unknown value in R7 is (4n), >= 76 */
-			{15, "R7_w=inv(id=0,umin_value=76,umax_value=1096,var_off=(0x0; 0x7fc))"},
+			{14, "R7", "var_off=(0x0; 0x7fc)"},
 			/* Adding it to packet pointer gives nice bounds again */
-			{16, "R5_w=pkt(id=3,off=0,r=0,umin_value=2,umax_value=1082,var_off=(0x2; 0xfffffffc)"},
+			{16, "R5", "var_off=(0x2; 0x7fc)"},
 			/* At the time the word size load is performed from R5,
 			 * its total fixed offset is NET_IP_ALIGN + reg->off (0)
 			 * which is 2.  Then the variable offset is (4n+2), so
 			 * the total offset is 4-byte aligned and meets the
 			 * load's requirements.
 			 */
-			{20, "R5=pkt(id=3,off=0,r=4,umin_value=2,umax_value=1082,var_off=(0x2; 0xfffffffc)"},
+			{20, "R5", "var_off=(0x2; 0x7fc)"},
 		},
 	},
 };
@@ -594,16 +604,23 @@ static int do_test_single(struct bpf_align_test *test)
 	struct bpf_insn *prog = test->insns;
 	int prog_type = test->prog_type;
 	char bpf_vlog_copy[32768];
+	LIBBPF_OPTS(bpf_prog_load_opts, opts,
+		.prog_flags = BPF_F_STRICT_ALIGNMENT,
+		.log_buf = bpf_vlog,
+		.log_size = sizeof(bpf_vlog),
+		.log_level = 2,
+	);
+	const char *main_pass_start = "0: R1=ctx() R10=fp0";
 	const char *line_ptr;
 	int cur_line = -1;
 	int prog_len, i;
+	char *start;
 	int fd_prog;
 	int ret;
 
 	prog_len = probe_filter_length(prog);
-	fd_prog = bpf_verify_program(prog_type ? : BPF_PROG_TYPE_SOCKET_FILTER,
-				     prog, prog_len, BPF_F_STRICT_ALIGNMENT,
-				     "GPL", 0, bpf_vlog, sizeof(bpf_vlog), 2);
+	fd_prog = bpf_prog_load(prog_type ? : BPF_PROG_TYPE_SOCKET_FILTER, NULL, "GPL",
+				prog, prog_len, &opts);
 	if (fd_prog < 0 && test->result != REJECT) {
 		printf("Failed to load program.\n");
 		printf("%s", bpf_vlog);
@@ -617,34 +634,63 @@ static int do_test_single(struct bpf_align_test *test)
 		ret = 0;
 		/* We make a local copy so that we can strtok() it */
 		strncpy(bpf_vlog_copy, bpf_vlog, sizeof(bpf_vlog_copy));
-		line_ptr = strtok(bpf_vlog_copy, "\n");
+		start = strstr(bpf_vlog_copy, main_pass_start);
+		if (!start) {
+			ret = 1;
+			printf("Can't find initial line '%s'\n", main_pass_start);
+			goto out;
+		}
+		line_ptr = strtok(start, "\n");
 		for (i = 0; i < MAX_MATCHES; i++) {
 			struct bpf_reg_match m = test->matches[i];
+			const char *p;
+			int tmp;
 
 			if (!m.match)
 				break;
 			while (line_ptr) {
 				cur_line = -1;
 				sscanf(line_ptr, "%u: ", &cur_line);
+				if (cur_line == -1)
+					sscanf(line_ptr, "from %u to %u: ", &tmp, &cur_line);
 				if (cur_line == m.line)
 					break;
 				line_ptr = strtok(NULL, "\n");
 			}
 			if (!line_ptr) {
-				printf("Failed to find line %u for match: %s\n",
-				       m.line, m.match);
+				printf("Failed to find line %u for match: %s=%s\n",
+				       m.line, m.reg, m.match);
 				ret = 1;
 				printf("%s", bpf_vlog);
 				break;
 			}
-			if (!strstr(line_ptr, m.match)) {
-				printf("Failed to find match %u: %s\n",
-				       m.line, m.match);
+			/* Check the next line as well in case the previous line
+			 * did not have a corresponding bpf insn. Example:
+			 * func#0 @0
+			 * 0: R1=ctx() R10=fp0
+			 * 0: (b7) r3 = 2                 ; R3_w=2
+			 *
+			 * Sometimes it's actually two lines below, e.g. when
+			 * searching for "6: R3_w=scalar(umax=255,var_off=(0x0; 0xff))":
+			 *   from 4 to 6: R0_w=pkt(off=8,r=8) R1=ctx() R2_w=pkt(r=8) R3_w=pkt_end() R10=fp0
+			 *   6: R0_w=pkt(off=8,r=8) R1=ctx() R2_w=pkt(r=8) R3_w=pkt_end() R10=fp0
+			 *   6: (71) r3 = *(u8 *)(r2 +0)           ; R2_w=pkt(r=8) R3_w=scalar(umax=255,var_off=(0x0; 0xff))
+			 */
+			while (!(p = strstr(line_ptr, m.reg)) || !strstr(p, m.match)) {
+				cur_line = -1;
+				line_ptr = strtok(NULL, "\n");
+				sscanf(line_ptr ?: "", "%u: ", &cur_line);
+				if (!line_ptr || cur_line != m.line)
+					break;
+			}
+			if (cur_line != m.line || !line_ptr || !(p = strstr(line_ptr, m.reg)) || !strstr(p, m.match)) {
+				printf("Failed to find match %u: %s=%s\n", m.line, m.reg, m.match);
 				ret = 1;
 				printf("%s", bpf_vlog);
 				break;
 			}
 		}
+out:
 		if (fd_prog >= 0)
 			close(fd_prog);
 	}
@@ -661,6 +707,6 @@ void test_align(void)
 		if (!test__start_subtest(test->descr))
 			continue;
 
-		CHECK_FAIL(do_test_single(test));
+		ASSERT_OK(do_test_single(test), test->descr);
 	}
 }

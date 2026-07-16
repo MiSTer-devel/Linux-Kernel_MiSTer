@@ -25,7 +25,6 @@
 
 #define DRIVER_NAME         "vboxvideo"
 #define DRIVER_DESC         "Oracle VM VirtualBox Graphics Card"
-#define DRIVER_DATE         "20130823"
 
 #define DRIVER_MAJOR        1
 #define DRIVER_MINOR        0
@@ -139,7 +138,6 @@ void vbox_mode_fini(struct vbox_private *vbox);
 void vbox_report_caps(struct vbox_private *vbox);
 
 int vbox_mm_init(struct vbox_private *vbox);
-void vbox_mm_fini(struct vbox_private *vbox);
 
 /* vbox_irq.c */
 int vbox_irq_init(struct vbox_private *vbox);

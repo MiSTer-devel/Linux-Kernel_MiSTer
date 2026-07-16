@@ -21,6 +21,7 @@
  */
 #define HSR_LIFE_CHECK_INTERVAL		 2000 /* ms */
 #define HSR_NODE_FORGET_TIME		60000 /* ms */
+#define HSR_PROXY_NODE_FORGET_TIME	60000 /* ms */
 #define HSR_ANNOUNCE_INTERVAL		  100 /* ms */
 #define HSR_ENTRY_FORGET_TIME		  400 /* ms */
 
@@ -35,29 +36,16 @@
  * HSR_NODE_FORGET_TIME?
  */
 #define PRUNE_PERIOD			 3000 /* ms */
-
+#define PRUNE_PROXY_PERIOD		 3000 /* ms */
+#define HSR_TLV_EOT				   0  /* End of TLVs */
 #define HSR_TLV_ANNOUNCE		   22
 #define HSR_TLV_LIFE_CHECK		   23
 /* PRP V1 life check for Duplicate discard */
 #define PRP_TLV_LIFE_CHECK_DD		   20
 /* PRP V1 life check for Duplicate Accept */
 #define PRP_TLV_LIFE_CHECK_DA		   21
-
-/* HSR Tag.
- * As defined in IEC-62439-3:2010, the HSR tag is really { ethertype = 0x88FB,
- * path, LSDU_size, sequence Nr }. But we let eth_header() create { h_dest,
- * h_source, h_proto = 0x88FB }, and add { path, LSDU_size, sequence Nr,
- * encapsulated protocol } instead.
- *
- * Field names as defined in the IEC:2010 standard for HSR.
- */
-struct hsr_tag {
-	__be16		path_and_LSDU_size;
-	__be16		sequence_nr;
-	__be16		encap_proto;
-} __packed;
-
-#define HSR_HLEN	6
+/* PRP V1 life redundancy box MAC address */
+#define PRP_TLV_REDBOX_MAC		   30
 
 #define HSR_V1_SUP_LSDUSIZE		52
 
@@ -94,14 +82,18 @@ struct hsr_vlan_ethhdr {
 	struct hsr_tag	hsr_tag;
 } __packed;
 
+struct hsr_sup_tlv {
+	u8		HSR_TLV_type;
+	u8		HSR_TLV_length;
+} __packed;
+
 /* HSR/PRP Supervision Frame data types.
  * Field names as defined in the IEC:2010 standard for HSR.
  */
 struct hsr_sup_tag {
-	__be16		path_and_HSR_ver;
-	__be16		sequence_nr;
-	__u8		HSR_TLV_type;
-	__u8		HSR_TLV_length;
+	__be16				path_and_HSR_ver;
+	__be16				sequence_nr;
+	struct hsr_sup_tlv  tlv;
 } __packed;
 
 struct hsr_sup_payload {
@@ -128,15 +120,6 @@ struct hsrv1_ethhdr_sp {
 	struct hsr_tag		hsr;
 	struct hsr_sup_tag	hsr_sup;
 } __packed;
-
-enum hsr_port_type {
-	HSR_PT_NONE = 0,	/* Must be 0, used by framereg */
-	HSR_PT_SLAVE_A,
-	HSR_PT_SLAVE_B,
-	HSR_PT_INTERLINK,
-	HSR_PT_MASTER,
-	HSR_PT_PORTS,	/* This must be the last item in the enum */
-};
 
 /* PRP Redunancy Control Trailor (RCT).
  * As defined in IEC-62439-4:2012, the PRP RCT is really { sequence Nr,
@@ -171,6 +154,8 @@ struct hsr_port {
 	struct net_device	*dev;
 	struct hsr_priv		*hsr;
 	enum hsr_port_type	type;
+	struct rcu_head		rcu;
+	unsigned char		original_macaddress[ETH_ALEN];
 };
 
 struct hsr_frame_info;
@@ -178,7 +163,8 @@ struct hsr_node;
 
 struct hsr_proto_ops {
 	/* format and send supervision frame */
-	void (*send_sv_frame)(struct hsr_port *port, unsigned long *interval);
+	void (*send_sv_frame)(struct hsr_port *port, unsigned long *interval,
+			      const unsigned char addr[ETH_ALEN]);
 	void (*handle_san_frame)(bool san, enum hsr_port_type port,
 				 struct hsr_node *node);
 	bool (*drop_frame)(struct hsr_frame_info *frame, struct hsr_port *port);
@@ -190,15 +176,26 @@ struct hsr_proto_ops {
 			       struct hsr_frame_info *frame);
 	bool (*invalid_dan_ingress_frame)(__be16 protocol);
 	void (*update_san_info)(struct hsr_node *node, bool is_sup);
+	int (*register_frame_out)(struct hsr_port *port,
+				  struct hsr_frame_info *frame);
+};
+
+struct hsr_self_node {
+	unsigned char	macaddress_A[ETH_ALEN];
+	unsigned char	macaddress_B[ETH_ALEN];
+	struct rcu_head	rcu_head;
 };
 
 struct hsr_priv {
 	struct rcu_head		rcu_head;
 	struct list_head	ports;
 	struct list_head	node_db;	/* Known HSR nodes */
-	struct list_head	self_node_db;	/* MACs of slaves */
+	struct list_head	proxy_node_db;	/* RedBox HSR proxy nodes */
+	struct hsr_self_node	__rcu *self_node;	/* MACs of slaves */
 	struct timer_list	announce_timer;	/* Supervision frame dispatch */
+	struct timer_list	announce_proxy_timer;
 	struct timer_list	prune_timer;
+	struct timer_list	prune_proxy_timer;
 	int announce_count;
 	u16 sequence_nr;
 	u16 sup_sequence_nr;	/* For HSRv1 separate seq_nr for supervision */
@@ -212,6 +209,9 @@ struct hsr_priv {
 	u8 net_id;		/* for PRP, it occupies most significant 3 bits
 				 * of lan_id
 				 */
+	bool fwd_offloaded;	/* Forwarding offloaded to HW */
+	bool redbox;            /* Device supports HSR RedBox */
+	unsigned char		macaddress_redbox[ETH_ALEN];
 	unsigned char		sup_multicast_addr[ETH_ALEN] __aligned(sizeof(u16));
 				/* Align to u16 boundary to avoid unaligned access
 				 * in ether_addr_equal
@@ -223,6 +223,9 @@ struct hsr_priv {
 
 #define hsr_for_each_port(hsr, port) \
 	list_for_each_entry_rcu((port), &(hsr)->ports, port_list)
+
+#define hsr_for_each_port_rtnl(hsr, port) \
+	list_for_each_entry_rcu((port), &(hsr)->ports, port_list, lockdep_rtnl_is_held())
 
 struct hsr_port *hsr_port_get_hsr(struct hsr_priv *hsr, enum hsr_port_type pt);
 
@@ -251,11 +254,6 @@ static inline struct prp_rct *skb_get_PRP_rct(struct sk_buff *skb)
 static inline u16 prp_get_skb_sequence_nr(struct prp_rct *rct)
 {
 	return ntohs(rct->sequence_nr);
-}
-
-static inline u16 get_prp_lan_id(struct prp_rct *rct)
-{
-	return ntohs(rct->lan_id_and_LSDU_size) >> 12;
 }
 
 /* assume there is a valid rct */

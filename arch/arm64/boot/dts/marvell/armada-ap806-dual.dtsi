@@ -8,9 +8,6 @@
 #include "armada-ap806.dtsi"
 
 / {
-	model = "Marvell Armada AP806 Dual";
-	compatible = "marvell,armada-ap806-dual", "marvell,armada-ap806";
-
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -51,6 +48,8 @@
 			cache-size = <0x80000>;
 			cache-line-size = <64>;
 			cache-sets = <512>;
+			cache-level = <2>;
+			cache-unified;
 		};
 	};
 

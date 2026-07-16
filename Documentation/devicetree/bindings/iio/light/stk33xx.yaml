@@ -13,18 +13,28 @@ maintainers:
 description: |
   Ambient light and proximity sensor over an i2c interface.
 
+allOf:
+  - $ref: ../common.yaml#
+
 properties:
   compatible:
-    enum:
-      - sensortek,stk3310
-      - sensortek,stk3311
-      - sensortek,stk3335
+    oneOf:
+      - enum:
+          - sensortek,stk3310
+          - sensortek,stk3311
+          - sensortek,stk3335
+      - items:
+          - enum:
+              - sensortek,stk3013
+          - const: sensortek,stk3310
 
   reg:
     maxItems: 1
 
   interrupts:
     maxItems: 1
+
+  proximity-near-level: true
 
 required:
   - compatible
@@ -44,6 +54,7 @@ examples:
         stk3310@48 {
                 compatible = "sensortek,stk3310";
                 reg = <0x48>;
+                proximity-near-level = <25>;
                 interrupt-parent = <&gpio1>;
                 interrupts = <5 IRQ_TYPE_LEVEL_LOW>;
         };

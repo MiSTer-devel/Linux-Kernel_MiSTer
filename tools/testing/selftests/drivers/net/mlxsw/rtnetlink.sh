@@ -10,15 +10,12 @@
 lib_dir=$(dirname $0)/../../../net/forwarding
 
 ALL_TESTS="
-	rif_set_addr_test
 	rif_vrf_set_addr_test
-	rif_inherit_bridge_addr_test
 	rif_non_inherit_bridge_addr_test
 	vlan_interface_deletion_test
 	bridge_deletion_test
 	bridge_vlan_flags_test
 	vlan_1_test
-	lag_bridge_upper_test
 	duplicate_vlans_test
 	vlan_rif_refcount_test
 	subport_rif_refcount_test
@@ -36,6 +33,7 @@ ALL_TESTS="
 	nexthop_obj_bucket_offload_test
 	nexthop_obj_blackhole_offload_test
 	nexthop_obj_route_offload_test
+	bridge_locked_port_test
 	devlink_reload_test
 "
 NUM_NETIFS=2
@@ -60,55 +58,6 @@ cleanup()
 	ip link set dev $swp1 down
 }
 
-rif_set_addr_test()
-{
-	local swp1_mac=$(mac_get $swp1)
-	local swp2_mac=$(mac_get $swp2)
-
-	RET=0
-
-	# $swp1 and $swp2 likely got their IPv6 local addresses already, but
-	# here we need to test the transition to RIF.
-	ip addr flush dev $swp1
-	ip addr flush dev $swp2
-	sleep .1
-
-	ip addr add dev $swp1 192.0.2.1/28
-	check_err $?
-
-	ip link set dev $swp1 addr 00:11:22:33:44:55
-	check_err $?
-
-	# IP address enablement should be rejected if the MAC address prefix
-	# doesn't match other RIFs.
-	ip addr add dev $swp2 192.0.2.2/28 &>/dev/null
-	check_fail $? "IP address addition passed for a device with a wrong MAC"
-	ip addr add dev $swp2 192.0.2.2/28 2>&1 >/dev/null \
-	    | grep -q mlxsw_spectrum
-	check_err $? "no extack for IP address addition"
-
-	ip link set dev $swp2 addr 00:11:22:33:44:66
-	check_err $?
-	ip addr add dev $swp2 192.0.2.2/28 &>/dev/null
-	check_err $?
-
-	# Change of MAC address of a RIF should be forbidden if the new MAC
-	# doesn't share the prefix with other MAC addresses.
-	ip link set dev $swp2 addr 00:11:22:33:00:66 &>/dev/null
-	check_fail $? "change of MAC address passed for a wrong MAC"
-	ip link set dev $swp2 addr 00:11:22:33:00:66 2>&1 >/dev/null \
-	    | grep -q mlxsw_spectrum
-	check_err $? "no extack for MAC address change"
-
-	log_test "RIF - bad MAC change"
-
-	ip addr del dev $swp2 192.0.2.2/28
-	ip addr del dev $swp1 192.0.2.1/28
-
-	ip link set dev $swp2 addr $swp2_mac
-	ip link set dev $swp1 addr $swp1_mac
-}
-
 rif_vrf_set_addr_test()
 {
 	# Test that it is possible to set an IP address on a VRF upper despite
@@ -126,45 +75,6 @@ rif_vrf_set_addr_test()
 	log_test "RIF - setting IP address on VRF"
 
 	ip link del dev vrf-test
-}
-
-rif_inherit_bridge_addr_test()
-{
-	RET=0
-
-	# Create first RIF
-	ip addr add dev $swp1 192.0.2.1/28
-	check_err $?
-
-	# Create a FID RIF
-	ip link add name br1 up type bridge vlan_filtering 0
-	ip link set dev $swp2 master br1
-	ip addr add dev br1 192.0.2.17/28
-	check_err $?
-
-	# Prepare a device with a low MAC address
-	ip link add name d up type dummy
-	ip link set dev d addr 00:11:22:33:44:55
-
-	# Attach the device to br1. That prompts bridge address change, which
-	# should be vetoed, thus preventing the attachment.
-	ip link set dev d master br1 &>/dev/null
-	check_fail $? "Device with low MAC was permitted to attach a bridge with RIF"
-	ip link set dev d master br1 2>&1 >/dev/null \
-	    | grep -q mlxsw_spectrum
-	check_err $? "no extack for bridge attach rejection"
-
-	ip link set dev $swp2 addr 00:11:22:33:44:55 &>/dev/null
-	check_fail $? "Changing swp2's MAC address permitted"
-	ip link set dev $swp2 addr 00:11:22:33:44:55 2>&1 >/dev/null \
-	    | grep -q mlxsw_spectrum
-	check_err $? "no extack for bridge port MAC address change rejection"
-
-	log_test "RIF - attach port with bad MAC to bridge"
-
-	ip link del dev d
-	ip link del dev br1
-	ip addr del dev $swp1 192.0.2.1/28
 }
 
 rif_non_inherit_bridge_addr_test()
@@ -276,10 +186,7 @@ bridge_vlan_flags_test()
 
 	# If we did not handle references correctly, then this should produce a
 	# trace
-	devlink dev reload "$DEVLINK_DEV"
-
-	# Allow netdevices to be re-created following the reload
-	sleep 20
+	devlink_reload
 
 	log_test "bridge vlan flags"
 }
@@ -298,33 +205,6 @@ vlan_1_test()
 	log_test "vlan 1"
 
 	ip link del dev $swp1.1
-}
-
-lag_bridge_upper_test()
-{
-	# Test that ports cannot be enslaved to LAG devices that have uppers
-	# and that failure is handled gracefully. See commit b3529af6bb0d
-	# ("spectrum: Reference count VLAN entries") for more details
-	RET=0
-
-	ip link add name bond1 type bond mode 802.3ad
-
-	ip link add name br0 type bridge vlan_filtering 1
-	ip link set dev bond1 master br0
-
-	ip link set dev $swp1 down
-	ip link set dev $swp1 master bond1 &> /dev/null
-	check_fail $? "managed to enslave port to lag when should not"
-
-	# This might generate a trace, if we did not handle the failure
-	# correctly
-	ip -6 address add 2001:db8:1::1/64 dev $swp1
-	ip -6 address del 2001:db8:1::1/64 dev $swp1
-
-	log_test "lag with bridge upper"
-
-	ip link del dev br0
-	ip link del dev bond1
 }
 
 duplicate_vlans_test()
@@ -599,9 +479,6 @@ vlan_interface_uppers_test()
 	ip link set dev $swp1 master br0
 
 	ip link add link br0 name br0.10 type vlan id 10
-	ip link add link br0.10 name macvlan0 \
-		type macvlan mode private &> /dev/null
-	check_fail $? "managed to create a macvlan when should not"
 
 	ip -6 address add 2001:db8:1::1/64 dev br0.10
 	ip link add link br0.10 name macvlan0 type macvlan mode private
@@ -779,7 +656,7 @@ nexthop_obj_offload_test()
 	setup_wait
 
 	ip nexthop add id 1 via 192.0.2.2 dev $swp1
-	ip neigh replace 192.0.2.2 lladdr 00:11:22:33:44:55 nud reachable \
+	ip neigh replace 192.0.2.2 lladdr 00:11:22:33:44:55 nud perm \
 		dev $swp1
 
 	busywait "$TIMEOUT" wait_for_offload \
@@ -791,7 +668,7 @@ nexthop_obj_offload_test()
 		ip nexthop show id 1
 	check_err $? "nexthop marked as offloaded after setting neigh to failed state"
 
-	ip neigh replace 192.0.2.2 lladdr 00:11:22:33:44:55 nud reachable \
+	ip neigh replace 192.0.2.2 lladdr 00:11:22:33:44:55 nud perm \
 		dev $swp1
 	busywait "$TIMEOUT" wait_for_offload \
 		ip nexthop show id 1
@@ -828,11 +705,11 @@ nexthop_obj_group_offload_test()
 	ip nexthop add id 1 via 192.0.2.2 dev $swp1
 	ip nexthop add id 2 via 2001:db8:1::2 dev $swp1
 	ip nexthop add id 10 group 1/2
-	ip neigh replace 192.0.2.2 lladdr 00:11:22:33:44:55 nud reachable \
+	ip neigh replace 192.0.2.2 lladdr 00:11:22:33:44:55 nud perm \
 		dev $swp1
-	ip neigh replace 192.0.2.3 lladdr 00:11:22:33:44:55 nud reachable \
+	ip neigh replace 192.0.2.3 lladdr 00:11:22:33:44:55 nud perm \
 		dev $swp1
-	ip neigh replace 2001:db8:1::2 lladdr 00:11:22:33:44:55 nud reachable \
+	ip neigh replace 2001:db8:1::2 lladdr 00:11:22:33:44:55 nud perm \
 		dev $swp1
 
 	busywait "$TIMEOUT" wait_for_offload \
@@ -888,11 +765,11 @@ nexthop_obj_bucket_offload_test()
 	ip nexthop add id 1 via 192.0.2.2 dev $swp1
 	ip nexthop add id 2 via 2001:db8:1::2 dev $swp1
 	ip nexthop add id 10 group 1/2 type resilient buckets 32 idle_timer 0
-	ip neigh replace 192.0.2.2 lladdr 00:11:22:33:44:55 nud reachable \
+	ip neigh replace 192.0.2.2 lladdr 00:11:22:33:44:55 nud perm \
 		dev $swp1
-	ip neigh replace 192.0.2.3 lladdr 00:11:22:33:44:55 nud reachable \
+	ip neigh replace 192.0.2.3 lladdr 00:11:22:33:44:55 nud perm \
 		dev $swp1
-	ip neigh replace 2001:db8:1::2 lladdr 00:11:22:33:44:55 nud reachable \
+	ip neigh replace 2001:db8:1::2 lladdr 00:11:22:33:44:55 nud perm \
 		dev $swp1
 
 	busywait "$TIMEOUT" wait_for_offload \
@@ -921,7 +798,7 @@ nexthop_obj_bucket_offload_test()
 	check_err $? "nexthop bucket not marked as offloaded after revalidating nexthop"
 
 	# Revalidate nexthop id 2 by changing its neighbour
-	ip neigh replace 2001:db8:1::2 lladdr 00:11:22:33:44:55 nud reachable \
+	ip neigh replace 2001:db8:1::2 lladdr 00:11:22:33:44:55 nud perm \
 		dev $swp1
 	busywait "$TIMEOUT" wait_for_offload \
 		ip nexthop bucket show nhid 2
@@ -971,9 +848,9 @@ nexthop_obj_route_offload_test()
 	setup_wait
 
 	ip nexthop add id 1 via 192.0.2.2 dev $swp1
-	ip neigh replace 192.0.2.2 lladdr 00:11:22:33:44:55 nud reachable \
+	ip neigh replace 192.0.2.2 lladdr 00:11:22:33:44:55 nud perm \
 		dev $swp1
-	ip neigh replace 192.0.2.3 lladdr 00:11:22:33:44:55 nud reachable \
+	ip neigh replace 192.0.2.3 lladdr 00:11:22:33:44:55 nud perm \
 		dev $swp1
 
 	ip route replace 198.51.100.0/24 nhid 1
@@ -1007,18 +884,45 @@ nexthop_obj_route_offload_test()
 	simple_if_fini $swp1 192.0.2.1/24 2001:db8:1::1/64
 }
 
+bridge_locked_port_test()
+{
+	RET=0
+
+	ip link add name br1 up type bridge vlan_filtering 0
+
+	ip link add link $swp1 name $swp1.10 type vlan id 10
+	ip link set dev $swp1.10 master br1
+
+	bridge link set dev $swp1.10 locked on
+	check_fail $? "managed to set locked flag on a VLAN upper"
+
+	ip link set dev $swp1.10 nomaster
+	ip link set dev $swp1 master br1
+
+	bridge link set dev $swp1 locked on
+	check_fail $? "managed to set locked flag on a bridge port that has a VLAN upper"
+
+	ip link del dev $swp1.10
+	bridge link set dev $swp1 locked on
+
+	ip link add link $swp1 name $swp1.10 type vlan id 10
+	check_fail $? "managed to configure a VLAN upper on a locked port"
+
+	log_test "bridge locked port"
+
+	ip link del dev $swp1.10 &> /dev/null
+	ip link del dev br1
+}
+
 devlink_reload_test()
 {
 	# Test that after executing all the above configuration tests, a
 	# devlink reload can be performed without errors
 	RET=0
 
-	devlink dev reload "$DEVLINK_DEV"
-	check_err $? "devlink reload failed"
+	devlink_reload
 
 	log_test "devlink reload - last test"
-
-	sleep 20
 }
 
 trap cleanup EXIT

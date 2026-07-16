@@ -73,6 +73,7 @@ struct raw_notifier_head {
 
 struct srcu_notifier_head {
 	struct mutex mutex;
+	struct srcu_usage srcuu;
 	struct srcu_struct srcu;
 	struct notifier_block __rcu *head;
 };
@@ -107,7 +108,8 @@ extern void srcu_init_notifier_head(struct srcu_notifier_head *nh);
 	{							\
 		.mutex = __MUTEX_INITIALIZER(name.mutex),	\
 		.head = NULL,					\
-		.srcu = __SRCU_STRUCT_INIT(name.srcu, pcpu),	\
+		.srcuu = __SRCU_USAGE_INIT(name.srcuu),		\
+		.srcu = __SRCU_STRUCT_INIT(name.srcu, name.srcuu, pcpu), \
 	}
 
 #define ATOMIC_NOTIFIER_HEAD(name)				\
@@ -150,6 +152,11 @@ extern int raw_notifier_chain_register(struct raw_notifier_head *nh,
 extern int srcu_notifier_chain_register(struct srcu_notifier_head *nh,
 		struct notifier_block *nb);
 
+extern int atomic_notifier_chain_register_unique_prio(
+		struct atomic_notifier_head *nh, struct notifier_block *nb);
+extern int blocking_notifier_chain_register_unique_prio(
+		struct blocking_notifier_head *nh, struct notifier_block *nb);
+
 extern int atomic_notifier_chain_unregister(struct atomic_notifier_head *nh,
 		struct notifier_block *nb);
 extern int blocking_notifier_chain_unregister(struct blocking_notifier_head *nh,
@@ -172,6 +179,8 @@ extern int blocking_notifier_call_chain_robust(struct blocking_notifier_head *nh
 		unsigned long val_up, unsigned long val_down, void *v);
 extern int raw_notifier_call_chain_robust(struct raw_notifier_head *nh,
 		unsigned long val_up, unsigned long val_down, void *v);
+
+extern bool atomic_notifier_call_chain_is_empty(struct atomic_notifier_head *nh);
 
 #define NOTIFY_DONE		0x0000		/* Don't care */
 #define NOTIFY_OK		0x0001		/* Suits me */
@@ -227,8 +236,6 @@ static inline int notifier_to_errno(int ret)
 #define KBD_UNICODE		0x0003 /* Keyboard unicode */
 #define KBD_KEYSYM		0x0004 /* Keyboard keysym */
 #define KBD_POST_KEYSYM		0x0005 /* Called after keyboard keysym interpretation */
-
-extern struct blocking_notifier_head reboot_notifier_list;
 
 #endif /* __KERNEL__ */
 #endif /* _LINUX_NOTIFIER_H */

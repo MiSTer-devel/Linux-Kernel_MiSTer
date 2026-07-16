@@ -8,6 +8,7 @@
 #include <linux/mm_types.h>
 #include <linux/gfp.h>
 #include <linux/sync_core.h>
+#include <linux/sched/coredump.h>
 
 /*
  * Routines for handling mm_structs
@@ -28,12 +29,17 @@ extern struct mm_struct *mm_alloc(void);
  *
  * Use mmdrop() to release the reference acquired by mmgrab().
  *
- * See also <Documentation/vm/active_mm.rst> for an in-depth explanation
+ * See also <Documentation/mm/active_mm.rst> for an in-depth explanation
  * of &mm_struct.mm_count vs &mm_struct.mm_users.
  */
 static inline void mmgrab(struct mm_struct *mm)
 {
 	atomic_inc(&mm->mm_count);
+}
+
+static inline void smp_mb__after_mmgrab(void)
+{
+	smp_mb__after_atomic();
 }
 
 extern void __mmdrop(struct mm_struct *mm);
@@ -49,6 +55,63 @@ static inline void mmdrop(struct mm_struct *mm)
 		__mmdrop(mm);
 }
 
+#ifdef CONFIG_PREEMPT_RT
+/*
+ * RCU callback for delayed mm drop. Not strictly RCU, but call_rcu() is
+ * by far the least expensive way to do that.
+ */
+static inline void __mmdrop_delayed(struct rcu_head *rhp)
+{
+	struct mm_struct *mm = container_of(rhp, struct mm_struct, delayed_drop);
+
+	__mmdrop(mm);
+}
+
+/*
+ * Invoked from finish_task_switch(). Delegates the heavy lifting on RT
+ * kernels via RCU.
+ */
+static inline void mmdrop_sched(struct mm_struct *mm)
+{
+	/* Provides a full memory barrier. See mmdrop() */
+	if (atomic_dec_and_test(&mm->mm_count))
+		call_rcu(&mm->delayed_drop, __mmdrop_delayed);
+}
+#else
+static inline void mmdrop_sched(struct mm_struct *mm)
+{
+	mmdrop(mm);
+}
+#endif
+
+/* Helpers for lazy TLB mm refcounting */
+static inline void mmgrab_lazy_tlb(struct mm_struct *mm)
+{
+	if (IS_ENABLED(CONFIG_MMU_LAZY_TLB_REFCOUNT))
+		mmgrab(mm);
+}
+
+static inline void mmdrop_lazy_tlb(struct mm_struct *mm)
+{
+	if (IS_ENABLED(CONFIG_MMU_LAZY_TLB_REFCOUNT)) {
+		mmdrop(mm);
+	} else {
+		/*
+		 * mmdrop_lazy_tlb must provide a full memory barrier, see the
+		 * membarrier comment finish_task_switch which relies on this.
+		 */
+		smp_mb();
+	}
+}
+
+static inline void mmdrop_lazy_tlb_sched(struct mm_struct *mm)
+{
+	if (IS_ENABLED(CONFIG_MMU_LAZY_TLB_REFCOUNT))
+		mmdrop_sched(mm);
+	else
+		smp_mb(); /* see mmdrop_lazy_tlb() above */
+}
+
 /**
  * mmget() - Pin the address space associated with a &struct mm_struct.
  * @mm: The address space to pin.
@@ -62,7 +125,7 @@ static inline void mmdrop(struct mm_struct *mm)
  *
  * Use mmput() to release the reference acquired by mmget().
  *
- * See also <Documentation/vm/active_mm.rst> for an in-depth explanation
+ * See also <Documentation/mm/active_mm.rst> for an in-depth explanation
  * of &mm_struct.mm_count vs &mm_struct.mm_users.
  */
 static inline void mmget(struct mm_struct *mm)
@@ -77,7 +140,7 @@ static inline bool mmget_not_zero(struct mm_struct *mm)
 
 /* mmput gets rid of the mappings and all user-space */
 extern void mmput(struct mm_struct *);
-#ifdef CONFIG_MMU
+#if defined(CONFIG_MMU) || defined(CONFIG_FUTEX_PRIVATE_HASH)
 /* same as above but performs the slow path from the async context. Can
  * be called from the atomic context as well
  */
@@ -106,18 +169,49 @@ static inline void mm_update_next_owner(struct mm_struct *mm)
 #endif /* CONFIG_MEMCG */
 
 #ifdef CONFIG_MMU
+#ifndef arch_get_mmap_end
+#define arch_get_mmap_end(addr, len, flags)	(TASK_SIZE)
+#endif
+
+#ifndef arch_get_mmap_base
+#define arch_get_mmap_base(addr, base) (base)
+#endif
+
 extern void arch_pick_mmap_layout(struct mm_struct *mm,
-				  struct rlimit *rlim_stack);
-extern unsigned long
-arch_get_unmapped_area(struct file *, unsigned long, unsigned long,
-		       unsigned long, unsigned long);
-extern unsigned long
+				  const struct rlimit *rlim_stack);
+
+unsigned long
+arch_get_unmapped_area(struct file *filp, unsigned long addr,
+		       unsigned long len, unsigned long pgoff,
+		       unsigned long flags, vm_flags_t vm_flags);
+unsigned long
 arch_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
+			       unsigned long len, unsigned long pgoff,
+			       unsigned long flags, vm_flags_t);
+
+unsigned long mm_get_unmapped_area(struct mm_struct *mm, struct file *filp,
+				   unsigned long addr, unsigned long len,
+				   unsigned long pgoff, unsigned long flags);
+
+unsigned long mm_get_unmapped_area_vmflags(struct mm_struct *mm,
+					   struct file *filp,
+					   unsigned long addr,
+					   unsigned long len,
+					   unsigned long pgoff,
+					   unsigned long flags,
+					   vm_flags_t vm_flags);
+
+unsigned long
+generic_get_unmapped_area(struct file *filp, unsigned long addr,
 			  unsigned long len, unsigned long pgoff,
-			  unsigned long flags);
+			  unsigned long flags, vm_flags_t vm_flags);
+unsigned long
+generic_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
+				  unsigned long len, unsigned long pgoff,
+				  unsigned long flags, vm_flags_t vm_flags);
 #else
 static inline void arch_pick_mmap_layout(struct mm_struct *mm,
-					 struct rlimit *rlim_stack) {}
+					 const struct rlimit *rlim_stack) {}
 #endif
 
 static inline bool in_vfork(struct task_struct *tsk)
@@ -185,6 +279,32 @@ static inline void fs_reclaim_acquire(gfp_t gfp_mask) { }
 static inline void fs_reclaim_release(gfp_t gfp_mask) { }
 #endif
 
+/* Any memory-allocation retry loop should use
+ * memalloc_retry_wait(), and pass the flags for the most
+ * constrained allocation attempt that might have failed.
+ * This provides useful documentation of where loops are,
+ * and a central place to fine tune the waiting as the MM
+ * implementation changes.
+ */
+static inline void memalloc_retry_wait(gfp_t gfp_flags)
+{
+	/* We use io_schedule_timeout because waiting for memory
+	 * typically included waiting for dirty pages to be
+	 * written out, which requires IO.
+	 */
+	__set_current_state(TASK_UNINTERRUPTIBLE);
+	gfp_flags = current_gfp_context(gfp_flags);
+	if (gfpflags_allow_blocking(gfp_flags) &&
+	    !(gfp_flags & __GFP_NORETRY))
+		/* Probably waited already, no need for much more */
+		io_schedule_timeout(1);
+	else
+		/* Probably didn't wait, and has now released a lock,
+		 * so now is a good time to wait
+		 */
+		io_schedule_timeout(HZ/50);
+}
+
 /**
  * might_alloc - Mark possible allocation sites
  * @gfp_mask: gfp_t flags that would be used to allocate
@@ -202,6 +322,25 @@ static inline void might_alloc(gfp_t gfp_mask)
 }
 
 /**
+ * memalloc_flags_save - Add a PF_* flag to current->flags, save old value
+ * @flags: Flags to add.
+ *
+ * This allows PF_* flags to be conveniently added, irrespective of current
+ * value, and then the old version restored with memalloc_flags_restore().
+ */
+static inline unsigned memalloc_flags_save(unsigned flags)
+{
+	unsigned oldflags = ~current->flags & flags;
+	current->flags |= flags;
+	return oldflags;
+}
+
+static inline void memalloc_flags_restore(unsigned flags)
+{
+	current->flags &= ~flags;
+}
+
+/**
  * memalloc_noio_save - Marks implicit GFP_NOIO allocation scope.
  *
  * This functions marks the beginning of the GFP_NOIO allocation scope.
@@ -210,13 +349,12 @@ static inline void might_alloc(gfp_t gfp_mask)
  * point of view. Use memalloc_noio_restore to end the scope with flags
  * returned by this function.
  *
- * This function is safe to be used from any context.
+ * Context: This function is safe to be used from any context.
+ * Return: The saved flags to be passed to memalloc_noio_restore.
  */
 static inline unsigned int memalloc_noio_save(void)
 {
-	unsigned int flags = current->flags & PF_MEMALLOC_NOIO;
-	current->flags |= PF_MEMALLOC_NOIO;
-	return flags;
+	return memalloc_flags_save(PF_MEMALLOC_NOIO);
 }
 
 /**
@@ -229,7 +367,7 @@ static inline unsigned int memalloc_noio_save(void)
  */
 static inline void memalloc_noio_restore(unsigned int flags)
 {
-	current->flags = (current->flags & ~PF_MEMALLOC_NOIO) | flags;
+	memalloc_flags_restore(flags);
 }
 
 /**
@@ -241,13 +379,12 @@ static inline void memalloc_noio_restore(unsigned int flags)
  * point of view. Use memalloc_nofs_restore to end the scope with flags
  * returned by this function.
  *
- * This function is safe to be used from any context.
+ * Context: This function is safe to be used from any context.
+ * Return: The saved flags to be passed to memalloc_nofs_restore.
  */
 static inline unsigned int memalloc_nofs_save(void)
 {
-	unsigned int flags = current->flags & PF_MEMALLOC_NOFS;
-	current->flags |= PF_MEMALLOC_NOFS;
-	return flags;
+	return memalloc_flags_save(PF_MEMALLOC_NOFS);
 }
 
 /**
@@ -260,32 +397,76 @@ static inline unsigned int memalloc_nofs_save(void)
  */
 static inline void memalloc_nofs_restore(unsigned int flags)
 {
-	current->flags = (current->flags & ~PF_MEMALLOC_NOFS) | flags;
+	memalloc_flags_restore(flags);
 }
 
+/**
+ * memalloc_noreclaim_save - Marks implicit __GFP_MEMALLOC scope.
+ *
+ * This function marks the beginning of the __GFP_MEMALLOC allocation scope.
+ * All further allocations will implicitly add the __GFP_MEMALLOC flag, which
+ * prevents entering reclaim and allows access to all memory reserves. This
+ * should only be used when the caller guarantees the allocation will allow more
+ * memory to be freed very shortly, i.e. it needs to allocate some memory in
+ * the process of freeing memory, and cannot reclaim due to potential recursion.
+ *
+ * Users of this scope have to be extremely careful to not deplete the reserves
+ * completely and implement a throttling mechanism which controls the
+ * consumption of the reserve based on the amount of freed memory. Usage of a
+ * pre-allocated pool (e.g. mempool) should be always considered before using
+ * this scope.
+ *
+ * Individual allocations under the scope can opt out using __GFP_NOMEMALLOC
+ *
+ * Context: This function should not be used in an interrupt context as that one
+ *          does not give PF_MEMALLOC access to reserves.
+ *          See __gfp_pfmemalloc_flags().
+ * Return: The saved flags to be passed to memalloc_noreclaim_restore.
+ */
 static inline unsigned int memalloc_noreclaim_save(void)
 {
-	unsigned int flags = current->flags & PF_MEMALLOC;
-	current->flags |= PF_MEMALLOC;
-	return flags;
+	return memalloc_flags_save(PF_MEMALLOC);
 }
 
+/**
+ * memalloc_noreclaim_restore - Ends the implicit __GFP_MEMALLOC scope.
+ * @flags: Flags to restore.
+ *
+ * Ends the implicit __GFP_MEMALLOC scope started by memalloc_noreclaim_save
+ * function. Always make sure that the given flags is the return value from the
+ * pairing memalloc_noreclaim_save call.
+ */
 static inline void memalloc_noreclaim_restore(unsigned int flags)
 {
-	current->flags = (current->flags & ~PF_MEMALLOC) | flags;
+	memalloc_flags_restore(flags);
 }
 
+/**
+ * memalloc_pin_save - Marks implicit ~__GFP_MOVABLE scope.
+ *
+ * This function marks the beginning of the ~__GFP_MOVABLE allocation scope.
+ * All further allocations will implicitly remove the __GFP_MOVABLE flag, which
+ * will constraint the allocations to zones that allow long term pinning, i.e.
+ * not ZONE_MOVABLE zones.
+ *
+ * Return: The saved flags to be passed to memalloc_pin_restore.
+ */
 static inline unsigned int memalloc_pin_save(void)
 {
-	unsigned int flags = current->flags & PF_MEMALLOC_PIN;
-
-	current->flags |= PF_MEMALLOC_PIN;
-	return flags;
+	return memalloc_flags_save(PF_MEMALLOC_PIN);
 }
 
+/**
+ * memalloc_pin_restore - Ends the implicit ~__GFP_MOVABLE scope.
+ * @flags: Flags to restore.
+ *
+ * Ends the implicit ~__GFP_MOVABLE scope started by memalloc_pin_save function.
+ * Always make sure that the given flags is the return value from the pairing
+ * memalloc_pin_save call.
+ */
 static inline void memalloc_pin_restore(unsigned int flags)
 {
-	current->flags = (current->flags & ~PF_MEMALLOC_PIN) | flags;
+	memalloc_flags_restore(flags);
 }
 
 #ifdef CONFIG_MEMCG
@@ -297,6 +478,10 @@ DECLARE_PER_CPU(struct mem_cgroup *, int_active_memcg);
  * This function marks the beginning of the remote memcg charging scope. All the
  * __GFP_ACCOUNT allocations till the end of the scope will be charged to the
  * given memcg.
+ *
+ * Please, make sure that caller has a reference to the passed memcg structure,
+ * so its lifetime is guaranteed to exceed the scope between two
+ * set_active_memcg() calls.
  *
  * NOTE: This function can nest. Users must save the return value and
  * reset the previous value after their own charging scope is over.
@@ -347,6 +532,13 @@ enum {
 
 static inline void membarrier_mm_sync_core_before_usermode(struct mm_struct *mm)
 {
+	/*
+	 * The atomic_read() below prevents CSE. The following should
+	 * help the compiler generate more efficient code on architectures
+	 * where sync_core_before_usermode() is a no-op.
+	 */
+	if (!IS_ENABLED(CONFIG_ARCH_HAS_SYNC_CORE_BEFORE_USERMODE))
+		return;
 	if (current->mm != mm)
 		return;
 	if (likely(!(atomic_read(&mm->membarrier_state) &

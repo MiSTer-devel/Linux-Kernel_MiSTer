@@ -150,7 +150,7 @@ static struct attribute *initiate_attrs[] = {
 	NULL,
 };
 
-static struct attribute_group initiate_attr_group = {
+static const struct attribute_group initiate_attr_group = {
 	.attrs = initiate_attrs,
 };
 
@@ -208,11 +208,12 @@ static struct attribute *dump_default_attrs[] = {
 	&ack_attribute.attr,
 	NULL,
 };
+ATTRIBUTE_GROUPS(dump_default);
 
-static struct kobj_type dump_ktype = {
+static const struct kobj_type dump_ktype = {
 	.sysfs_ops = &dump_sysfs_ops,
 	.release = &dump_release,
-	.default_attrs = dump_default_attrs,
+	.default_groups = dump_default_groups,
 };
 
 static int64_t dump_read_info(uint32_t *dump_id, uint32_t *dump_size, uint32_t *dump_type)
@@ -285,7 +286,7 @@ out:
 }
 
 static ssize_t dump_attr_read(struct file *filep, struct kobject *kobj,
-			      struct bin_attribute *bin_attr,
+			      const struct bin_attribute *bin_attr,
 			      char *buffer, loff_t pos, size_t count)
 {
 	ssize_t rc;
@@ -419,7 +420,7 @@ void __init opal_platform_dump_init(void)
 	int rc;
 	int dump_irq;
 
-	/* ELOG not supported by firmware */
+	/* Dump not supported by firmware */
 	if (!opal_check_token(OPAL_DUMP_READ))
 		return;
 

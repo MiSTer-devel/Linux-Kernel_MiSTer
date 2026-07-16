@@ -1,5 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 OR MIT */
 /*
- * Copyright 2020 Advanced Micro Devices, Inc.
+ * Copyright 2020-2022 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -36,7 +37,7 @@ struct pm4_mes_map_process_aldebaran {
 		struct {
 			uint32_t pasid:16;	    /* 0 - 15  */
 			uint32_t single_memops:1;   /* 16      */
-			uint32_t reserved1:1;	    /* 17      */
+			uint32_t exec_cleaner_shader:1;	    /* 17      */
 			uint32_t debug_vmid:4;	    /* 18 - 21 */
 			uint32_t new_debug:1;	    /* 22      */
 			uint32_t tmz:1;		    /* 23      */

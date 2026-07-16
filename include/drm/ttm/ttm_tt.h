@@ -32,43 +32,100 @@
 #include <drm/ttm/ttm_caching.h>
 #include <drm/ttm/ttm_kmap_iter.h>
 
+struct ttm_backup;
 struct ttm_device;
 struct ttm_tt;
 struct ttm_resource;
 struct ttm_buffer_object;
 struct ttm_operation_ctx;
-
-#define TTM_PAGE_FLAG_SWAPPED         (1 << 4)
-#define TTM_PAGE_FLAG_ZERO_ALLOC      (1 << 6)
-#define TTM_PAGE_FLAG_SG              (1 << 8)
-#define TTM_PAGE_FLAG_NO_RETRY	      (1 << 9)
-
-#define TTM_PAGE_FLAG_PRIV_POPULATED  (1 << 31)
+struct ttm_pool_tt_restore;
 
 /**
- * struct ttm_tt
- *
- * @pages: Array of pages backing the data.
- * @page_flags: see TTM_PAGE_FLAG_*
- * @num_pages: Number of pages in the page array.
- * @sg: for SG objects via dma-buf
- * @dma_address: The DMA (bus) addresses of the pages
- * @swap_storage: Pointer to shmem struct file for swap storage.
- * @pages_list: used by some page allocation backend
- * @caching: The current caching state of the pages.
- *
- * This is a structure holding the pages, caching- and aperture binding
- * status for a buffer object that isn't backed by fixed (VRAM / AGP)
+ * struct ttm_tt - This is a structure holding the pages, caching- and aperture
+ * binding status for a buffer object that isn't backed by fixed (VRAM / AGP)
  * memory.
  */
 struct ttm_tt {
+	/** @pages: Array of pages backing the data. */
 	struct page **pages;
+	/**
+	 * @page_flags: The page flags.
+	 *
+	 * Supported values:
+	 *
+	 * TTM_TT_FLAG_SWAPPED: Set by TTM when the pages have been unpopulated
+	 * and swapped out by TTM.  Calling ttm_tt_populate() will then swap the
+	 * pages back in, and unset the flag. Drivers should in general never
+	 * need to touch this.
+	 *
+	 * TTM_TT_FLAG_ZERO_ALLOC: Set if the pages will be zeroed on
+	 * allocation.
+	 *
+	 * TTM_TT_FLAG_EXTERNAL: Set if the underlying pages were allocated
+	 * externally, like with dma-buf or userptr. This effectively disables
+	 * TTM swapping out such pages.  Also important is to prevent TTM from
+	 * ever directly mapping these pages.
+	 *
+	 * Note that enum ttm_bo_type.ttm_bo_type_sg objects will always enable
+	 * this flag.
+	 *
+	 * TTM_TT_FLAG_EXTERNAL_MAPPABLE: Same behaviour as
+	 * TTM_TT_FLAG_EXTERNAL, but with the reduced restriction that it is
+	 * still valid to use TTM to map the pages directly. This is useful when
+	 * implementing a ttm_tt backend which still allocates driver owned
+	 * pages underneath(say with shmem).
+	 *
+	 * Note that since this also implies TTM_TT_FLAG_EXTERNAL, the usage
+	 * here should always be:
+	 *
+	 *   page_flags = TTM_TT_FLAG_EXTERNAL |
+	 *		  TTM_TT_FLAG_EXTERNAL_MAPPABLE;
+	 *
+	 * TTM_TT_FLAG_DECRYPTED: The mapped ttm pages should be marked as
+	 * not encrypted. The framework will try to match what the dma layer
+	 * is doing, but note that it is a little fragile because ttm page
+	 * fault handling abuses the DMA api a bit and dma_map_attrs can't be
+	 * used to assure pgprot always matches.
+	 *
+	 * TTM_TT_FLAG_BACKED_UP: TTM internal only. This is set if the
+	 * struct ttm_tt has been (possibly partially) backed up.
+	 *
+	 * TTM_TT_FLAG_PRIV_POPULATED: TTM internal only. DO NOT USE. This is
+	 * set by TTM after ttm_tt_populate() has successfully returned, and is
+	 * then unset when TTM calls ttm_tt_unpopulate().
+	 *
+	 */
+#define TTM_TT_FLAG_SWAPPED		BIT(0)
+#define TTM_TT_FLAG_ZERO_ALLOC		BIT(1)
+#define TTM_TT_FLAG_EXTERNAL		BIT(2)
+#define TTM_TT_FLAG_EXTERNAL_MAPPABLE	BIT(3)
+#define TTM_TT_FLAG_DECRYPTED		BIT(4)
+#define TTM_TT_FLAG_BACKED_UP	        BIT(5)
+
+#define TTM_TT_FLAG_PRIV_POPULATED	BIT(6)
 	uint32_t page_flags;
+	/** @num_pages: Number of pages in the page array. */
 	uint32_t num_pages;
+	/** @sg: for SG objects via dma-buf. */
 	struct sg_table *sg;
+	/** @dma_address: The DMA (bus) addresses of the pages. */
 	dma_addr_t *dma_address;
+	/** @swap_storage: Pointer to shmem struct file for swap storage. */
 	struct file *swap_storage;
+	/**
+	 * @backup: Pointer to backup struct for backed up tts.
+	 * Could be unified with @swap_storage. Meanwhile, the driver's
+	 * ttm_tt_create() callback is responsible for assigning
+	 * this field.
+	 */
+	struct file *backup;
+	/**
+	 * @caching: The current caching state of the pages, see enum
+	 * ttm_caching.
+	 */
 	enum ttm_caching caching;
+	/** @restore: Partial restoration from backup state. TTM private */
+	struct ttm_pool_tt_restore *restore;
 };
 
 /**
@@ -85,7 +142,41 @@ struct ttm_kmap_iter_tt {
 
 static inline bool ttm_tt_is_populated(struct ttm_tt *tt)
 {
-	return tt->page_flags & TTM_PAGE_FLAG_PRIV_POPULATED;
+	return tt->page_flags & TTM_TT_FLAG_PRIV_POPULATED;
+}
+
+/**
+ * ttm_tt_is_swapped() - Whether the ttm_tt is swapped out or backed up
+ * @tt: The struct ttm_tt.
+ *
+ * Return: true if swapped or backed up, false otherwise.
+ */
+static inline bool ttm_tt_is_swapped(const struct ttm_tt *tt)
+{
+	return tt->page_flags & (TTM_TT_FLAG_SWAPPED | TTM_TT_FLAG_BACKED_UP);
+}
+
+/**
+ * ttm_tt_is_backed_up() - Whether the ttm_tt backed up
+ * @tt: The struct ttm_tt.
+ *
+ * Return: true if swapped or backed up, false otherwise.
+ */
+static inline bool ttm_tt_is_backed_up(const struct ttm_tt *tt)
+{
+	return tt->page_flags & TTM_TT_FLAG_BACKED_UP;
+}
+
+/**
+ * ttm_tt_clear_backed_up() - Clear the ttm_tt backed-up status
+ * @tt: The struct ttm_tt.
+ *
+ * Drivers can use this functionto clear the backed-up status,
+ * for example before destroying or re-validating a purged tt.
+ */
+static inline void ttm_tt_clear_backed_up(struct ttm_tt *tt)
+{
+	tt->page_flags &= ~TTM_TT_FLAG_BACKED_UP;
 }
 
 /**
@@ -104,8 +195,9 @@ int ttm_tt_create(struct ttm_buffer_object *bo, bool zero_alloc);
  *
  * @ttm: The struct ttm_tt.
  * @bo: The buffer object we create the ttm for.
- * @page_flags: Page flags as identified by TTM_PAGE_FLAG_XX flags.
+ * @page_flags: Page flags as identified by TTM_TT_FLAG_XX flags.
  * @caching: the desired caching state of the pages
+ * @extra_pages: Extra pages needed for the driver.
  *
  * Create a struct ttm_tt to back data with system memory pages.
  * No pages are actually allocated.
@@ -113,7 +205,8 @@ int ttm_tt_create(struct ttm_buffer_object *bo, bool zero_alloc);
  * NULL: Out of memory.
  */
 int ttm_tt_init(struct ttm_tt *ttm, struct ttm_buffer_object *bo,
-		uint32_t page_flags, enum ttm_caching caching);
+		uint32_t page_flags, enum ttm_caching caching,
+		unsigned long extra_pages);
 int ttm_sg_tt_init(struct ttm_tt *ttm_dma, struct ttm_buffer_object *bo,
 		   uint32_t page_flags, enum ttm_caching caching);
 
@@ -127,20 +220,14 @@ int ttm_sg_tt_init(struct ttm_tt *ttm_dma, struct ttm_buffer_object *bo,
 void ttm_tt_fini(struct ttm_tt *ttm);
 
 /**
- * ttm_ttm_destroy:
+ * ttm_tt_destroy:
  *
+ * @bdev: the ttm_device this object belongs to
  * @ttm: The struct ttm_tt.
  *
  * Unbind, unpopulate and destroy common struct ttm_tt.
  */
 void ttm_tt_destroy(struct ttm_device *bdev, struct ttm_tt *ttm);
-
-/**
- * ttm_tt_destroy_common:
- *
- * Called from driver to destroy common path.
- */
-void ttm_tt_destroy_common(struct ttm_device *bdev, struct ttm_tt *ttm);
 
 /**
  * ttm_tt_swapin:
@@ -156,15 +243,19 @@ int ttm_tt_swapout(struct ttm_device *bdev, struct ttm_tt *ttm,
 /**
  * ttm_tt_populate - allocate pages for a ttm
  *
+ * @bdev: the ttm_device this object belongs to
  * @ttm: Pointer to the ttm_tt structure
+ * @ctx: operation context for populating the tt object.
  *
  * Calls the driver method to allocate pages for a ttm
  */
-int ttm_tt_populate(struct ttm_device *bdev, struct ttm_tt *ttm, struct ttm_operation_ctx *ctx);
+int ttm_tt_populate(struct ttm_device *bdev, struct ttm_tt *ttm,
+		    struct ttm_operation_ctx *ctx);
 
 /**
  * ttm_tt_unpopulate - free pages from a ttm
  *
+ * @bdev: the ttm_device this object belongs to
  * @ttm: Pointer to the ttm_tt structure
  *
  * Calls the driver method to free all pages from a ttm
@@ -181,13 +272,33 @@ void ttm_tt_unpopulate(struct ttm_device *bdev, struct ttm_tt *ttm);
  */
 static inline void ttm_tt_mark_for_clear(struct ttm_tt *ttm)
 {
-	ttm->page_flags |= TTM_PAGE_FLAG_ZERO_ALLOC;
+	ttm->page_flags |= TTM_TT_FLAG_ZERO_ALLOC;
 }
 
 void ttm_tt_mgr_init(unsigned long num_pages, unsigned long num_dma32_pages);
 
 struct ttm_kmap_iter *ttm_kmap_iter_tt_init(struct ttm_kmap_iter_tt *iter_tt,
 					    struct ttm_tt *tt);
+unsigned long ttm_tt_pages_limit(void);
+
+/**
+ * struct ttm_backup_flags - Flags to govern backup behaviour.
+ * @purge: Free pages without backing up. Bypass pools.
+ * @writeback: Attempt to copy contents directly to swap space, even
+ * if that means blocking on writes to external memory.
+ */
+struct ttm_backup_flags {
+	u32 purge : 1;
+	u32 writeback : 1;
+};
+
+long ttm_tt_backup(struct ttm_device *bdev, struct ttm_tt *tt,
+		   const struct ttm_backup_flags flags);
+
+int ttm_tt_restore(struct ttm_device *bdev, struct ttm_tt *tt,
+		   const struct ttm_operation_ctx *ctx);
+
+int ttm_tt_setup_backup(struct ttm_tt *tt);
 
 #if IS_ENABLED(CONFIG_AGP)
 #include <linux/agp_backend.h>
@@ -197,7 +308,7 @@ struct ttm_kmap_iter *ttm_kmap_iter_tt_init(struct ttm_kmap_iter_tt *iter_tt,
  *
  * @bo: Buffer object we allocate the ttm for.
  * @bridge: The agp bridge this device is sitting on.
- * @page_flags: Page flags as identified by TTM_PAGE_FLAG_XX flags.
+ * @page_flags: Page flags as identified by TTM_TT_FLAG_XX flags.
  *
  *
  * Create a TTM backend that uses the indicated AGP bridge as an aperture

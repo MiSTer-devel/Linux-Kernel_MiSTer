@@ -36,6 +36,7 @@ static struct pci_driver stub_driver = {
 	.name		= "pci-stub",
 	.id_table	= NULL,	/* only dynamic id's */
 	.probe		= pci_stub_probe,
+	.driver_managed_dma = true,
 };
 
 static int __init pci_stub_init(void)
@@ -91,5 +92,6 @@ static void __exit pci_stub_exit(void)
 module_init(pci_stub_init);
 module_exit(pci_stub_exit);
 
+MODULE_DESCRIPTION("VM device assignment stub driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Chris Wright <chrisw@sous-sol.org>");

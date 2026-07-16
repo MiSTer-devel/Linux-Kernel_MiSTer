@@ -137,12 +137,15 @@ static void kvmppc_core_vcpu_load_pr(struct kvm_vcpu *vcpu, int cpu)
 	svcpu->slb_max = to_book3s(vcpu)->slb_shadow_max;
 	svcpu->in_use = 0;
 	svcpu_put(svcpu);
-#endif
 
 	/* Disable AIL if supported */
-	if (cpu_has_feature(CPU_FTR_HVMODE) &&
-	    cpu_has_feature(CPU_FTR_ARCH_207S))
-		mtspr(SPRN_LPCR, mfspr(SPRN_LPCR) & ~LPCR_AIL);
+	if (cpu_has_feature(CPU_FTR_HVMODE)) {
+		if (cpu_has_feature(CPU_FTR_ARCH_207S))
+			mtspr(SPRN_LPCR, mfspr(SPRN_LPCR) & ~LPCR_AIL);
+		if (cpu_has_feature(CPU_FTR_ARCH_300) && (current->thread.fscr & FSCR_SCV))
+			mtspr(SPRN_FSCR, mfspr(SPRN_FSCR) & ~FSCR_SCV);
+	}
+#endif
 
 	vcpu->cpu = smp_processor_id();
 #ifdef CONFIG_PPC_BOOK3S_32
@@ -165,6 +168,14 @@ static void kvmppc_core_vcpu_put_pr(struct kvm_vcpu *vcpu)
 	memcpy(to_book3s(vcpu)->slb_shadow, svcpu->slb, sizeof(svcpu->slb));
 	to_book3s(vcpu)->slb_shadow_max = svcpu->slb_max;
 	svcpu_put(svcpu);
+
+	/* Enable AIL if supported */
+	if (cpu_has_feature(CPU_FTR_HVMODE)) {
+		if (cpu_has_feature(CPU_FTR_ARCH_207S))
+			mtspr(SPRN_LPCR, mfspr(SPRN_LPCR) | LPCR_AIL_3);
+		if (cpu_has_feature(CPU_FTR_ARCH_300) && (current->thread.fscr & FSCR_SCV))
+			mtspr(SPRN_FSCR, mfspr(SPRN_FSCR) | FSCR_SCV);
+	}
 #endif
 
 	if (kvmppc_is_split_real(vcpu))
@@ -173,11 +184,6 @@ static void kvmppc_core_vcpu_put_pr(struct kvm_vcpu *vcpu)
 	kvmppc_giveup_ext(vcpu, MSR_FP | MSR_VEC | MSR_VSX);
 	kvmppc_giveup_fac(vcpu, FSCR_TAR_LG);
 	kvmppc_save_tm_pr(vcpu);
-
-	/* Enable AIL if supported */
-	if (cpu_has_feature(CPU_FTR_HVMODE) &&
-	    cpu_has_feature(CPU_FTR_ARCH_207S))
-		mtspr(SPRN_LPCR, mfspr(SPRN_LPCR) | LPCR_AIL_3);
 
 	vcpu->cpu = -1;
 }
@@ -428,7 +434,7 @@ static int kvmppc_core_check_requests_pr(struct kvm_vcpu *vcpu)
 /************* MMU Notifiers *************/
 static bool do_kvm_unmap_gfn(struct kvm *kvm, struct kvm_gfn_range *range)
 {
-	long i;
+	unsigned long i;
 	struct kvm_vcpu *vcpu;
 
 	kvm_for_each_vcpu(i, vcpu, kvm)
@@ -453,12 +459,6 @@ static bool kvm_test_age_gfn_pr(struct kvm *kvm, struct kvm_gfn_range *range)
 {
 	/* XXX could be more clever ;) */
 	return false;
-}
-
-static bool kvm_set_spte_gfn_pr(struct kvm *kvm, struct kvm_gfn_range *range)
-{
-	/* The page will get remapped properly on its next fault */
-	return do_kvm_unmap_gfn(kvm, range);
 }
 
 /*****************************************/
@@ -492,8 +492,7 @@ static void kvmppc_set_msr_pr(struct kvm_vcpu *vcpu, u64 msr)
 
 	if (msr & MSR_POW) {
 		if (!vcpu->arch.pending_exceptions) {
-			kvm_vcpu_block(vcpu);
-			kvm_clear_request(KVM_REQ_UNHALT, vcpu);
+			kvm_vcpu_halt(vcpu);
 			vcpu->stat.generic.halt_wakeup++;
 
 			/* Unset POW bit after we woke up */
@@ -599,6 +598,7 @@ static void kvmppc_set_pvr_pr(struct kvm_vcpu *vcpu, u32 pvr)
 	case PVR_POWER8:
 	case PVR_POWER8E:
 	case PVR_POWER8NVL:
+	case PVR_HX_C2000:
 	case PVR_POWER9:
 		vcpu->arch.hflags |= BOOK3S_HFLAG_MULTI_PGSIZE |
 			BOOK3S_HFLAG_NEW_TLBIE;
@@ -639,29 +639,27 @@ static void kvmppc_set_pvr_pr(struct kvm_vcpu *vcpu, u32 pvr)
  */
 static void kvmppc_patch_dcbz(struct kvm_vcpu *vcpu, struct kvmppc_pte *pte)
 {
-	struct page *hpage;
+	struct kvm_host_map map;
 	u64 hpage_offset;
 	u32 *page;
-	int i;
+	int i, r;
 
-	hpage = gfn_to_page(vcpu->kvm, pte->raddr >> PAGE_SHIFT);
-	if (is_error_page(hpage))
+	r = kvm_vcpu_map(vcpu, pte->raddr >> PAGE_SHIFT, &map);
+	if (r)
 		return;
 
 	hpage_offset = pte->raddr & ~PAGE_MASK;
 	hpage_offset &= ~0xFFFULL;
 	hpage_offset /= 4;
 
-	get_page(hpage);
-	page = kmap_atomic(hpage);
+	page = map.hva;
 
 	/* patch dcbz into reserved instruction, so we trap */
 	for (i=hpage_offset; i < hpage_offset + (HW_PAGE_SIZE / 4); i++)
 		if ((be32_to_cpu(page[i]) & 0xff0007ff) == INS_DCBZ)
 			page[i] &= cpu_to_be32(0xfffffff7);
 
-	kunmap_atomic(page);
-	put_page(hpage);
+	kvm_vcpu_unmap(vcpu, &map);
 }
 
 static bool kvmppc_visible_gpa(struct kvm_vcpu *vcpu, gpa_t gpa)
@@ -754,7 +752,7 @@ static int kvmppc_handle_pagefault(struct kvm_vcpu *vcpu,
 			flags = DSISR_NOHPTE;
 		if (data) {
 			flags |= vcpu->arch.fault_dsisr & DSISR_ISSTORE;
-			kvmppc_core_queue_data_storage(vcpu, eaddr, flags);
+			kvmppc_core_queue_data_storage(vcpu, 0, eaddr, flags);
 		} else {
 			kvmppc_core_queue_inst_storage(vcpu, flags);
 		}
@@ -1037,6 +1035,10 @@ static int kvmppc_handle_fac(struct kvm_vcpu *vcpu, ulong fac)
 
 void kvmppc_set_fscr(struct kvm_vcpu *vcpu, u64 fscr)
 {
+	if (fscr & FSCR_SCV)
+		fscr &= ~FSCR_SCV; /* SCV must not be enabled */
+	/* Prohibit prefixed instructions for now */
+	fscr &= ~FSCR_PREFIX;
 	if ((vcpu->arch.fscr & FSCR_TAR) && !(fscr & FSCR_TAR)) {
 		/* TAR got dropped, drop it in shadow too */
 		kvmppc_giveup_fac(vcpu, FSCR_TAR_LG);
@@ -1072,7 +1074,7 @@ static int kvmppc_exit_pr_progint(struct kvm_vcpu *vcpu, unsigned int exit_nr)
 {
 	enum emulation_result er;
 	ulong flags;
-	u32 last_inst;
+	ppc_inst_t last_inst;
 	int emul, r;
 
 	/*
@@ -1093,9 +1095,9 @@ static int kvmppc_exit_pr_progint(struct kvm_vcpu *vcpu, unsigned int exit_nr)
 	if (kvmppc_get_msr(vcpu) & MSR_PR) {
 #ifdef EXIT_DEBUG
 		pr_info("Userspace triggered 0x700 exception at\n 0x%lx (0x%x)\n",
-			kvmppc_get_pc(vcpu), last_inst);
+			kvmppc_get_pc(vcpu), ppc_inst_val(last_inst));
 #endif
-		if ((last_inst & 0xff0007ff) != (INS_DCBZ & 0xfffffff7)) {
+		if ((ppc_inst_val(last_inst) & 0xff0007ff) != (INS_DCBZ & 0xfffffff7)) {
 			kvmppc_core_queue_program(vcpu, flags);
 			return RESUME_GUEST;
 		}
@@ -1112,7 +1114,7 @@ static int kvmppc_exit_pr_progint(struct kvm_vcpu *vcpu, unsigned int exit_nr)
 		break;
 	case EMULATE_FAIL:
 		pr_crit("%s: emulation at %lx failed (%08x)\n",
-			__func__, kvmppc_get_pc(vcpu), last_inst);
+			__func__, kvmppc_get_pc(vcpu), ppc_inst_val(last_inst));
 		kvmppc_core_queue_program(vcpu, flags);
 		r = RESUME_GUEST;
 		break;
@@ -1229,7 +1231,7 @@ int kvmppc_handle_exit_pr(struct kvm_vcpu *vcpu, unsigned int exit_nr)
 			r = kvmppc_handle_pagefault(vcpu, dar, exit_nr);
 			srcu_read_unlock(&vcpu->kvm->srcu, idx);
 		} else {
-			kvmppc_core_queue_data_storage(vcpu, dar, fault_dsisr);
+			kvmppc_core_queue_data_storage(vcpu, 0, dar, fault_dsisr);
 			r = RESUME_GUEST;
 		}
 		break;
@@ -1274,12 +1276,12 @@ int kvmppc_handle_exit_pr(struct kvm_vcpu *vcpu, unsigned int exit_nr)
 		break;
 	case BOOK3S_INTERRUPT_SYSCALL:
 	{
-		u32 last_sc;
+		ppc_inst_t last_sc;
 		int emul;
 
 		/* Get last sc for papr */
 		if (vcpu->arch.papr_enabled) {
-			/* The sc instuction points SRR0 to the next inst */
+			/* The sc instruction points SRR0 to the next inst */
 			emul = kvmppc_get_last_inst(vcpu, INST_SC, &last_sc);
 			if (emul != EMULATE_DONE) {
 				kvmppc_set_pc(vcpu, kvmppc_get_pc(vcpu) - 4);
@@ -1289,7 +1291,7 @@ int kvmppc_handle_exit_pr(struct kvm_vcpu *vcpu, unsigned int exit_nr)
 		}
 
 		if (vcpu->arch.papr_enabled &&
-		    (last_sc == 0x44000022) &&
+		    (ppc_inst_val(last_sc) == 0x44000022) &&
 		    !(kvmppc_get_msr(vcpu) & MSR_PR)) {
 			/* SC 1 papr hypercalls */
 			ulong cmd = kvmppc_get_gpr(vcpu, 3);
@@ -1341,7 +1343,7 @@ int kvmppc_handle_exit_pr(struct kvm_vcpu *vcpu, unsigned int exit_nr)
 	{
 		int ext_msr = 0;
 		int emul;
-		u32 last_inst;
+		ppc_inst_t last_inst;
 
 		if (vcpu->arch.hflags & BOOK3S_HFLAG_PAIRED_SINGLE) {
 			/* Do paired single instruction emulation */
@@ -1375,15 +1377,15 @@ int kvmppc_handle_exit_pr(struct kvm_vcpu *vcpu, unsigned int exit_nr)
 	}
 	case BOOK3S_INTERRUPT_ALIGNMENT:
 	{
-		u32 last_inst;
+		ppc_inst_t last_inst;
 		int emul = kvmppc_get_last_inst(vcpu, INST_GENERIC, &last_inst);
 
 		if (emul == EMULATE_DONE) {
 			u32 dsisr;
 			u64 dar;
 
-			dsisr = kvmppc_alignment_dsisr(vcpu, last_inst);
-			dar = kvmppc_alignment_dar(vcpu, last_inst);
+			dsisr = kvmppc_alignment_dsisr(vcpu, ppc_inst_val(last_inst));
+			dar = kvmppc_alignment_dar(vcpu, ppc_inst_val(last_inst));
 
 			kvmppc_set_dsisr(vcpu, dsisr);
 			kvmppc_set_dar(vcpu, dar);
@@ -1899,16 +1901,15 @@ static void kvmppc_core_flush_memslot_pr(struct kvm *kvm,
 }
 
 static int kvmppc_core_prepare_memory_region_pr(struct kvm *kvm,
-					struct kvm_memory_slot *memslot,
-					const struct kvm_userspace_memory_region *mem,
-					enum kvm_mr_change change)
+				const struct kvm_memory_slot *old,
+				struct kvm_memory_slot *new,
+				enum kvm_mr_change change)
 {
 	return 0;
 }
 
 static void kvmppc_core_commit_memory_region_pr(struct kvm *kvm,
-				const struct kvm_userspace_memory_region *mem,
-				const struct kvm_memory_slot *old,
+				struct kvm_memory_slot *old,
 				const struct kvm_memory_slot *new,
 				enum kvm_mr_change change)
 {
@@ -2036,8 +2037,8 @@ static int kvmppc_core_check_processor_compat_pr(void)
 	return 0;
 }
 
-static long kvm_arch_vm_ioctl_pr(struct file *filp,
-				 unsigned int ioctl, unsigned long arg)
+static int kvm_arch_vm_ioctl_pr(struct file *filp,
+				unsigned int ioctl, unsigned long arg)
 {
 	return -ENOTTY;
 }
@@ -2062,7 +2063,6 @@ static struct kvmppc_ops kvm_ops_pr = {
 	.unmap_gfn_range = kvm_unmap_gfn_range_pr,
 	.age_gfn  = kvm_age_gfn_pr,
 	.test_age_gfn = kvm_test_age_gfn_pr,
-	.set_spte_gfn = kvm_set_spte_gfn_pr,
 	.free_memslot = kvmppc_core_free_memslot_pr,
 	.init_vm = kvmppc_core_init_vm_pr,
 	.destroy_vm = kvmppc_core_destroy_vm_pr,
@@ -2109,6 +2109,7 @@ void kvmppc_book3s_exit_pr(void)
 module_init(kvmppc_book3s_init_pr);
 module_exit(kvmppc_book3s_exit_pr);
 
+MODULE_DESCRIPTION("KVM on Book3S without using hypervisor mode");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_MISCDEV(KVM_MINOR);
 MODULE_ALIAS("devname:kvm");

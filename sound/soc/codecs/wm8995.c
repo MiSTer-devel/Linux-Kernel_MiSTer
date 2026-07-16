@@ -541,7 +541,7 @@ static int check_clk_sys(struct snd_soc_dapm_widget *source,
 		clk = "AIF2CLK";
 	else
 		clk = "AIF1CLK";
-	return !strcmp(source->name, clk);
+	return !snd_soc_dapm_widget_name_cmp(source, clk);
 }
 
 static int wm8995_put_class_w(struct snd_kcontrol *kcontrol,
@@ -1448,9 +1448,9 @@ static int wm8995_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 
 	master = 0;
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		break;
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		master = WM8995_AIF1_MSTR;
 		break;
 	default:
@@ -2182,7 +2182,6 @@ static const struct snd_soc_component_driver soc_component_dev_wm8995 = {
 	.num_dapm_routes	= ARRAY_SIZE(wm8995_intercon),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config wm8995_regmap = {
@@ -2194,7 +2193,7 @@ static const struct regmap_config wm8995_regmap = {
 	.num_reg_defaults = ARRAY_SIZE(wm8995_reg_defaults),
 	.volatile_reg = wm8995_volatile,
 	.readable_reg = wm8995_readable,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 };
 
 #if defined(CONFIG_SPI_MASTER)
@@ -2231,8 +2230,7 @@ static struct spi_driver wm8995_spi_driver = {
 #endif
 
 #if IS_ENABLED(CONFIG_I2C)
-static int wm8995_i2c_probe(struct i2c_client *i2c,
-			    const struct i2c_device_id *id)
+static int wm8995_i2c_probe(struct i2c_client *i2c)
 {
 	struct wm8995_priv *wm8995;
 	int ret;
@@ -2260,7 +2258,7 @@ static int wm8995_i2c_probe(struct i2c_client *i2c,
 }
 
 static const struct i2c_device_id wm8995_i2c_id[] = {
-	{"wm8995", 0},
+	{"wm8995"},
 	{}
 };
 

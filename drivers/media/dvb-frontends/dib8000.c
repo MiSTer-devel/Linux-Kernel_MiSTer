@@ -13,7 +13,7 @@
 #include <linux/mutex.h>
 #include <asm/div64.h>
 
-#include <media/dvb_math.h>
+#include <linux/int_log.h>
 
 #include <media/dvb_frontend.h>
 
@@ -1584,7 +1584,7 @@ static int dib8096p_set_output_mode(struct dvb_frontend *fe, int mode)
 				dib8096p_configMpegMux(state, 3, 1, 1);
 				dib8096p_setHostBusMux(state, MPEG_ON_HOSTBUS);
 			} else {/* Use Smooth block */
-				dprintk("dib8096P setting output mode TS_SERIAL using Smooth bloc\n");
+				dprintk("dib8096P setting output mode TS_SERIAL using Smooth block\n");
 				dib8096p_setHostBusMux(state,
 						DEMOUT_ON_HOSTBUS);
 				outreg |= (2 << 6) | (0 << 1);
@@ -1612,7 +1612,8 @@ static int dib8096p_set_output_mode(struct dvb_frontend *fe, int mode)
 
 	case OUTMODE_MPEG2_FIFO:
 			/* Using Smooth block because not supported
-			   by new Mpeg Mux bloc */
+			 * by new Mpeg Mux block
+			 */
 			dprintk("dib8096P setting output mode TS_FIFO using Smooth block\n");
 			dib8096p_setHostBusMux(state, DEMOUT_ON_HOSTBUS);
 			outreg |= (5 << 6);
@@ -2694,15 +2695,18 @@ static void dib8000_viterbi_state(struct dib8000_state *state, u8 onoff)
 
 static void dib8000_set_dds(struct dib8000_state *state, s32 offset_khz)
 {
-	s16 unit_khz_dds_val;
+	s32 unit_khz_dds_val;
 	u32 abs_offset_khz = abs(offset_khz);
 	u32 dds = state->cfg.pll->ifreq & 0x1ffffff;
 	u8 invert = !!(state->cfg.pll->ifreq & (1 << 25));
 	u8 ratio;
 
 	if (state->revision == 0x8090) {
+		u32 internal = dib8000_read32(state, 23) / 1000;
+
 		ratio = 4;
-		unit_khz_dds_val = (1<<26) / (dib8000_read32(state, 23) / 1000);
+
+		unit_khz_dds_val = (1<<26) / (internal ?: 1);
 		if (offset_khz < 0)
 			dds = (1 << 26) - (abs_offset_khz * unit_khz_dds_val);
 		else
@@ -2712,7 +2716,7 @@ static void dib8000_set_dds(struct dib8000_state *state, s32 offset_khz)
 			dds = (1<<26) - dds;
 	} else {
 		ratio = 2;
-		unit_khz_dds_val = (u16) (67108864 / state->cfg.pll->internal);
+		unit_khz_dds_val = 67108864 / state->cfg.pll->internal;
 
 		if (offset_khz < 0)
 			unit_khz_dds_val *= -1;
@@ -3212,7 +3216,7 @@ static int dib8000_tune(struct dvb_frontend *fe)
 
 	case CT_DEMOD_STEP_6: /* (36)  if there is an input (diversity) */
 		if ((state->fe[1] != NULL) && (state->output_mode != OUTMODE_DIVERSITY)) {
-			/* if there is a diversity fe in input and this fe is has not already failed : wait here until this this fe has succedeed or failed */
+			/* if there is a diversity fe in input and this fe is has not already failed : wait here until this fe has succeeded or failed */
 			if (dib8000_get_status(state->fe[1]) <= FE_STATUS_STD_SUCCESS) /* Something is locked on the input fe */
 				*tune_state = CT_DEMOD_STEP_8; /* go for mpeg */
 			else if (dib8000_get_status(state->fe[1]) >= FE_STATUS_TUNE_TIME_TOO_SHORT) { /* fe in input failed also, break the current one */
@@ -4473,8 +4477,10 @@ static struct dvb_frontend *dib8000_init(struct i2c_adapter *i2c_adap, u8 i2c_ad
 
 	state->timf_default = cfg->pll->timf;
 
-	if (dib8000_identify(&state->i2c) == 0)
+	if (dib8000_identify(&state->i2c) == 0) {
+		kfree(fe);
 		goto error;
+	}
 
 	dibx000_init_i2c_master(&state->i2c_master, DIB8000, state->i2c.adap, state->i2c.addr);
 
@@ -4525,7 +4531,7 @@ void *dib8000_attach(struct dib8000_ops *ops)
 
 	return ops;
 }
-EXPORT_SYMBOL(dib8000_attach);
+EXPORT_SYMBOL_GPL(dib8000_attach);
 
 MODULE_AUTHOR("Olivier Grenie <Olivier.Grenie@parrot.com, Patrick Boettcher <patrick.boettcher@posteo.de>");
 MODULE_DESCRIPTION("Driver for the DiBcom 8000 ISDB-T demodulator");

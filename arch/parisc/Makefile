@@ -2,9 +2,7 @@
 # parisc/Makefile
 #
 # This file is included by the global makefile so that you can add your own
-# architecture-specific flags and dependencies. Remember to do have actions
-# for "archclean" and "archdep" for cleaning up and making dependencies for
-# this architecture
+# architecture-specific flags and dependencies.
 #
 # This file is subject to the terms and conditions of the GNU General Public
 # License.  See the file "COPYING" in the main directory of this archive
@@ -13,13 +11,13 @@
 # Copyright (C) 1994 by Linus Torvalds
 # Portions Copyright (C) 1999 The Puffin Group
 #
-# Modified for PA-RISC Linux by Paul Lahaie, Alex deVries, 
+# Modified for PA-RISC Linux by Paul Lahaie, Alex deVries,
 # Mike Shaver, Helge Deller and Martin K. Petersen
 #
 
-KBUILD_IMAGE := vmlinuz
+boot := arch/parisc/boot
+KBUILD_IMAGE := $(boot)/bzImage
 
-NM		= sh $(srctree)/arch/parisc/nm
 CHECKFLAGS	+= -D__hppa__=1
 
 ifdef CONFIG_64BIT
@@ -41,13 +39,25 @@ endif
 
 export LD_BFD
 
+# Set default 32 bits cross compilers for vdso.
+# This means that for 64BIT, both the 64-bit tools and the 32-bit tools
+# need to be in the path.
+CC_ARCHES_32 = hppa hppa2.0 hppa1.1
+CC_SUFFIXES  = linux linux-gnu unknown-linux-gnu suse-linux
+CROSS32_COMPILE := $(call cc-cross-prefix, \
+	$(foreach a,$(CC_ARCHES_32), \
+	$(foreach s,$(CC_SUFFIXES),$(a)-$(s)-)))
+CROSS32CC := $(CROSS32_COMPILE)gcc
+export CROSS32CC
+
+# Set default cross compiler for kernel build
 ifdef cross_compiling
-	ifeq ($(CROSS_COMPILE),)
-		CC_SUFFIXES = linux linux-gnu unknown-linux-gnu
+    ifeq ($(CROSS_COMPILE),)
+		CC_SUFFIXES = linux linux-gnu unknown-linux-gnu suse-linux
 		CROSS_COMPILE := $(call cc-cross-prefix, \
 			$(foreach a,$(CC_ARCHES), \
 			$(foreach s,$(CC_SUFFIXES),$(a)-$(s)-)))
-	endif
+    endif
 endif
 
 ifdef CONFIG_DYNAMIC_FTRACE
@@ -105,13 +115,13 @@ cflags-$(CONFIG_PA7100LC)	+= -march=1.1 -mschedule=7100LC
 cflags-$(CONFIG_PA7300LC)	+= -march=1.1 -mschedule=7300
 cflags-$(CONFIG_PA8X00)		+= -march=2.0 -mschedule=8000
 
-head-y			:= arch/parisc/kernel/head.o 
-
 KBUILD_CFLAGS	+= $(cflags-y)
 LIBGCC		:= $(shell $(CC) -print-libgcc-file-name)
 export LIBGCC
 
 libs-y	+= arch/parisc/lib/ $(LIBGCC)
+
+drivers-$(CONFIG_VIDEO) += arch/parisc/video/
 
 boot	:= arch/parisc/boot
 
@@ -131,7 +141,7 @@ palo lifimage: vmlinuz
 	fi
 	@if test ! -f "$(PALOCONF)"; then \
 		cp $(srctree)/arch/parisc/defpalo.conf $(objtree)/palo.conf; \
-		echo 'A generic palo config file ($(objree)/palo.conf) has been created for you.'; \
+		echo 'A generic palo config file ($(objtree)/palo.conf) has been created for you.'; \
 		echo 'You should check it and re-run "make palo".'; \
 		echo 'WARNING: the "lifimage" file is now placed in this directory by default!'; \
 		false; \
@@ -152,20 +162,30 @@ Image: vmlinux
 bzImage: vmlinux
 	$(Q)$(MAKE) $(build)=$(boot) $(boot)/$@
 
-ifdef CONFIG_PARISC_SELF_EXTRACT
 vmlinuz: bzImage
 	$(OBJCOPY) $(boot)/bzImage $@
-else
-vmlinuz: vmlinux
-	@$(KGZIP) -cf -9 $< > $@
+
+ifeq ($(KBUILD_EXTMOD),)
+# We need to generate vdso-offsets.h before compiling certain files in kernel/.
+# In order to do that, we should use the archprepare target, but we can't since
+# asm-offsets.h is included in some files used to generate vdso-offsets.h, and
+# asm-offsets.h is built in prepare0, for which archprepare is a dependency.
+# Therefore we need to generate the header after prepare0 has been made, hence
+# this hack.
+prepare: vdso_prepare
+vdso_prepare: prepare0
+	$(if $(CONFIG_64BIT),$(Q)$(MAKE) \
+		$(build)=arch/parisc/kernel/vdso64 include/generated/vdso64-offsets.h)
+	$(Q)$(MAKE) $(build)=arch/parisc/kernel/vdso32 include/generated/vdso32-offsets.h
 endif
 
-install:
-	$(CONFIG_SHELL) $(srctree)/arch/parisc/install.sh \
-			$(KERNELRELEASE) vmlinux System.map "$(INSTALL_PATH)"
-zinstall:
-	$(CONFIG_SHELL) $(srctree)/arch/parisc/install.sh \
-			$(KERNELRELEASE) vmlinuz System.map "$(INSTALL_PATH)"
+vdso-install-y			+= arch/parisc/kernel/vdso32/vdso32.so
+vdso-install-$(CONFIG_64BIT)	+= arch/parisc/kernel/vdso64/vdso64.so
+
+install: KBUILD_IMAGE := vmlinux
+zinstall: KBUILD_IMAGE := vmlinuz
+install zinstall:
+	$(call cmd,install)
 
 CLEAN_FILES	+= lifimage
 MRPROPER_FILES	+= palo.conf
@@ -180,9 +200,6 @@ define archhelp
 	@echo  '		  copy to $$(INSTALL_PATH)'
 	@echo  '  zinstall	- Install compressed vmlinuz kernel'
 endef
-
-archclean:
-	$(Q)$(MAKE) $(clean)=$(boot)
 
 archheaders:
 	$(Q)$(MAKE) $(build)=arch/parisc/kernel/syscalls all

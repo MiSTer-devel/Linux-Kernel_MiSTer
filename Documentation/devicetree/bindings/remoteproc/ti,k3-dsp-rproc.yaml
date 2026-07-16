@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: (GPL-2.0-only or BSD-2-Clause)
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 %YAML 1.2
 ---
 $id: http://devicetree.org/schemas/remoteproc/ti,k3-dsp-rproc.yaml#
@@ -25,17 +25,18 @@ description: |
   host processor (Arm CorePac) to perform the device management of the remote
   processor and to communicate with the remote processor.
 
-allOf:
-  - $ref: /schemas/arm/keystone/ti,k3-sci-common.yaml#
-
 properties:
   compatible:
     enum:
+      - ti,am62a-c7xv-dsp
       - ti,j721e-c66-dsp
       - ti,j721e-c71-dsp
+      - ti,j721s2-c71-dsp
     description:
+      Use "ti,am62a-c7xv-dsp" for AM62A Deep learning DSPs on K3 AM62A SoCs
       Use "ti,j721e-c66-dsp" for C66x DSPs on K3 J721E SoCs
       Use "ti,j721e-c71-dsp" for C71x DSPs on K3 J721E SoCs
+      Use "ti,j721s2-c71-dsp" for C71x DSPs on K3 J721S2 SoCs
 
   resets:
     description: |
@@ -77,45 +78,65 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle-array
     minItems: 1
     maxItems: 4
+    items:
+      maxItems: 1
     description: |
       phandles to one or more reserved on-chip SRAM regions. The regions
       should be defined as child nodes of the respective SRAM node, and
       should be defined as per the generic bindings in,
       Documentation/devicetree/bindings/sram/sram.yaml
 
-if:
-  properties:
-    compatible:
-      enum:
-        - ti,j721e-c66-dsp
-then:
-  properties:
-    reg:
-      items:
-        - description: Address and Size of the L2 SRAM internal memory region
-        - description: Address and Size of the L1 PRAM internal memory region
-        - description: Address and Size of the L1 DRAM internal memory region
-    reg-names:
-      items:
-        - const: l2sram
-        - const: l1pram
-        - const: l1dram
-else:
-  if:
-    properties:
-      compatible:
-        enum:
-          - ti,j721e-c71-dsp
-  then:
-    properties:
-      reg:
-        items:
-          - description: Address and Size of the L2 SRAM internal memory region
-          - description: Address and Size of the L1 DRAM internal memory region
-      reg-names:
-        items:
-          - const: l2sram
-          - const: l1dram
+allOf:
+  - if:
+      properties:
+        compatible:
+          enum:
+            - ti,j721e-c66-dsp
+    then:
+      properties:
+        reg:
+          items:
+            - description: Address and Size of the L2 SRAM internal memory region
+            - description: Address and Size of the L1 PRAM internal memory region
+            - description: Address and Size of the L1 DRAM internal memory region
+        reg-names:
+          items:
+            - const: l2sram
+            - const: l1pram
+            - const: l1dram
+
+  - if:
+      properties:
+        compatible:
+          enum:
+            - ti,j721e-c71-dsp
+            - ti,j721s2-c71-dsp
+    then:
+      properties:
+        reg:
+          items:
+            - description: Address and Size of the L2 SRAM internal memory region
+            - description: Address and Size of the L1 DRAM internal memory region
+        reg-names:
+          items:
+            - const: l2sram
+            - const: l1dram
+
+  - if:
+      properties:
+        compatible:
+          enum:
+            - ti,am62a-c7xv-dsp
+    then:
+      properties:
+        reg:
+          items:
+            - description: Address and Size of the L2 SRAM internal memory region
+        reg-names:
+          items:
+            - const: l2sram
+
+  - $ref: /schemas/arm/keystone/ti,k3-sci-common.yaml#
 
 required:
   - compatible
@@ -133,11 +154,17 @@ unevaluatedProperties: false
 
 examples:
   - |
-    / {
-        model = "Texas Instruments K3 J721E SoC";
-        compatible = "ti,j721e";
+    soc {
         #address-cells = <2>;
         #size-cells = <2>;
+
+        mailbox0_cluster3: mailbox-0 {
+            #mbox-cells = <1>;
+        };
+
+        mailbox0_cluster4: mailbox-1 {
+            #mbox-cells = <1>;
+        };
 
         bus@100000 {
             compatible = "simple-bus";

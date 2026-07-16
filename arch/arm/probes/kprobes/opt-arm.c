@@ -14,7 +14,7 @@
 /* for arm_gen_branch */
 #include <asm/insn.h>
 /* for patch_text */
-#include <asm/patch.h>
+#include <asm/text-patching.h>
 
 #include "core.h"
 
@@ -144,8 +144,6 @@ __arch_remove_optimized_kprobe(struct optimized_kprobe *op, int dirty)
 		op->optinsn.insn = NULL;
 	}
 }
-
-extern void kprobe_handler(struct pt_regs *regs);
 
 static void
 optimized_callback(struct optimized_kprobe *op, struct pt_regs *regs)
@@ -347,10 +345,11 @@ void arch_unoptimize_kprobes(struct list_head *oplist,
 }
 
 int arch_within_optimized_kprobe(struct optimized_kprobe *op,
-				unsigned long addr)
+				 kprobe_opcode_t *addr)
 {
-	return ((unsigned long)op->kp.addr <= addr &&
-		(unsigned long)op->kp.addr + RELATIVEJUMP_SIZE > addr);
+	return (op->kp.addr <= addr &&
+		op->kp.addr + (RELATIVEJUMP_SIZE / sizeof(kprobe_opcode_t)) > addr);
+
 }
 
 void arch_remove_optimized_kprobe(struct optimized_kprobe *op)

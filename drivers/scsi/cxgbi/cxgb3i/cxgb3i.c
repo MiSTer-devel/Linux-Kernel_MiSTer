@@ -80,7 +80,7 @@ static struct cxgb3_client t3_client = {
 	.event_handler = cxgb3i_dev_event_handler,
 };
 
-static struct scsi_host_template cxgb3i_host_template = {
+static const struct scsi_host_template cxgb3i_host_template = {
 	.module		= THIS_MODULE,
 	.name		= DRV_MODULE_NAME,
 	.proc_name	= DRV_MODULE_NAME,
@@ -98,6 +98,7 @@ static struct scsi_host_template cxgb3i_host_template = {
 	.dma_boundary	= PAGE_SIZE - 1,
 	.this_id	= -1,
 	.track_queue_depth = 1,
+	.cmd_size	= sizeof(struct iscsi_cmd),
 };
 
 static struct iscsi_transport cxgb3i_iscsi_transport = {
@@ -494,7 +495,7 @@ static int do_act_establish(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 
 	spin_lock_bh(&csk->lock);
 	if (csk->retry_timer.function) {
-		del_timer(&csk->retry_timer);
+		timer_delete(&csk->retry_timer);
 		csk->retry_timer.function = NULL;
 	}
 
@@ -546,7 +547,7 @@ static int act_open_rpl_status_to_errno(int status)
 
 static void act_open_retry_timer(struct timer_list *t)
 {
-	struct cxgbi_sock *csk = from_timer(csk, t, retry_timer);
+	struct cxgbi_sock *csk = timer_container_of(csk, t, retry_timer);
 	struct sk_buff *skb;
 
 	log_debug(1 << CXGBI_DBG_TOE | 1 << CXGBI_DBG_SOCK,

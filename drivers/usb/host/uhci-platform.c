@@ -91,8 +91,7 @@ static int uhci_hcd_platform_probe(struct platform_device *pdev)
 
 	uhci = hcd_to_uhci(hcd);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	hcd->regs = devm_ioremap_resource(&pdev->dev, res);
+	hcd->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(hcd->regs)) {
 		ret = PTR_ERR(hcd->regs);
 		goto err_rmr;
@@ -113,7 +112,8 @@ static int uhci_hcd_platform_probe(struct platform_device *pdev)
 				num_ports);
 		}
 		if (of_device_is_compatible(np, "aspeed,ast2400-uhci") ||
-		    of_device_is_compatible(np, "aspeed,ast2500-uhci")) {
+		    of_device_is_compatible(np, "aspeed,ast2500-uhci") ||
+		    of_device_is_compatible(np, "aspeed,ast2600-uhci")) {
 			uhci->is_aspeed = 1;
 			dev_info(&pdev->dev,
 				 "Enabled Aspeed implementation workarounds\n");
@@ -121,7 +121,7 @@ static int uhci_hcd_platform_probe(struct platform_device *pdev)
 	}
 
 	/* Get and enable clock if any specified */
-	uhci->clk = devm_clk_get(&pdev->dev, NULL);
+	uhci->clk = devm_clk_get_optional(&pdev->dev, NULL);
 	if (IS_ERR(uhci->clk)) {
 		ret = PTR_ERR(uhci->clk);
 		goto err_rmr;
@@ -132,7 +132,11 @@ static int uhci_hcd_platform_probe(struct platform_device *pdev)
 		goto err_rmr;
 	}
 
-	ret = usb_add_hcd(hcd, pdev->resource[1].start, IRQF_SHARED);
+	ret = platform_get_irq(pdev, 0);
+	if (ret < 0)
+		goto err_clk;
+
+	ret = usb_add_hcd(hcd, ret, IRQF_SHARED);
 	if (ret)
 		goto err_clk;
 
@@ -147,7 +151,7 @@ err_rmr:
 	return ret;
 }
 
-static int uhci_hcd_platform_remove(struct platform_device *pdev)
+static void uhci_hcd_platform_remove(struct platform_device *pdev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(pdev);
 	struct uhci_hcd *uhci = hcd_to_uhci(hcd);
@@ -155,8 +159,6 @@ static int uhci_hcd_platform_remove(struct platform_device *pdev)
 	clk_disable_unprepare(uhci->clk);
 	usb_remove_hcd(hcd);
 	usb_put_hcd(hcd);
-
-	return 0;
 }
 
 /* Make sure the controller is quiescent and that we're not using it
@@ -189,3 +191,4 @@ static struct platform_driver uhci_platform_driver = {
 		.of_match_table = platform_uhci_ids,
 	},
 };
+MODULE_SOFTDEP("pre: ehci_platform");

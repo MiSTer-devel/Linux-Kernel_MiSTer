@@ -17,13 +17,14 @@
 #include <linux/irq.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
+#include <linux/soc/pxa/cpu.h>
 
 #include <asm/exception.h>
 
-#include <mach/hardware.h>
-#include <mach/irqs.h>
+#include "irqs.h"
 
 #include "generic.h"
+#include "pxa-regs.h"
 
 #define ICIP			(0x000)
 #define ICMR			(0x004)
@@ -146,12 +147,11 @@ pxa_init_irq_common(struct device_node *node, int irq_nr,
 	int n;
 
 	pxa_internal_irq_nr = irq_nr;
-	pxa_irq_domain = irq_domain_add_legacy(node, irq_nr,
-					       PXA_IRQ(0), 0,
-					       &pxa_irq_ops, NULL);
+	pxa_irq_domain = irq_domain_create_legacy(of_fwnode_handle(node), irq_nr, PXA_IRQ(0), 0,
+						  &pxa_irq_ops, NULL);
 	if (!pxa_irq_domain)
 		panic("Unable to add PXA IRQ domain\n");
-	irq_set_default_host(pxa_irq_domain);
+	irq_set_default_domain(pxa_irq_domain);
 
 	for (n = 0; n < irq_nr; n += 32) {
 		void __iomem *base = irq_base(n >> 5);
@@ -256,8 +256,7 @@ void __init pxa_dt_irq_init(int (*fn)(struct irq_data *, unsigned int))
 	}
 	pxa_irq_base = io_p2v(res.start);
 
-	if (of_find_property(node, "marvell,intc-priority", NULL))
-		cpu_has_ipr = 1;
+	cpu_has_ipr = of_property_read_bool(node, "marvell,intc-priority");
 
 	ret = irq_alloc_descs(-1, 0, pxa_internal_irq_nr, 0);
 	if (ret < 0) {

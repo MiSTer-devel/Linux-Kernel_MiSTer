@@ -178,9 +178,10 @@ static int lb035q02_probe(struct spi_device *spi)
 	struct lb035q02_device *lcd;
 	int ret;
 
-	lcd = devm_kzalloc(&spi->dev, sizeof(*lcd), GFP_KERNEL);
-	if (!lcd)
-		return -ENOMEM;
+	lcd = devm_drm_panel_alloc(&spi->dev, struct lb035q02_device, panel,
+				   &lb035q02_funcs, DRM_MODE_CONNECTOR_DPI);
+	if (IS_ERR(lcd))
+		return PTR_ERR(lcd);
 
 	spi_set_drvdata(spi, lcd);
 	lcd->spi = spi;
@@ -195,22 +196,17 @@ static int lb035q02_probe(struct spi_device *spi)
 	if (ret < 0)
 		return ret;
 
-	drm_panel_init(&lcd->panel, &lcd->spi->dev, &lb035q02_funcs,
-		       DRM_MODE_CONNECTOR_DPI);
-
 	drm_panel_add(&lcd->panel);
 
 	return 0;
 }
 
-static int lb035q02_remove(struct spi_device *spi)
+static void lb035q02_remove(struct spi_device *spi)
 {
 	struct lb035q02_device *lcd = spi_get_drvdata(spi);
 
 	drm_panel_remove(&lcd->panel);
 	drm_panel_disable(&lcd->panel);
-
-	return 0;
 }
 
 static const struct of_device_id lb035q02_of_match[] = {

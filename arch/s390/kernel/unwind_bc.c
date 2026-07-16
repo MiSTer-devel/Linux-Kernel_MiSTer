@@ -1,4 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+
+#include <linux/export.h>
 #include <linux/sched.h>
 #include <linux/sched/task.h>
 #include <linux/sched/task_stack.h>
@@ -49,6 +51,8 @@ static inline bool is_final_pt_regs(struct unwind_state *state,
 	       READ_ONCE_NOCHECK(regs->psw.mask) & PSW_MASK_PSTATE;
 }
 
+/* Avoid KMSAN false positives from touching uninitialized frames. */
+__no_kmsan_checks
 bool unwind_next_frame(struct unwind_state *state)
 {
 	struct stack_info *info = &state->stack_info;
@@ -64,8 +68,8 @@ bool unwind_next_frame(struct unwind_state *state)
 		ip = READ_ONCE_NOCHECK(sf->gprs[8]);
 		reliable = false;
 		regs = NULL;
-		if (!__kernel_text_address(ip)) {
-			/* skip bogus %r14 */
+		/* skip bogus %r14 or if is the same as regs->psw.addr */
+		if (!__kernel_text_address(ip) || state->ip == unwind_recover_ret_addr(state, ip)) {
 			state->regs = NULL;
 			return unwind_next_frame(state);
 		}
@@ -103,13 +107,11 @@ bool unwind_next_frame(struct unwind_state *state)
 	if (sp & 0x7)
 		goto out_err;
 
-	ip = ftrace_graph_ret_addr(state->task, &state->graph_idx, ip, (void *) sp);
-
 	/* Update unwind state */
 	state->sp = sp;
-	state->ip = ip;
 	state->regs = regs;
 	state->reliable = reliable;
+	state->ip = unwind_recover_ret_addr(state, ip);
 	return true;
 
 out_err:
@@ -120,6 +122,8 @@ out_stop:
 }
 EXPORT_SYMBOL_GPL(unwind_next_frame);
 
+/* Avoid KMSAN false positives from touching uninitialized frames. */
+__no_kmsan_checks
 void __unwind_start(struct unwind_state *state, struct task_struct *task,
 		    struct pt_regs *regs, unsigned long first_frame)
 {
@@ -161,12 +165,10 @@ void __unwind_start(struct unwind_state *state, struct task_struct *task,
 		ip = READ_ONCE_NOCHECK(sf->gprs[8]);
 	}
 
-	ip = ftrace_graph_ret_addr(state->task, &state->graph_idx, ip, NULL);
-
 	/* Update unwind state */
 	state->sp = sp;
-	state->ip = ip;
 	state->reliable = true;
+	state->ip = unwind_recover_ret_addr(state, ip);
 
 	if (!first_frame)
 		return;

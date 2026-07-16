@@ -39,14 +39,13 @@ static void workload_exec_failed_signal(int signo __maybe_unused,
  * if the number of exit event reported by the kernel is 1 or not
  * in order to check the kernel returns correct number of event.
  */
-int test__task_exit(struct test *test __maybe_unused, int subtest __maybe_unused)
+static int test__task_exit(struct test_suite *test __maybe_unused, int subtest __maybe_unused)
 {
 	int err = -1;
 	union perf_event *event;
 	struct evsel *evsel;
 	struct evlist *evlist;
 	struct target target = {
-		.uid		= UINT_MAX,
 		.uses_mmap	= true,
 	};
 	const char *argv[] = { "true", NULL };
@@ -58,9 +57,9 @@ int test__task_exit(struct test *test __maybe_unused, int subtest __maybe_unused
 
 	signal(SIGCHLD, sig_handler);
 
-	evlist = evlist__new_default();
+	evlist = evlist__new_dummy();
 	if (evlist == NULL) {
-		pr_debug("evlist__new_default\n");
+		pr_debug("evlist__new_dummy\n");
 		return -1;
 	}
 
@@ -70,7 +69,7 @@ int test__task_exit(struct test *test __maybe_unused, int subtest __maybe_unused
 	 * evlist__prepare_workload we'll fill in the only thread
 	 * we're monitoring, the one forked there.
 	 */
-	cpus = perf_cpu_map__dummy_new();
+	cpus = perf_cpu_map__new_any_cpu();
 	threads = thread_map__new_by_tid(-1);
 	if (!cpus || !threads) {
 		err = -ENOMEM;
@@ -151,3 +150,12 @@ out_delete_evlist:
 	evlist__delete(evlist);
 	return err;
 }
+
+struct test_case tests__task_exit[] = {
+	TEST_CASE_EXCLUSIVE("Number of exit events of a simple workload", task_exit),
+	{	.name = NULL, }
+};
+struct test_suite suite__task_exit = {
+	.desc = "Number of exit events of a simple workload",
+	.test_cases = tests__task_exit,
+};

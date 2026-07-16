@@ -46,7 +46,7 @@ union __sifields {
 		__kernel_timer_t _tid;	/* timer id */
 		int _overrun;		/* overrun count */
 		sigval_t _sigval;	/* same as below */
-		int _sys_private;       /* not to be passed to user */
+		int _sys_private;       /* Not used by the kernel. Historic leftover. Always 0. */
 	} _timer;
 
 	/* POSIX.1b signals */
@@ -68,11 +68,6 @@ union __sifields {
 	/* SIGILL, SIGFPE, SIGSEGV, SIGBUS, SIGTRAP, SIGEMT */
 	struct {
 		void __user *_addr; /* faulting insn/memory ref. */
-#ifdef __ia64__
-		int _imm;		/* immediate value for "break" */
-		unsigned int _flags;	/* see ia64 si_flags */
-		unsigned long _isr;	/* isr */
-#endif
 
 #define __ADDR_BND_PKEY_PAD  (__alignof__(void *) < sizeof(short) ? \
 			      sizeof(short) : __alignof__(void *))
@@ -99,6 +94,7 @@ union __sifields {
 			struct {
 				unsigned long _data;
 				__u32 _type;
+				__u32 _flags;
 			} _perf;
 		};
 	} _sigfault;
@@ -164,6 +160,7 @@ typedef struct siginfo {
 #define si_pkey		_sifields._sigfault._addr_pkey._pkey
 #define si_perf_data	_sifields._sigfault._perf._data
 #define si_perf_type	_sifields._sigfault._perf._type
+#define si_perf_flags	_sifields._sigfault._perf._flags
 #define si_band		_sifields._sigpoll._band
 #define si_fd		_sifields._sigpoll._fd
 #define si_call_addr	_sifields._sigsys._call_addr
@@ -240,7 +237,8 @@ typedef struct siginfo {
 #define SEGV_ADIPERR	7	/* Precise MCD exception */
 #define SEGV_MTEAERR	8	/* Asynchronous ARM MTE error */
 #define SEGV_MTESERR	9	/* Synchronous ARM MTE exception */
-#define NSIGSEGV	9
+#define SEGV_CPERR	10	/* Control protection fault */
+#define NSIGSEGV	10
 
 /*
  * SIGBUS si_codes
@@ -269,6 +267,11 @@ typedef struct siginfo {
  * There is an additional set of SIGTRAP si_codes used by ptrace
  * that are of the form: ((PTRACE_EVENT_XXX << 8) | SIGTRAP)
  */
+
+/*
+ * Flags for si_perf_flags if SIGTRAP si_code is TRAP_PERF.
+ */
+#define TRAP_PERF_FLAG_ASYNC (1u << 0)
 
 /*
  * SIGCHLD si_codes

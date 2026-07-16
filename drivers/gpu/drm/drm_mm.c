@@ -118,8 +118,6 @@ static noinline void save_stack(struct drm_mm_node *node)
 static void show_leaks(struct drm_mm *mm)
 {
 	struct drm_mm_node *node;
-	unsigned long *entries;
-	unsigned int nr_entries;
 	char *buf;
 
 	buf = kmalloc(BUFSZ, GFP_KERNEL);
@@ -133,8 +131,7 @@ static void show_leaks(struct drm_mm *mm)
 			continue;
 		}
 
-		nr_entries = stack_depot_fetch(node->stack, &entries);
-		stack_trace_snprint(buf, BUFSZ, entries, nr_entries, 0);
+		stack_depot_snprint(node->stack, buf, BUFSZ, 0);
 		DRM_ERROR("node [%08llx + %08llx]: inserted at\n%s",
 			  node->start, node->size, buf);
 	}
@@ -154,7 +151,7 @@ static void show_leaks(struct drm_mm *mm) { }
 
 INTERVAL_TREE_DEFINE(struct drm_mm_node, rb,
 		     u64, __subtree_last,
-		     START, LAST, static inline, drm_mm_interval_tree)
+		     START, LAST, static inline __maybe_unused, drm_mm_interval_tree)
 
 struct drm_mm_node *
 __drm_mm_interval_first(const struct drm_mm *mm, u64 start, u64 last)
@@ -614,7 +611,7 @@ int drm_mm_insert_node_in_range(struct drm_mm * const mm,
 }
 EXPORT_SYMBOL(drm_mm_insert_node_in_range);
 
-static inline bool drm_mm_node_scanned_block(const struct drm_mm_node *node)
+static inline __maybe_unused bool drm_mm_node_scanned_block(const struct drm_mm_node *node)
 {
 	return test_bit(DRM_MM_NODE_SCANNED_BIT, &node->flags);
 }
@@ -650,41 +647,6 @@ void drm_mm_remove_node(struct drm_mm_node *node)
 	clear_bit_unlock(DRM_MM_NODE_ALLOCATED_BIT, &node->flags);
 }
 EXPORT_SYMBOL(drm_mm_remove_node);
-
-/**
- * drm_mm_replace_node - move an allocation from @old to @new
- * @old: drm_mm_node to remove from the allocator
- * @new: drm_mm_node which should inherit @old's allocation
- *
- * This is useful for when drivers embed the drm_mm_node structure and hence
- * can't move allocations by reassigning pointers. It's a combination of remove
- * and insert with the guarantee that the allocation start will match.
- */
-void drm_mm_replace_node(struct drm_mm_node *old, struct drm_mm_node *new)
-{
-	struct drm_mm *mm = old->mm;
-
-	DRM_MM_BUG_ON(!drm_mm_node_allocated(old));
-
-	*new = *old;
-
-	__set_bit(DRM_MM_NODE_ALLOCATED_BIT, &new->flags);
-	list_replace(&old->node_list, &new->node_list);
-	rb_replace_node_cached(&old->rb, &new->rb, &mm->interval_tree);
-
-	if (drm_mm_hole_follows(old)) {
-		list_replace(&old->hole_stack, &new->hole_stack);
-		rb_replace_node_cached(&old->rb_hole_size,
-				       &new->rb_hole_size,
-				       &mm->holes_size);
-		rb_replace_node(&old->rb_hole_addr,
-				&new->rb_hole_addr,
-				&mm->holes_addr);
-	}
-
-	clear_bit_unlock(DRM_MM_NODE_ALLOCATED_BIT, &old->flags);
-}
-EXPORT_SYMBOL(drm_mm_replace_node);
 
 /**
  * DOC: lru scan roster
@@ -983,6 +945,10 @@ void drm_mm_init(struct drm_mm *mm, u64 start, u64 size)
 	add_hole(&mm->head_node);
 
 	mm->scan_active = 0;
+
+#ifdef CONFIG_DRM_DEBUG_MM
+	stack_depot_init();
+#endif
 }
 EXPORT_SYMBOL(drm_mm_init);
 

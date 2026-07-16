@@ -157,11 +157,16 @@ static void rx_complete(struct urb *req)
 						PAGE_SIZE);
 				page = NULL;
 			}
-		} else {
+		} else if (skb_shinfo(skb)->nr_frags < MAX_SKB_FRAGS) {
 			skb_add_rx_frag(skb, skb_shinfo(skb)->nr_frags,
 					page, 0, req->actual_length,
 					PAGE_SIZE);
 			page = NULL;
+		} else {
+			dev_kfree_skb_any(skb);
+			pnd->rx_skb = NULL;
+			skb = NULL;
+			dev->stats.rx_length_errors++;
 		}
 		if (req->actual_length < PAGE_SIZE)
 			pnd->rx_skb = NULL; /* Last fragment */
@@ -275,6 +280,8 @@ static const struct net_device_ops usbpn_ops = {
 
 static void usbpn_setup(struct net_device *dev)
 {
+	const u8 addr = PN_MEDIA_USB;
+
 	dev->features		= 0;
 	dev->netdev_ops		= &usbpn_ops;
 	dev->header_ops		= &phonet_header_ops;
@@ -284,8 +291,8 @@ static void usbpn_setup(struct net_device *dev)
 	dev->min_mtu		= PHONET_MIN_MTU;
 	dev->max_mtu		= PHONET_MAX_MTU;
 	dev->hard_header_len	= 1;
-	dev->dev_addr[0]	= PN_MEDIA_USB;
 	dev->addr_len		= 1;
+	dev_addr_set(dev, &addr);
 	dev->tx_queue_len	= 3;
 
 	dev->needs_free_netdev	= true;

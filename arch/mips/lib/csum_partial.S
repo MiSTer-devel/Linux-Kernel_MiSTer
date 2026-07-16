@@ -11,9 +11,9 @@
  * Copyright (C) 2014 Imagination Technologies Ltd.
  */
 #include <linux/errno.h>
+#include <linux/export.h>
 #include <asm/asm.h>
 #include <asm/asm-offsets.h>
-#include <asm/export.h>
 #include <asm/regdef.h>
 
 #ifdef CONFIG_64BIT
@@ -347,7 +347,7 @@ EXPORT_SYMBOL(csum_partial)
 	.if \mode == LEGACY_MODE;		\
 9:		insn reg, addr;			\
 		.section __ex_table,"a";	\
-		PTR	9b, .L_exc;		\
+		PTR_WD	9b, .L_exc;		\
 		.previous;			\
 	/* This is enabled in EVA mode */	\
 	.else;					\
@@ -356,7 +356,7 @@ EXPORT_SYMBOL(csum_partial)
 		    ((\to == USEROP) && (type == ST_INSN));	\
 9:			__BUILD_EVA_INSN(insn##e, reg, addr);	\
 			.section __ex_table,"a";		\
-			PTR	9b, .L_exc;			\
+			PTR_WD	9b, .L_exc;			\
 			.previous;				\
 		.else;						\
 			/* EVA without exception */		\

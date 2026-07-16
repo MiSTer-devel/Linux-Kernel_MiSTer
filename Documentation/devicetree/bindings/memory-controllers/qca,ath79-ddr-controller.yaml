@@ -7,7 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: Qualcomm Atheros AR7xxx/AR9xxx DDR controller
 
 maintainers:
-  - Krzysztof Kozlowski <krzysztof.kozlowski@canonical.com>
+  - Krzysztof Kozlowski <krzk@kernel.org>
 
 description: |
   The DDR controller of the AR7xxx and AR9xxx families provides an interface to
@@ -51,11 +51,4 @@ examples:
         reg = <0x18000000 0x100>;
 
         #qca,ddr-wb-channel-cells = <1>;
-    };
-
-    interrupt-controller {
-        // ...
-        qca,ddr-wb-channel-interrupts = <2>, <3>, <4>, <5>;
-        qca,ddr-wb-channels = <&ddr_ctrl 3>, <&ddr_ctrl 2>,
-                              <&ddr_ctrl 0>, <&ddr_ctrl 1>;
     };

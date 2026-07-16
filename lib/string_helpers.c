@@ -10,6 +10,7 @@
 #include <linux/math64.h>
 #include <linux/export.h>
 #include <linux/ctype.h>
+#include <linux/device.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/limits.h>
@@ -17,12 +18,14 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/string_helpers.h>
+#include <kunit/test.h>
+#include <kunit/test-bug.h>
 
 /**
  * string_get_size - get the size in the specified units
  * @size:	The size to be converted in blocks
  * @blk_size:	Size of the block (use 1 for size in bytes)
- * @units:	units to use (powers of 1000 or 1024)
+ * @units:	Units to use (powers of 1000 or 1024), whether to include space separator
  * @buf:	buffer to format to
  * @len:	length of buffer
  *
@@ -30,15 +33,18 @@
  * giving the size in the required units.  @buf should have room for
  * at least 9 bytes and will always be zero terminated.
  *
+ * Return value: number of characters of output that would have been written
+ * (which may be greater than len, if output was truncated).
  */
-void string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
-		     char *buf, int len)
+int string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
+		    char *buf, int len)
 {
+	enum string_size_units units_base = units & STRING_UNITS_MASK;
 	static const char *const units_10[] = {
-		"B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"
+		"", "k", "M", "G", "T", "P", "E", "Z", "Y",
 	};
 	static const char *const units_2[] = {
-		"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"
+		"", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi", "Yi",
 	};
 	static const char *const *const units_str[] = {
 		[STRING_UNITS_10] = units_10,
@@ -51,7 +57,7 @@ void string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
 	static const unsigned int rounding[] = { 500, 50, 5 };
 	int i = 0, j;
 	u32 remainder = 0, sf_cap;
-	char tmp[8];
+	char tmp[12];
 	const char *unit;
 
 	tmp[0] = '\0';
@@ -63,7 +69,7 @@ void string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
 
 	/* This is Napier's algorithm.  Reduce the original block size to
 	 *
-	 * coefficient * divisor[units]^i
+	 * coefficient * divisor[units_base]^i
 	 *
 	 * we do the reduction so both coefficients are just under 32 bits so
 	 * that multiplying them together won't overflow 64 bits and we keep
@@ -73,12 +79,12 @@ void string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
 	 * precision is in the coefficients.
 	 */
 	while (blk_size >> 32) {
-		do_div(blk_size, divisor[units]);
+		do_div(blk_size, divisor[units_base]);
 		i++;
 	}
 
 	while (size >> 32) {
-		do_div(size, divisor[units]);
+		do_div(size, divisor[units_base]);
 		i++;
 	}
 
@@ -87,8 +93,8 @@ void string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
 	size *= blk_size;
 
 	/* and logarithmically reduce it until it's just under the divisor */
-	while (size >= divisor[units]) {
-		remainder = do_div(size, divisor[units]);
+	while (size >= divisor[units_base]) {
+		remainder = do_div(size, divisor[units_base]);
 		i++;
 	}
 
@@ -98,10 +104,10 @@ void string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
 	for (j = 0; sf_cap*10 < 1000; j++)
 		sf_cap *= 10;
 
-	if (units == STRING_UNITS_2) {
+	if (units_base == STRING_UNITS_2) {
 		/* express the remainder as a decimal.  It's currently the
 		 * numerator of a fraction whose denominator is
-		 * divisor[units], which is 1 << 10 for STRING_UNITS_2 */
+		 * divisor[units_base], which is 1 << 10 for STRING_UNITS_2 */
 		remainder *= 1000;
 		remainder >>= 10;
 	}
@@ -123,12 +129,61 @@ void string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
 	if (i >= ARRAY_SIZE(units_2))
 		unit = "UNK";
 	else
-		unit = units_str[units][i];
+		unit = units_str[units_base][i];
 
-	snprintf(buf, len, "%u%s %s", (u32)size,
-		 tmp, unit);
+	return snprintf(buf, len, "%u%s%s%s%s", (u32)size, tmp,
+			(units & STRING_UNITS_NO_SPACE) ? "" : " ",
+			unit,
+			(units & STRING_UNITS_NO_BYTES) ? "" : "B");
 }
 EXPORT_SYMBOL(string_get_size);
+
+int parse_int_array(const char *buf, size_t count, int **array)
+{
+	int *ints, nints;
+
+	get_options(buf, 0, &nints);
+	if (!nints)
+		return -ENOENT;
+
+	ints = kcalloc(nints + 1, sizeof(*ints), GFP_KERNEL);
+	if (!ints)
+		return -ENOMEM;
+
+	get_options(buf, nints + 1, ints);
+	*array = ints;
+
+	return 0;
+}
+EXPORT_SYMBOL(parse_int_array);
+
+/**
+ * parse_int_array_user - Split string into a sequence of integers
+ * @from:	The user space buffer to read from
+ * @count:	The maximum number of bytes to read
+ * @array:	Returned pointer to sequence of integers
+ *
+ * On success @array is allocated and initialized with a sequence of
+ * integers extracted from the @from plus an additional element that
+ * begins the sequence and specifies the integers count.
+ *
+ * Caller takes responsibility for freeing @array when it is no longer
+ * needed.
+ */
+int parse_int_array_user(const char __user *from, size_t count, int **array)
+{
+	char *buf;
+	int ret;
+
+	buf = memdup_user_nul(from, count);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
+
+	ret = parse_int_array(buf, count, array);
+	kfree(buf);
+	return ret;
+}
+EXPORT_SYMBOL(parse_int_array_user);
 
 static bool unescape_space(char **src, char **dst)
 {
@@ -268,6 +323,9 @@ static bool unescape_special(char **src, char **dst)
 int string_unescape(char *src, char *dst, size_t size, unsigned int flags)
 {
 	char *out = dst;
+
+	if (!size)
+		size = SIZE_MAX;
 
 	while (*src && --size) {
 		if (src[0] == '\\' && src[1] != '\0' && size > 1) {
@@ -674,6 +732,54 @@ char *kstrdup_quotable_file(struct file *file, gfp_t gfp)
 }
 EXPORT_SYMBOL_GPL(kstrdup_quotable_file);
 
+/*
+ * Returns duplicate string in which the @old characters are replaced by @new.
+ */
+char *kstrdup_and_replace(const char *src, char old, char new, gfp_t gfp)
+{
+	char *dst;
+
+	dst = kstrdup(src, gfp);
+	if (!dst)
+		return NULL;
+
+	return strreplace(dst, old, new);
+}
+EXPORT_SYMBOL_GPL(kstrdup_and_replace);
+
+/**
+ * kasprintf_strarray - allocate and fill array of sequential strings
+ * @gfp: flags for the slab allocator
+ * @prefix: prefix to be used
+ * @n: amount of lines to be allocated and filled
+ *
+ * Allocates and fills @n strings using pattern "%s-%zu", where prefix
+ * is provided by caller. The caller is responsible to free them with
+ * kfree_strarray() after use.
+ *
+ * Returns array of strings or NULL when memory can't be allocated.
+ */
+char **kasprintf_strarray(gfp_t gfp, const char *prefix, size_t n)
+{
+	char **names;
+	size_t i;
+
+	names = kcalloc(n + 1, sizeof(char *), gfp);
+	if (!names)
+		return NULL;
+
+	for (i = 0; i < n; i++) {
+		names[i] = kasprintf(gfp, "%s-%zu", prefix, i);
+		if (!names[i]) {
+			kfree_strarray(names, i);
+			return NULL;
+		}
+	}
+
+	return names;
+}
+EXPORT_SYMBOL_GPL(kasprintf_strarray);
+
 /**
  * kfree_strarray - free a number of dynamically allocated strings contained
  *                  in an array and the array itself
@@ -696,3 +802,245 @@ void kfree_strarray(char **array, size_t n)
 	kfree(array);
 }
 EXPORT_SYMBOL_GPL(kfree_strarray);
+
+struct strarray {
+	char **array;
+	size_t n;
+};
+
+static void devm_kfree_strarray(struct device *dev, void *res)
+{
+	struct strarray *array = res;
+
+	kfree_strarray(array->array, array->n);
+}
+
+char **devm_kasprintf_strarray(struct device *dev, const char *prefix, size_t n)
+{
+	struct strarray *ptr;
+
+	ptr = devres_alloc(devm_kfree_strarray, sizeof(*ptr), GFP_KERNEL);
+	if (!ptr)
+		return ERR_PTR(-ENOMEM);
+
+	ptr->array = kasprintf_strarray(GFP_KERNEL, prefix, n);
+	if (!ptr->array) {
+		devres_free(ptr);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	ptr->n = n;
+	devres_add(dev, ptr);
+
+	return ptr->array;
+}
+EXPORT_SYMBOL_GPL(devm_kasprintf_strarray);
+
+/**
+ * skip_spaces - Removes leading whitespace from @str.
+ * @str: The string to be stripped.
+ *
+ * Returns a pointer to the first non-whitespace character in @str.
+ */
+char *skip_spaces(const char *str)
+{
+	while (isspace(*str))
+		++str;
+	return (char *)str;
+}
+EXPORT_SYMBOL(skip_spaces);
+
+/**
+ * strim - Removes leading and trailing whitespace from @s.
+ * @s: The string to be stripped.
+ *
+ * Note that the first trailing whitespace is replaced with a %NUL-terminator
+ * in the given string @s. Returns a pointer to the first non-whitespace
+ * character in @s.
+ */
+char *strim(char *s)
+{
+	size_t size;
+	char *end;
+
+	size = strlen(s);
+	if (!size)
+		return s;
+
+	end = s + size - 1;
+	while (end >= s && isspace(*end))
+		end--;
+	*(end + 1) = '\0';
+
+	return skip_spaces(s);
+}
+EXPORT_SYMBOL(strim);
+
+/**
+ * sysfs_streq - return true if strings are equal, modulo trailing newline
+ * @s1: one string
+ * @s2: another string
+ *
+ * This routine returns true iff two strings are equal, treating both
+ * NUL and newline-then-NUL as equivalent string terminations.  It's
+ * geared for use with sysfs input strings, which generally terminate
+ * with newlines but are compared against values without newlines.
+ */
+bool sysfs_streq(const char *s1, const char *s2)
+{
+	while (*s1 && *s1 == *s2) {
+		s1++;
+		s2++;
+	}
+
+	if (*s1 == *s2)
+		return true;
+	if (!*s1 && *s2 == '\n' && !s2[1])
+		return true;
+	if (*s1 == '\n' && !s1[1] && !*s2)
+		return true;
+	return false;
+}
+EXPORT_SYMBOL(sysfs_streq);
+
+/**
+ * match_string - matches given string in an array
+ * @array:	array of strings
+ * @n:		number of strings in the array or -1 for NULL terminated arrays
+ * @string:	string to match with
+ *
+ * This routine will look for a string in an array of strings up to the
+ * n-th element in the array or until the first NULL element.
+ *
+ * Historically the value of -1 for @n, was used to search in arrays that
+ * are NULL terminated. However, the function does not make a distinction
+ * when finishing the search: either @n elements have been compared OR
+ * the first NULL element was found.
+ *
+ * Return:
+ * index of a @string in the @array if matches, or %-EINVAL otherwise.
+ */
+int match_string(const char * const *array, size_t n, const char *string)
+{
+	int index;
+	const char *item;
+
+	for (index = 0; index < n; index++) {
+		item = array[index];
+		if (!item)
+			break;
+		if (!strcmp(item, string))
+			return index;
+	}
+
+	return -EINVAL;
+}
+EXPORT_SYMBOL(match_string);
+
+/**
+ * __sysfs_match_string - matches given string in an array
+ * @array: array of strings
+ * @n: number of strings in the array or -1 for NULL terminated arrays
+ * @str: string to match with
+ *
+ * Returns index of @str in the @array or -EINVAL, just like match_string().
+ * Uses sysfs_streq instead of strcmp for matching.
+ *
+ * This routine will look for a string in an array of strings up to the
+ * n-th element in the array or until the first NULL element.
+ *
+ * Historically the value of -1 for @n, was used to search in arrays that
+ * are NULL terminated. However, the function does not make a distinction
+ * when finishing the search: either @n elements have been compared OR
+ * the first NULL element was found.
+ */
+int __sysfs_match_string(const char * const *array, size_t n, const char *str)
+{
+	const char *item;
+	int index;
+
+	for (index = 0; index < n; index++) {
+		item = array[index];
+		if (!item)
+			break;
+		if (sysfs_streq(item, str))
+			return index;
+	}
+
+	return -EINVAL;
+}
+EXPORT_SYMBOL(__sysfs_match_string);
+
+/**
+ * strreplace - Replace all occurrences of character in string.
+ * @str: The string to operate on.
+ * @old: The character being replaced.
+ * @new: The character @old is replaced with.
+ *
+ * Replaces the each @old character with a @new one in the given string @str.
+ *
+ * Return: pointer to the string @str itself.
+ */
+char *strreplace(char *str, char old, char new)
+{
+	char *s = str;
+
+	for (; *s; ++s)
+		if (*s == old)
+			*s = new;
+	return str;
+}
+EXPORT_SYMBOL(strreplace);
+
+/**
+ * memcpy_and_pad - Copy one buffer to another with padding
+ * @dest: Where to copy to
+ * @dest_len: The destination buffer size
+ * @src: Where to copy from
+ * @count: The number of bytes to copy
+ * @pad: Character to use for padding if space is left in destination.
+ */
+void memcpy_and_pad(void *dest, size_t dest_len, const void *src, size_t count,
+		    int pad)
+{
+	if (dest_len > count) {
+		memcpy(dest, src, count);
+		memset(dest + count, pad,  dest_len - count);
+	} else {
+		memcpy(dest, src, dest_len);
+	}
+}
+EXPORT_SYMBOL(memcpy_and_pad);
+
+#ifdef CONFIG_FORTIFY_SOURCE
+/* These are placeholders for fortify compile-time warnings. */
+void __read_overflow2_field(size_t avail, size_t wanted) { }
+EXPORT_SYMBOL(__read_overflow2_field);
+void __write_overflow_field(size_t avail, size_t wanted) { }
+EXPORT_SYMBOL(__write_overflow_field);
+
+static const char * const fortify_func_name[] = {
+#define MAKE_FORTIFY_FUNC_NAME(func)	[MAKE_FORTIFY_FUNC(func)] = #func
+	EACH_FORTIFY_FUNC(MAKE_FORTIFY_FUNC_NAME)
+#undef  MAKE_FORTIFY_FUNC_NAME
+};
+
+void __fortify_report(const u8 reason, const size_t avail, const size_t size)
+{
+	const u8 func = FORTIFY_REASON_FUNC(reason);
+	const bool write = FORTIFY_REASON_DIR(reason);
+	const char *name;
+
+	name = fortify_func_name[umin(func, FORTIFY_FUNC_UNKNOWN)];
+	WARN(1, "%s: detected buffer overflow: %zu byte %s of buffer size %zu\n",
+		 name, size, str_read_write(!write), avail);
+}
+EXPORT_SYMBOL(__fortify_report);
+
+void __fortify_panic(const u8 reason, const size_t avail, const size_t size)
+{
+	__fortify_report(reason, avail, size);
+	BUG();
+}
+EXPORT_SYMBOL(__fortify_panic);
+#endif /* CONFIG_FORTIFY_SOURCE */

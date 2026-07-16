@@ -12,12 +12,13 @@
 #define _ASM_X86_FPU_API_H
 #include <linux/bottom_half.h>
 
+#include <asm/fpu/types.h>
+
 /*
  * Use kernel_fpu_begin/end() if you intend to use FPU in kernel context. It
- * disables preemption so be careful if you intend to use it for long periods
- * of time.
- * If you intend to use the FPU in irq/softirq you need to check first with
- * irq_fpu_usable() if it is possible.
+ * disables preemption and softirq processing, so be careful if you intend to
+ * use it for long periods of time.  Kernel-mode FPU cannot be used in all
+ * contexts -- see irq_fpu_usable() for details.
  */
 
 /* Kernel FPU states to initialize in kernel_fpu_begin_mask() */
@@ -48,10 +49,10 @@ static inline void kernel_fpu_begin(void)
 }
 
 /*
- * Use fpregs_lock() while editing CPU's FPU registers or fpu->state.
- * A context switch will (and softirq might) save CPU's FPU registers to
- * fpu->state and set TIF_NEED_FPU_LOAD leaving CPU's FPU registers in
- * a random state.
+ * Use fpregs_lock() while editing CPU's FPU registers or fpu->fpstate, or while
+ * using the FPU in kernel mode.  A context switch will (and softirq might) save
+ * CPU's FPU registers to fpu->fpstate.regs and set TIF_NEED_FPU_LOAD leaving
+ * CPU's FPU registers in a random state.
  *
  * local_bh_disable() protects against both preemption and soft interrupts
  * on !RT kernels.
@@ -61,8 +62,6 @@ static inline void kernel_fpu_begin(void)
  * preemptible. Disabling preemption is the right choice here as bottom
  * half processing is always in thread context on RT kernels so it
  * implicitly prevents bottom half processing as well.
- *
- * Disabling preemption also serializes against kernel_fpu_begin().
  */
 static inline void fpregs_lock(void)
 {
@@ -79,6 +78,15 @@ static inline void fpregs_unlock(void)
 	else
 		preempt_enable();
 }
+
+/*
+ * FPU state gets lazily restored before returning to userspace. So when in the
+ * kernel, the valid FPU state may be kept in the buffer. This function will force
+ * restore all the fpu state to the registers early if needed, and lock them from
+ * being automatically saved/restored. Then FPU state can be modified safely in the
+ * registers, before unlocking with fpregs_unlock().
+ */
+void fpregs_lock_and_load(void);
 
 #ifdef CONFIG_X86_DEBUG_FPU
 extern void fpregs_assert_state_consistent(void);
@@ -100,12 +108,73 @@ extern void switch_fpu_return(void);
  */
 extern int cpu_has_xfeatures(u64 xfeatures_mask, const char **feature_name);
 
-/*
- * Tasks that are not using SVA have mm->pasid set to zero to note that they
- * will not have the valid bit set in MSR_IA32_PASID while they are running.
- */
-#define PASID_DISABLED	0
+/* Trap handling */
+extern int  fpu__exception_code(struct fpu *fpu, int trap_nr);
+extern void fpu_sync_fpstate(struct fpu *fpu);
+extern void fpu_reset_from_exception_fixup(void);
 
-static inline void update_pasid(void) { }
+/* Boot, hotplug and resume */
+extern void fpu__init_cpu(void);
+extern void fpu__init_system(void);
+extern void fpu__init_check_bugs(void);
+extern void fpu__resume_cpu(void);
+
+#ifdef CONFIG_MATH_EMULATION
+extern void fpstate_init_soft(struct swregs_state *soft);
+#else
+static inline void fpstate_init_soft(struct swregs_state *soft) {}
+#endif
+
+/* State tracking */
+DECLARE_PER_CPU(bool, kernel_fpu_allowed);
+DECLARE_PER_CPU(struct fpu *, fpu_fpregs_owner_ctx);
+
+/* Process cleanup */
+#ifdef CONFIG_X86_64
+extern void fpstate_free(struct fpu *fpu);
+#else
+static inline void fpstate_free(struct fpu *fpu) { }
+#endif
+
+/* fpstate-related functions which are exported to KVM */
+extern void fpstate_clear_xstate_component(struct fpstate *fpstate, unsigned int xfeature);
+
+extern u64 xstate_get_guest_group_perm(void);
+
+extern void *get_xsave_addr(struct xregs_state *xsave, int xfeature_nr);
+
+
+/* KVM specific functions */
+extern bool fpu_alloc_guest_fpstate(struct fpu_guest *gfpu);
+extern void fpu_free_guest_fpstate(struct fpu_guest *gfpu);
+extern int fpu_swap_kvm_fpstate(struct fpu_guest *gfpu, bool enter_guest);
+extern int fpu_enable_guest_xfd_features(struct fpu_guest *guest_fpu, u64 xfeatures);
+
+#ifdef CONFIG_X86_64
+extern void fpu_update_guest_xfd(struct fpu_guest *guest_fpu, u64 xfd);
+extern void fpu_sync_guest_vmexit_xfd_state(void);
+#else
+static inline void fpu_update_guest_xfd(struct fpu_guest *guest_fpu, u64 xfd) { }
+static inline void fpu_sync_guest_vmexit_xfd_state(void) { }
+#endif
+
+extern void fpu_copy_guest_fpstate_to_uabi(struct fpu_guest *gfpu, void *buf,
+					   unsigned int size, u64 xfeatures, u32 pkru);
+extern int fpu_copy_uabi_to_guest_fpstate(struct fpu_guest *gfpu, const void *buf, u64 xcr0, u32 *vpkru);
+
+static inline void fpstate_set_confidential(struct fpu_guest *gfpu)
+{
+	gfpu->fpstate->is_confidential = true;
+}
+
+static inline bool fpstate_is_confidential(struct fpu_guest *gfpu)
+{
+	return gfpu->fpstate->is_confidential;
+}
+
+/* prctl */
+extern long fpu_xstate_prctl(int option, unsigned long arg2);
+
+extern void fpu_idle_fpregs(void);
 
 #endif /* _ASM_X86_FPU_API_H */

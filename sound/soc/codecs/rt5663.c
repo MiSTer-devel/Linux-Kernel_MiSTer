@@ -74,6 +74,7 @@ struct rt5663_priv {
 	int pll_out;
 
 	int jack_type;
+	unsigned int irq;
 };
 
 static const struct reg_sequence rt5663_patch_list[] = {
@@ -2813,9 +2814,9 @@ static int rt5663_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	unsigned int reg_val = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		reg_val |= RT5663_I2S_MS_S;
 		break;
 	default:
@@ -2941,7 +2942,7 @@ static int rt5663_set_dai_pll(struct snd_soc_dai *dai, int pll_id, int source,
 
 	ret = rl6231_pll_calc(freq_in, freq_out, &pll_code);
 	if (ret < 0) {
-		dev_err(component->dev, "Unsupport input clock %d\n", freq_in);
+		dev_err(component->dev, "Unsupported input clock %d\n", freq_in);
 		return ret;
 	}
 
@@ -3186,6 +3187,12 @@ static int rt5663_suspend(struct snd_soc_component *component)
 {
 	struct rt5663_priv *rt5663 = snd_soc_component_get_drvdata(component);
 
+	if (rt5663->irq)
+		disable_irq(rt5663->irq);
+
+	cancel_delayed_work_sync(&rt5663->jack_detect_work);
+	cancel_delayed_work_sync(&rt5663->jd_unplug_work);
+
 	regcache_cache_only(rt5663->regmap, true);
 	regcache_mark_dirty(rt5663->regmap);
 
@@ -3200,6 +3207,9 @@ static int rt5663_resume(struct snd_soc_component *component)
 	regcache_sync(rt5663->regmap);
 
 	rt5663_irq(0, rt5663);
+
+	if (rt5663->irq)
+		enable_irq(rt5663->irq);
 
 	return 0;
 }
@@ -3258,7 +3268,6 @@ static const struct snd_soc_component_driver soc_component_dev_rt5663 = {
 	.set_jack		= rt5663_set_jack_detect,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config rt5663_v2_regmap = {
@@ -3269,7 +3278,7 @@ static const struct regmap_config rt5663_v2_regmap = {
 	.max_register = 0x07fa,
 	.volatile_reg = rt5663_v2_volatile_register,
 	.readable_reg = rt5663_v2_readable_register,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.reg_defaults = rt5663_v2_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt5663_v2_reg),
 };
@@ -3282,7 +3291,7 @@ static const struct regmap_config rt5663_regmap = {
 	.max_register = 0x03f3,
 	.volatile_reg = rt5663_volatile_register,
 	.readable_reg = rt5663_readable_register,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.reg_defaults = rt5663_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt5663_reg),
 };
@@ -3298,7 +3307,7 @@ static const struct regmap_config temp_regmap = {
 };
 
 static const struct i2c_device_id rt5663_i2c_id[] = {
-	{ "rt5663", 0 },
+	{ "rt5663" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, rt5663_i2c_id);
@@ -3306,15 +3315,15 @@ MODULE_DEVICE_TABLE(i2c, rt5663_i2c_id);
 #if defined(CONFIG_OF)
 static const struct of_device_id rt5663_of_match[] = {
 	{ .compatible = "realtek,rt5663", },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, rt5663_of_match);
 #endif
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id rt5663_acpi_match[] = {
-	{ "10EC5663", 0},
-	{},
+	{ "10EC5663" },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, rt5663_acpi_match);
 #endif
@@ -3461,6 +3470,7 @@ static void rt5663_calibrate(struct rt5663_priv *rt5663)
 static int rt5663_parse_dp(struct rt5663_priv *rt5663, struct device *dev)
 {
 	int table_size;
+	int ret;
 
 	device_property_read_u32(dev, "realtek,dc_offset_l_manual",
 		&rt5663->pdata.dc_offset_l_manual);
@@ -3477,16 +3487,19 @@ static int rt5663_parse_dp(struct rt5663_priv *rt5663, struct device *dev)
 		table_size = sizeof(struct impedance_mapping_table) *
 			rt5663->pdata.impedance_sensing_num;
 		rt5663->imp_table = devm_kzalloc(dev, table_size, GFP_KERNEL);
-		device_property_read_u32_array(dev,
+		if (!rt5663->imp_table)
+			return -ENOMEM;
+		ret = device_property_read_u32_array(dev,
 			"realtek,impedance_sensing_table",
 			(u32 *)rt5663->imp_table, table_size);
+		if (ret)
+			return ret;
 	}
 
 	return 0;
 }
 
-static int rt5663_i2c_probe(struct i2c_client *i2c,
-		    const struct i2c_device_id *id)
+static int rt5663_i2c_probe(struct i2c_client *i2c)
 {
 	struct rt5663_platform_data *pdata = dev_get_platdata(&i2c->dev);
 	struct rt5663_priv *rt5663;
@@ -3504,8 +3517,11 @@ static int rt5663_i2c_probe(struct i2c_client *i2c,
 
 	if (pdata)
 		rt5663->pdata = *pdata;
-	else
-		rt5663_parse_dp(rt5663, &i2c->dev);
+	else {
+		ret = rt5663_parse_dp(rt5663, &i2c->dev);
+		if (ret)
+			return ret;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(rt5663->supplies); i++)
 		rt5663->supplies[i].supply = rt5663_supply_names[i];
@@ -3676,10 +3692,11 @@ static int rt5663_i2c_probe(struct i2c_client *i2c,
 			IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING
 			| IRQF_ONESHOT, "rt5663", rt5663);
 		if (ret) {
-			dev_err(&i2c->dev, "%s Failed to reguest IRQ: %d\n",
+			dev_err(&i2c->dev, "%s Failed to request IRQ: %d\n",
 				__func__, ret);
 			goto err_enable;
 		}
+		rt5663->irq = i2c->irq;
 	}
 
 	ret = devm_snd_soc_register_component(&i2c->dev,
@@ -3704,7 +3721,7 @@ err_enable:
 	return ret;
 }
 
-static int rt5663_i2c_remove(struct i2c_client *i2c)
+static void rt5663_i2c_remove(struct i2c_client *i2c)
 {
 	struct rt5663_priv *rt5663 = i2c_get_clientdata(i2c);
 
@@ -3712,8 +3729,6 @@ static int rt5663_i2c_remove(struct i2c_client *i2c)
 		free_irq(i2c->irq, rt5663);
 
 	regulator_bulk_disable(ARRAY_SIZE(rt5663->supplies), rt5663->supplies);
-
-	return 0;
 }
 
 static void rt5663_i2c_shutdown(struct i2c_client *client)

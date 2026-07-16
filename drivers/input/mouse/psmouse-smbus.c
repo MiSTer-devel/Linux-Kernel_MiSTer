@@ -26,6 +26,8 @@ struct psmouse_smbus_dev {
 static LIST_HEAD(psmouse_smbus_list);
 static DEFINE_MUTEX(psmouse_smbus_mutex);
 
+static struct workqueue_struct *psmouse_smbus_wq;
+
 static void psmouse_smbus_check_adapter(struct i2c_adapter *adapter)
 {
 	struct psmouse_smbus_dev *smbdev;
@@ -33,7 +35,7 @@ static void psmouse_smbus_check_adapter(struct i2c_adapter *adapter)
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_HOST_NOTIFY))
 		return;
 
-	mutex_lock(&psmouse_smbus_mutex);
+	guard(mutex)(&psmouse_smbus_mutex);
 
 	list_for_each_entry(smbdev, &psmouse_smbus_list, node) {
 		if (smbdev->dead)
@@ -53,15 +55,13 @@ static void psmouse_smbus_check_adapter(struct i2c_adapter *adapter)
 			    "SMBus candidate adapter appeared, triggering rescan\n");
 		serio_rescan(smbdev->psmouse->ps2dev.serio);
 	}
-
-	mutex_unlock(&psmouse_smbus_mutex);
 }
 
 static void psmouse_smbus_detach_i2c_client(struct i2c_client *client)
 {
 	struct psmouse_smbus_dev *smbdev, *tmp;
 
-	mutex_lock(&psmouse_smbus_mutex);
+	guard(mutex)(&psmouse_smbus_mutex);
 
 	list_for_each_entry_safe(smbdev, tmp, &psmouse_smbus_list, node) {
 		if (smbdev->client != client)
@@ -75,14 +75,14 @@ static void psmouse_smbus_detach_i2c_client(struct i2c_client *client)
 				    "Marking SMBus companion %s as gone\n",
 				    dev_name(&smbdev->client->dev));
 			smbdev->dead = true;
+			device_link_remove(&smbdev->client->dev,
+					   &smbdev->psmouse->ps2dev.serio->dev);
 			serio_rescan(smbdev->psmouse->ps2dev.serio);
 		} else {
 			list_del(&smbdev->node);
 			kfree(smbdev);
 		}
 	}
-
-	mutex_unlock(&psmouse_smbus_mutex);
 }
 
 static int psmouse_smbus_notifier_call(struct notifier_block *nb,
@@ -159,7 +159,7 @@ static void psmouse_smbus_schedule_remove(struct i2c_client *client)
 		INIT_WORK(&rwork->work, psmouse_smbus_remove_i2c_device);
 		rwork->client = client;
 
-		schedule_work(&rwork->work);
+		queue_work(psmouse_smbus_wq, &rwork->work);
 	}
 }
 
@@ -167,20 +167,20 @@ static void psmouse_smbus_disconnect(struct psmouse *psmouse)
 {
 	struct psmouse_smbus_dev *smbdev = psmouse->private;
 
-	mutex_lock(&psmouse_smbus_mutex);
+	guard(mutex)(&psmouse_smbus_mutex);
 
 	if (smbdev->dead) {
 		list_del(&smbdev->node);
 		kfree(smbdev);
 	} else {
 		smbdev->dead = true;
+		device_link_remove(&smbdev->client->dev,
+				   &psmouse->ps2dev.serio->dev);
 		psmouse_dbg(smbdev->psmouse,
 			    "posting removal request for SMBus companion %s\n",
 			    dev_name(&smbdev->client->dev));
 		psmouse_smbus_schedule_remove(smbdev->client);
 	}
-
-	mutex_unlock(&psmouse_smbus_mutex);
 
 	psmouse->private = NULL;
 }
@@ -213,7 +213,7 @@ void psmouse_smbus_cleanup(struct psmouse *psmouse)
 {
 	struct psmouse_smbus_dev *smbdev, *tmp;
 
-	mutex_lock(&psmouse_smbus_mutex);
+	guard(mutex)(&psmouse_smbus_mutex);
 
 	list_for_each_entry_safe(smbdev, tmp, &psmouse_smbus_list, node) {
 		if (psmouse == smbdev->psmouse) {
@@ -221,8 +221,6 @@ void psmouse_smbus_cleanup(struct psmouse *psmouse)
 			kfree(smbdev);
 		}
 	}
-
-	mutex_unlock(&psmouse_smbus_mutex);
 }
 
 int psmouse_smbus_init(struct psmouse *psmouse,
@@ -261,15 +259,21 @@ int psmouse_smbus_init(struct psmouse *psmouse,
 	psmouse->disconnect = psmouse_smbus_disconnect;
 	psmouse->resync_time = 0;
 
-	mutex_lock(&psmouse_smbus_mutex);
-	list_add_tail(&smbdev->node, &psmouse_smbus_list);
-	mutex_unlock(&psmouse_smbus_mutex);
+	scoped_guard(mutex, &psmouse_smbus_mutex) {
+		list_add_tail(&smbdev->node, &psmouse_smbus_list);
+	}
 
 	/* Bind to already existing adapters right away */
 	error = i2c_for_each_dev(smbdev, psmouse_smbus_create_companion);
 
 	if (smbdev->client) {
 		/* We have our companion device */
+		if (!device_link_add(&smbdev->client->dev,
+				     &psmouse->ps2dev.serio->dev,
+				     DL_FLAG_STATELESS))
+			psmouse_warn(psmouse,
+				     "failed to set up link with iSMBus companion %s\n",
+				     dev_name(&smbdev->client->dev));
 		return 0;
 	}
 
@@ -281,9 +285,9 @@ int psmouse_smbus_init(struct psmouse *psmouse,
 	smbdev->board.platform_data = NULL;
 
 	if (error < 0 || !leave_breadcrumbs) {
-		mutex_lock(&psmouse_smbus_mutex);
-		list_del(&smbdev->node);
-		mutex_unlock(&psmouse_smbus_mutex);
+		scoped_guard(mutex, &psmouse_smbus_mutex) {
+			list_del(&smbdev->node);
+		}
 
 		kfree(smbdev);
 	}
@@ -295,9 +299,14 @@ int __init psmouse_smbus_module_init(void)
 {
 	int error;
 
+	psmouse_smbus_wq = alloc_workqueue("psmouse-smbus", 0, 0);
+	if (!psmouse_smbus_wq)
+		return -ENOMEM;
+
 	error = bus_register_notifier(&i2c_bus_type, &psmouse_smbus_notifier);
 	if (error) {
 		pr_err("failed to register i2c bus notifier: %d\n", error);
+		destroy_workqueue(psmouse_smbus_wq);
 		return error;
 	}
 
@@ -307,5 +316,5 @@ int __init psmouse_smbus_module_init(void)
 void psmouse_smbus_module_exit(void)
 {
 	bus_unregister_notifier(&i2c_bus_type, &psmouse_smbus_notifier);
-	flush_scheduled_work();
+	destroy_workqueue(psmouse_smbus_wq);
 }

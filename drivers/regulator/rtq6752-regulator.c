@@ -54,14 +54,14 @@ static int rtq6752_set_vdd_enable(struct regulator_dev *rdev)
 	int rid = rdev_get_id(rdev), ret;
 
 	mutex_lock(&priv->lock);
-	if (priv->enable_gpio) {
-		gpiod_set_value(priv->enable_gpio, 1);
-
-		usleep_range(RTQ6752_I2CRDY_TIMEUS,
-			     RTQ6752_I2CRDY_TIMEUS + 100);
-	}
-
 	if (!priv->enable_flag) {
+		if (priv->enable_gpio) {
+			gpiod_set_value(priv->enable_gpio, 1);
+
+			usleep_range(RTQ6752_I2CRDY_TIMEUS,
+				     RTQ6752_I2CRDY_TIMEUS + 100);
+		}
+
 		regcache_cache_only(priv->regmap, false);
 		ret = regcache_sync(priv->regmap);
 		if (ret) {
@@ -91,11 +91,11 @@ static int rtq6752_set_vdd_disable(struct regulator_dev *rdev)
 	if (!priv->enable_flag) {
 		regcache_cache_only(priv->regmap, true);
 		regcache_mark_dirty(priv->regmap);
+
+		if (priv->enable_gpio)
+			gpiod_set_value(priv->enable_gpio, 0);
+
 	}
-
-	if (priv->enable_gpio)
-		gpiod_set_value(priv->enable_gpio, 0);
-
 	mutex_unlock(&priv->lock);
 
 	return 0;
@@ -105,7 +105,7 @@ static int rtq6752_get_error_flags(struct regulator_dev *rdev,
 				   unsigned int *flags)
 {
 	unsigned int val, events = 0;
-	const unsigned int fault_mask[] = {
+	static const unsigned int fault_mask[] = {
 		RTQ6752_PAVDDF_MASK, RTQ6752_NAVDDF_MASK };
 	int rid = rdev_get_id(rdev), ret;
 
@@ -209,7 +209,7 @@ static const struct reg_default rtq6752_reg_defaults[] = {
 static const struct regmap_config rtq6752_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.max_register = RTQ6752_REG_FAULT,
 	.reg_defaults = rtq6752_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(rtq6752_reg_defaults),
@@ -278,9 +278,10 @@ MODULE_DEVICE_TABLE(of, rtq6752_device_table);
 static struct i2c_driver rtq6752_driver = {
 	.driver = {
 		.name = "rtq6752",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = rtq6752_device_table,
 	},
-	.probe_new = rtq6752_probe,
+	.probe = rtq6752_probe,
 };
 module_i2c_driver(rtq6752_driver);
 

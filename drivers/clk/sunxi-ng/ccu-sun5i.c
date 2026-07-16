@@ -731,7 +731,7 @@ static struct clk_hw_onecell_data sun5i_a10s_hw_clks = {
 	.num	= CLK_NUMBER,
 };
 
-static struct ccu_reset_map sun5i_a10s_ccu_resets[] = {
+static const struct ccu_reset_map sun5i_a10s_ccu_resets[] = {
 	[RST_USB_PHY0]		=  { 0x0cc, BIT(0) },
 	[RST_USB_PHY1]		=  { 0x0cc, BIT(1) },
 
@@ -1012,7 +1012,7 @@ static void __init sun5i_ccu_init(struct device_node *node,
 	val &= ~GENMASK(7, 6);
 	writel(val | (2 << 6), reg + SUN5I_AHB_REG);
 
-	sunxi_ccu_probe(node, reg, desc);
+	of_sunxi_ccu_probe(node, reg, desc);
 }
 
 static void __init sun5i_a10s_ccu_setup(struct device_node *node)

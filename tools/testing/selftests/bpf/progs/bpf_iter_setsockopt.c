@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2021 Facebook */
-#include "bpf_iter.h"
+#include <vmlinux.h>
 #include "bpf_tracing_net.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
@@ -42,7 +42,6 @@ int change_tcp_cc(struct bpf_iter__tcp *ctx)
 	char cur_cc[TCP_CA_NAME_MAX];
 	struct tcp_sock *tp;
 	struct sock *sk;
-	int ret;
 
 	if (!bpf_tcp_sk(ctx->sk_common))
 		return 0;

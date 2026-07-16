@@ -79,6 +79,7 @@
 #include <perf/cpumap.h>
 
 #include "../util/stat.h"
+#include "../util/mutex.h"
 #include <subcmd/parse-options.h>
 #include "bench.h"
 
@@ -109,10 +110,10 @@ static bool multiq; /* use an epoll instance per thread */
 /* amount of fds to monitor, per thread */
 static unsigned int nfds = 64;
 
-static pthread_mutex_t thread_lock;
+static struct mutex thread_lock;
 static unsigned int threads_starting;
 static struct stats throughput_stats;
-static pthread_cond_t thread_parent, thread_worker;
+static struct cond thread_parent, thread_worker;
 
 struct worker {
 	int tid;
@@ -189,12 +190,12 @@ static void *workerfn(void *arg)
 	int to = nonblocking? 0 : -1;
 	int efd = multiq ? w->epollfd : epollfd;
 
-	pthread_mutex_lock(&thread_lock);
+	mutex_lock(&thread_lock);
 	threads_starting--;
 	if (!threads_starting)
-		pthread_cond_signal(&thread_parent);
-	pthread_cond_wait(&thread_worker, &thread_lock);
-	pthread_mutex_unlock(&thread_lock);
+		cond_signal(&thread_parent);
+	cond_wait(&thread_worker, &thread_lock);
+	mutex_unlock(&thread_lock);
 
 	do {
 		/*
@@ -291,9 +292,11 @@ static void print_summary(void)
 static int do_threads(struct worker *worker, struct perf_cpu_map *cpu)
 {
 	pthread_attr_t thread_attr, *attrp = NULL;
-	cpu_set_t cpuset;
+	cpu_set_t *cpuset;
 	unsigned int i, j;
 	int ret = 0, events = EPOLLIN;
+	int nrcpus;
+	size_t size;
 
 	if (oneshot)
 		events |= EPOLLONESHOT;
@@ -305,6 +308,11 @@ static int do_threads(struct worker *worker, struct perf_cpu_map *cpu)
 		  nonblocking ? " (nonblocking)":"");
 	if (!noaffinity)
 		pthread_attr_init(&thread_attr);
+
+	nrcpus = cpu__max_cpu().cpu;
+	cpuset = CPU_ALLOC(nrcpus);
+	BUG_ON(!cpuset);
+	size = CPU_ALLOC_SIZE(nrcpus);
 
 	for (i = 0; i < nthreads; i++) {
 		struct worker *w = &worker[i];
@@ -341,22 +349,28 @@ static int do_threads(struct worker *worker, struct perf_cpu_map *cpu)
 		}
 
 		if (!noaffinity) {
-			CPU_ZERO(&cpuset);
-			CPU_SET(cpu->map[i % cpu->nr], &cpuset);
+			CPU_ZERO_S(size, cpuset);
+			CPU_SET_S(perf_cpu_map__cpu(cpu, i % perf_cpu_map__nr(cpu)).cpu,
+					size, cpuset);
 
-			ret = pthread_attr_setaffinity_np(&thread_attr, sizeof(cpu_set_t), &cpuset);
-			if (ret)
+			ret = pthread_attr_setaffinity_np(&thread_attr, size, cpuset);
+			if (ret) {
+				CPU_FREE(cpuset);
 				err(EXIT_FAILURE, "pthread_attr_setaffinity_np");
+			}
 
 			attrp = &thread_attr;
 		}
 
 		ret = pthread_create(&w->thread, attrp, workerfn,
 				     (void *)(struct worker *) w);
-		if (ret)
+		if (ret) {
+			CPU_FREE(cpuset);
 			err(EXIT_FAILURE, "pthread_create");
+		}
 	}
 
+	CPU_FREE(cpuset);
 	if (!noaffinity)
 		pthread_attr_destroy(&thread_attr);
 
@@ -406,7 +420,12 @@ static int cmpworker(const void *p1, const void *p2)
 
 	struct worker *w1 = (struct worker *) p1;
 	struct worker *w2 = (struct worker *) p2;
-	return w1->tid > w2->tid;
+
+	if (w1->tid > w2->tid)
+		return 1;
+	if (w1->tid < w2->tid)
+		return -1;
+	return 0;
 }
 
 int bench_epoll_wait(int argc, const char **argv)
@@ -430,7 +449,7 @@ int bench_epoll_wait(int argc, const char **argv)
 	act.sa_sigaction = toggle_done;
 	sigaction(SIGINT, &act, NULL);
 
-	cpu = perf_cpu_map__new(NULL);
+	cpu = perf_cpu_map__new_online_cpus();
 	if (!cpu)
 		goto errmem;
 
@@ -452,7 +471,7 @@ int bench_epoll_wait(int argc, const char **argv)
 
 	/* default to the number of CPUs and leave one for the writer pthread */
 	if (!nthreads)
-		nthreads = cpu->nr - 1;
+		nthreads = perf_cpu_map__nr(cpu) - 1;
 
 	worker = calloc(nthreads, sizeof(*worker));
 	if (!worker) {
@@ -472,9 +491,9 @@ int bench_epoll_wait(int argc, const char **argv)
 	       getpid(), nthreads, oneshot ? " (EPOLLONESHOT semantics)": "", nfds, nsecs);
 
 	init_stats(&throughput_stats);
-	pthread_mutex_init(&thread_lock, NULL);
-	pthread_cond_init(&thread_parent, NULL);
-	pthread_cond_init(&thread_worker, NULL);
+	mutex_init(&thread_lock);
+	cond_init(&thread_parent);
+	cond_init(&thread_worker);
 
 	threads_starting = nthreads;
 
@@ -482,11 +501,11 @@ int bench_epoll_wait(int argc, const char **argv)
 
 	do_threads(worker, cpu);
 
-	pthread_mutex_lock(&thread_lock);
+	mutex_lock(&thread_lock);
 	while (threads_starting)
-		pthread_cond_wait(&thread_parent, &thread_lock);
-	pthread_cond_broadcast(&thread_worker);
-	pthread_mutex_unlock(&thread_lock);
+		cond_wait(&thread_parent, &thread_lock);
+	cond_broadcast(&thread_worker);
+	mutex_unlock(&thread_lock);
 
 	/*
 	 * At this point the workers should be blocked waiting for read events
@@ -509,9 +528,9 @@ int bench_epoll_wait(int argc, const char **argv)
 		err(EXIT_FAILURE, "pthread_join");
 
 	/* cleanup & report results */
-	pthread_cond_destroy(&thread_parent);
-	pthread_cond_destroy(&thread_worker);
-	pthread_mutex_destroy(&thread_lock);
+	cond_destroy(&thread_parent);
+	cond_destroy(&thread_worker);
+	mutex_destroy(&thread_lock);
 
 	/* sort the array back before reporting */
 	if (randomize)
@@ -535,6 +554,11 @@ int bench_epoll_wait(int argc, const char **argv)
 	print_summary();
 
 	close(epollfd);
+	perf_cpu_map__put(cpu);
+	for (i = 0; i < nthreads; i++)
+		free(worker[i].fdmap);
+
+	free(worker);
 	return ret;
 errmem:
 	err(EXIT_FAILURE, "calloc");

@@ -490,7 +490,7 @@ int snd_tscm_stream_start_duplex(struct snd_tscm *tscm, unsigned int rate)
 		// packet is important for media clock recovery.
 		err = amdtp_domain_start(&tscm->domain, tx_init_skip_cycles, true, true);
 		if (err < 0)
-			return err;
+			goto error;
 
 		if (!amdtp_domain_wait_ready(&tscm->domain, READY_TIMEOUT_MS)) {
 			err = -ETIMEDOUT;
@@ -527,33 +527,24 @@ void snd_tscm_stream_lock_changed(struct snd_tscm *tscm)
 
 int snd_tscm_stream_lock_try(struct snd_tscm *tscm)
 {
-	int err;
-
-	spin_lock_irq(&tscm->lock);
+	guard(spinlock_irq)(&tscm->lock);
 
 	/* user land lock this */
-	if (tscm->dev_lock_count < 0) {
-		err = -EBUSY;
-		goto end;
-	}
+	if (tscm->dev_lock_count < 0)
+		return -EBUSY;
 
 	/* this is the first time */
 	if (tscm->dev_lock_count++ == 0)
 		snd_tscm_stream_lock_changed(tscm);
-	err = 0;
-end:
-	spin_unlock_irq(&tscm->lock);
-	return err;
+	return 0;
 }
 
 void snd_tscm_stream_lock_release(struct snd_tscm *tscm)
 {
-	spin_lock_irq(&tscm->lock);
+	guard(spinlock_irq)(&tscm->lock);
 
 	if (WARN_ON(tscm->dev_lock_count <= 0))
-		goto end;
+		return;
 	if (--tscm->dev_lock_count == 0)
 		snd_tscm_stream_lock_changed(tscm);
-end:
-	spin_unlock_irq(&tscm->lock);
 }

@@ -8,7 +8,7 @@
  */
 
 #include <linux/uaccess.h>
-#include "comedidev.h"
+#include <linux/comedi/comedidev.h>
 #include "comedi_internal.h"
 
 const struct comedi_lrange range_bipolar10 = { 1, {BIP_RANGE(10)} };
@@ -52,7 +52,7 @@ int do_rangeinfo_ioctl(struct comedi_device *dev,
 	const struct comedi_lrange *lr;
 	struct comedi_subdevice *s;
 
-	subd = (it->range_type >> 24) & 0xf;
+	subd = (it->range_type >> 24) & 0xff;
 	chan = (it->range_type >> 16) & 0xff;
 
 	if (!dev->attached)

@@ -305,14 +305,12 @@ static int tc574_config(struct pcmcia_device *link)
 	struct net_device *dev = link->priv;
 	struct el3_private *lp = netdev_priv(dev);
 	int ret, i, j;
+	__be16 addr[ETH_ALEN / 2];
 	unsigned int ioaddr;
-	__be16 *phys_addr;
 	char *cardname;
 	__u32 config;
 	u8 *buf;
 	size_t len;
-
-	phys_addr = (__be16 *)dev->dev_addr;
 
 	dev_dbg(&link->dev, "3c574_config()\n");
 
@@ -347,19 +345,20 @@ static int tc574_config(struct pcmcia_device *link)
 	len = pcmcia_get_tuple(link, 0x88, &buf);
 	if (buf && len >= 6) {
 		for (i = 0; i < 3; i++)
-			phys_addr[i] = htons(le16_to_cpu(buf[i * 2]));
+			addr[i] = htons(le16_to_cpu(buf[i * 2]));
 		kfree(buf);
 	} else {
 		kfree(buf); /* 0 < len < 6 */
 		EL3WINDOW(0);
 		for (i = 0; i < 3; i++)
-			phys_addr[i] = htons(read_eeprom(ioaddr, i + 10));
-		if (phys_addr[0] == htons(0x6060)) {
+			addr[i] = htons(read_eeprom(ioaddr, i + 10));
+		if (addr[0] == htons(0x6060)) {
 			pr_notice("IO port conflict at 0x%03lx-0x%03lx\n",
 				  dev->base_addr, dev->base_addr+15);
 			goto failed;
 		}
 	}
+	eth_hw_addr_set(dev, (u8 *)addr);
 	if (link->prod_id[1])
 		cardname = link->prod_id[1];
 	else
@@ -859,7 +858,7 @@ static irqreturn_t el3_interrupt(int irq, void *dev_id)
 */
 static void media_check(struct timer_list *t)
 {
-	struct el3_private *lp = from_timer(lp, t, media);
+	struct el3_private *lp = timer_container_of(lp, t, media);
 	struct net_device *dev = lp->p_dev->priv;
 	unsigned int ioaddr = dev->base_addr;
 	unsigned long flags;
@@ -1141,7 +1140,7 @@ static int el3_close(struct net_device *dev)
 
 	link->open--;
 	netif_stop_queue(dev);
-	del_timer_sync(&lp->media);
+	timer_delete_sync(&lp->media);
 
 	return 0;
 }

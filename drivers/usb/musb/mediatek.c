@@ -10,6 +10,7 @@
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/usb/role.h>
@@ -36,6 +37,8 @@
 #define DMA_INTR_STATUS_MSK	GENMASK(7, 0)
 #define DMA_INTR_UNMASK_SET_MSK	GENMASK(31, 24)
 
+#define MTK_MUSB_CLKS_NUM	3
+
 struct mtk_glue {
 	struct device *dev;
 	struct musb *musb;
@@ -44,9 +47,7 @@ struct mtk_glue {
 	struct phy *phy;
 	struct usb_phy *xceiv;
 	enum phy_mode phy_mode;
-	struct clk *main;
-	struct clk *mcu;
-	struct clk *univpll;
+	struct clk_bulk_data clks[MTK_MUSB_CLKS_NUM];
 	enum usb_role role;
 	struct usb_role_switch *role_sw;
 };
@@ -55,64 +56,11 @@ static int mtk_musb_clks_get(struct mtk_glue *glue)
 {
 	struct device *dev = glue->dev;
 
-	glue->main = devm_clk_get(dev, "main");
-	if (IS_ERR(glue->main)) {
-		dev_err(dev, "fail to get main clock\n");
-		return PTR_ERR(glue->main);
-	}
+	glue->clks[0].id = "main";
+	glue->clks[1].id = "mcu";
+	glue->clks[2].id = "univpll";
 
-	glue->mcu = devm_clk_get(dev, "mcu");
-	if (IS_ERR(glue->mcu)) {
-		dev_err(dev, "fail to get mcu clock\n");
-		return PTR_ERR(glue->mcu);
-	}
-
-	glue->univpll = devm_clk_get(dev, "univpll");
-	if (IS_ERR(glue->univpll)) {
-		dev_err(dev, "fail to get univpll clock\n");
-		return PTR_ERR(glue->univpll);
-	}
-
-	return 0;
-}
-
-static int mtk_musb_clks_enable(struct mtk_glue *glue)
-{
-	int ret;
-
-	ret = clk_prepare_enable(glue->main);
-	if (ret) {
-		dev_err(glue->dev, "failed to enable main clock\n");
-		goto err_main_clk;
-	}
-
-	ret = clk_prepare_enable(glue->mcu);
-	if (ret) {
-		dev_err(glue->dev, "failed to enable mcu clock\n");
-		goto err_mcu_clk;
-	}
-
-	ret = clk_prepare_enable(glue->univpll);
-	if (ret) {
-		dev_err(glue->dev, "failed to enable univpll clock\n");
-		goto err_univpll_clk;
-	}
-
-	return 0;
-
-err_univpll_clk:
-	clk_disable_unprepare(glue->mcu);
-err_mcu_clk:
-	clk_disable_unprepare(glue->main);
-err_main_clk:
-	return ret;
-}
-
-static void mtk_musb_clks_disable(struct mtk_glue *glue)
-{
-	clk_disable_unprepare(glue->univpll);
-	clk_disable_unprepare(glue->mcu);
-	clk_disable_unprepare(glue->main);
+	return devm_clk_bulk_get(dev, MTK_MUSB_CLKS_NUM, glue->clks);
 }
 
 static int mtk_otg_switch_set(struct mtk_glue *glue, enum usb_role role)
@@ -185,6 +133,7 @@ static int mtk_otg_switch_init(struct mtk_glue *glue)
 
 	role_sx_desc.set = musb_usb_role_sx_set;
 	role_sx_desc.get = musb_usb_role_sx_get;
+	role_sx_desc.allow_userspace_control = true;
 	role_sx_desc.fwnode = dev_fwnode(glue->dev);
 	role_sx_desc.driver_data = glue;
 	glue->role_sw = usb_role_switch_register(glue->dev, &role_sx_desc);
@@ -346,7 +295,8 @@ static int mtk_musb_init(struct musb *musb)
 err_phy_power_on:
 	phy_exit(glue->phy);
 err_phy_init:
-	mtk_otg_switch_exit(glue);
+	if (musb->port_mode == MUSB_OTG)
+		mtk_otg_switch_exit(glue);
 	return ret;
 }
 
@@ -389,7 +339,7 @@ static int mtk_musb_exit(struct musb *musb)
 	mtk_otg_switch_exit(glue);
 	phy_power_off(glue->phy);
 	phy_exit(glue->phy);
-	mtk_musb_clks_disable(glue);
+	clk_bulk_disable_unprepare(MTK_MUSB_CLKS_NUM, glue->clks);
 
 	pm_runtime_put_sync(dev);
 	pm_runtime_disable(dev);
@@ -415,7 +365,7 @@ static const struct musb_platform_ops mtk_musb_ops = {
 #define MTK_MUSB_MAX_EP_NUM	8
 #define MTK_MUSB_RAM_BITS	11
 
-static struct musb_fifo_cfg mtk_musb_mode_cfg[] = {
+static const struct musb_fifo_cfg mtk_musb_mode_cfg[] = {
 	{ .hw_ep_num = 1, .style = FIFO_TX, .maxpacket = 512, },
 	{ .hw_ep_num = 1, .style = FIFO_RX, .maxpacket = 512, },
 	{ .hw_ep_num = 2, .style = FIFO_TX, .maxpacket = 512, },
@@ -466,10 +416,9 @@ static int mtk_musb_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	ret = of_platform_populate(np, NULL, NULL, dev);
-	if (ret) {
-		dev_err(dev, "failed to create child devices at %p\n", np);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret,
+				"failed to create child devices at %p\n", np);
 
 	ret = mtk_musb_clks_get(glue);
 	if (ret)
@@ -498,23 +447,19 @@ static int mtk_musb_probe(struct platform_device *pdev)
 		glue->role = USB_ROLE_NONE;
 		break;
 	default:
-		dev_err(&pdev->dev, "Error 'dr_mode' property\n");
-		return -EINVAL;
+		return dev_err_probe(&pdev->dev, -EINVAL,
+				"Error 'dr_mode' property\n");
 	}
 
 	glue->phy = devm_of_phy_get_by_index(dev, np, 0);
-	if (IS_ERR(glue->phy)) {
-		dev_err(dev, "fail to getting phy %ld\n",
-			PTR_ERR(glue->phy));
-		return PTR_ERR(glue->phy);
-	}
+	if (IS_ERR(glue->phy))
+		return dev_err_probe(dev, PTR_ERR(glue->phy),
+				"fail to getting phy\n");
 
 	glue->usb_phy = usb_phy_generic_register();
-	if (IS_ERR(glue->usb_phy)) {
-		dev_err(dev, "fail to registering usb-phy %ld\n",
-			PTR_ERR(glue->usb_phy));
-		return PTR_ERR(glue->usb_phy);
-	}
+	if (IS_ERR(glue->usb_phy))
+		return dev_err_probe(dev, PTR_ERR(glue->usb_phy),
+				"fail to registering usb-phy\n");
 
 	glue->xceiv = devm_usb_get_phy(dev, USB_PHY_TYPE_USB2);
 	if (IS_ERR(glue->xceiv)) {
@@ -527,7 +472,7 @@ static int mtk_musb_probe(struct platform_device *pdev)
 	pm_runtime_enable(dev);
 	pm_runtime_get_sync(dev);
 
-	ret = mtk_musb_clks_enable(glue);
+	ret = clk_bulk_prepare_enable(MTK_MUSB_CLKS_NUM, glue->clks);
 	if (ret)
 		goto err_enable_clk;
 
@@ -537,6 +482,8 @@ static int mtk_musb_probe(struct platform_device *pdev)
 	pinfo.num_res = pdev->num_resources;
 	pinfo.data = pdata;
 	pinfo.size_data = sizeof(*pdata);
+	pinfo.fwnode = of_fwnode_handle(np);
+	pinfo.of_node_reused = true;
 
 	glue->musb_pdev = platform_device_register_full(&pinfo);
 	if (IS_ERR(glue->musb_pdev)) {
@@ -548,7 +495,7 @@ static int mtk_musb_probe(struct platform_device *pdev)
 	return 0;
 
 err_device_register:
-	mtk_musb_clks_disable(glue);
+	clk_bulk_disable_unprepare(MTK_MUSB_CLKS_NUM, glue->clks);
 err_enable_clk:
 	pm_runtime_put_sync(dev);
 	pm_runtime_disable(dev);
@@ -557,15 +504,13 @@ err_unregister_usb_phy:
 	return ret;
 }
 
-static int mtk_musb_remove(struct platform_device *pdev)
+static void mtk_musb_remove(struct platform_device *pdev)
 {
 	struct mtk_glue *glue = platform_get_drvdata(pdev);
 	struct platform_device *usb_phy = glue->usb_phy;
 
 	platform_device_unregister(glue->musb_pdev);
 	usb_phy_generic_unregister(usb_phy);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF

@@ -9,6 +9,7 @@
 #include <linux/list.h>
 #include <linux/rbtree.h>
 #include <stdio.h>
+#include "addr_location.h"
 #include "path.h"
 #include "symbol_conf.h"
 #include "spark.h"
@@ -40,22 +41,34 @@ Elf_Scn *elf_section_by_name(Elf *elf, GElf_Ehdr *ep,
 			     GElf_Shdr *shp, const char *name, size_t *idx);
 #endif
 
-/** struct symbol - symtab entry
- *
- * @ignore - resolvable but tools ignore it (e.g. idle routines)
+/**
+ * A symtab entry. When allocated this may be preceded by an annotation (see
+ * symbol__annotation) and/or a browser_index (see symbol__browser_index).
  */
 struct symbol {
 	struct rb_node	rb_node;
+	/** Range of symbol [start, end). */
 	u64		start;
 	u64		end;
+	/** Length of the string name. */
 	u16		namelen;
+	/** ELF symbol type as defined for st_info. E.g STT_OBJECT or STT_FUNC. */
 	u8		type:4;
+	/** ELF binding type as defined for st_info. E.g. STB_WEAK or STB_GLOBAL. */
 	u8		binding:4;
+	/** Set true for kernel symbols of idle routines. */
 	u8		idle:1;
+	/** Resolvable but tools ignore it (e.g. idle routines). */
 	u8		ignore:1;
+	/** Symbol for an inlined function. */
 	u8		inlined:1;
+	/** Has symbol__annotate2 been performed. */
+	u8		annotate2:1;
+	/** Symbol is an alias of an STT_GNU_IFUNC */
+	u8		ifunc_alias:1;
+	/** Architecture specific. Unused except on PPC where it holds st_other. */
 	u8		arch_sym;
-	bool		annotate2;
+	/** The name of length namelen associated with the symbol. */
 	char		name[];
 };
 
@@ -81,11 +94,6 @@ static inline size_t symbol__size(const struct symbol *sym)
 struct strlist;
 struct intlist;
 
-struct symbol_name_rb_node {
-	struct rb_node	rb_node;
-	struct symbol	sym;
-};
-
 static inline int __symbol__join_symfs(char *bf, size_t size, const char *path)
 {
 	return path__join(bf, size, symbol_conf.symfs, path);
@@ -107,20 +115,6 @@ struct ref_reloc_sym {
 	u64		unrelocated_addr;
 };
 
-struct addr_location {
-	struct thread *thread;
-	struct maps   *maps;
-	struct map    *map;
-	struct symbol *sym;
-	const char    *srcline;
-	u64	      addr;
-	char	      level;
-	u8	      filtered;
-	u8	      cpumode;
-	s32	      cpu;
-	s32	      socket;
-};
-
 int dso__load(struct dso *dso, struct map *map);
 int dso__load_vmlinux(struct dso *dso, struct map *map,
 		      const char *vmlinux, bool vmlinux_allocated);
@@ -135,9 +129,10 @@ void dso__delete_symbol(struct dso *dso,
 			struct symbol *sym);
 
 struct symbol *dso__find_symbol(struct dso *dso, u64 addr);
-struct symbol *dso__find_symbol_by_name(struct dso *dso, const char *name);
+struct symbol *dso__find_symbol_nocache(struct dso *dso, u64 addr);
 
-struct symbol *symbol__next_by_name(struct symbol *sym);
+struct symbol *dso__next_symbol_by_name(struct dso *dso, size_t *idx);
+struct symbol *dso__find_symbol_by_name(struct dso *dso, const char *name, size_t *idx);
 
 struct symbol *dso__first_symbol(struct dso *dso);
 struct symbol *dso__last_symbol(struct dso *dso);
@@ -145,13 +140,14 @@ struct symbol *dso__next_symbol(struct symbol *sym);
 
 enum dso_type dso__type_fd(int fd);
 
-int filename__read_build_id(const char *filename, struct build_id *id);
+int filename__read_build_id(const char *filename, struct build_id *id, bool block);
 int sysfs__read_build_id(const char *filename, struct build_id *bid);
 int modules__parse(const char *filename, void *arg,
 		   int (*process_module)(void *arg, const char *name,
 					 u64 start, u64 size));
 int filename__read_debuglink(const char *filename, char *debuglink,
 			     size_t size);
+bool filename__has_section(const char *filename, const char *sec);
 
 struct perf_env;
 int symbol__init(struct perf_env *env);
@@ -192,8 +188,7 @@ void __symbols__insert(struct rb_root_cached *symbols, struct symbol *sym,
 		       bool kernel);
 void symbols__insert(struct rb_root_cached *symbols, struct symbol *sym);
 void symbols__fixup_duplicate(struct rb_root_cached *symbols);
-void symbols__fixup_end(struct rb_root_cached *symbols);
-void maps__fixup_end(struct maps *maps);
+void symbols__fixup_end(struct rb_root_cached *symbols, bool is_kallsyms);
 
 typedef int (*mapfn_t)(u64 start, u64 len, u64 pgoff, void *data);
 int file__read_maps(int fd, bool exe, mapfn_t mapfn, void *data,
@@ -230,7 +225,6 @@ const char *arch__normalize_symbol_name(const char *name);
 #define SYMBOL_A 0
 #define SYMBOL_B 1
 
-void arch__symbols__fixup_end(struct symbol *p, struct symbol *c);
 int arch__compare_symbol_names(const char *namea, const char *nameb);
 int arch__compare_symbol_names_n(const char *namea, const char *nameb,
 				 unsigned int n);
@@ -274,16 +268,6 @@ enum {
 	SDT_NOTE_IDX_REFCTR,
 };
 
-struct mem_info *mem_info__new(void);
-struct mem_info *mem_info__get(struct mem_info *mi);
-void   mem_info__put(struct mem_info *mi);
-
-static inline void __mem_info__zput(struct mem_info **mi)
-{
-	mem_info__put(*mi);
-	*mi = NULL;
-}
-
-#define mem_info__zput(mi) __mem_info__zput(&mi)
+int symbol__validate_sym_arguments(void);
 
 #endif /* __PERF_SYMBOL */

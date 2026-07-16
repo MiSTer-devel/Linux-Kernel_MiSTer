@@ -3,11 +3,7 @@
 #define GCC_COMMON_H_INCLUDED
 
 #include "bversion.h"
-#if BUILDING_GCC_VERSION >= 6000
 #include "gcc-plugin.h"
-#else
-#include "plugin.h"
-#endif
 #include "plugin-version.h"
 #include "config.h"
 #include "system.h"
@@ -27,9 +23,7 @@
 #include "except.h"
 #include "function.h"
 #include "toplev.h"
-#if BUILDING_GCC_VERSION >= 5000
 #include "expr.h"
-#endif
 #include "basic-block.h"
 #include "intl.h"
 #include "ggc.h"
@@ -39,15 +33,9 @@
 #include "params.h"
 #endif
 
-#if BUILDING_GCC_VERSION <= 4009
-#include "pointer-set.h"
-#else
 #include "hash-map.h"
-#endif
 
-#if BUILDING_GCC_VERSION >= 7000
 #include "memmodel.h"
-#endif
 #include "emit-rtl.h"
 #include "debug.h"
 #include "target.h"
@@ -68,40 +56,30 @@
 #include "pass_manager.h"
 #include "predict.h"
 #include "ipa-utils.h"
-
-#if BUILDING_GCC_VERSION >= 8000
 #include "stringpool.h"
-#endif
-
 #include "attribs.h"
 #include "varasm.h"
 #include "stor-layout.h"
 #include "internal-fn.h"
+#include "gimple.h"
 #include "gimple-expr.h"
+#include "gimple-iterator.h"
 #include "gimple-fold.h"
 #include "context.h"
 #include "tree-ssa-alias.h"
 #include "tree-ssa.h"
-#include "stringpool.h"
-#if BUILDING_GCC_VERSION >= 7000
 #include "tree-vrp.h"
-#endif
 #include "tree-ssanames.h"
 #include "print-tree.h"
 #include "tree-eh.h"
 #include "stmt.h"
 #include "gimplify.h"
-#include "gimple.h"
-#include "tree-ssa-operands.h"
 #include "tree-phinodes.h"
 #include "tree-cfg.h"
-#include "gimple-iterator.h"
 #include "gimple-ssa.h"
 #include "ssa-iterators.h"
 
-#if BUILDING_GCC_VERSION >= 5000
 #include "builtins.h"
-#endif
 
 /* missing from basic_block.h... */
 void debug_dominance_info(enum cdi_direction dir);
@@ -137,6 +115,38 @@ static inline tree build_const_char_string(int len, const char *str)
 	return cstr;
 }
 
+static inline void __add_type_attr(tree type, const char *attr, tree args)
+{
+	tree oldattr;
+
+	if (type == NULL_TREE)
+		return;
+	oldattr = lookup_attribute(attr, TYPE_ATTRIBUTES(type));
+	if (oldattr != NULL_TREE) {
+		gcc_assert(TREE_VALUE(oldattr) == args || TREE_VALUE(TREE_VALUE(oldattr)) == TREE_VALUE(args));
+		return;
+	}
+
+	TYPE_ATTRIBUTES(type) = copy_list(TYPE_ATTRIBUTES(type));
+	TYPE_ATTRIBUTES(type) = tree_cons(get_identifier(attr), args, TYPE_ATTRIBUTES(type));
+}
+
+static inline void add_type_attr(tree type, const char *attr, tree args)
+{
+	tree main_variant = TYPE_MAIN_VARIANT(type);
+
+	__add_type_attr(TYPE_CANONICAL(type), attr, args);
+	__add_type_attr(TYPE_CANONICAL(main_variant), attr, args);
+	__add_type_attr(main_variant, attr, args);
+
+	for (type = TYPE_NEXT_VARIANT(main_variant); type; type = TYPE_NEXT_VARIANT(type)) {
+		if (!lookup_attribute(attr, TYPE_ATTRIBUTES(type)))
+			TYPE_ATTRIBUTES(type) = TYPE_ATTRIBUTES(main_variant);
+
+		__add_type_attr(TYPE_CANONICAL(type), attr, args);
+	}
+}
+
 #define PASS_INFO(NAME, REF, ID, POS)		\
 struct register_pass_info NAME##_pass_info = {	\
 	.pass = make_##NAME##_pass(),		\
@@ -152,125 +162,6 @@ struct register_pass_info NAME##_pass_info = {	\
 #define TODO_dump_func 0
 #define TODO_dump_cgraph 0
 
-#if BUILDING_GCC_VERSION <= 4009
-#define TODO_verify_il 0
-#define AVAIL_INTERPOSABLE AVAIL_OVERWRITABLE
-
-#define section_name_prefix LTO_SECTION_NAME_PREFIX
-#define fatal_error(loc, gmsgid, ...) fatal_error((gmsgid), __VA_ARGS__)
-
-rtx emit_move_insn(rtx x, rtx y);
-
-typedef struct rtx_def rtx_insn;
-
-static inline const char *get_decl_section_name(const_tree decl)
-{
-	if (DECL_SECTION_NAME(decl) == NULL_TREE)
-		return NULL;
-
-	return TREE_STRING_POINTER(DECL_SECTION_NAME(decl));
-}
-
-static inline void set_decl_section_name(tree node, const char *value)
-{
-	if (value)
-		DECL_SECTION_NAME(node) = build_string(strlen(value) + 1, value);
-	else
-		DECL_SECTION_NAME(node) = NULL;
-}
-#endif
-
-#if BUILDING_GCC_VERSION == 4009
-typedef struct gimple_statement_asm gasm;
-typedef struct gimple_statement_base gassign;
-typedef struct gimple_statement_call gcall;
-typedef struct gimple_statement_base gcond;
-typedef struct gimple_statement_base gdebug;
-typedef struct gimple_statement_base ggoto;
-typedef struct gimple_statement_phi gphi;
-typedef struct gimple_statement_base greturn;
-
-static inline gasm *as_a_gasm(gimple stmt)
-{
-	return as_a<gasm>(stmt);
-}
-
-static inline const gasm *as_a_const_gasm(const_gimple stmt)
-{
-	return as_a<const gasm>(stmt);
-}
-
-static inline gassign *as_a_gassign(gimple stmt)
-{
-	return stmt;
-}
-
-static inline const gassign *as_a_const_gassign(const_gimple stmt)
-{
-	return stmt;
-}
-
-static inline gcall *as_a_gcall(gimple stmt)
-{
-	return as_a<gcall>(stmt);
-}
-
-static inline const gcall *as_a_const_gcall(const_gimple stmt)
-{
-	return as_a<const gcall>(stmt);
-}
-
-static inline gcond *as_a_gcond(gimple stmt)
-{
-	return stmt;
-}
-
-static inline const gcond *as_a_const_gcond(const_gimple stmt)
-{
-	return stmt;
-}
-
-static inline gdebug *as_a_gdebug(gimple stmt)
-{
-	return stmt;
-}
-
-static inline const gdebug *as_a_const_gdebug(const_gimple stmt)
-{
-	return stmt;
-}
-
-static inline ggoto *as_a_ggoto(gimple stmt)
-{
-	return stmt;
-}
-
-static inline const ggoto *as_a_const_ggoto(const_gimple stmt)
-{
-	return stmt;
-}
-
-static inline gphi *as_a_gphi(gimple stmt)
-{
-	return as_a<gphi>(stmt);
-}
-
-static inline const gphi *as_a_const_gphi(const_gimple stmt)
-{
-	return as_a<const gphi>(stmt);
-}
-
-static inline greturn *as_a_greturn(gimple stmt)
-{
-	return stmt;
-}
-
-static inline const greturn *as_a_const_greturn(const_gimple stmt)
-{
-	return stmt;
-}
-#endif
-
 #define TODO_ggc_collect 0
 #define NODE_SYMBOL(node) (node)
 #define NODE_DECL(node) (node)->decl
@@ -282,21 +173,17 @@ static inline opt_pass *get_pass_for_id(int id)
 	return g->get_passes()->get_pass_for_id(id);
 }
 
-#if BUILDING_GCC_VERSION >= 5000 && BUILDING_GCC_VERSION < 6000
-/* gimple related */
-template <>
-template <>
-inline bool is_a_helper<const gassign *>::test(const_gimple gs)
-{
-	return gs->code == GIMPLE_ASSIGN;
-}
-#endif
-
-#if BUILDING_GCC_VERSION >= 5000
+#if BUILDING_GCC_VERSION < 16000
 #define TODO_verify_ssa TODO_verify_il
 #define TODO_verify_flow TODO_verify_il
 #define TODO_verify_stmts TODO_verify_il
 #define TODO_verify_rtl_sharing TODO_verify_il
+#else
+#define TODO_verify_ssa 0
+#define TODO_verify_flow 0
+#define TODO_verify_stmts 0
+#define TODO_verify_rtl_sharing 0
+#endif
 
 #define INSN_DELETED_P(insn) (insn)->deleted()
 
@@ -315,7 +202,6 @@ static inline const char *get_decl_section_name(const_tree decl)
 #define varpool_get_node(decl) varpool_node::get(decl)
 #define dump_varpool_node(file, node) (node)->dump(file)
 
-#if BUILDING_GCC_VERSION >= 8000
 #define cgraph_create_edge(caller, callee, call_stmt, count, freq) \
 	(caller)->create_edge((callee), (call_stmt), (count))
 
@@ -323,15 +209,6 @@ static inline const char *get_decl_section_name(const_tree decl)
 		old_call_stmt, call_stmt, count, freq, reason)	\
 	(caller)->create_edge_including_clones((callee),	\
 		(old_call_stmt), (call_stmt), (count), (reason))
-#else
-#define cgraph_create_edge(caller, callee, call_stmt, count, freq) \
-	(caller)->create_edge((callee), (call_stmt), (count), (freq))
-
-#define cgraph_create_edge_including_clones(caller, callee,	\
-		old_call_stmt, call_stmt, count, freq, reason)	\
-	(caller)->create_edge_including_clones((callee),	\
-		(old_call_stmt), (call_stmt), (count), (freq), (reason))
-#endif
 
 typedef struct cgraph_node *cgraph_node_ptr;
 typedef struct cgraph_edge *cgraph_edge_p;
@@ -427,14 +304,14 @@ static inline void cgraph_call_edge_duplication_hooks(cgraph_edge *cs1, cgraph_e
 	symtab->call_edge_duplication_hooks(cs1, cs2);
 }
 
-#if BUILDING_GCC_VERSION >= 6000
 typedef gimple *gimple_ptr;
 typedef const gimple *const_gimple_ptr;
 #define gimple gimple_ptr
 #define const_gimple const_gimple_ptr
 #undef CONST_CAST_GIMPLE
-#define CONST_CAST_GIMPLE(X) CONST_CAST(gimple, (X))
-#endif
+#define CONST_CAST_GIMPLE(X) const_cast<gimple>((X))
+#undef CONST_CAST_TREE
+#define CONST_CAST_TREE(X) const_cast<tree>((X))
 
 /* gimple related */
 static inline gimple gimple_build_assign_with_ops(enum tree_code subcode, tree lhs, tree op1, tree op2 MEM_STAT_DECL)
@@ -533,17 +410,8 @@ static inline void ipa_remove_stmt_references(symtab_node *referring_node, gimpl
 {
 	referring_node->remove_stmt_references(stmt);
 }
-#endif
 
-#if BUILDING_GCC_VERSION < 6000
-#define get_inner_reference(exp, pbitsize, pbitpos, poffset, pmode, punsignedp, preversep, pvolatilep, keep_aligning)	\
-	get_inner_reference(exp, pbitsize, pbitpos, poffset, pmode, punsignedp, pvolatilep, keep_aligning)
-#define gen_rtx_set(ARG0, ARG1) gen_rtx_SET(VOIDmode, (ARG0), (ARG1))
-#endif
-
-#if BUILDING_GCC_VERSION >= 6000
 #define gen_rtx_set(ARG0, ARG1) gen_rtx_SET((ARG0), (ARG1))
-#endif
 
 #ifdef __cplusplus
 static inline void debug_tree(const_tree t)
@@ -560,14 +428,11 @@ static inline void debug_gimple_stmt(const_gimple s)
 #define debug_gimple_stmt(s) debug_gimple_stmt(CONST_CAST_GIMPLE(s))
 #endif
 
-#if BUILDING_GCC_VERSION >= 7000
 #define get_inner_reference(exp, pbitsize, pbitpos, poffset, pmode, punsignedp, preversep, pvolatilep, keep_aligning)	\
 	get_inner_reference(exp, pbitsize, pbitpos, poffset, pmode, punsignedp, preversep, pvolatilep)
-#endif
 
-#if BUILDING_GCC_VERSION < 7000
-#define SET_DECL_ALIGN(decl, align)	DECL_ALIGN(decl) = (align)
-#define SET_DECL_MODE(decl, mode)	DECL_MODE(decl) = (mode)
+#if BUILDING_GCC_VERSION >= 14000
+#define last_stmt(x)			last_nondebug_stmt(x)
 #endif
 
 #endif

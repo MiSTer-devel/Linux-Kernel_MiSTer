@@ -1,145 +1,54 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause)
 //
-// Copyright 2019 NXP
+// Copyright 2019-2025 NXP
 //
 // Author: Daniel Baluta <daniel.baluta@nxp.com>
 //
 // Hardware interface for audio DSP on i.MX8
 
-#include <linux/firmware.h>
-#include <linux/of_platform.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
-#include <linux/pm_domain.h>
-
-#include <linux/module.h>
-#include <sound/sof.h>
-#include <sound/sof/xtensa.h>
-#include <linux/firmware/imx/ipc.h>
-#include <linux/firmware/imx/dsp.h>
-
-#include <linux/firmware/imx/svc/misc.h>
 #include <dt-bindings/firmware/imx/rsrc.h>
-#include "../ops.h"
+
+#include <linux/arm-smccc.h>
+#include <linux/firmware/imx/svc/misc.h>
+#include <linux/mfd/syscon.h>
+#include <linux/reset.h>
+
 #include "imx-common.h"
 
-/* DSP memories */
-#define IRAM_OFFSET		0x10000
-#define IRAM_SIZE		(2 * 1024)
-#define DRAM0_OFFSET		0x0
-#define DRAM0_SIZE		(32 * 1024)
-#define DRAM1_OFFSET		0x8000
-#define DRAM1_SIZE		(32 * 1024)
-#define SYSRAM_OFFSET		0x18000
-#define SYSRAM_SIZE		(256 * 1024)
-#define SYSROM_OFFSET		0x58000
-#define SYSROM_SIZE		(192 * 1024)
-
+/* imx8/imx8x macros */
 #define RESET_VECTOR_VADDR	0x596f8000
 
-#define MBOX_OFFSET	0x800000
-#define MBOX_SIZE	0x1000
+/* imx8m macros */
+#define IMX8M_DAP_DEBUG 0x28800000
+#define IMX8M_DAP_DEBUG_SIZE (64 * 1024)
+#define IMX8M_DAP_PWRCTL (0x4000 + 0x3020)
+#define IMX8M_PWRCTL_CORERESET BIT(16)
 
-struct imx8_priv {
-	struct device *dev;
-	struct snd_sof_dev *sdev;
+/* imx8ulp macros */
+#define FSL_SIP_HIFI_XRDC       0xc200000e
+#define SYSCTRL0                0x8
+#define EXECUTE_BIT             BIT(13)
+#define RESET_BIT               BIT(16)
+#define HIFI4_CLK_BIT           BIT(17)
+#define PB_CLK_BIT              BIT(18)
+#define PLAT_CLK_BIT            BIT(19)
+#define DEBUG_LOGIC_BIT         BIT(25)
 
-	/* DSP IPC handler */
-	struct imx_dsp_ipc *dsp_ipc;
-	struct platform_device *ipc_dev;
-
-	/* System Controller IPC handler */
-	struct imx_sc_ipc *sc_ipc;
-
-	/* Power domain handling */
-	int num_domains;
-	struct device **pd_dev;
-	struct device_link **link;
-
+struct imx8m_chip_data {
+	void __iomem *dap;
+	struct regmap *regmap;
+	struct reset_control *run_stall;
 };
 
-static void imx8_get_reply(struct snd_sof_dev *sdev)
+static int imx8_shutdown(struct snd_sof_dev *sdev)
 {
-	struct snd_sof_ipc_msg *msg = sdev->msg;
-	struct sof_ipc_reply reply;
-	int ret = 0;
-
-	if (!msg) {
-		dev_warn(sdev->dev, "unexpected ipc interrupt\n");
-		return;
-	}
-
-	/* get reply */
-	sof_mailbox_read(sdev, sdev->host_box.offset, &reply, sizeof(reply));
-
-	if (reply.error < 0) {
-		memcpy(msg->reply_data, &reply, sizeof(reply));
-		ret = reply.error;
-	} else {
-		/* reply has correct size? */
-		if (reply.hdr.size != msg->reply_size) {
-			dev_err(sdev->dev, "error: reply expected %zu got %u bytes\n",
-				msg->reply_size, reply.hdr.size);
-			ret = -EINVAL;
-		}
-
-		/* read the message */
-		if (msg->reply_size > 0)
-			sof_mailbox_read(sdev, sdev->host_box.offset,
-					 msg->reply_data, msg->reply_size);
-	}
-
-	msg->reply_error = ret;
-}
-
-static int imx8_get_mailbox_offset(struct snd_sof_dev *sdev)
-{
-	return MBOX_OFFSET;
-}
-
-static int imx8_get_window_offset(struct snd_sof_dev *sdev, u32 id)
-{
-	return MBOX_OFFSET;
-}
-
-static void imx8_dsp_handle_reply(struct imx_dsp_ipc *ipc)
-{
-	struct imx8_priv *priv = imx_dsp_get_data(ipc);
-	unsigned long flags;
-
-	spin_lock_irqsave(&priv->sdev->ipc_lock, flags);
-	imx8_get_reply(priv->sdev);
-	snd_sof_ipc_reply(priv->sdev, 0);
-	spin_unlock_irqrestore(&priv->sdev->ipc_lock, flags);
-}
-
-static void imx8_dsp_handle_request(struct imx_dsp_ipc *ipc)
-{
-	struct imx8_priv *priv = imx_dsp_get_data(ipc);
-	u32 p; /* panic code */
-
-	/* Read the message from the debug box. */
-	sof_mailbox_read(priv->sdev, priv->sdev->debug_box.offset + 4, &p, sizeof(p));
-
-	/* Check to see if the message is a panic code (0x0dead***) */
-	if ((p & SOF_IPC_PANIC_MAGIC_MASK) == SOF_IPC_PANIC_MAGIC)
-		snd_sof_dsp_panic(priv->sdev, p);
-	else
-		snd_sof_ipc_msgs_rx(priv->sdev);
-}
-
-static struct imx_dsp_ops dsp_ops = {
-	.handle_reply		= imx8_dsp_handle_reply,
-	.handle_request		= imx8_dsp_handle_request,
-};
-
-static int imx8_send_msg(struct snd_sof_dev *sdev, struct snd_sof_ipc_msg *msg)
-{
-	struct imx8_priv *priv = sdev->pdata->hw_pdata;
-
-	sof_mailbox_write(sdev, sdev->host_box.offset, msg->msg_data,
-			  msg->msg_size);
-	imx_dsp_ring_doorbell(priv->dsp_ipc, 0);
+	/*
+	 * Force the DSP to stall. After the firmware image is loaded,
+	 * the stall will be removed during run() by a matching
+	 * imx_sc_pm_cpu_start() call.
+	 */
+	imx_sc_pm_cpu_start(get_chip_pdata(sdev), IMX_SC_R_DSP, false,
+			    RESET_VECTOR_VADDR);
 
 	return 0;
 }
@@ -149,24 +58,23 @@ static int imx8_send_msg(struct snd_sof_dev *sdev, struct snd_sof_ipc_msg *msg)
  */
 static int imx8x_run(struct snd_sof_dev *sdev)
 {
-	struct imx8_priv *dsp_priv = sdev->pdata->hw_pdata;
 	int ret;
 
-	ret = imx_sc_misc_set_control(dsp_priv->sc_ipc, IMX_SC_R_DSP,
+	ret = imx_sc_misc_set_control(get_chip_pdata(sdev), IMX_SC_R_DSP,
 				      IMX_SC_C_OFS_SEL, 1);
 	if (ret < 0) {
 		dev_err(sdev->dev, "Error system address offset source select\n");
 		return ret;
 	}
 
-	ret = imx_sc_misc_set_control(dsp_priv->sc_ipc, IMX_SC_R_DSP,
+	ret = imx_sc_misc_set_control(get_chip_pdata(sdev), IMX_SC_R_DSP,
 				      IMX_SC_C_OFS_AUDIO, 0x80);
 	if (ret < 0) {
 		dev_err(sdev->dev, "Error system address offset of AUDIO\n");
 		return ret;
 	}
 
-	ret = imx_sc_misc_set_control(dsp_priv->sc_ipc, IMX_SC_R_DSP,
+	ret = imx_sc_misc_set_control(get_chip_pdata(sdev), IMX_SC_R_DSP,
 				      IMX_SC_C_OFS_PERIPH, 0x5A);
 	if (ret < 0) {
 		dev_err(sdev->dev, "Error system address offset of PERIPH %d\n",
@@ -174,14 +82,14 @@ static int imx8x_run(struct snd_sof_dev *sdev)
 		return ret;
 	}
 
-	ret = imx_sc_misc_set_control(dsp_priv->sc_ipc, IMX_SC_R_DSP,
+	ret = imx_sc_misc_set_control(get_chip_pdata(sdev), IMX_SC_R_DSP,
 				      IMX_SC_C_OFS_IRQ, 0x51);
 	if (ret < 0) {
 		dev_err(sdev->dev, "Error system address offset of IRQ\n");
 		return ret;
 	}
 
-	imx_sc_pm_cpu_start(dsp_priv->sc_ipc, IMX_SC_R_DSP, true,
+	imx_sc_pm_cpu_start(get_chip_pdata(sdev), IMX_SC_R_DSP, true,
 			    RESET_VECTOR_VADDR);
 
 	return 0;
@@ -189,17 +97,16 @@ static int imx8x_run(struct snd_sof_dev *sdev)
 
 static int imx8_run(struct snd_sof_dev *sdev)
 {
-	struct imx8_priv *dsp_priv = sdev->pdata->hw_pdata;
 	int ret;
 
-	ret = imx_sc_misc_set_control(dsp_priv->sc_ipc, IMX_SC_R_DSP,
+	ret = imx_sc_misc_set_control(get_chip_pdata(sdev), IMX_SC_R_DSP,
 				      IMX_SC_C_OFS_SEL, 0);
 	if (ret < 0) {
 		dev_err(sdev->dev, "Error system address offset source select\n");
 		return ret;
 	}
 
-	imx_sc_pm_cpu_start(dsp_priv->sc_ipc, IMX_SC_R_DSP, true,
+	imx_sc_pm_cpu_start(get_chip_pdata(sdev), IMX_SC_R_DSP, true,
 			    RESET_VECTOR_VADDR);
 
 	return 0;
@@ -207,310 +114,360 @@ static int imx8_run(struct snd_sof_dev *sdev)
 
 static int imx8_probe(struct snd_sof_dev *sdev)
 {
-	struct platform_device *pdev =
-		container_of(sdev->dev, struct platform_device, dev);
-	struct device_node *np = pdev->dev.of_node;
-	struct device_node *res_node;
-	struct resource *mmio;
-	struct imx8_priv *priv;
-	struct resource res;
-	u32 base, size;
-	int ret = 0;
-	int i;
+	struct imx_sc_ipc *sc_ipc_handle;
+	struct imx_common_data *common;
+	int ret;
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
-	if (!priv)
-		return -ENOMEM;
+	common = sdev->pdata->hw_pdata;
 
-	sdev->pdata->hw_pdata = priv;
-	priv->dev = sdev->dev;
-	priv->sdev = sdev;
+	ret = imx_scu_get_handle(&sc_ipc_handle);
+	if (ret < 0)
+		return dev_err_probe(sdev->dev, ret,
+				     "failed to fetch SC IPC handle\n");
 
-	/* power up device associated power domains */
-	priv->num_domains = of_count_phandle_with_args(np, "power-domains",
-						       "#power-domain-cells");
-	if (priv->num_domains < 0) {
-		dev_err(sdev->dev, "no power-domains property in %pOF\n", np);
-		return priv->num_domains;
-	}
-
-	priv->pd_dev = devm_kmalloc_array(&pdev->dev, priv->num_domains,
-					  sizeof(*priv->pd_dev), GFP_KERNEL);
-	if (!priv->pd_dev)
-		return -ENOMEM;
-
-	priv->link = devm_kmalloc_array(&pdev->dev, priv->num_domains,
-					sizeof(*priv->link), GFP_KERNEL);
-	if (!priv->link)
-		return -ENOMEM;
-
-	for (i = 0; i < priv->num_domains; i++) {
-		priv->pd_dev[i] = dev_pm_domain_attach_by_id(&pdev->dev, i);
-		if (IS_ERR(priv->pd_dev[i])) {
-			ret = PTR_ERR(priv->pd_dev[i]);
-			goto exit_unroll_pm;
-		}
-		priv->link[i] = device_link_add(&pdev->dev, priv->pd_dev[i],
-						DL_FLAG_STATELESS |
-						DL_FLAG_PM_RUNTIME |
-						DL_FLAG_RPM_ACTIVE);
-		if (!priv->link[i]) {
-			ret = -ENOMEM;
-			dev_pm_domain_detach(priv->pd_dev[i], false);
-			goto exit_unroll_pm;
-		}
-	}
-
-	ret = imx_scu_get_handle(&priv->sc_ipc);
-	if (ret) {
-		dev_err(sdev->dev, "Cannot obtain SCU handle (err = %d)\n",
-			ret);
-		goto exit_unroll_pm;
-	}
-
-	priv->ipc_dev = platform_device_register_data(sdev->dev, "imx-dsp",
-						      PLATFORM_DEVID_NONE,
-						      pdev, sizeof(*pdev));
-	if (IS_ERR(priv->ipc_dev)) {
-		ret = PTR_ERR(priv->ipc_dev);
-		goto exit_unroll_pm;
-	}
-
-	priv->dsp_ipc = dev_get_drvdata(&priv->ipc_dev->dev);
-	if (!priv->dsp_ipc) {
-		/* DSP IPC driver not probed yet, try later */
-		ret = -EPROBE_DEFER;
-		dev_err(sdev->dev, "Failed to get drvdata\n");
-		goto exit_pdev_unregister;
-	}
-
-	imx_dsp_set_data(priv->dsp_ipc, priv);
-	priv->dsp_ipc->ops = &dsp_ops;
-
-	/* DSP base */
-	mmio = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (mmio) {
-		base = mmio->start;
-		size = resource_size(mmio);
-	} else {
-		dev_err(sdev->dev, "error: failed to get DSP base at idx 0\n");
-		ret = -EINVAL;
-		goto exit_pdev_unregister;
-	}
-
-	sdev->bar[SOF_FW_BLK_TYPE_IRAM] = devm_ioremap(sdev->dev, base, size);
-	if (!sdev->bar[SOF_FW_BLK_TYPE_IRAM]) {
-		dev_err(sdev->dev, "failed to ioremap base 0x%x size 0x%x\n",
-			base, size);
-		ret = -ENODEV;
-		goto exit_pdev_unregister;
-	}
-	sdev->mmio_bar = SOF_FW_BLK_TYPE_IRAM;
-
-	res_node = of_parse_phandle(np, "memory-region", 0);
-	if (!res_node) {
-		dev_err(&pdev->dev, "failed to get memory region node\n");
-		ret = -ENODEV;
-		goto exit_pdev_unregister;
-	}
-
-	ret = of_address_to_resource(res_node, 0, &res);
-	of_node_put(res_node);
-	if (ret) {
-		dev_err(&pdev->dev, "failed to get reserved region address\n");
-		goto exit_pdev_unregister;
-	}
-
-	sdev->bar[SOF_FW_BLK_TYPE_SRAM] = devm_ioremap_wc(sdev->dev, res.start,
-							  resource_size(&res));
-	if (!sdev->bar[SOF_FW_BLK_TYPE_SRAM]) {
-		dev_err(sdev->dev, "failed to ioremap mem 0x%x size 0x%x\n",
-			base, size);
-		ret = -ENOMEM;
-		goto exit_pdev_unregister;
-	}
-	sdev->mailbox_bar = SOF_FW_BLK_TYPE_SRAM;
-
-	/* set default mailbox offset for FW ready message */
-	sdev->dsp_box.offset = MBOX_OFFSET;
-
-	return 0;
-
-exit_pdev_unregister:
-	platform_device_unregister(priv->ipc_dev);
-exit_unroll_pm:
-	while (--i >= 0) {
-		device_link_del(priv->link[i]);
-		dev_pm_domain_detach(priv->pd_dev[i], false);
-	}
-
-	return ret;
-}
-
-static int imx8_remove(struct snd_sof_dev *sdev)
-{
-	struct imx8_priv *priv = sdev->pdata->hw_pdata;
-	int i;
-
-	platform_device_unregister(priv->ipc_dev);
-
-	for (i = 0; i < priv->num_domains; i++) {
-		device_link_del(priv->link[i]);
-		dev_pm_domain_detach(priv->pd_dev[i], false);
-	}
+	common->chip_pdata = sc_ipc_handle;
 
 	return 0;
 }
 
-/* on i.MX8 there is 1 to 1 match between type and BAR idx */
-static int imx8_get_bar_index(struct snd_sof_dev *sdev, u32 type)
+static int imx8m_reset(struct snd_sof_dev *sdev)
 {
-	/* Only IRAM and SRAM bars are valid */
-	switch (type) {
-	case SOF_FW_BLK_TYPE_IRAM:
-	case SOF_FW_BLK_TYPE_SRAM:
-		return type;
-	default:
-		return -EINVAL;
-	}
+	struct imx8m_chip_data *chip;
+	u32 pwrctl;
+
+	chip = get_chip_pdata(sdev);
+
+	/* put DSP into reset and stall */
+	pwrctl = readl(chip->dap + IMX8M_DAP_PWRCTL);
+	pwrctl |= IMX8M_PWRCTL_CORERESET;
+	writel(pwrctl, chip->dap + IMX8M_DAP_PWRCTL);
+
+	/* keep reset asserted for 10 cycles */
+	usleep_range(1, 2);
+
+	reset_control_assert(chip->run_stall);
+
+	/* take the DSP out of reset and keep stalled for FW loading */
+	pwrctl = readl(chip->dap + IMX8M_DAP_PWRCTL);
+	pwrctl &= ~IMX8M_PWRCTL_CORERESET;
+	writel(pwrctl, chip->dap + IMX8M_DAP_PWRCTL);
+
+	return 0;
 }
 
-static void imx8_ipc_msg_data(struct snd_sof_dev *sdev,
-			      struct snd_pcm_substream *substream,
-			      void *p, size_t sz)
+static int imx8m_run(struct snd_sof_dev *sdev)
 {
-	sof_mailbox_read(sdev, sdev->dsp_box.offset, p, sz);
+	struct imx8m_chip_data *chip = get_chip_pdata(sdev);
+
+	return reset_control_deassert(chip->run_stall);
 }
 
-static int imx8_ipc_pcm_params(struct snd_sof_dev *sdev,
-			       struct snd_pcm_substream *substream,
-			       const struct sof_ipc_pcm_params_reply *reply)
+static int imx8m_probe(struct snd_sof_dev *sdev)
 {
+	struct imx_common_data *common;
+	struct imx8m_chip_data *chip;
+
+	common = sdev->pdata->hw_pdata;
+
+	chip = devm_kzalloc(sdev->dev, sizeof(*chip), GFP_KERNEL);
+	if (!chip)
+		return -ENOMEM;
+
+	chip->dap = devm_ioremap(sdev->dev, IMX8M_DAP_DEBUG, IMX8M_DAP_DEBUG_SIZE);
+	if (!chip->dap)
+		return dev_err_probe(sdev->dev, -ENODEV,
+				     "failed to ioremap DAP\n");
+
+	chip->run_stall = devm_reset_control_get_exclusive(sdev->dev, "runstall");
+	if (IS_ERR(chip->run_stall))
+		return dev_err_probe(sdev->dev, PTR_ERR(chip->run_stall),
+				     "failed to get dsp runstall reset control\n");
+
+	common->chip_pdata = chip;
+
+	return 0;
+}
+
+static int imx8ulp_run(struct snd_sof_dev *sdev)
+{
+	struct regmap *regmap = get_chip_pdata(sdev);
+
+	/* Controls the HiFi4 DSP Reset: 1 in reset, 0 out of reset */
+	regmap_update_bits(regmap, SYSCTRL0, RESET_BIT, 0);
+
+	/* Reset HiFi4 DSP Debug logic: 1 debug reset, 0  out of reset*/
+	regmap_update_bits(regmap, SYSCTRL0, DEBUG_LOGIC_BIT, 0);
+
+	/* Stall HIFI4 DSP Execution: 1 stall, 0 run */
+	regmap_update_bits(regmap, SYSCTRL0, EXECUTE_BIT, 0);
+
+	return 0;
+}
+
+static int imx8ulp_reset(struct snd_sof_dev *sdev)
+{
+	struct arm_smccc_res smc_res;
+	struct regmap *regmap;
+
+	regmap = get_chip_pdata(sdev);
+
+	/* HiFi4 Platform Clock Enable: 1 enabled, 0 disabled */
+	regmap_update_bits(regmap, SYSCTRL0, PLAT_CLK_BIT, PLAT_CLK_BIT);
+
+	/* HiFi4 PBCLK clock enable: 1 enabled, 0 disabled */
+	regmap_update_bits(regmap, SYSCTRL0, PB_CLK_BIT, PB_CLK_BIT);
+
+	/* HiFi4 Clock Enable: 1 enabled, 0 disabled */
+	regmap_update_bits(regmap, SYSCTRL0, HIFI4_CLK_BIT, HIFI4_CLK_BIT);
+
+	regmap_update_bits(regmap, SYSCTRL0, RESET_BIT, RESET_BIT);
+
+	usleep_range(1, 2);
+
+	/* Stall HIFI4 DSP Execution: 1 stall, 0 not stall */
+	regmap_update_bits(regmap, SYSCTRL0, EXECUTE_BIT, EXECUTE_BIT);
+	usleep_range(1, 2);
+
+	arm_smccc_smc(FSL_SIP_HIFI_XRDC, 0, 0, 0, 0, 0, 0, 0, &smc_res);
+
+	return smc_res.a0;
+}
+
+static int imx8ulp_probe(struct snd_sof_dev *sdev)
+{
+	struct imx_common_data *common;
+	struct regmap *regmap;
+
+	common = sdev->pdata->hw_pdata;
+
+	regmap = syscon_regmap_lookup_by_phandle(sdev->dev->of_node, "fsl,dsp-ctrl");
+	if (IS_ERR(regmap))
+		return dev_err_probe(sdev->dev, PTR_ERR(regmap),
+				     "failed to fetch dsp ctrl regmap\n");
+
+	common->chip_pdata = regmap;
+
 	return 0;
 }
 
 static struct snd_soc_dai_driver imx8_dai[] = {
-{
-	.name = "esai0",
-	.playback = {
-		.channels_min = 1,
-		.channels_max = 8,
-	},
-	.capture = {
-		.channels_min = 1,
-		.channels_max = 8,
-	},
-},
-{
-	.name = "sai1",
-	.playback = {
-		.channels_min = 1,
-		.channels_max = 32,
-	},
-	.capture = {
-		.channels_min = 1,
-		.channels_max = 32,
-	},
-},
+	IMX_SOF_DAI_DRV_ENTRY_BIDIR("esai0", 1, 8),
+	IMX_SOF_DAI_DRV_ENTRY_BIDIR("sai1", 1, 32),
 };
 
-/* i.MX8 ops */
-struct snd_sof_dsp_ops sof_imx8_ops = {
-	/* probe and remove */
-	.probe		= imx8_probe,
-	.remove		= imx8_remove,
-	/* DSP core boot */
-	.run		= imx8_run,
+static struct snd_soc_dai_driver imx8m_dai[] = {
+	IMX_SOF_DAI_DRV_ENTRY_BIDIR("sai1", 1, 32),
+	IMX_SOF_DAI_DRV_ENTRY_BIDIR("sai2", 1, 32),
+	IMX_SOF_DAI_DRV_ENTRY_BIDIR("sai3", 1, 32),
+	IMX_SOF_DAI_DRV_ENTRY_BIDIR("sai5", 1, 32),
+	IMX_SOF_DAI_DRV_ENTRY_BIDIR("sai6", 1, 32),
+	IMX_SOF_DAI_DRV_ENTRY_BIDIR("sai7", 1, 32),
+	IMX_SOF_DAI_DRV_ENTRY("micfil", 0, 0, 1, 8),
+};
 
-	/* Block IO */
-	.block_read	= sof_block_read,
-	.block_write	= sof_block_write,
+static struct snd_soc_dai_driver imx8ulp_dai[] = {
+	IMX_SOF_DAI_DRV_ENTRY_BIDIR("sai5", 1, 32),
+	IMX_SOF_DAI_DRV_ENTRY_BIDIR("sai6", 1, 32),
+};
 
-	/* Module IO */
-	.read64	= sof_io_read64,
+static struct snd_sof_dsp_ops sof_imx8_ops;
 
-	/* ipc */
-	.send_msg	= imx8_send_msg,
-	.fw_ready	= sof_fw_ready,
-	.get_mailbox_offset	= imx8_get_mailbox_offset,
-	.get_window_offset	= imx8_get_window_offset,
+static int imx8_ops_init(struct snd_sof_dev *sdev)
+{
+	/* first copy from template */
+	memcpy(&sof_imx8_ops, &sof_imx_ops, sizeof(sof_imx_ops));
 
-	.ipc_msg_data	= imx8_ipc_msg_data,
-	.ipc_pcm_params	= imx8_ipc_pcm_params,
+	/* then set common imx8 ops */
+	sof_imx8_ops.dbg_dump = imx8_dump;
+	sof_imx8_ops.dsp_arch_ops = &sof_xtensa_arch_ops;
+	sof_imx8_ops.debugfs_add_region_item =
+		snd_sof_debugfs_add_region_item_iomem;
 
-	/* module loading */
-	.load_module	= snd_sof_parse_module_memcpy,
-	.get_bar_index	= imx8_get_bar_index,
-	/* firmware loading */
-	.load_firmware	= snd_sof_load_firmware_memcpy,
+	/* ... and finally set DAI driver */
+	sof_imx8_ops.drv = get_chip_info(sdev)->drv;
+	sof_imx8_ops.num_drv = get_chip_info(sdev)->num_drv;
 
-	/* Debug information */
-	.dbg_dump = imx8_dump,
+	return 0;
+}
 
-	/* Firmware ops */
-	.arch_ops = &sof_xtensa_arch_ops,
+static const struct imx_chip_ops imx8_chip_ops = {
+	.probe = imx8_probe,
+	.core_kick = imx8_run,
+	.core_shutdown = imx8_shutdown,
+};
 
-	/* DAI drivers */
+static const struct imx_chip_ops imx8x_chip_ops = {
+	.probe = imx8_probe,
+	.core_kick = imx8x_run,
+	.core_shutdown = imx8_shutdown,
+};
+
+static const struct imx_chip_ops imx8m_chip_ops = {
+	.probe = imx8m_probe,
+	.core_kick = imx8m_run,
+	.core_reset = imx8m_reset,
+};
+
+static const struct imx_chip_ops imx8ulp_chip_ops = {
+	.probe = imx8ulp_probe,
+	.core_kick = imx8ulp_run,
+	.core_reset = imx8ulp_reset,
+};
+
+static struct imx_memory_info imx8_memory_regions[] = {
+	{ .name = "iram", .reserved = false },
+	{ .name = "sram", .reserved = true },
+	{ }
+};
+
+static struct imx_memory_info imx8m_memory_regions[] = {
+	{ .name = "iram", .reserved = false },
+	{ .name = "sram", .reserved = true },
+	{ }
+};
+
+static struct imx_memory_info imx8ulp_memory_regions[] = {
+	{ .name = "iram", .reserved = false },
+	{ .name = "sram", .reserved = true },
+	{ }
+};
+
+static const struct imx_chip_info imx8_chip_info = {
+	.ipc_info = {
+		.has_panic_code = true,
+		.boot_mbox_offset = 0x800000,
+		.window_offset = 0x800000,
+	},
+	.memory = imx8_memory_regions,
 	.drv = imx8_dai,
 	.num_drv = ARRAY_SIZE(imx8_dai),
-
-	/* ALSA HW info flags */
-	.hw_info =	SNDRV_PCM_INFO_MMAP |
-			SNDRV_PCM_INFO_MMAP_VALID |
-			SNDRV_PCM_INFO_INTERLEAVED |
-			SNDRV_PCM_INFO_PAUSE |
-			SNDRV_PCM_INFO_NO_PERIOD_WAKEUP,
+	.ops = &imx8_chip_ops,
 };
-EXPORT_SYMBOL(sof_imx8_ops);
 
-/* i.MX8X ops */
-struct snd_sof_dsp_ops sof_imx8x_ops = {
-	/* probe and remove */
-	.probe		= imx8_probe,
-	.remove		= imx8_remove,
-	/* DSP core boot */
-	.run		= imx8x_run,
-
-	/* Block IO */
-	.block_read	= sof_block_read,
-	.block_write	= sof_block_write,
-
-	/* Module IO */
-	.read64	= sof_io_read64,
-
-	/* ipc */
-	.send_msg	= imx8_send_msg,
-	.fw_ready	= sof_fw_ready,
-	.get_mailbox_offset	= imx8_get_mailbox_offset,
-	.get_window_offset	= imx8_get_window_offset,
-
-	.ipc_msg_data	= imx8_ipc_msg_data,
-	.ipc_pcm_params	= imx8_ipc_pcm_params,
-
-	/* module loading */
-	.load_module	= snd_sof_parse_module_memcpy,
-	.get_bar_index	= imx8_get_bar_index,
-	/* firmware loading */
-	.load_firmware	= snd_sof_load_firmware_memcpy,
-
-	/* Debug information */
-	.dbg_dump = imx8_dump,
-
-	/* Firmware ops */
-	.arch_ops = &sof_xtensa_arch_ops,
-
-	/* DAI drivers */
+static const struct imx_chip_info imx8x_chip_info = {
+	.ipc_info = {
+		.has_panic_code = true,
+		.boot_mbox_offset = 0x800000,
+		.window_offset = 0x800000,
+	},
+	.memory = imx8_memory_regions,
 	.drv = imx8_dai,
 	.num_drv = ARRAY_SIZE(imx8_dai),
-
-	/* ALSA HW info flags */
-	.hw_info =	SNDRV_PCM_INFO_MMAP |
-			SNDRV_PCM_INFO_MMAP_VALID |
-			SNDRV_PCM_INFO_INTERLEAVED |
-			SNDRV_PCM_INFO_PAUSE |
-			SNDRV_PCM_INFO_NO_PERIOD_WAKEUP
+	.ops = &imx8x_chip_ops,
 };
-EXPORT_SYMBOL(sof_imx8x_ops);
 
-MODULE_IMPORT_NS(SND_SOC_SOF_XTENSA);
+static const struct imx_chip_info imx8m_chip_info = {
+	.ipc_info = {
+		.has_panic_code = true,
+		.boot_mbox_offset = 0x800000,
+		.window_offset = 0x800000,
+	},
+	.memory = imx8m_memory_regions,
+	.drv = imx8m_dai,
+	.num_drv = ARRAY_SIZE(imx8m_dai),
+	.ops = &imx8m_chip_ops,
+};
+
+static const struct imx_chip_info imx8ulp_chip_info = {
+	.ipc_info = {
+		.has_panic_code = true,
+		.boot_mbox_offset = 0x800000,
+		.window_offset = 0x800000,
+	},
+	.has_dma_reserved = true,
+	.memory = imx8ulp_memory_regions,
+	.drv = imx8ulp_dai,
+	.num_drv = ARRAY_SIZE(imx8ulp_dai),
+	.ops = &imx8ulp_chip_ops,
+};
+
+static struct snd_sof_of_mach sof_imx8_machs[] = {
+	{
+		.compatible = "fsl,imx8qxp-mek",
+		.sof_tplg_filename = "sof-imx8-wm8960.tplg",
+		.drv_name = "asoc-audio-graph-card2",
+	},
+	{
+		.compatible = "fsl,imx8qxp-mek-wcpu",
+		.sof_tplg_filename = "sof-imx8-wm8962.tplg",
+		.drv_name = "asoc-audio-graph-card2",
+	},
+	{
+		.compatible = "fsl,imx8qm-mek",
+		.sof_tplg_filename = "sof-imx8-wm8960.tplg",
+		.drv_name = "asoc-audio-graph-card2",
+	},
+	{
+		.compatible = "fsl,imx8qm-mek-revd",
+		.sof_tplg_filename = "sof-imx8-wm8962.tplg",
+		.drv_name = "asoc-audio-graph-card2",
+	},
+	{
+		.compatible = "fsl,imx8qxp-mek-bb",
+		.sof_tplg_filename = "sof-imx8-cs42888.tplg",
+		.drv_name = "asoc-audio-graph-card2",
+	},
+	{
+		.compatible = "fsl,imx8qm-mek-bb",
+		.sof_tplg_filename = "sof-imx8-cs42888.tplg",
+		.drv_name = "asoc-audio-graph-card2",
+	},
+	{
+		.compatible = "fsl,imx8mp-evk",
+		.sof_tplg_filename = "sof-imx8mp-wm8960.tplg",
+		.drv_name = "asoc-audio-graph-card2",
+	},
+	{
+		.compatible = "fsl,imx8mp-evk-revb4",
+		.sof_tplg_filename = "sof-imx8mp-wm8962.tplg",
+		.drv_name = "asoc-audio-graph-card2",
+	},
+	{
+		.compatible = "fsl,imx8ulp-evk",
+		.sof_tplg_filename = "sof-imx8ulp-btsco.tplg",
+		.drv_name = "asoc-audio-graph-card2",
+	},
+	{}
+};
+
+IMX_SOF_DEV_DESC(imx8, sof_imx8_machs, &imx8_chip_info, &sof_imx8_ops, imx8_ops_init);
+IMX_SOF_DEV_DESC(imx8x, sof_imx8_machs, &imx8x_chip_info, &sof_imx8_ops, imx8_ops_init);
+IMX_SOF_DEV_DESC(imx8m, sof_imx8_machs, &imx8m_chip_info, &sof_imx8_ops, imx8_ops_init);
+IMX_SOF_DEV_DESC(imx8ulp, sof_imx8_machs, &imx8ulp_chip_info, &sof_imx8_ops, imx8_ops_init);
+
+static const struct of_device_id sof_of_imx8_ids[] = {
+	{
+		.compatible = "fsl,imx8qxp-dsp",
+		.data = &IMX_SOF_DEV_DESC_NAME(imx8x),
+	},
+	{
+		.compatible = "fsl,imx8qm-dsp",
+		.data = &IMX_SOF_DEV_DESC_NAME(imx8),
+	},
+	{
+		.compatible = "fsl,imx8mp-dsp",
+		.data = &IMX_SOF_DEV_DESC_NAME(imx8m),
+	},
+	{
+		.compatible = "fsl,imx8ulp-dsp",
+		.data = &IMX_SOF_DEV_DESC_NAME(imx8ulp),
+	},
+	{ }
+};
+MODULE_DEVICE_TABLE(of, sof_of_imx8_ids);
+
+/* DT driver definition */
+static struct platform_driver snd_sof_of_imx8_driver = {
+	.probe = sof_of_probe,
+	.remove = sof_of_remove,
+	.driver = {
+		.name = "sof-audio-of-imx8",
+		.pm = pm_ptr(&sof_of_pm),
+		.of_match_table = sof_of_imx8_ids,
+	},
+};
+module_platform_driver(snd_sof_of_imx8_driver);
+
 MODULE_LICENSE("Dual BSD/GPL");
+MODULE_DESCRIPTION("SOF support for IMX8 platforms");
+MODULE_IMPORT_NS("SND_SOC_SOF_XTENSA");

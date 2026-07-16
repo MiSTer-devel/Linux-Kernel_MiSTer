@@ -233,7 +233,7 @@ struct devfreq_event_dev *devfreq_event_get_edev_by_phandle(struct device *dev,
 
 	mutex_lock(&devfreq_event_list_lock);
 	list_for_each_entry(edev, &devfreq_event_list, node) {
-		if (edev->dev.parent && edev->dev.parent->of_node == node)
+		if (edev->dev.parent && device_match_of_node(edev->dev.parent, node))
 			goto out;
 	}
 
@@ -244,13 +244,9 @@ struct devfreq_event_dev *devfreq_event_get_edev_by_phandle(struct device *dev,
 	edev = NULL;
 out:
 	mutex_unlock(&devfreq_event_list_lock);
-
-	if (!edev) {
-		of_node_put(node);
-		return ERR_PTR(-ENODEV);
-	}
-
 	of_node_put(node);
+	if (!edev)
+		return ERR_PTR(-ENODEV);
 
 	return edev;
 }
@@ -469,7 +465,7 @@ ATTRIBUTE_GROUPS(devfreq_event);
 
 static int __init devfreq_event_init(void)
 {
-	devfreq_event_class = class_create(THIS_MODULE, "devfreq-event");
+	devfreq_event_class = class_create("devfreq-event");
 	if (IS_ERR(devfreq_event_class)) {
 		pr_err("%s: couldn't create class\n", __FILE__);
 		return PTR_ERR(devfreq_event_class);

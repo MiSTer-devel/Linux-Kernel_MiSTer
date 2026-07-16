@@ -3,7 +3,7 @@
  * An rtc driver for the Dallas/Maxim DS1685/DS1687 and related real-time
  * chips.
  *
- * Copyright (C) 2011-2014 Joshua Kinard <kumba@gentoo.org>.
+ * Copyright (C) 2011-2014 Joshua Kinard <linux@kumba.dev>.
  * Copyright (C) 2009 Matthias Fuchs <matthias.fuchs@esd-electronics.com>.
  *
  * References:
@@ -132,7 +132,7 @@ ds1685_rtc_bin2bcd(struct ds1685_priv *rtc, u8 val, u8 bin_mask, u8 bcd_mask)
 }
 
 /**
- * s1685_rtc_check_mday - check validity of the day of month.
+ * ds1685_rtc_check_mday - check validity of the day of month.
  * @rtc: pointer to the ds1685 rtc structure.
  * @mday: day of month.
  *
@@ -1273,7 +1273,7 @@ ds1685_rtc_probe(struct platform_device *pdev)
 
 	/* See if the platform doesn't support UIE. */
 	if (pdata->uie_unsupported)
-		rtc_dev->uie_unsupported = 1;
+		clear_bit(RTC_FEATURE_UPDATE_INTERRUPT, rtc_dev->features);
 
 	rtc->dev = rtc_dev;
 
@@ -1285,13 +1285,10 @@ ds1685_rtc_probe(struct platform_device *pdev)
 	 * there won't be an automatic way of notifying the kernel about it,
 	 * unless ctrlc is explicitly polled.
 	 */
-	if (!pdata->no_irq) {
-		ret = platform_get_irq(pdev, 0);
-		if (ret <= 0)
-			return ret;
-
-		rtc->irq_num = ret;
-
+	rtc->irq_num = platform_get_irq(pdev, 0);
+	if (rtc->irq_num <= 0) {
+		clear_bit(RTC_FEATURE_ALARM, rtc_dev->features);
+	} else {
 		/* Request an IRQ. */
 		ret = devm_request_threaded_irq(&pdev->dev, rtc->irq_num,
 				       NULL, ds1685_rtc_irq_handler,
@@ -1305,7 +1302,6 @@ ds1685_rtc_probe(struct platform_device *pdev)
 			rtc->irq_num = 0;
 		}
 	}
-	rtc->no_irq = pdata->no_irq;
 
 	/* Setup complete. */
 	ds1685_rtc_switch_to_bank0(rtc);
@@ -1326,7 +1322,7 @@ ds1685_rtc_probe(struct platform_device *pdev)
  * ds1685_rtc_remove - removes rtc driver.
  * @pdev: pointer to platform_device structure.
  */
-static int
+static void
 ds1685_rtc_remove(struct platform_device *pdev)
 {
 	struct ds1685_priv *rtc = platform_get_drvdata(pdev);
@@ -1348,8 +1344,6 @@ ds1685_rtc_remove(struct platform_device *pdev)
 	rtc->write(rtc, RTC_EXT_CTRL_4A,
 		   (rtc->read(rtc, RTC_EXT_CTRL_4A) &
 		    ~(RTC_CTRL_4A_RWK_MASK)));
-
-	return 0;
 }
 
 /*
@@ -1394,7 +1388,7 @@ ds1685_rtc_poweroff(struct platform_device *pdev)
 		 * have been taken care of by the shutdown scripts and this
 		 * is the final function call.
 		 */
-		if (!rtc->no_irq)
+		if (rtc->irq_num)
 			disable_irq_nosync(rtc->irq_num);
 
 		/* Oscillator must be on and the countdown chain enabled. */
@@ -1438,11 +1432,11 @@ ds1685_rtc_poweroff(struct platform_device *pdev)
 		unreachable();
 	}
 }
-EXPORT_SYMBOL(ds1685_rtc_poweroff);
+EXPORT_SYMBOL_GPL(ds1685_rtc_poweroff);
 /* ----------------------------------------------------------------------- */
 
 
-MODULE_AUTHOR("Joshua Kinard <kumba@gentoo.org>");
+MODULE_AUTHOR("Joshua Kinard <linux@kumba.dev>");
 MODULE_AUTHOR("Matthias Fuchs <matthias.fuchs@esd-electronics.com>");
 MODULE_DESCRIPTION("Dallas/Maxim DS1685/DS1687-series RTC driver");
 MODULE_LICENSE("GPL");

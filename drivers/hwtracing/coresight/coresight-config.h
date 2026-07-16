@@ -97,6 +97,8 @@ struct cscfg_regval_desc {
  * @params_desc: array of parameters used.
  * @nr_regs:	 number of registers used.
  * @regs_desc:	 array of registers used.
+ * @load_owner:	 handle to load owner for dynamic load and unload of features.
+ * @fs_group:	 reference to configfs group for dynamic unload.
  */
 struct cscfg_feature_desc {
 	const char *name;
@@ -107,6 +109,8 @@ struct cscfg_feature_desc {
 	struct cscfg_parameter_desc *params_desc;
 	int nr_regs;
 	struct cscfg_regval_desc *regs_desc;
+	void *load_owner;
+	struct config_group *fs_group;
 };
 
 /**
@@ -128,7 +132,9 @@ struct cscfg_feature_desc {
  * @presets:		Array of preset values.
  * @event_ea:		Extended attribute for perf event value
  * @active_cnt:		ref count for activate on this configuration.
- *
+ * @load_owner:		handle to load owner for dynamic load and unload of configs.
+ * @fs_group:		reference to configfs group for dynamic unload.
+ * @available:		config can be activated - multi-stage load sets true on completion.
  */
 struct cscfg_config_desc {
 	const char *name;
@@ -141,6 +147,9 @@ struct cscfg_config_desc {
 	const u64 *presets; /* nr_presets * nr_total_params */
 	struct dev_ext_attribute *event_ea;
 	atomic_t active_cnt;
+	void *load_owner;
+	struct config_group *fs_group;
+	bool available;
 };
 
 /**
@@ -197,7 +206,7 @@ struct cscfg_feature_csdev {
 	const struct cscfg_feature_desc *feat_desc;
 	struct coresight_device *csdev;
 	struct list_head node;
-	spinlock_t *drv_spinlock;
+	raw_spinlock_t *drv_spinlock;
 	int nr_params;
 	struct cscfg_parameter_csdev *params_csdev;
 	int nr_regs;
@@ -219,12 +228,12 @@ struct cscfg_feature_csdev {
  * @feats_csdev:references to the device features to enable.
  */
 struct cscfg_config_csdev {
-	const struct cscfg_config_desc *config_desc;
+	struct cscfg_config_desc *config_desc;
 	struct coresight_device *csdev;
 	bool enabled;
 	struct list_head node;
 	int nr_feat;
-	struct cscfg_feature_csdev *feats_csdev[0];
+	struct cscfg_feature_csdev *feats_csdev[];
 };
 
 /**

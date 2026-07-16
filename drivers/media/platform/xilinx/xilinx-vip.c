@@ -40,6 +40,8 @@ static const struct xvip_video_format xvip_video_formats[] = {
 	  1, V4L2_PIX_FMT_SGBRG8 },
 	{ XVIP_VF_MONO_SENSOR, 8, "bggr", MEDIA_BUS_FMT_SBGGR8_1X8,
 	  1, V4L2_PIX_FMT_SBGGR8 },
+	{ XVIP_VF_MONO_SENSOR, 12, "mono", MEDIA_BUS_FMT_Y12_1X12,
+	  2, V4L2_PIX_FMT_Y12 },
 };
 
 /**
@@ -205,10 +207,8 @@ EXPORT_SYMBOL_GPL(xvip_clr_and_set);
 int xvip_init_resources(struct xvip_device *xvip)
 {
 	struct platform_device *pdev = to_platform_device(xvip->dev);
-	struct resource *res;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	xvip->iomem = devm_ioremap_resource(xvip->dev, res);
+	xvip->iomem = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(xvip->iomem))
 		return PTR_ERR(xvip->iomem);
 
@@ -260,7 +260,7 @@ int xvip_enum_mbus_code(struct v4l2_subdev *subdev,
 	if (code->index)
 		return -EINVAL;
 
-	format = v4l2_subdev_get_try_format(subdev, sd_state, code->pad);
+	format = v4l2_subdev_state_get_format(sd_state, code->pad);
 
 	code->code = format->code;
 
@@ -295,7 +295,7 @@ int xvip_enum_frame_size(struct v4l2_subdev *subdev,
 	if (fse->which == V4L2_SUBDEV_FORMAT_ACTIVE)
 		return -EINVAL;
 
-	format = v4l2_subdev_get_try_format(subdev, sd_state, fse->pad);
+	format = v4l2_subdev_state_get_format(sd_state, fse->pad);
 
 	if (fse->index || fse->code != format->code)
 		return -EINVAL;

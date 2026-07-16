@@ -26,6 +26,8 @@
 #include <media/dvb_ca_en50221.h>
 #include "ttpci-eeprom.h"
 
+#include <linux/etherdevice.h>
+
 static int debug;
 module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "Turn on/off debugging (default:off).");
@@ -106,7 +108,7 @@ struct pctv452e_state {
 static int tt3650_ci_msg(struct dvb_usb_device *d, u8 cmd, u8 *data,
 			 unsigned int write_len, unsigned int read_len)
 {
-	struct pctv452e_state *state = (struct pctv452e_state *)d->priv;
+	struct pctv452e_state *state = d->priv;
 	u8 *buf;
 	u8 id;
 	unsigned int rlen;
@@ -157,8 +159,8 @@ static int tt3650_ci_msg_locked(struct dvb_ca_en50221 *ca,
 				u8 cmd, u8 *data, unsigned int write_len,
 				unsigned int read_len)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
-	struct pctv452e_state *state = (struct pctv452e_state *)d->priv;
+	struct dvb_usb_device *d = ca->data;
+	struct pctv452e_state *state = d->priv;
 	int ret;
 
 	mutex_lock(&state->ca_mutex);
@@ -290,8 +292,8 @@ static int tt3650_ci_slot_ts_enable(struct dvb_ca_en50221 *ca, int slot)
 
 static int tt3650_ci_slot_reset(struct dvb_ca_en50221 *ca, int slot)
 {
-	struct dvb_usb_device *d = (struct dvb_usb_device *)ca->data;
-	struct pctv452e_state *state = (struct pctv452e_state *)d->priv;
+	struct dvb_usb_device *d = ca->data;
+	struct pctv452e_state *state = d->priv;
 	u8 buf[1];
 	int ret;
 
@@ -359,7 +361,7 @@ static void tt3650_ci_uninit(struct dvb_usb_device *d)
 	if (NULL == d)
 		return;
 
-	state = (struct pctv452e_state *)d->priv;
+	state = d->priv;
 	if (NULL == state)
 		return;
 
@@ -377,7 +379,7 @@ static void tt3650_ci_uninit(struct dvb_usb_device *d)
 static int tt3650_ci_init(struct dvb_usb_adapter *a)
 {
 	struct dvb_usb_device *d = a->dev;
-	struct pctv452e_state *state = (struct pctv452e_state *)d->priv;
+	struct pctv452e_state *state = d->priv;
 	int ret;
 
 	ci_dbg("%s", __func__);
@@ -415,7 +417,7 @@ static int pctv452e_i2c_msg(struct dvb_usb_device *d, u8 addr,
 				const u8 *snd_buf, u8 snd_len,
 				u8 *rcv_buf, u8 rcv_len)
 {
-	struct pctv452e_state *state = (struct pctv452e_state *)d->priv;
+	struct pctv452e_state *state = d->priv;
 	u8 *buf;
 	u8 id;
 	int ret;
@@ -514,7 +516,7 @@ static u32 pctv452e_i2c_func(struct i2c_adapter *adapter)
 
 static int pctv452e_power_ctrl(struct dvb_usb_device *d, int i)
 {
-	struct pctv452e_state *state = (struct pctv452e_state *)d->priv;
+	struct pctv452e_state *state = d->priv;
 	u8 *b0, *rx;
 	int ret;
 
@@ -565,7 +567,7 @@ ret:
 
 static int pctv452e_rc_query(struct dvb_usb_device *d)
 {
-	struct pctv452e_state *state = (struct pctv452e_state *)d->priv;
+	struct pctv452e_state *state = d->priv;
 	u8 *b, *rx;
 	int ret, i;
 	u8 id;
@@ -904,14 +906,14 @@ static struct stb6100_config stb6100_config = {
 };
 
 
-static struct i2c_algorithm pctv452e_i2c_algo = {
+static const struct i2c_algorithm pctv452e_i2c_algo = {
 	.master_xfer   = pctv452e_i2c_xfer,
 	.functionality = pctv452e_i2c_func
 };
 
 static int pctv452e_frontend_attach(struct dvb_usb_adapter *a)
 {
-	struct usb_device_id *id;
+	const struct usb_device_id *id;
 
 	a->fe_adap[0].fe = dvb_attach(stb0899_attach, &stb0899_config,
 						&a->dev->i2c_adap);
@@ -951,13 +953,19 @@ static int pctv452e_tuner_attach(struct dvb_usb_adapter *a)
 	return 0;
 }
 
-static struct usb_device_id pctv452e_usb_table[] = {
-	{USB_DEVICE(USB_VID_PINNACLE, USB_PID_PCTV_452E)},
-	{USB_DEVICE(USB_VID_TECHNOTREND, USB_PID_TECHNOTREND_CONNECT_S2_3600)},
-	{USB_DEVICE(USB_VID_TECHNOTREND,
-				USB_PID_TECHNOTREND_CONNECT_S2_3650_CI)},
-	{}
+enum {
+	PINNACLE_PCTV_452E,
+	TECHNOTREND_CONNECT_S2_3600,
+	TECHNOTREND_CONNECT_S2_3650_CI,
 };
+
+static const struct usb_device_id pctv452e_usb_table[] = {
+	DVB_USB_DEV(PINNACLE, PINNACLE_PCTV_452E),
+	DVB_USB_DEV(TECHNOTREND, TECHNOTREND_CONNECT_S2_3600),
+	DVB_USB_DEV(TECHNOTREND, TECHNOTREND_CONNECT_S2_3650_CI),
+	{ }
+};
+
 MODULE_DEVICE_TABLE(usb, pctv452e_usb_table);
 
 static struct dvb_usb_device_properties pctv452e_properties = {
@@ -1006,7 +1014,7 @@ static struct dvb_usb_device_properties pctv452e_properties = {
 	.devices = {
 		{ .name = "PCTV HDTV USB",
 		  .cold_ids = { NULL, NULL }, /* this is a warm only device */
-		  .warm_ids = { &pctv452e_usb_table[0], NULL }
+		  .warm_ids = { &pctv452e_usb_table[PINNACLE_PCTV_452E], NULL }
 		},
 		{ NULL },
 	}
@@ -1060,11 +1068,11 @@ static struct dvb_usb_device_properties tt_connect_s2_3600_properties = {
 	.devices = {
 		{ .name = "Technotrend TT Connect S2-3600",
 		  .cold_ids = { NULL, NULL }, /* this is a warm only device */
-		  .warm_ids = { &pctv452e_usb_table[1], NULL }
+		  .warm_ids = { &pctv452e_usb_table[TECHNOTREND_CONNECT_S2_3600], NULL }
 		},
 		{ .name = "Technotrend TT Connect S2-3650-CI",
 		  .cold_ids = { NULL, NULL },
-		  .warm_ids = { &pctv452e_usb_table[2], NULL }
+		  .warm_ids = { &pctv452e_usb_table[TECHNOTREND_CONNECT_S2_3650_CI], NULL }
 		},
 		{ NULL },
 	}

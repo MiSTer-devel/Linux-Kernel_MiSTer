@@ -1,13 +1,36 @@
 // SPDX-License-Identifier: GPL-2.0
+
 /*
  * Auto-group scheduling implementation:
  */
-#include <linux/nospec.h>
+
+#include "autogroup.h"
 #include "sched.h"
 
 unsigned int __read_mostly sysctl_sched_autogroup_enabled = 1;
 static struct autogroup autogroup_default;
 static atomic_t autogroup_seq_nr;
+
+#ifdef CONFIG_SYSCTL
+static const struct ctl_table sched_autogroup_sysctls[] = {
+	{
+		.procname       = "sched_autogroup_enabled",
+		.data           = &sysctl_sched_autogroup_enabled,
+		.maxlen         = sizeof(unsigned int),
+		.mode           = 0644,
+		.proc_handler   = proc_dointvec_minmax,
+		.extra1         = SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE,
+	},
+};
+
+static void __init sched_autogroup_sysctl_init(void)
+{
+	register_sysctl_init("kernel", sched_autogroup_sysctls);
+}
+#else /* !CONFIG_SYSCTL: */
+#define sched_autogroup_sysctl_init() do { } while (0)
+#endif /* !CONFIG_SYSCTL */
 
 void __init autogroup_init(struct task_struct *init_task)
 {
@@ -15,6 +38,7 @@ void __init autogroup_init(struct task_struct *init_task)
 	kref_init(&autogroup_default.kref);
 	init_rwsem(&autogroup_default.lock);
 	init_task->signal->autogroup = &autogroup_default;
+	sched_autogroup_sysctl_init();
 }
 
 void autogroup_free(struct task_group *tg)
@@ -31,7 +55,7 @@ static inline void autogroup_destroy(struct kref *kref)
 	ag->tg->rt_se = NULL;
 	ag->tg->rt_rq = NULL;
 #endif
-	sched_offline_group(ag->tg);
+	sched_release_group(ag->tg);
 	sched_destroy_group(ag->tg);
 }
 
@@ -87,7 +111,7 @@ static inline struct autogroup *autogroup_create(void)
 	free_rt_sched_group(tg);
 	tg->rt_se = root_task_group.rt_se;
 	tg->rt_rq = root_task_group.rt_rq;
-#endif
+#endif /* CONFIG_RT_GROUP_SCHED */
 	tg->autogroup = ag;
 
 	sched_online_group(tg, &root_task_group);
@@ -129,7 +153,7 @@ void sched_autogroup_exit_task(struct task_struct *p)
 	 * see this thread after that: we can no longer use signal->autogroup.
 	 * See the PF_EXITING check in task_wants_autogroup().
 	 */
-	sched_move_task(p);
+	sched_move_task(p, true);
 }
 
 static void
@@ -139,7 +163,8 @@ autogroup_move_group(struct task_struct *p, struct autogroup *ag)
 	struct task_struct *t;
 	unsigned long flags;
 
-	BUG_ON(!lock_task_sighand(p, &flags));
+	if (WARN_ON_ONCE(!lock_task_sighand(p, &flags)))
+		return;
 
 	prev = p->signal->autogroup;
 	if (prev == ag) {
@@ -160,7 +185,7 @@ autogroup_move_group(struct task_struct *p, struct autogroup *ag)
 	 * sched_autogroup_exit_task().
 	 */
 	for_each_thread(p, t)
-		sched_move_task(t);
+		sched_move_task(t, true);
 
 	unlock_task_sighand(p, &flags);
 	autogroup_kref_put(prev);

@@ -8,7 +8,7 @@
  */
 
 #include <linux/extcon.h>
-#include <linux/of_graph.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
 
@@ -18,25 +18,25 @@
 
 static void dwc3_otg_disable_events(struct dwc3 *dwc, u32 disable_mask)
 {
-	u32 reg = dwc3_readl(dwc->regs, DWC3_OEVTEN);
+	u32 reg = dwc3_readl(dwc, DWC3_OEVTEN);
 
 	reg &= ~(disable_mask);
-	dwc3_writel(dwc->regs, DWC3_OEVTEN, reg);
+	dwc3_writel(dwc, DWC3_OEVTEN, reg);
 }
 
 static void dwc3_otg_enable_events(struct dwc3 *dwc, u32 enable_mask)
 {
-	u32 reg = dwc3_readl(dwc->regs, DWC3_OEVTEN);
+	u32 reg = dwc3_readl(dwc, DWC3_OEVTEN);
 
 	reg |= (enable_mask);
-	dwc3_writel(dwc->regs, DWC3_OEVTEN, reg);
+	dwc3_writel(dwc, DWC3_OEVTEN, reg);
 }
 
 static void dwc3_otg_clear_events(struct dwc3 *dwc)
 {
-	u32 reg = dwc3_readl(dwc->regs, DWC3_OEVT);
+	u32 reg = dwc3_readl(dwc, DWC3_OEVT);
 
-	dwc3_writel(dwc->regs, DWC3_OEVTEN, reg);
+	dwc3_writel(dwc, DWC3_OEVTEN, reg);
 }
 
 #define DWC3_OTG_ALL_EVENTS	(DWC3_OEVTEN_XHCIRUNSTPSETEN | \
@@ -72,18 +72,18 @@ static irqreturn_t dwc3_otg_irq(int irq, void *_dwc)
 	struct dwc3 *dwc = _dwc;
 	irqreturn_t ret = IRQ_NONE;
 
-	reg = dwc3_readl(dwc->regs, DWC3_OEVT);
+	reg = dwc3_readl(dwc, DWC3_OEVT);
 	if (reg) {
 		/* ignore non OTG events, we can't disable them in OEVTEN */
 		if (!(reg & DWC3_OTG_ALL_EVENTS)) {
-			dwc3_writel(dwc->regs, DWC3_OEVT, reg);
+			dwc3_writel(dwc, DWC3_OEVT, reg);
 			return IRQ_NONE;
 		}
 
 		if (dwc->current_otg_role == DWC3_OTG_ROLE_HOST &&
 		    !(reg & DWC3_OEVT_DEVICEMODE))
 			dwc->otg_restart_host = true;
-		dwc3_writel(dwc->regs, DWC3_OEVT, reg);
+		dwc3_writel(dwc, DWC3_OEVT, reg);
 		ret = IRQ_WAKE_THREAD;
 	}
 
@@ -100,23 +100,23 @@ static void dwc3_otgregs_init(struct dwc3 *dwc)
 	 * the signal outputs sent to the PHY, the OTG FSM logic of the
 	 * core and also the resets to the VBUS filters inside the core.
 	 */
-	reg = dwc3_readl(dwc->regs, DWC3_OCFG);
+	reg = dwc3_readl(dwc, DWC3_OCFG);
 	reg |= DWC3_OCFG_SFTRSTMASK;
-	dwc3_writel(dwc->regs, DWC3_OCFG, reg);
+	dwc3_writel(dwc, DWC3_OCFG, reg);
 
 	/* Disable hibernation for simplicity */
-	reg = dwc3_readl(dwc->regs, DWC3_GCTL);
+	reg = dwc3_readl(dwc, DWC3_GCTL);
 	reg &= ~DWC3_GCTL_GBLHIBERNATIONEN;
-	dwc3_writel(dwc->regs, DWC3_GCTL, reg);
+	dwc3_writel(dwc, DWC3_GCTL, reg);
 
 	/*
 	 * Initialize OTG registers as per
 	 * Figure 11-4 OTG Driver Overall Programming Flow
 	 */
 	/* OCFG.SRPCap = 0, OCFG.HNPCap = 0 */
-	reg = dwc3_readl(dwc->regs, DWC3_OCFG);
+	reg = dwc3_readl(dwc, DWC3_OCFG);
 	reg &= ~(DWC3_OCFG_SRPCAP | DWC3_OCFG_HNPCAP);
-	dwc3_writel(dwc->regs, DWC3_OCFG, reg);
+	dwc3_writel(dwc, DWC3_OCFG, reg);
 	/* OEVT = FFFF */
 	dwc3_otg_clear_events(dwc);
 	/* OEVTEN = 0 */
@@ -127,11 +127,11 @@ static void dwc3_otgregs_init(struct dwc3 *dwc)
 	 * OCTL.PeriMode = 1, OCTL.DevSetHNPEn = 0, OCTL.HstSetHNPEn = 0,
 	 * OCTL.HNPReq = 0
 	 */
-	reg = dwc3_readl(dwc->regs, DWC3_OCTL);
+	reg = dwc3_readl(dwc, DWC3_OCTL);
 	reg |= DWC3_OCTL_PERIMODE;
 	reg &= ~(DWC3_OCTL_DEVSETHNPEN | DWC3_OCTL_HSTSETHNPEN |
 		 DWC3_OCTL_HNPREQ);
-	dwc3_writel(dwc->regs, DWC3_OCTL, reg);
+	dwc3_writel(dwc, DWC3_OCTL, reg);
 }
 
 static int dwc3_otg_get_irq(struct dwc3 *dwc)
@@ -173,11 +173,11 @@ void dwc3_otg_init(struct dwc3 *dwc)
 	 * block "Initialize GCTL for OTG operation".
 	 */
 	/* GCTL.PrtCapDir=2'b11 */
-	dwc3_set_prtcap(dwc, DWC3_GCTL_PRTCAP_OTG);
+	dwc3_set_prtcap(dwc, DWC3_GCTL_PRTCAP_OTG, true);
 	/* GUSB2PHYCFG0.SusPHY=0 */
-	reg = dwc3_readl(dwc->regs, DWC3_GUSB2PHYCFG(0));
+	reg = dwc3_readl(dwc, DWC3_GUSB2PHYCFG(0));
 	reg &= ~DWC3_GUSB2PHYCFG_SUSPHY;
-	dwc3_writel(dwc->regs, DWC3_GUSB2PHYCFG(0), reg);
+	dwc3_writel(dwc, DWC3_GUSB2PHYCFG(0), reg);
 
 	/* Initialize OTG registers */
 	dwc3_otgregs_init(dwc);
@@ -203,17 +203,17 @@ void dwc3_otg_host_init(struct dwc3 *dwc)
 	 * OCTL.PeriMode=0, OCTL.TermSelDLPulse = 0,
 	 * OCTL.DevSetHNPEn = 0, OCTL.HstSetHNPEn = 0
 	 */
-	reg = dwc3_readl(dwc->regs, DWC3_OCTL);
+	reg = dwc3_readl(dwc, DWC3_OCTL);
 	reg &= ~(DWC3_OCTL_PERIMODE | DWC3_OCTL_TERMSELIDPULSE |
 			DWC3_OCTL_DEVSETHNPEN | DWC3_OCTL_HSTSETHNPEN);
-	dwc3_writel(dwc->regs, DWC3_OCTL, reg);
+	dwc3_writel(dwc, DWC3_OCTL, reg);
 
 	/*
 	 * OCFG.DisPrtPwrCutoff = 0/1
 	 */
-	reg = dwc3_readl(dwc->regs, DWC3_OCFG);
+	reg = dwc3_readl(dwc, DWC3_OCFG);
 	reg &= ~DWC3_OCFG_DISPWRCUTTOFF;
-	dwc3_writel(dwc->regs, DWC3_OCFG, reg);
+	dwc3_writel(dwc, DWC3_OCFG, reg);
 
 	/*
 	 * OCFG.SRPCap = 1, OCFG.HNPCap = GHWPARAMS6.HNP_CAP
@@ -229,15 +229,15 @@ void dwc3_otg_host_init(struct dwc3 *dwc)
 
 	/* GUSB2PHYCFG.ULPIAutoRes = 1/0, GUSB2PHYCFG.SusPHY = 1 */
 	if (!dwc->dis_u2_susphy_quirk) {
-		reg = dwc3_readl(dwc->regs, DWC3_GUSB2PHYCFG(0));
+		reg = dwc3_readl(dwc, DWC3_GUSB2PHYCFG(0));
 		reg |= DWC3_GUSB2PHYCFG_SUSPHY;
-		dwc3_writel(dwc->regs, DWC3_GUSB2PHYCFG(0), reg);
+		dwc3_writel(dwc, DWC3_GUSB2PHYCFG(0), reg);
 	}
 
 	/* Set Port Power to enable VBUS: OCTL.PrtPwrCtl = 1 */
-	reg = dwc3_readl(dwc->regs, DWC3_OCTL);
+	reg = dwc3_readl(dwc, DWC3_OCTL);
 	reg |= DWC3_OCTL_PRTPWRCTL;
-	dwc3_writel(dwc->regs, DWC3_OCTL, reg);
+	dwc3_writel(dwc, DWC3_OCTL, reg);
 }
 
 /* should be called after Host controller driver is stopped */
@@ -258,9 +258,9 @@ static void dwc3_otg_host_exit(struct dwc3 *dwc)
 	 */
 
 	/* OCTL.HstSetHNPEn = 0, OCTL.PrtPwrCtl=0 */
-	reg = dwc3_readl(dwc->regs, DWC3_OCTL);
+	reg = dwc3_readl(dwc, DWC3_OCTL);
 	reg &= ~(DWC3_OCTL_HSTSETHNPEN | DWC3_OCTL_PRTPWRCTL);
-	dwc3_writel(dwc->regs, DWC3_OCTL, reg);
+	dwc3_writel(dwc, DWC3_OCTL, reg);
 }
 
 /* should be called before the gadget controller driver is started */
@@ -274,27 +274,27 @@ static void dwc3_otg_device_init(struct dwc3 *dwc)
 	 * OCFG.HNPCap = GHWPARAMS6.HNP_CAP, OCFG.SRPCap = 1
 	 * but we keep them 0 for simple dual-role operation.
 	 */
-	reg = dwc3_readl(dwc->regs, DWC3_OCFG);
+	reg = dwc3_readl(dwc, DWC3_OCFG);
 	/* OCFG.OTGSftRstMsk = 0/1 */
 	reg |= DWC3_OCFG_SFTRSTMASK;
-	dwc3_writel(dwc->regs, DWC3_OCFG, reg);
+	dwc3_writel(dwc, DWC3_OCFG, reg);
 	/*
 	 * OCTL.PeriMode = 1
 	 * OCTL.TermSelDLPulse = 0/1, OCTL.HNPReq = 0
 	 * OCTL.DevSetHNPEn = 0, OCTL.HstSetHNPEn = 0
 	 */
-	reg = dwc3_readl(dwc->regs, DWC3_OCTL);
+	reg = dwc3_readl(dwc, DWC3_OCTL);
 	reg |= DWC3_OCTL_PERIMODE;
 	reg &= ~(DWC3_OCTL_TERMSELIDPULSE | DWC3_OCTL_HNPREQ |
 			DWC3_OCTL_DEVSETHNPEN | DWC3_OCTL_HSTSETHNPEN);
-	dwc3_writel(dwc->regs, DWC3_OCTL, reg);
+	dwc3_writel(dwc, DWC3_OCTL, reg);
 	/* OEVTEN.OTGBDevSesVldDetEvntEn = 1 */
 	dwc3_otg_enable_events(dwc, DWC3_OEVTEN_BDEVSESSVLDDETEN);
 	/* GUSB2PHYCFG.ULPIAutoRes = 0, GUSB2PHYCFG0.SusPHY = 1 */
 	if (!dwc->dis_u2_susphy_quirk) {
-		reg = dwc3_readl(dwc->regs, DWC3_GUSB2PHYCFG(0));
+		reg = dwc3_readl(dwc, DWC3_GUSB2PHYCFG(0));
 		reg |= DWC3_GUSB2PHYCFG_SUSPHY;
-		dwc3_writel(dwc->regs, DWC3_GUSB2PHYCFG(0), reg);
+		dwc3_writel(dwc, DWC3_GUSB2PHYCFG(0), reg);
 	}
 	/* GCTL.GblHibernationEn = 0. Already 0. */
 }
@@ -319,10 +319,10 @@ static void dwc3_otg_device_exit(struct dwc3 *dwc)
 				DWC3_OEVTEN_BDEVBHOSTENDEN);
 
 	/* OCTL.DevSetHNPEn = 0, OCTL.HNPReq = 0, OCTL.PeriMode=1 */
-	reg = dwc3_readl(dwc->regs, DWC3_OCTL);
+	reg = dwc3_readl(dwc, DWC3_OCTL);
 	reg &= ~(DWC3_OCTL_DEVSETHNPEN | DWC3_OCTL_HNPREQ);
 	reg |= DWC3_OCTL_PERIMODE;
-	dwc3_writel(dwc->regs, DWC3_OCTL, reg);
+	dwc3_writel(dwc, DWC3_OCTL, reg);
 }
 
 void dwc3_otg_update(struct dwc3 *dwc, bool ignore_idstatus)
@@ -331,6 +331,7 @@ void dwc3_otg_update(struct dwc3 *dwc, bool ignore_idstatus)
 	u32 reg;
 	int id;
 	unsigned long flags;
+	int i;
 
 	if (dwc->dr_mode != USB_DR_MODE_OTG)
 		return;
@@ -340,7 +341,7 @@ void dwc3_otg_update(struct dwc3 *dwc, bool ignore_idstatus)
 		return;
 
 	if (!ignore_idstatus) {
-		reg = dwc3_readl(dwc->regs, DWC3_OSTS);
+		reg = dwc3_readl(dwc, DWC3_OSTS);
 		id = !!(reg & DWC3_OSTS_CONIDSTS);
 
 		dwc->desired_otg_role = id ? DWC3_OTG_ROLE_DEVICE :
@@ -386,9 +387,12 @@ void dwc3_otg_update(struct dwc3 *dwc, bool ignore_idstatus)
 		} else {
 			if (dwc->usb2_phy)
 				otg_set_vbus(dwc->usb2_phy->otg, true);
-			if (dwc->usb2_generic_phy)
-				phy_set_mode(dwc->usb2_generic_phy,
-					     PHY_MODE_USB_HOST);
+			for (i = 0; i < dwc->num_usb2_ports; i++) {
+				if (dwc->usb2_generic_phy[i]) {
+					phy_set_mode(dwc->usb2_generic_phy[i],
+						     PHY_MODE_USB_HOST);
+				}
+			}
 		}
 		break;
 	case DWC3_OTG_ROLE_DEVICE:
@@ -400,9 +404,8 @@ void dwc3_otg_update(struct dwc3 *dwc, bool ignore_idstatus)
 
 		if (dwc->usb2_phy)
 			otg_set_vbus(dwc->usb2_phy->otg, false);
-		if (dwc->usb2_generic_phy)
-			phy_set_mode(dwc->usb2_generic_phy,
-				     PHY_MODE_USB_DEVICE);
+		if (dwc->usb2_generic_phy[0])
+			phy_set_mode(dwc->usb2_generic_phy[0], PHY_MODE_USB_DEVICE);
 		ret = dwc3_gadget_init(dwc);
 		if (ret)
 			dev_err(dwc->dev, "failed to initialize peripheral\n");
@@ -438,51 +441,6 @@ static int dwc3_drd_notifier(struct notifier_block *nb,
 	return NOTIFY_DONE;
 }
 
-static struct extcon_dev *dwc3_get_extcon(struct dwc3 *dwc)
-{
-	struct device *dev = dwc->dev;
-	struct device_node *np_phy;
-	struct extcon_dev *edev = NULL;
-	const char *name;
-
-	if (device_property_read_bool(dev, "extcon"))
-		return extcon_get_edev_by_phandle(dev, 0);
-
-	/*
-	 * Device tree platforms should get extcon via phandle.
-	 * On ACPI platforms, we get the name from a device property.
-	 * This device property is for kernel internal use only and
-	 * is expected to be set by the glue code.
-	 */
-	if (device_property_read_string(dev, "linux,extcon-name", &name) == 0) {
-		edev = extcon_get_extcon_dev(name);
-		if (!edev)
-			return ERR_PTR(-EPROBE_DEFER);
-
-		return edev;
-	}
-
-	/*
-	 * Try to get an extcon device from the USB PHY controller's "port"
-	 * node. Check if it has the "port" node first, to avoid printing the
-	 * error message from underlying code, as it's a valid case: extcon
-	 * device (and "port" node) may be missing in case of "usb-role-switch"
-	 * or OTG mode.
-	 */
-	np_phy = of_parse_phandle(dev->of_node, "phys", 0);
-	if (of_graph_is_present(np_phy)) {
-		struct device_node *np_conn;
-
-		np_conn = of_graph_get_remote_node(np_phy, -1, -1);
-		if (np_conn)
-			edev = extcon_find_edev_by_node(np_conn);
-		of_node_put(np_conn);
-	}
-	of_node_put(np_phy);
-
-	return edev;
-}
-
 #if IS_ENABLED(CONFIG_USB_ROLE_SWITCH)
 #define ROLE_SWITCH 1
 static int dwc3_usb_role_switch_set(struct usb_role_switch *sw,
@@ -506,6 +464,7 @@ static int dwc3_usb_role_switch_set(struct usb_role_switch *sw,
 		break;
 	}
 
+	dwc3_pre_set_role(dwc, role);
 	dwc3_set_mode(dwc, mode);
 	return 0;
 }
@@ -550,6 +509,7 @@ static int dwc3_setup_role_switch(struct dwc3 *dwc)
 		dwc->role_switch_default_mode = USB_DR_MODE_PERIPHERAL;
 		mode = DWC3_GCTL_PRTCAP_DEVICE;
 	}
+	dwc3_set_mode(dwc, mode);
 
 	dwc3_role_switch.fwnode = dev_fwnode(dwc->dev);
 	dwc3_role_switch.set = dwc3_usb_role_switch_set;
@@ -559,7 +519,18 @@ static int dwc3_setup_role_switch(struct dwc3 *dwc)
 	if (IS_ERR(dwc->role_sw))
 		return PTR_ERR(dwc->role_sw);
 
-	dwc3_set_mode(dwc, mode);
+	if (dwc->dev->of_node) {
+		/* populate connector entry */
+		int ret = devm_of_platform_populate(dwc->dev);
+
+		if (ret) {
+			usb_role_switch_unregister(dwc->role_sw);
+			dwc->role_sw = NULL;
+			dev_err(dwc->dev, "DWC3 platform devices creation failed: %i\n", ret);
+			return ret;
+		}
+	}
+
 	return 0;
 }
 #else
@@ -571,16 +542,11 @@ int dwc3_drd_init(struct dwc3 *dwc)
 {
 	int ret, irq;
 
-	dwc->edev = dwc3_get_extcon(dwc);
-	if (IS_ERR(dwc->edev))
-		return PTR_ERR(dwc->edev);
-
 	if (ROLE_SWITCH &&
-	    device_property_read_bool(dwc->dev, "usb-role-switch")) {
-		ret = dwc3_setup_role_switch(dwc);
-		if (ret < 0)
-			return ret;
-	} else if (dwc->edev) {
+	    device_property_read_bool(dwc->dev, "usb-role-switch"))
+		return dwc3_setup_role_switch(dwc);
+
+	if (dwc->edev) {
 		dwc->edev_nb.notifier_call = dwc3_drd_notifier;
 		ret = extcon_register_notifier(dwc->edev, EXTCON_USB_HOST,
 					       &dwc->edev_nb);
@@ -591,7 +557,7 @@ int dwc3_drd_init(struct dwc3 *dwc)
 
 		dwc3_drd_update(dwc);
 	} else {
-		dwc3_set_prtcap(dwc, DWC3_GCTL_PRTCAP_OTG);
+		dwc3_set_prtcap(dwc, DWC3_GCTL_PRTCAP_OTG, true);
 
 		/* use OTG block to get ID event */
 		irq = dwc3_otg_get_irq(dwc);

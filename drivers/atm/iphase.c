@@ -90,6 +90,7 @@ module_param(IA_RX_BUF, int, 0);
 module_param(IA_RX_BUF_SZ, int, 0);
 module_param(IADebugFlag, uint, 0644);
 
+MODULE_DESCRIPTION("Driver for Interphase ATM PCI NICs");
 MODULE_LICENSE("GPL");
 
 /**************************** IA_LIB **********************************/
@@ -178,7 +179,6 @@ static void ia_hack_tcq(IADEV *dev) {
 
 static u16 get_desc (IADEV *dev, struct ia_vcc *iavcc) {
   u_short 		desc_num, i;
-  struct sk_buff        *skb;
   struct ia_vcc         *iavcc_r = NULL; 
   unsigned long delta;
   static unsigned long timer = 0;
@@ -202,8 +202,7 @@ static u16 get_desc (IADEV *dev, struct ia_vcc *iavcc) {
            else 
               dev->ffL.tcq_rd -= 2;
            *(u_short *)(dev->seg_ram + dev->ffL.tcq_rd) = i+1;
-           if (!(skb = dev->desc_tbl[i].txskb) || 
-                          !(iavcc_r = dev->desc_tbl[i].iavcc))
+           if (!dev->desc_tbl[i].txskb || !(iavcc_r = dev->desc_tbl[i].iavcc))
               printk("Fatal err, desc table vcc or skb is NULL\n");
            else 
               iavcc_r->vc_desc_cnt--;
@@ -741,7 +740,7 @@ static u16 ia_eeprom_get (IADEV *iadev, u32 addr)
         u32	t;
 	int	i;
 	/*
-	 * Read the first bit that was clocked with the falling edge of the
+	 * Read the first bit that was clocked with the falling edge of
 	 * the last command data clock
 	 */
 	NVRAM_CMD(IAREAD + addr);
@@ -2293,19 +2292,21 @@ static int get_esi(struct atm_dev *dev)
 static int reset_sar(struct atm_dev *dev)  
 {  
 	IADEV *iadev;  
-	int i, error = 1;  
+	int i, error;
 	unsigned int pci[64];  
 	  
 	iadev = INPH_IA_DEV(dev);  
-	for(i=0; i<64; i++)  
-	  if ((error = pci_read_config_dword(iadev->pci,  
-				i*4, &pci[i])) != PCIBIOS_SUCCESSFUL)  
-  	      return error;  
+	for (i = 0; i < 64; i++) {
+		error = pci_read_config_dword(iadev->pci, i * 4, &pci[i]);
+		if (error != PCIBIOS_SUCCESSFUL)
+			return error;
+	}
 	writel(0, iadev->reg+IPHASE5575_EXT_RESET);  
-	for(i=0; i<64; i++)  
-	  if ((error = pci_write_config_dword(iadev->pci,  
-					i*4, pci[i])) != PCIBIOS_SUCCESSFUL)  
-	    return error;  
+	for (i = 0; i < 64; i++) {
+		error = pci_write_config_dword(iadev->pci, i * 4, pci[i]);
+		if (error != PCIBIOS_SUCCESSFUL)
+			return error;
+	}
 	udelay(5);  
 	return 0;  
 }  
@@ -3282,7 +3283,7 @@ static void __exit ia_module_exit(void)
 {
 	pci_unregister_driver(&ia_driver);
 
-	del_timer_sync(&ia_timer);
+	timer_delete_sync(&ia_timer);
 }
 
 module_init(ia_module_init);

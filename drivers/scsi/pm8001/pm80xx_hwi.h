@@ -558,8 +558,10 @@ struct ssp_completion_resp {
 	__le32	status;
 	__le32	param;
 	__le32	ssptag_rescv_rescpad;
+
+	/* Must be last --ends in a flexible-array member. */
 	struct ssp_response_iu ssp_resp_iu;
-	__le32	residual_count;
+	/* __le32  residual_count; */
 } __attribute__((packed, aligned(4)));
 
 #define SSP_RESCV_BIT	0x00010000
@@ -672,11 +674,6 @@ struct task_abort_req {
 	u32	reserved[27];
 } __attribute__((packed, aligned(4)));
 
-/* These flags used for SSP SMP & SATA Abort */
-#define ABORT_MASK		0x3
-#define ABORT_SINGLE		0x0
-#define ABORT_ALL		0x1
-
 /**
  * brief the data structure of SSP SATA SMP Abort Response
  * use to describe SSP SMP & SATA Abort Response ( 64 bytes)
@@ -736,7 +733,7 @@ struct sata_start_req {
 	__le32	tag;
 	__le32	device_id;
 	__le32	data_len;
-	__le32	ncqtag_atap_dir_m_dad;
+	__le32	retfis_ncqtag_atap_dir_m_dad;
 	struct host_to_dev_fis	sata_fis;
 	u32	reserved1;
 	u32	reserved2;	/* dword 11. rsvd for normal I/O. */
@@ -972,7 +969,7 @@ struct dek_mgmt_req {
 struct set_phy_profile_req {
 	__le32	tag;
 	__le32	ppc_phyid;
-	u32	reserved[29];
+	__le32	reserved[29];
 } __attribute__((packed, aligned(4)));
 
 /**
@@ -1366,8 +1363,8 @@ typedef struct SASProtocolTimerConfig SASProtocolTimerConfig_t;
 #define MSGU_HOST_SCRATCH_PAD_3			0x60
 #define MSGU_HOST_SCRATCH_PAD_4			0x64
 #define MSGU_HOST_SCRATCH_PAD_5			0x68
-#define MSGU_HOST_SCRATCH_PAD_6			0x6C
-#define MSGU_HOST_SCRATCH_PAD_7			0x70
+#define MSGU_SCRATCH_PAD_RSVD_0			0x6C
+#define MSGU_SCRATCH_PAD_RSVD_1			0x70
 
 #define MSGU_SCRATCHPAD1_RAAE_STATE_ERR(x) ((x & 0x3) == 0x2)
 #define MSGU_SCRATCHPAD1_ILA_STATE_ERR(x) (((x >> 2) & 0x3) == 0x2)
@@ -1405,8 +1402,12 @@ typedef struct SASProtocolTimerConfig SASProtocolTimerConfig_t;
 #define SCRATCH_PAD_BOOT_LOAD_SUCCESS	0x0
 #define SCRATCH_PAD_IOP0_READY		0xC00
 #define SCRATCH_PAD_IOP1_READY		0x3000
-#define SCRATCH_PAD_MIPSALL_READY	(SCRATCH_PAD_IOP1_READY | \
+#define SCRATCH_PAD_MIPSALL_READY_16PORT	(SCRATCH_PAD_IOP1_READY | \
 					SCRATCH_PAD_IOP0_READY | \
+					SCRATCH_PAD_ILA_READY | \
+					SCRATCH_PAD_RAAE_READY)
+#define SCRATCH_PAD_MIPSALL_READY_8PORT	(SCRATCH_PAD_IOP0_READY | \
+					SCRATCH_PAD_ILA_READY | \
 					SCRATCH_PAD_RAAE_READY)
 
 /* boot loader state */
@@ -1434,6 +1435,11 @@ typedef struct SASProtocolTimerConfig SASProtocolTimerConfig_t;
 
 #define SCRATCH_PAD_ERROR_MASK		0xFFFFFC00 /* Error mask bits */
 #define SCRATCH_PAD_STATE_MASK		0x00000003 /* State Mask bits */
+
+/*state definition for Scratchpad Rsvd 0, Offset 0x6C, Non-fatal*/
+#define NON_FATAL_SPBC_LBUS_ECC_ERR	0x70000001
+#define NON_FATAL_BDMA_ERR		0xE0000001
+#define NON_FATAL_THERM_OVERTEMP_ERR	0x80000001
 
 /* main configuration offset - byte offset */
 #define MAIN_SIGNATURE_OFFSET		0x00 /* DWORD 0x00 */

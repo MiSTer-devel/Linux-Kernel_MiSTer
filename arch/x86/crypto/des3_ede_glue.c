@@ -45,14 +45,6 @@ static inline void des3_ede_dec_blk(struct des3_ede_x86_ctx *ctx, u8 *dst,
 	des3_ede_x86_64_crypt_blk(dec_ctx, dst, src);
 }
 
-static inline void des3_ede_enc_blk_3way(struct des3_ede_x86_ctx *ctx, u8 *dst,
-					 const u8 *src)
-{
-	u32 *enc_ctx = ctx->enc.expkey;
-
-	des3_ede_x86_64_crypt_blk_3way(enc_ctx, dst, src);
-}
-
 static inline void des3_ede_dec_blk_3way(struct des3_ede_x86_ctx *ctx, u8 *dst,
 					 const u8 *src)
 {
@@ -81,7 +73,7 @@ static int ecb_crypt(struct skcipher_request *req, const u32 *expkey)
 	err = skcipher_walk_virt(&walk, req, false);
 
 	while ((nbytes = walk.nbytes)) {
-		u8 *wsrc = walk.src.virt.addr;
+		const u8 *wsrc = walk.src.virt.addr;
 		u8 *wdst = walk.dst.virt.addr;
 
 		/* Process four block batch */
@@ -164,7 +156,7 @@ static int cbc_encrypt(struct skcipher_request *req)
 
 	err = skcipher_walk_virt(&walk, req, false);
 
-	while ((nbytes = walk.nbytes)) {
+	while (walk.nbytes) {
 		nbytes = __cbc_encrypt(ctx, &walk);
 		err = skcipher_walk_done(&walk, nbytes);
 	}
@@ -243,7 +235,7 @@ static int cbc_decrypt(struct skcipher_request *req)
 
 	err = skcipher_walk_virt(&walk, req, false);
 
-	while ((nbytes = walk.nbytes)) {
+	while (walk.nbytes) {
 		nbytes = __cbc_decrypt(ctx, &walk);
 		err = skcipher_walk_done(&walk, nbytes);
 	}
@@ -299,7 +291,6 @@ static struct crypto_alg des3_ede_cipher = {
 	.cra_flags		= CRYPTO_ALG_TYPE_CIPHER,
 	.cra_blocksize		= DES3_EDE_BLOCK_SIZE,
 	.cra_ctxsize		= sizeof(struct des3_ede_x86_ctx),
-	.cra_alignmask		= 0,
 	.cra_module		= THIS_MODULE,
 	.cra_u = {
 		.cipher = {

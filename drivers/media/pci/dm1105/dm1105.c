@@ -763,6 +763,7 @@ static int dm1105_ir_init(struct dm1105_dev *dm1105)
 static void dm1105_ir_exit(struct dm1105_dev *dm1105)
 {
 	rc_unregister_device(dm1105->ir.dev);
+	rc_free_device(dm1105->ir.dev);
 }
 
 static int dm1105_hw_init(struct dm1105_dev *dev)
@@ -1176,6 +1177,7 @@ static void dm1105_remove(struct pci_dev *pdev)
 	struct dvb_demux *dvbdemux = &dev->demux;
 	struct dmx_demux *dmx = &dvbdemux->dmx;
 
+	cancel_work_sync(&dev->ir.work);
 	dm1105_ir_exit(dev);
 	dmx->close(dmx);
 	dvb_net_release(&dev->dvbnet);

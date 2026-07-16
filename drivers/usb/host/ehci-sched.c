@@ -490,13 +490,14 @@ static int tt_no_collision(
 static void enable_periodic(struct ehci_hcd *ehci)
 {
 	if (ehci->periodic_count++)
-		return;
+		goto out;
 
 	/* Stop waiting to turn off the periodic schedule */
 	ehci->enabled_hrtimer_events &= ~BIT(EHCI_HRTIMER_DISABLE_PERIODIC);
 
 	/* Don't start the schedule until PSS is 0 */
 	ehci_poll_PSS(ehci);
+out:
 	turn_on_io_watchdog(ehci);
 }
 
@@ -1165,10 +1166,8 @@ static struct ehci_iso_sched *
 iso_sched_alloc(unsigned packets, gfp_t mem_flags)
 {
 	struct ehci_iso_sched	*iso_sched;
-	int			size = sizeof(*iso_sched);
 
-	size += packets * sizeof(struct ehci_iso_packet);
-	iso_sched = kzalloc(size, mem_flags);
+	iso_sched = kzalloc(struct_size(iso_sched, packet, packets), mem_flags);
 	if (likely(iso_sched != NULL))
 		INIT_LIST_HEAD(&iso_sched->td_list);
 

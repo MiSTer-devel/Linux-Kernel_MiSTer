@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
+/* Store the full address of the global discovery table */
+#define UNCORE_DISCOVERY_MSR			0x201e
+
 /* Generic device ID of a discovery table device */
 #define UNCORE_DISCOVERY_TABLE_DEVICE		0x09a7
 /* Capability ID for a discovery table device */
@@ -18,19 +21,23 @@
 #define UNCORE_DISCOVERY_BIR_BASE		0x10
 /* Discovery table BAR step */
 #define UNCORE_DISCOVERY_BIR_STEP		0x4
-/* Mask of the discovery table offset */
-#define UNCORE_DISCOVERY_MASK			0xf
 /* Global discovery table size */
 #define UNCORE_DISCOVERY_GLOBAL_MAP_SIZE	0x20
 
-#define UNCORE_DISCOVERY_PCI_DOMAIN(data)	((data >> 28) & 0x7)
-#define UNCORE_DISCOVERY_PCI_BUS(data)		((data >> 20) & 0xff)
-#define UNCORE_DISCOVERY_PCI_DEVFN(data)	((data >> 12) & 0xff)
+#define UNCORE_DISCOVERY_PCI_DOMAIN_OFFSET	28
+#define UNCORE_DISCOVERY_PCI_DOMAIN(data)			\
+		((data >> UNCORE_DISCOVERY_PCI_DOMAIN_OFFSET) & 0x7)
+#define UNCORE_DISCOVERY_PCI_BUS_OFFSET		20
+#define UNCORE_DISCOVERY_PCI_BUS(data)				\
+		((data >> UNCORE_DISCOVERY_PCI_BUS_OFFSET) & 0xff)
+#define UNCORE_DISCOVERY_PCI_DEVFN_OFFSET	12
+#define UNCORE_DISCOVERY_PCI_DEVFN(data)			\
+		((data >> UNCORE_DISCOVERY_PCI_DEVFN_OFFSET) & 0xff)
 #define UNCORE_DISCOVERY_PCI_BOX_CTRL(data)	(data & 0xfff)
 
 
 #define uncore_discovery_invalid_unit(unit)			\
-	(!unit.table1 || !unit.ctl || !unit.table3 ||	\
+	(!unit.table1 || !unit.ctl || \
 	 unit.table1 == -1ULL || unit.ctl == -1ULL ||	\
 	 unit.table3 == -1ULL)
 
@@ -109,22 +116,27 @@ struct uncore_unit_discovery {
 	};
 };
 
+struct intel_uncore_discovery_unit {
+	struct rb_node	node;
+	unsigned int	pmu_idx;	/* The idx of the corresponding PMU */
+	unsigned int	id;		/* Unit ID */
+	unsigned int	die;		/* Die ID */
+	u64		addr;		/* Unit Control Address */
+};
+
 struct intel_uncore_discovery_type {
 	struct rb_node	node;
 	enum uncore_access_type	access_type;
-	u64		box_ctrl;	/* Unit ctrl addr of the first box */
-	u64		*box_ctrl_die;	/* Unit ctrl addr of the first box of each die */
+	struct rb_root	units;		/* Unit ctrl addr for all units */
 	u16		type;		/* Type ID of the uncore block */
 	u8		num_counters;
 	u8		counter_width;
 	u8		ctl_offset;	/* Counter Control 0 offset */
 	u8		ctr_offset;	/* Counter 0 offset */
-	u16		num_boxes;	/* number of boxes for the uncore block */
-	unsigned int	*ids;		/* Box IDs */
-	unsigned int	*box_offset;	/* Box offset */
+	u16		num_units;	/* number of units */
 };
 
-bool intel_uncore_has_discovery_tables(void);
+bool intel_uncore_has_discovery_tables(int *ignore);
 void intel_uncore_clear_discovery_tables(void);
 void intel_uncore_generic_uncore_cpu_init(void);
 int intel_uncore_generic_uncore_pci_init(void);
@@ -139,6 +151,8 @@ void intel_generic_uncore_mmio_disable_box(struct intel_uncore_box *box);
 void intel_generic_uncore_mmio_enable_box(struct intel_uncore_box *box);
 void intel_generic_uncore_mmio_disable_event(struct intel_uncore_box *box,
 					     struct perf_event *event);
+void intel_generic_uncore_mmio_enable_event(struct intel_uncore_box *box,
+					    struct perf_event *event);
 
 void intel_generic_uncore_pci_init_box(struct intel_uncore_box *box);
 void intel_generic_uncore_pci_disable_box(struct intel_uncore_box *box);
@@ -150,3 +164,14 @@ u64 intel_generic_uncore_pci_read_counter(struct intel_uncore_box *box,
 
 struct intel_uncore_type **
 intel_uncore_generic_init_uncores(enum uncore_access_type type_id, int num_extra);
+
+int intel_uncore_find_discovery_unit_id(struct rb_root *units, int die,
+					unsigned int pmu_idx);
+bool intel_generic_uncore_assign_hw_event(struct perf_event *event,
+					  struct intel_uncore_box *box);
+void uncore_find_add_unit(struct intel_uncore_discovery_unit *node,
+			  struct rb_root *root, u16 *num_units);
+struct intel_uncore_type **
+uncore_get_uncores(enum uncore_access_type type_id, int num_extra,
+		   struct intel_uncore_type **extra, int max_num_types,
+		   struct intel_uncore_type **uncores);

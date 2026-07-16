@@ -629,7 +629,6 @@ struct tegra_clk_periph {
 
 #define TEGRA_CLK_PERIPH_MAGIC 0x18221223
 
-extern const struct clk_ops tegra_clk_periph_ops;
 struct clk *tegra_clk_register_periph(const char *name,
 		const char * const *parent_names, int num_parents,
 		struct tegra_clk_periph *periph, void __iomem *clk_base,
@@ -898,8 +897,6 @@ static inline bool tegra124_clk_emc_driver_available(struct clk_hw *emc_hw)
 void tegra114_clock_tune_cpu_trimmers_high(void);
 void tegra114_clock_tune_cpu_trimmers_low(void);
 void tegra114_clock_tune_cpu_trimmers_init(void);
-void tegra114_clock_assert_dfll_dvco_reset(void);
-void tegra114_clock_deassert_dfll_dvco_reset(void);
 
 typedef void (*tegra_clk_apply_init_table_func)(void);
 extern tegra_clk_apply_init_table_func tegra_clk_apply_init_table;
@@ -926,5 +923,7 @@ struct clk *tegra20_clk_register_emc(void __iomem *ioaddr, bool low_jitter);
 
 struct clk *tegra210_clk_register_emc(struct device_node *np,
 				      void __iomem *regs);
+
+struct clk *tegra_clk_dev_register(struct clk_hw *hw);
 
 #endif /* TEGRA_CLK_H */

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: ISC
 /*
  * Copyright (c) 2014-2017 Qualcomm Atheros, Inc.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/types.h>
@@ -11,6 +12,7 @@
 #include "hif.h"
 #include "wmi-ops.h"
 #include "bmi.h"
+#include "rx_desc.h"
 
 const struct ath10k_hw_regs qca988x_regs = {
 	.rtc_soc_base_address		= 0x00004000,
@@ -83,7 +85,7 @@ const struct ath10k_hw_regs qca99x0_regs = {
 	.ce5_base_address			= 0x0004b400,
 	.ce6_base_address			= 0x0004b800,
 	.ce7_base_address			= 0x0004bc00,
-	/* Note: qca99x0 supports upto 12 Copy Engines. Other than address of
+	/* Note: qca99x0 supports up to 12 Copy Engines. Other than address of
 	 * CE0 and CE1 no other copy engine is directly referred in the code.
 	 * It is not really necessary to assign address for newly supported
 	 * CEs in this address table.
@@ -119,7 +121,7 @@ const struct ath10k_hw_regs qca4019_regs = {
 	.ce5_base_address                       = 0x0004b400,
 	.ce6_base_address                       = 0x0004b800,
 	.ce7_base_address                       = 0x0004bc00,
-	/* qca4019 supports upto 12 copy engines. Since base address
+	/* qca4019 supports up to 12 copy engines. Since base address
 	 * of ce8 to ce11 are not directly referred in the code,
 	 * no need have them in separate members in this table.
 	 *      Copy Engine             Address
@@ -210,40 +212,40 @@ const struct ath10k_hw_regs wcn3990_regs = {
 	.pcie_intr_fw_mask			= 0x00100000,
 };
 
-static struct ath10k_hw_ce_regs_addr_map wcn3990_src_ring = {
+static const struct ath10k_hw_ce_regs_addr_map wcn3990_src_ring = {
 	.msb	= 0x00000010,
 	.lsb	= 0x00000010,
 	.mask	= GENMASK(17, 17),
 };
 
-static struct ath10k_hw_ce_regs_addr_map wcn3990_dst_ring = {
+static const struct ath10k_hw_ce_regs_addr_map wcn3990_dst_ring = {
 	.msb	= 0x00000012,
 	.lsb	= 0x00000012,
 	.mask	= GENMASK(18, 18),
 };
 
-static struct ath10k_hw_ce_regs_addr_map wcn3990_dmax = {
+static const struct ath10k_hw_ce_regs_addr_map wcn3990_dmax = {
 	.msb	= 0x00000000,
 	.lsb	= 0x00000000,
 	.mask	= GENMASK(15, 0),
 };
 
-static struct ath10k_hw_ce_ctrl1 wcn3990_ctrl1 = {
+static const struct ath10k_hw_ce_ctrl1 wcn3990_ctrl1 = {
 	.addr		= 0x00000018,
 	.src_ring	= &wcn3990_src_ring,
 	.dst_ring	= &wcn3990_dst_ring,
 	.dmax		= &wcn3990_dmax,
 };
 
-static struct ath10k_hw_ce_regs_addr_map wcn3990_host_ie_cc = {
+static const struct ath10k_hw_ce_regs_addr_map wcn3990_host_ie_cc = {
 	.mask	= GENMASK(0, 0),
 };
 
-static struct ath10k_hw_ce_host_ie wcn3990_host_ie = {
+static const struct ath10k_hw_ce_host_ie wcn3990_host_ie = {
 	.copy_complete	= &wcn3990_host_ie_cc,
 };
 
-static struct ath10k_hw_ce_host_wm_regs wcn3990_wm_reg = {
+static const struct ath10k_hw_ce_host_wm_regs wcn3990_wm_reg = {
 	.dstr_lmask	= 0x00000010,
 	.dstr_hmask	= 0x00000008,
 	.srcr_lmask	= 0x00000004,
@@ -253,7 +255,7 @@ static struct ath10k_hw_ce_host_wm_regs wcn3990_wm_reg = {
 	.addr		= 0x00000030,
 };
 
-static struct ath10k_hw_ce_misc_regs wcn3990_misc_reg = {
+static const struct ath10k_hw_ce_misc_regs wcn3990_misc_reg = {
 	.axi_err	= 0x00000100,
 	.dstr_add_err	= 0x00000200,
 	.srcr_len_err	= 0x00000100,
@@ -264,19 +266,19 @@ static struct ath10k_hw_ce_misc_regs wcn3990_misc_reg = {
 	.addr		= 0x00000038,
 };
 
-static struct ath10k_hw_ce_regs_addr_map wcn3990_src_wm_low = {
+static const struct ath10k_hw_ce_regs_addr_map wcn3990_src_wm_low = {
 	.msb	= 0x00000000,
 	.lsb	= 0x00000010,
 	.mask	= GENMASK(31, 16),
 };
 
-static struct ath10k_hw_ce_regs_addr_map wcn3990_src_wm_high = {
+static const struct ath10k_hw_ce_regs_addr_map wcn3990_src_wm_high = {
 	.msb	= 0x0000000f,
 	.lsb	= 0x00000000,
 	.mask	= GENMASK(15, 0),
 };
 
-static struct ath10k_hw_ce_dst_src_wm_regs wcn3990_wm_src_ring = {
+static const struct ath10k_hw_ce_dst_src_wm_regs wcn3990_wm_src_ring = {
 	.addr		= 0x0000004c,
 	.low_rst	= 0x00000000,
 	.high_rst	= 0x00000000,
@@ -284,18 +286,18 @@ static struct ath10k_hw_ce_dst_src_wm_regs wcn3990_wm_src_ring = {
 	.wm_high	= &wcn3990_src_wm_high,
 };
 
-static struct ath10k_hw_ce_regs_addr_map wcn3990_dst_wm_low = {
+static const struct ath10k_hw_ce_regs_addr_map wcn3990_dst_wm_low = {
 	.lsb	= 0x00000010,
 	.mask	= GENMASK(31, 16),
 };
 
-static struct ath10k_hw_ce_regs_addr_map wcn3990_dst_wm_high = {
+static const struct ath10k_hw_ce_regs_addr_map wcn3990_dst_wm_high = {
 	.msb	= 0x0000000f,
 	.lsb	= 0x00000000,
 	.mask	= GENMASK(15, 0),
 };
 
-static struct ath10k_hw_ce_dst_src_wm_regs wcn3990_wm_dst_ring = {
+static const struct ath10k_hw_ce_dst_src_wm_regs wcn3990_wm_dst_ring = {
 	.addr		= 0x00000050,
 	.low_rst	= 0x00000000,
 	.high_rst	= 0x00000000,
@@ -303,7 +305,7 @@ static struct ath10k_hw_ce_dst_src_wm_regs wcn3990_wm_dst_ring = {
 	.wm_high	= &wcn3990_dst_wm_high,
 };
 
-static struct ath10k_hw_ce_ctrl1_upd wcn3990_ctrl1_upd = {
+static const struct ath10k_hw_ce_ctrl1_upd wcn3990_ctrl1_upd = {
 	.shift = 19,
 	.mask = 0x00080000,
 	.enable = 0x00000000,
@@ -342,25 +344,25 @@ const struct ath10k_hw_values wcn3990_values = {
 	.ce_desc_meta_data_lsb		= 4,
 };
 
-static struct ath10k_hw_ce_regs_addr_map qcax_src_ring = {
+static const struct ath10k_hw_ce_regs_addr_map qcax_src_ring = {
 	.msb	= 0x00000010,
 	.lsb	= 0x00000010,
 	.mask	= GENMASK(16, 16),
 };
 
-static struct ath10k_hw_ce_regs_addr_map qcax_dst_ring = {
+static const struct ath10k_hw_ce_regs_addr_map qcax_dst_ring = {
 	.msb	= 0x00000011,
 	.lsb	= 0x00000011,
 	.mask	= GENMASK(17, 17),
 };
 
-static struct ath10k_hw_ce_regs_addr_map qcax_dmax = {
+static const struct ath10k_hw_ce_regs_addr_map qcax_dmax = {
 	.msb	= 0x0000000f,
 	.lsb	= 0x00000000,
 	.mask	= GENMASK(15, 0),
 };
 
-static struct ath10k_hw_ce_ctrl1 qcax_ctrl1 = {
+static const struct ath10k_hw_ce_ctrl1 qcax_ctrl1 = {
 	.addr		= 0x00000010,
 	.hw_mask	= 0x0007ffff,
 	.sw_mask	= 0x0007ffff,
@@ -373,31 +375,31 @@ static struct ath10k_hw_ce_ctrl1 qcax_ctrl1 = {
 	.dmax		= &qcax_dmax,
 };
 
-static struct ath10k_hw_ce_regs_addr_map qcax_cmd_halt_status = {
+static const struct ath10k_hw_ce_regs_addr_map qcax_cmd_halt_status = {
 	.msb	= 0x00000003,
 	.lsb	= 0x00000003,
 	.mask	= GENMASK(3, 3),
 };
 
-static struct ath10k_hw_ce_cmd_halt qcax_cmd_halt = {
+static const struct ath10k_hw_ce_cmd_halt qcax_cmd_halt = {
 	.msb		= 0x00000000,
 	.mask		= GENMASK(0, 0),
 	.status_reset	= 0x00000000,
 	.status		= &qcax_cmd_halt_status,
 };
 
-static struct ath10k_hw_ce_regs_addr_map qcax_host_ie_cc = {
+static const struct ath10k_hw_ce_regs_addr_map qcax_host_ie_cc = {
 	.msb	= 0x00000000,
 	.lsb	= 0x00000000,
 	.mask	= GENMASK(0, 0),
 };
 
-static struct ath10k_hw_ce_host_ie qcax_host_ie = {
+static const struct ath10k_hw_ce_host_ie qcax_host_ie = {
 	.copy_complete_reset	= 0x00000000,
 	.copy_complete		= &qcax_host_ie_cc,
 };
 
-static struct ath10k_hw_ce_host_wm_regs qcax_wm_reg = {
+static const struct ath10k_hw_ce_host_wm_regs qcax_wm_reg = {
 	.dstr_lmask	= 0x00000010,
 	.dstr_hmask	= 0x00000008,
 	.srcr_lmask	= 0x00000004,
@@ -407,7 +409,7 @@ static struct ath10k_hw_ce_host_wm_regs qcax_wm_reg = {
 	.addr		= 0x00000030,
 };
 
-static struct ath10k_hw_ce_misc_regs qcax_misc_reg = {
+static const struct ath10k_hw_ce_misc_regs qcax_misc_reg = {
 	.axi_err	= 0x00000400,
 	.dstr_add_err	= 0x00000200,
 	.srcr_len_err	= 0x00000100,
@@ -418,19 +420,19 @@ static struct ath10k_hw_ce_misc_regs qcax_misc_reg = {
 	.addr		= 0x00000038,
 };
 
-static struct ath10k_hw_ce_regs_addr_map qcax_src_wm_low = {
+static const struct ath10k_hw_ce_regs_addr_map qcax_src_wm_low = {
 	.msb    = 0x0000001f,
 	.lsb	= 0x00000010,
 	.mask	= GENMASK(31, 16),
 };
 
-static struct ath10k_hw_ce_regs_addr_map qcax_src_wm_high = {
+static const struct ath10k_hw_ce_regs_addr_map qcax_src_wm_high = {
 	.msb	= 0x0000000f,
 	.lsb	= 0x00000000,
 	.mask	= GENMASK(15, 0),
 };
 
-static struct ath10k_hw_ce_dst_src_wm_regs qcax_wm_src_ring = {
+static const struct ath10k_hw_ce_dst_src_wm_regs qcax_wm_src_ring = {
 	.addr		= 0x0000004c,
 	.low_rst	= 0x00000000,
 	.high_rst	= 0x00000000,
@@ -438,18 +440,18 @@ static struct ath10k_hw_ce_dst_src_wm_regs qcax_wm_src_ring = {
 	.wm_high        = &qcax_src_wm_high,
 };
 
-static struct ath10k_hw_ce_regs_addr_map qcax_dst_wm_low = {
+static const struct ath10k_hw_ce_regs_addr_map qcax_dst_wm_low = {
 	.lsb	= 0x00000010,
 	.mask	= GENMASK(31, 16),
 };
 
-static struct ath10k_hw_ce_regs_addr_map qcax_dst_wm_high = {
+static const struct ath10k_hw_ce_regs_addr_map qcax_dst_wm_high = {
 	.msb	= 0x0000000f,
 	.lsb	= 0x00000000,
 	.mask	= GENMASK(15, 0),
 };
 
-static struct ath10k_hw_ce_dst_src_wm_regs qcax_wm_dst_ring = {
+static const struct ath10k_hw_ce_dst_src_wm_regs qcax_wm_dst_ring = {
 	.addr		= 0x00000050,
 	.low_rst	= 0x00000000,
 	.high_rst	= 0x00000000,
@@ -588,6 +590,7 @@ void ath10k_hw_fill_survey_time(struct ath10k *ar, struct survey_info *survey,
  * function monitors and modifies the corresponding MAC registers.
  */
 static void ath10k_hw_qca988x_set_coverage_class(struct ath10k *ar,
+						 int radio_idx,
 						 s16 value)
 {
 	u32 slottime_reg;
@@ -923,7 +926,7 @@ static void ath10k_hw_map_target_mem(struct ath10k *ar, u32 msb)
 	ath10k_hif_write32(ar, address, msb);
 }
 
-/* 1. Write to memory region of target, such as IRAM adn DRAM.
+/* 1. Write to memory region of target, such as IRAM and DRAM.
  * 2. Target address( 0 ~ 00100000 & 0x00400000~0x00500000)
  *    can be written directly. See ath10k_pci_targ_cpu_to_ce_addr() too.
  * 3. In order to access the region other than the above,
@@ -1134,21 +1137,7 @@ const struct ath10k_hw_ops qca988x_ops = {
 	.is_rssi_enable = ath10k_htt_tx_rssi_enable,
 };
 
-static int ath10k_qca99x0_rx_desc_get_l3_pad_bytes(struct htt_rx_desc *rxd)
-{
-	return MS(__le32_to_cpu(rxd->msdu_end.qca99x0.info1),
-		  RX_MSDU_END_INFO1_L3_HDR_PAD);
-}
-
-static bool ath10k_qca99x0_rx_desc_msdu_limit_error(struct htt_rx_desc *rxd)
-{
-	return !!(rxd->msdu_end.common.info0 &
-		  __cpu_to_le32(RX_MSDU_END_INFO0_MSDU_LIMIT_ERR));
-}
-
 const struct ath10k_hw_ops qca99x0_ops = {
-	.rx_desc_get_l3_pad_bytes = ath10k_qca99x0_rx_desc_get_l3_pad_bytes,
-	.rx_desc_get_msdu_limit_error = ath10k_qca99x0_rx_desc_msdu_limit_error,
 	.is_rssi_enable = ath10k_htt_tx_rssi_enable,
 };
 

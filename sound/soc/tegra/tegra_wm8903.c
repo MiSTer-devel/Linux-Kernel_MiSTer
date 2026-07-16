@@ -75,15 +75,15 @@ static int tegra_wm8903_init(struct snd_soc_pcm_runtime *rtd)
 		return err;
 
 	if (!machine->gpiod_mic_det && machine->asoc->add_mic_jack) {
-		struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
+		struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
 		struct snd_soc_component *component = codec_dai->component;
 		int shrt = 0;
 
-		err = snd_soc_card_jack_new(rtd->card, "Mic Jack",
-					    SND_JACK_MICROPHONE,
-					    machine->mic_jack,
-					    tegra_wm8903_mic_jack_pins,
-					    ARRAY_SIZE(tegra_wm8903_mic_jack_pins));
+		err = snd_soc_card_jack_new_pins(rtd->card, "Mic Jack",
+						 SND_JACK_MICROPHONE,
+						 machine->mic_jack,
+						 tegra_wm8903_mic_jack_pins,
+						 ARRAY_SIZE(tegra_wm8903_mic_jack_pins));
 		if (err) {
 			dev_err(rtd->dev, "Mic Jack creation failed: %d\n", err);
 			return err;
@@ -105,7 +105,7 @@ static int tegra_wm8903_remove(struct snd_soc_card *card)
 {
 	struct snd_soc_dai_link *link = &card->dai_link[0];
 	struct snd_soc_pcm_runtime *rtd = snd_soc_get_pcm_runtime(card, link);
-	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
+	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
 	struct snd_soc_component *component = codec_dai->component;
 
 	wm8903_mic_detect(component, NULL, 0, 0);
@@ -124,7 +124,7 @@ static struct snd_soc_dai_link tegra_wm8903_dai = {
 	.init = tegra_wm8903_init,
 	.dai_fmt = SND_SOC_DAIFMT_I2S |
 		   SND_SOC_DAIFMT_NB_NF |
-		   SND_SOC_DAIFMT_CBS_CFS,
+		   SND_SOC_DAIFMT_CBC_CFC,
 	SND_SOC_DAILINK_REG(hifi),
 };
 

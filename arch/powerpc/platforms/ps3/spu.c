@@ -137,7 +137,7 @@ u64 ps3_get_spe_id(void *arg)
 }
 EXPORT_SYMBOL_GPL(ps3_get_spe_id);
 
-static unsigned long get_vas_id(void)
+static unsigned long __init get_vas_id(void)
 {
 	u64 id;
 
@@ -190,10 +190,10 @@ static void spu_unmap(struct spu *spu)
 static int __init setup_areas(struct spu *spu)
 {
 	struct table {char* name; unsigned long addr; unsigned long size;};
-	unsigned long shadow_flags = pgprot_val(pgprot_noncached_wc(PAGE_KERNEL_RO));
 
 	spu_pdata(spu)->shadow = ioremap_prot(spu_pdata(spu)->shadow_addr,
-					      sizeof(struct spe_shadow), shadow_flags);
+					      sizeof(struct spe_shadow),
+					      pgprot_noncached_wc(PAGE_KERNEL_RO));
 	if (!spu_pdata(spu)->shadow) {
 		pr_debug("%s:%d: ioremap shadow failed\n", __func__, __LINE__);
 		goto fail_ioremap;

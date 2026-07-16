@@ -248,8 +248,7 @@ static int ltc2992_gpio_get_multiple(struct gpio_chip *chip, unsigned long *mask
 
 	gpio_status = reg;
 
-	gpio_nr = 0;
-	for_each_set_bit_from(gpio_nr, mask, LTC2992_GPIO_NR) {
+	for_each_set_bit(gpio_nr, mask, LTC2992_GPIO_NR) {
 		if (test_bit(LTC2992_GPIO_BIT(gpio_nr), &gpio_status))
 			set_bit(gpio_nr, bits);
 	}
@@ -257,33 +256,38 @@ static int ltc2992_gpio_get_multiple(struct gpio_chip *chip, unsigned long *mask
 	return 0;
 }
 
-static void ltc2992_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
+static int ltc2992_gpio_set(struct gpio_chip *chip, unsigned int offset,
+			    int value)
 {
 	struct ltc2992_state *st = gpiochip_get_data(chip);
 	unsigned long gpio_ctrl;
-	int reg;
+	int reg, ret;
 
 	mutex_lock(&st->gpio_mutex);
 	reg = ltc2992_read_reg(st, ltc2992_gpio_addr_map[offset].ctrl, 1);
 	if (reg < 0) {
 		mutex_unlock(&st->gpio_mutex);
-		return;
+		return reg;
 	}
 
 	gpio_ctrl = reg;
 	assign_bit(ltc2992_gpio_addr_map[offset].ctrl_bit, &gpio_ctrl, value);
 
-	ltc2992_write_reg(st, ltc2992_gpio_addr_map[offset].ctrl, 1, gpio_ctrl);
+	ret = ltc2992_write_reg(st, ltc2992_gpio_addr_map[offset].ctrl, 1,
+				gpio_ctrl);
 	mutex_unlock(&st->gpio_mutex);
+
+	return ret;
 }
 
-static void ltc2992_gpio_set_multiple(struct gpio_chip *chip, unsigned long *mask,
-				      unsigned long *bits)
+static int ltc2992_gpio_set_multiple(struct gpio_chip *chip, unsigned long *mask,
+				     unsigned long *bits)
 {
 	struct ltc2992_state *st = gpiochip_get_data(chip);
 	unsigned long gpio_ctrl_io = 0;
 	unsigned long gpio_ctrl = 0;
 	unsigned int gpio_nr;
+	int ret;
 
 	for_each_set_bit(gpio_nr, mask, LTC2992_GPIO_NR) {
 		if (gpio_nr < 3)
@@ -294,9 +298,14 @@ static void ltc2992_gpio_set_multiple(struct gpio_chip *chip, unsigned long *mas
 	}
 
 	mutex_lock(&st->gpio_mutex);
-	ltc2992_write_reg(st, LTC2992_GPIO_IO_CTRL, 1, gpio_ctrl_io);
-	ltc2992_write_reg(st, LTC2992_GPIO_CTRL, 1, gpio_ctrl);
+	ret = ltc2992_write_reg(st, LTC2992_GPIO_IO_CTRL, 1, gpio_ctrl_io);
+	if (ret)
+		goto out;
+
+	ret = ltc2992_write_reg(st, LTC2992_GPIO_CTRL, 1, gpio_ctrl);
+out:
 	mutex_unlock(&st->gpio_mutex);
+	return ret;
 }
 
 static int ltc2992_config_gpio(struct ltc2992_state *st)
@@ -324,6 +333,7 @@ static int ltc2992_config_gpio(struct ltc2992_state *st)
 	st->gc.label = name;
 	st->gc.parent = &st->client->dev;
 	st->gc.owner = THIS_MODULE;
+	st->gc.can_sleep = true;
 	st->gc.base = -1;
 	st->gc.names = st->gpio_names;
 	st->gc.ngpio = ARRAY_SIZE(st->gpio_names);
@@ -421,10 +431,16 @@ static int ltc2992_get_voltage(struct ltc2992_state *st, u32 reg, u32 scale, lon
 
 static int ltc2992_set_voltage(struct ltc2992_state *st, u32 reg, u32 scale, long val)
 {
-	val = DIV_ROUND_CLOSEST(val * 1000, scale);
-	val = val << 4;
+	u32 reg_val;
+	long vmax;
 
-	return ltc2992_write_reg(st, reg, 2, val);
+	vmax = DIV_ROUND_CLOSEST_ULL(0xFFFULL * scale, 1000);
+	val = max(val, 0L);
+	val = min(val, vmax);
+	reg_val = min(DIV_ROUND_CLOSEST_ULL((u64)val * 1000, scale),
+		      0xFFFULL) << 4;
+
+	return ltc2992_write_reg(st, reg, 2, reg_val);
 }
 
 static int ltc2992_read_gpio_alarm(struct ltc2992_state *st, int nr_gpio, u32 attr, long *val)
@@ -549,9 +565,15 @@ static int ltc2992_get_current(struct ltc2992_state *st, u32 reg, u32 channel, l
 static int ltc2992_set_current(struct ltc2992_state *st, u32 reg, u32 channel, long val)
 {
 	u32 reg_val;
+	long cmax;
 
-	reg_val = DIV_ROUND_CLOSEST(val * st->r_sense_uohm[channel], LTC2992_IADC_NANOV_LSB);
-	reg_val = reg_val << 4;
+	cmax = DIV_ROUND_CLOSEST_ULL(0xFFFULL * LTC2992_IADC_NANOV_LSB,
+				     st->r_sense_uohm[channel]);
+	val = max(val, 0L);
+	val = min(val, cmax);
+	reg_val = min(DIV_ROUND_CLOSEST_ULL((u64)val * st->r_sense_uohm[channel],
+					    LTC2992_IADC_NANOV_LSB),
+		      0xFFFULL) << 4;
 
 	return ltc2992_write_reg(st, reg, 2, reg_val);
 }
@@ -615,8 +637,10 @@ static int ltc2992_get_power(struct ltc2992_state *st, u32 reg, u32 channel, lon
 	if (reg_val < 0)
 		return reg_val;
 
-	*val = mul_u64_u32_div(reg_val, LTC2992_VADC_UV_LSB * LTC2992_IADC_NANOV_LSB,
-			       st->r_sense_uohm[channel] * 1000);
+	*val = mul_u64_u32_div(reg_val,
+			       LTC2992_VADC_UV_LSB / 1000 *
+			       LTC2992_IADC_NANOV_LSB,
+			       st->r_sense_uohm[channel]);
 
 	return 0;
 }
@@ -624,9 +648,18 @@ static int ltc2992_get_power(struct ltc2992_state *st, u32 reg, u32 channel, lon
 static int ltc2992_set_power(struct ltc2992_state *st, u32 reg, u32 channel, long val)
 {
 	u32 reg_val;
+	u64 pmax, uval;
 
-	reg_val = mul_u64_u32_div(val, st->r_sense_uohm[channel] * 1000,
-				  LTC2992_VADC_UV_LSB * LTC2992_IADC_NANOV_LSB);
+	uval = max(val, 0L);
+	pmax = mul_u64_u32_div(0xFFFFFFULL,
+			       LTC2992_VADC_UV_LSB / 1000 *
+			       LTC2992_IADC_NANOV_LSB,
+			       st->r_sense_uohm[channel]);
+	uval = min(uval, pmax);
+	reg_val = min(mul_u64_u32_div(uval, st->r_sense_uohm[channel],
+				      LTC2992_VADC_UV_LSB / 1000 *
+				      LTC2992_IADC_NANOV_LSB),
+		      0xFFFFFFULL);
 
 	return ltc2992_write_reg(st, reg, 3, reg_val);
 }
@@ -812,68 +845,32 @@ static const struct hwmon_ops ltc2992_hwmon_ops = {
 	.write = ltc2992_write,
 };
 
-static const u32 ltc2992_chip_config[] = {
-	HWMON_C_IN_RESET_HISTORY,
-	0
-};
-
-static const struct hwmon_channel_info ltc2992_chip = {
-	.type = hwmon_chip,
-	.config = ltc2992_chip_config,
-};
-
-static const u32 ltc2992_in_config[] = {
-	HWMON_I_INPUT | HWMON_I_LOWEST | HWMON_I_HIGHEST | HWMON_I_MIN | HWMON_I_MAX |
-	HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM,
-	HWMON_I_INPUT | HWMON_I_LOWEST | HWMON_I_HIGHEST | HWMON_I_MIN | HWMON_I_MAX |
-	HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM,
-	HWMON_I_INPUT | HWMON_I_LOWEST | HWMON_I_HIGHEST | HWMON_I_MIN | HWMON_I_MAX |
-	HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM,
-	HWMON_I_INPUT | HWMON_I_LOWEST | HWMON_I_HIGHEST | HWMON_I_MIN | HWMON_I_MAX |
-	HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM,
-	HWMON_I_INPUT | HWMON_I_LOWEST | HWMON_I_HIGHEST | HWMON_I_MIN | HWMON_I_MAX |
-	HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM,
-	HWMON_I_INPUT | HWMON_I_LOWEST | HWMON_I_HIGHEST | HWMON_I_MIN | HWMON_I_MAX |
-	HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM,
-	0
-};
-
-static const struct hwmon_channel_info ltc2992_in = {
-	.type = hwmon_in,
-	.config = ltc2992_in_config,
-};
-
-static const u32 ltc2992_curr_config[] = {
-	HWMON_C_INPUT | HWMON_C_LOWEST | HWMON_C_HIGHEST | HWMON_C_MIN | HWMON_C_MAX |
-	HWMON_C_MIN_ALARM | HWMON_C_MAX_ALARM,
-	HWMON_C_INPUT | HWMON_C_LOWEST | HWMON_C_HIGHEST | HWMON_C_MIN | HWMON_C_MAX |
-	HWMON_C_MIN_ALARM | HWMON_C_MAX_ALARM,
-	0
-};
-
-static const struct hwmon_channel_info ltc2992_curr = {
-	.type = hwmon_curr,
-	.config = ltc2992_curr_config,
-};
-
-static const u32 ltc2992_power_config[] = {
-	HWMON_P_INPUT | HWMON_P_INPUT_LOWEST | HWMON_P_INPUT_HIGHEST | HWMON_P_MIN | HWMON_P_MAX |
-	HWMON_P_MIN_ALARM | HWMON_P_MAX_ALARM,
-	HWMON_P_INPUT | HWMON_P_INPUT_LOWEST | HWMON_P_INPUT_HIGHEST | HWMON_P_MIN | HWMON_P_MAX |
-	HWMON_P_MIN_ALARM | HWMON_P_MAX_ALARM,
-	0
-};
-
-static const struct hwmon_channel_info ltc2992_power = {
-	.type = hwmon_power,
-	.config = ltc2992_power_config,
-};
-
-static const struct hwmon_channel_info *ltc2992_info[] = {
-	&ltc2992_chip,
-	&ltc2992_in,
-	&ltc2992_curr,
-	&ltc2992_power,
+static const struct hwmon_channel_info * const ltc2992_info[] = {
+	HWMON_CHANNEL_INFO(chip,
+			   HWMON_C_IN_RESET_HISTORY),
+	HWMON_CHANNEL_INFO(in,
+			   HWMON_I_INPUT | HWMON_I_LOWEST | HWMON_I_HIGHEST | HWMON_I_MIN |
+			   HWMON_I_MAX | HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM,
+			   HWMON_I_INPUT | HWMON_I_LOWEST | HWMON_I_HIGHEST | HWMON_I_MIN |
+			   HWMON_I_MAX | HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM,
+			   HWMON_I_INPUT | HWMON_I_LOWEST | HWMON_I_HIGHEST | HWMON_I_MIN |
+			   HWMON_I_MAX | HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM,
+			   HWMON_I_INPUT | HWMON_I_LOWEST | HWMON_I_HIGHEST | HWMON_I_MIN |
+			   HWMON_I_MAX | HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM,
+			   HWMON_I_INPUT | HWMON_I_LOWEST | HWMON_I_HIGHEST | HWMON_I_MIN |
+			   HWMON_I_MAX | HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM,
+			   HWMON_I_INPUT | HWMON_I_LOWEST | HWMON_I_HIGHEST | HWMON_I_MIN |
+			   HWMON_I_MAX | HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM),
+	HWMON_CHANNEL_INFO(curr,
+			   HWMON_C_INPUT | HWMON_C_LOWEST | HWMON_C_HIGHEST | HWMON_C_MIN |
+			   HWMON_C_MAX | HWMON_C_MIN_ALARM | HWMON_C_MAX_ALARM,
+			   HWMON_C_INPUT | HWMON_C_LOWEST | HWMON_C_HIGHEST | HWMON_C_MIN |
+			   HWMON_C_MAX | HWMON_C_MIN_ALARM | HWMON_C_MAX_ALARM),
+	HWMON_CHANNEL_INFO(power,
+			   HWMON_P_INPUT | HWMON_P_INPUT_LOWEST | HWMON_P_INPUT_HIGHEST |
+			   HWMON_P_MIN | HWMON_P_MAX | HWMON_P_MIN_ALARM | HWMON_P_MAX_ALARM,
+			   HWMON_P_INPUT | HWMON_P_INPUT_LOWEST | HWMON_P_INPUT_HIGHEST |
+			   HWMON_P_MIN | HWMON_P_MAX | HWMON_P_MIN_ALARM | HWMON_P_MAX_ALARM),
 	NULL
 };
 
@@ -890,35 +887,32 @@ static const struct regmap_config ltc2992_regmap_config = {
 
 static int ltc2992_parse_dt(struct ltc2992_state *st)
 {
-	struct fwnode_handle *fwnode;
-	struct fwnode_handle *child;
 	u32 addr;
 	u32 val;
 	int ret;
 
-	fwnode = dev_fwnode(&st->client->dev);
-
-	fwnode_for_each_available_child_node(fwnode, child) {
+	device_for_each_child_node_scoped(&st->client->dev, child) {
 		ret = fwnode_property_read_u32(child, "reg", &addr);
-		if (ret < 0) {
-			fwnode_handle_put(child);
+		if (ret < 0)
 			return ret;
-		}
 
-		if (addr > 1) {
-			fwnode_handle_put(child);
+		if (addr > 1)
 			return -EINVAL;
-		}
 
 		ret = fwnode_property_read_u32(child, "shunt-resistor-micro-ohms", &val);
-		if (!ret)
+		if (!ret) {
+			if (!val)
+				return dev_err_probe(&st->client->dev, -EINVAL,
+						     "shunt resistor value cannot be zero\n");
+
 			st->r_sense_uohm[addr] = val;
+		}
 	}
 
 	return 0;
 }
 
-static int ltc2992_i2c_probe(struct i2c_client *client, const struct i2c_device_id *id)
+static int ltc2992_i2c_probe(struct i2c_client *client)
 {
 	struct device *hwmon_dev;
 	struct ltc2992_state *st;
@@ -954,7 +948,7 @@ static const struct of_device_id ltc2992_of_match[] = {
 MODULE_DEVICE_TABLE(of, ltc2992_of_match);
 
 static const struct i2c_device_id ltc2992_i2c_id[] = {
-	{"ltc2992", 0},
+	{"ltc2992"},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, ltc2992_i2c_id);
@@ -964,7 +958,7 @@ static struct i2c_driver ltc2992_i2c_driver = {
 		.name = "ltc2992",
 		.of_match_table = ltc2992_of_match,
 	},
-	.probe    = ltc2992_i2c_probe,
+	.probe = ltc2992_i2c_probe,
 	.id_table = ltc2992_i2c_id,
 };
 

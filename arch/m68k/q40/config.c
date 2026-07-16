@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  arch/m68k/q40/config.c
  *
@@ -6,24 +7,18 @@
  * originally based on:
  *
  *  linux/bvme/config.c
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file README.legal in the main directory of this archive
- * for more details.
  */
 
 #include <linux/errno.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
-#include <linux/tty.h>
 #include <linux/console.h>
 #include <linux/linkage.h>
 #include <linux/init.h>
 #include <linux/major.h>
 #include <linux/serial_reg.h>
 #include <linux/rtc.h>
-#include <linux/vt_kern.h>
 #include <linux/bcd.h>
 #include <linux/platform_device.h>
 
@@ -34,17 +29,15 @@
 #include <asm/traps.h>
 #include <asm/machdep.h>
 #include <asm/q40_master.h>
+#include <asm/config.h>
 
-extern void q40_init_IRQ(void);
+#include "q40.h"
+
 static void q40_get_model(char *model);
-extern void q40_sched_init(void);
 
 static int q40_hwclk(int, struct rtc_time *);
-static unsigned int q40_get_ss(void);
 static int q40_get_rtc_pll(struct rtc_pll_info *pll);
 static int q40_set_rtc_pll(struct rtc_pll_info *pll);
-
-extern void q40_mksound(unsigned int /*freq*/, unsigned int /*ticks*/);
 
 static void q40_mem_console_write(struct console *co, const char *b,
 				  unsigned int count);
@@ -168,7 +161,6 @@ void __init config_q40(void)
 
 	mach_init_IRQ = q40_init_IRQ;
 	mach_hwclk = q40_hwclk;
-	mach_get_ss = q40_get_ss;
 	mach_get_rtc_pll = q40_get_rtc_pll;
 	mach_set_rtc_pll = q40_set_rtc_pll;
 
@@ -243,11 +235,6 @@ static int q40_hwclk(int op, struct rtc_time *t)
 	}
 
 	return 0;
-}
-
-static unsigned int q40_get_ss(void)
-{
-	return bcd2bin(Q40_RTC_SECS);
 }
 
 /* get and set PLL calibration of RTC clock */

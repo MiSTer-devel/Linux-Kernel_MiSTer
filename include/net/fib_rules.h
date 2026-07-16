@@ -43,6 +43,10 @@ struct fib_rule {
 	struct fib_kuid_range	uid_range;
 	struct fib_rule_port_range	sport_range;
 	struct fib_rule_port_range	dport_range;
+	u16			sport_mask;
+	u16			dport_mask;
+	u8                      iif_is_l3_master;
+	u8                      oif_is_l3_master;
 	struct rcu_head		rcu;
 };
 
@@ -69,7 +73,7 @@ struct fib_rules_ops {
 	int			(*action)(struct fib_rule *,
 					  struct flowi *, int,
 					  struct fib_lookup_arg *);
-	bool			(*suppress)(struct fib_rule *,
+	bool			(*suppress)(struct fib_rule *, int,
 					    struct fib_lookup_arg *);
 	int			(*match)(struct fib_rule *,
 					 struct flowi *, int);
@@ -91,7 +95,6 @@ struct fib_rules_ops {
 	void			(*flush_cache)(struct fib_rules_ops *ops);
 
 	int			nlgroup;
-	const struct nla_policy	*policy;
 	struct list_head	rules_list;
 	struct module		*owner;
 	struct net		*fro_net;
@@ -102,26 +105,6 @@ struct fib_rule_notifier_info {
 	struct fib_notifier_info info; /* must be first */
 	struct fib_rule *rule;
 };
-
-#define FRA_GENERIC_POLICY \
-	[FRA_UNSPEC]	= { .strict_start_type = FRA_DPORT_RANGE + 1 }, \
-	[FRA_IIFNAME]	= { .type = NLA_STRING, .len = IFNAMSIZ - 1 }, \
-	[FRA_OIFNAME]	= { .type = NLA_STRING, .len = IFNAMSIZ - 1 }, \
-	[FRA_PRIORITY]	= { .type = NLA_U32 }, \
-	[FRA_FWMARK]	= { .type = NLA_U32 }, \
-	[FRA_TUN_ID]	= { .type = NLA_U64 }, \
-	[FRA_FWMASK]	= { .type = NLA_U32 }, \
-	[FRA_TABLE]     = { .type = NLA_U32 }, \
-	[FRA_SUPPRESS_PREFIXLEN] = { .type = NLA_U32 }, \
-	[FRA_SUPPRESS_IFGROUP] = { .type = NLA_U32 }, \
-	[FRA_GOTO]	= { .type = NLA_U32 }, \
-	[FRA_L3MDEV]	= { .type = NLA_U8 }, \
-	[FRA_UID_RANGE]	= { .len = sizeof(struct fib_rule_uid_range) }, \
-	[FRA_PROTOCOL]  = { .type = NLA_U8 }, \
-	[FRA_IP_PROTO]  = { .type = NLA_U8 }, \
-	[FRA_SPORT_RANGE] = { .len = sizeof(struct fib_rule_port_range) }, \
-	[FRA_DPORT_RANGE] = { .len = sizeof(struct fib_rule_port_range) }
-
 
 static inline void fib_rule_get(struct fib_rule *rule)
 {
@@ -167,6 +150,17 @@ static inline bool fib_rule_port_inrange(const struct fib_rule_port_range *a,
 		ntohs(port) <= a->end;
 }
 
+static inline bool fib_rule_port_match(const struct fib_rule_port_range *range,
+				       u16 port_mask, __be16 port)
+{
+	if ((range->start ^ ntohs(port)) & port_mask)
+		return false;
+	if (!port_mask && fib_rule_port_range_set(range) &&
+	    !fib_rule_port_inrange(range, port))
+		return false;
+	return true;
+}
+
 static inline bool fib_rule_port_range_valid(const struct fib_rule_port_range *a)
 {
 	return a->start != 0 && a->end != 0 && a->end < 0xffff &&
@@ -178,6 +172,12 @@ static inline bool fib_rule_port_range_compare(struct fib_rule_port_range *a,
 {
 	return a->start == b->start &&
 		a->end == b->end;
+}
+
+static inline bool
+fib_rule_port_is_range(const struct fib_rule_port_range *range)
+{
+	return range->start != range->end;
 }
 
 static inline bool fib_rule_requires_fldissect(struct fib_rule *rule)
@@ -193,17 +193,16 @@ void fib_rules_unregister(struct fib_rules_ops *);
 
 int fib_rules_lookup(struct fib_rules_ops *, struct flowi *, int flags,
 		     struct fib_lookup_arg *);
-int fib_default_rule_add(struct fib_rules_ops *, u32 pref, u32 table,
-			 u32 flags);
+int fib_default_rule_add(struct fib_rules_ops *, u32 pref, u32 table);
 bool fib_rule_matchall(const struct fib_rule *rule);
 int fib_rules_dump(struct net *net, struct notifier_block *nb, int family,
 		   struct netlink_ext_ack *extack);
-unsigned int fib_rules_seq_read(struct net *net, int family);
+unsigned int fib_rules_seq_read(const struct net *net, int family);
 
-int fib_nl_newrule(struct sk_buff *skb, struct nlmsghdr *nlh,
-		   struct netlink_ext_ack *extack);
-int fib_nl_delrule(struct sk_buff *skb, struct nlmsghdr *nlh,
-		   struct netlink_ext_ack *extack);
+int fib_newrule(struct net *net, struct sk_buff *skb, struct nlmsghdr *nlh,
+		struct netlink_ext_ack *extack, bool rtnl_held);
+int fib_delrule(struct net *net, struct sk_buff *skb, struct nlmsghdr *nlh,
+		struct netlink_ext_ack *extack, bool rtnl_held);
 
 INDIRECT_CALLABLE_DECLARE(int fib6_rule_match(struct fib_rule *rule,
 					    struct flowi *fl, int flags));
@@ -218,7 +217,9 @@ INDIRECT_CALLABLE_DECLARE(int fib4_rule_action(struct fib_rule *rule,
 			    struct fib_lookup_arg *arg));
 
 INDIRECT_CALLABLE_DECLARE(bool fib6_rule_suppress(struct fib_rule *rule,
+						int flags,
 						struct fib_lookup_arg *arg));
 INDIRECT_CALLABLE_DECLARE(bool fib4_rule_suppress(struct fib_rule *rule,
+						int flags,
 						struct fib_lookup_arg *arg));
 #endif

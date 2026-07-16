@@ -155,9 +155,12 @@ static int perf_open(struct inode *inode, struct file *file)
 	struct msm_gpu *gpu = priv->gpu;
 	int ret = 0;
 
-	mutex_lock(&dev->struct_mutex);
+	if (!gpu)
+		return -ENODEV;
 
-	if (perf->open || !gpu) {
+	mutex_lock(&gpu->lock);
+
+	if (perf->open) {
 		ret = -EBUSY;
 		goto out;
 	}
@@ -171,7 +174,7 @@ static int perf_open(struct inode *inode, struct file *file)
 	perf->next_jiffies = jiffies + SAMPLE_TIME;
 
 out:
-	mutex_unlock(&dev->struct_mutex);
+	mutex_unlock(&gpu->lock);
 	return ret;
 }
 
@@ -189,7 +192,6 @@ static const struct file_operations perf_debugfs_fops = {
 	.owner = THIS_MODULE,
 	.open = perf_open,
 	.read = perf_read,
-	.llseek = no_llseek,
 	.release = perf_release,
 };
 

@@ -164,8 +164,6 @@ asn1_encode_oid(unsigned char *data, const unsigned char *end_data,
 
 	data_len -= 3;
 
-	ret = 0;
-
 	for (i = 2; i < oid_len; i++) {
 		ret = asn1_encode_oid_digit(&d, &data_len, oid[i]);
 		if (ret < 0)
@@ -451,4 +449,5 @@ asn1_encode_boolean(unsigned char *data, const unsigned char *end_data,
 }
 EXPORT_SYMBOL_GPL(asn1_encode_boolean);
 
+MODULE_DESCRIPTION("Simple encoder primitives for ASN.1 BER/DER/CER");
 MODULE_LICENSE("GPL");

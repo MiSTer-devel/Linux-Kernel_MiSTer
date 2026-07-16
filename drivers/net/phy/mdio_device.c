@@ -21,6 +21,7 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/unistd.h>
+#include <linux/property.h>
 
 void mdio_device_free(struct mdio_device *mdiodev)
 {
@@ -30,13 +31,15 @@ EXPORT_SYMBOL(mdio_device_free);
 
 static void mdio_device_release(struct device *dev)
 {
+	fwnode_handle_put(dev->fwnode);
 	kfree(to_mdio_device(dev));
 }
 
-int mdio_device_bus_match(struct device *dev, struct device_driver *drv)
+static int mdio_device_bus_match(struct device *dev,
+				 const struct device_driver *drv)
 {
 	struct mdio_device *mdiodev = to_mdio_device(dev);
-	struct mdio_driver *mdiodrv = to_mdio_driver(drv);
+	const struct mdio_driver *mdiodrv = to_mdio_driver(drv);
 
 	if (mdiodrv->mdiodrv.flags & MDIO_DEVICE_IS_PHY)
 		return 0;
@@ -56,10 +59,12 @@ struct mdio_device *mdio_device_create(struct mii_bus *bus, int addr)
 	mdiodev->dev.release = mdio_device_release;
 	mdiodev->dev.parent = &bus->dev;
 	mdiodev->dev.bus = &mdio_bus_type;
+	mdiodev->bus_match = mdio_device_bus_match;
 	mdiodev->device_free = mdio_device_free;
 	mdiodev->device_remove = mdio_device_remove;
 	mdiodev->bus = bus;
 	mdiodev->addr = addr;
+	mdiodev->reset_state = -1;
 
 	dev_set_name(&mdiodev->dev, PHY_ID_FMT, bus->id, addr);
 
@@ -120,6 +125,9 @@ void mdio_device_reset(struct mdio_device *mdiodev, int value)
 	if (!mdiodev->reset_gpio && !mdiodev->reset_ctrl)
 		return;
 
+	if (mdiodev->reset_state == value)
+		return;
+
 	if (mdiodev->reset_gpio)
 		gpiod_set_value_cansleep(mdiodev->reset_gpio, value);
 
@@ -133,6 +141,8 @@ void mdio_device_reset(struct mdio_device *mdiodev, int value)
 	d = value ? mdiodev->reset_assert_delay : mdiodev->reset_deassert_delay;
 	if (d)
 		fsleep(d);
+
+	mdiodev->reset_state = value;
 }
 EXPORT_SYMBOL(mdio_device_reset);
 

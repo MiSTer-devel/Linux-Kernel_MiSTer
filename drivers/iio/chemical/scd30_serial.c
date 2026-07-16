@@ -15,7 +15,7 @@
 #include <linux/serdev.h>
 #include <linux/string.h>
 #include <linux/types.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "scd30.h"
 
@@ -174,13 +174,13 @@ static int scd30_serdev_command(struct scd30_state *state, enum scd30_cmd cmd, u
 	return 0;
 }
 
-static int scd30_serdev_receive_buf(struct serdev_device *serdev,
-				    const unsigned char *buf, size_t size)
+static size_t scd30_serdev_receive_buf(struct serdev_device *serdev,
+				       const u8 *buf, size_t size)
 {
 	struct iio_dev *indio_dev = serdev_device_get_drvdata(serdev);
 	struct scd30_serdev_priv *priv;
 	struct scd30_state *state;
-	int num;
+	size_t num;
 
 	if (!indio_dev)
 		return 0;
@@ -252,7 +252,7 @@ static struct serdev_device_driver scd30_serdev_driver = {
 	.driver = {
 		.name = KBUILD_MODNAME,
 		.of_match_table = scd30_serdev_of_match,
-		.pm = &scd30_pm_ops,
+		.pm = pm_sleep_ptr(&scd30_pm_ops),
 	},
 	.probe = scd30_serdev_probe,
 };
@@ -261,3 +261,4 @@ module_serdev_device_driver(scd30_serdev_driver);
 MODULE_AUTHOR("Tomasz Duszynski <tomasz.duszynski@octakon.com>");
 MODULE_DESCRIPTION("Sensirion SCD30 carbon dioxide sensor serial driver");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS("IIO_SCD30");

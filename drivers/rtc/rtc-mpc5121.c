@@ -11,10 +11,8 @@
 #include <linux/module.h>
 #include <linux/rtc.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/io.h>
 #include <linux/slab.h>
 
@@ -210,20 +208,6 @@ static int mpc5121_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alarm)
 	struct mpc5121_rtc_data *rtc = dev_get_drvdata(dev);
 	struct mpc5121_rtc_regs __iomem *regs = rtc->regs;
 
-	/*
-	 * the alarm has no seconds so deal with it
-	 */
-	if (alarm->time.tm_sec) {
-		alarm->time.tm_sec = 0;
-		alarm->time.tm_min++;
-		if (alarm->time.tm_min >= 60) {
-			alarm->time.tm_min = 0;
-			alarm->time.tm_hour++;
-			if (alarm->time.tm_hour >= 24)
-				alarm->time.tm_hour = 0;
-		}
-	}
-
 	alarm->time.tm_mday = -1;
 	alarm->time.tm_mon = -1;
 	alarm->time.tm_year = -1;
@@ -319,7 +303,7 @@ static int mpc5121_rtc_probe(struct platform_device *op)
 		return PTR_ERR(rtc->regs);
 	}
 
-	device_init_wakeup(&op->dev, 1);
+	device_init_wakeup(&op->dev, true);
 
 	platform_set_drvdata(op, rtc);
 
@@ -349,7 +333,8 @@ static int mpc5121_rtc_probe(struct platform_device *op)
 	}
 
 	rtc->rtc->ops = &mpc5200_rtc_ops;
-	rtc->rtc->uie_unsupported = 1;
+	set_bit(RTC_FEATURE_ALARM_RES_MINUTE, rtc->rtc->features);
+	clear_bit(RTC_FEATURE_UPDATE_INTERRUPT, rtc->rtc->features);
 	rtc->rtc->range_min = RTC_TIMESTAMP_BEGIN_0000;
 	rtc->rtc->range_max = 65733206399ULL; /* 4052-12-31 23:59:59 */
 
@@ -385,7 +370,7 @@ out_dispose:
 	return err;
 }
 
-static int mpc5121_rtc_remove(struct platform_device *op)
+static void mpc5121_rtc_remove(struct platform_device *op)
 {
 	struct mpc5121_rtc_data *rtc = platform_get_drvdata(op);
 	struct mpc5121_rtc_regs __iomem *regs = rtc->regs;
@@ -396,8 +381,6 @@ static int mpc5121_rtc_remove(struct platform_device *op)
 
 	irq_dispose_mapping(rtc->irq);
 	irq_dispose_mapping(rtc->irq_periodic);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -420,5 +403,6 @@ static struct platform_driver mpc5121_rtc_driver = {
 
 module_platform_driver(mpc5121_rtc_driver);
 
+MODULE_DESCRIPTION("Freescale MPC5121 built-in RTC driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("John Rigby <jcrigby@gmail.com>");

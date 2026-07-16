@@ -267,6 +267,8 @@ static const struct net_device_ops pn_netdev_ops = {
 
 static void pn_net_setup(struct net_device *dev)
 {
+	const u8 addr = PN_MEDIA_USB;
+
 	dev->features		= 0;
 	dev->type		= ARPHRD_PHONET;
 	dev->flags		= IFF_POINTOPOINT | IFF_NOARP;
@@ -274,8 +276,9 @@ static void pn_net_setup(struct net_device *dev)
 	dev->min_mtu		= PHONET_MIN_MTU;
 	dev->max_mtu		= PHONET_MAX_MTU;
 	dev->hard_header_len	= 1;
-	dev->dev_addr[0]	= PN_MEDIA_USB;
 	dev->addr_len		= 1;
+	dev_addr_set(dev, &addr);
+
 	dev->tx_queue_len	= 1;
 
 	dev->netdev_ops		= &pn_netdev_ops;
@@ -329,6 +332,15 @@ static void pn_rx_complete(struct usb_ep *ep, struct usb_request *req)
 
 		if (unlikely(!skb))
 			break;
+
+		if (unlikely(skb_shinfo(skb)->nr_frags >= MAX_SKB_FRAGS)) {
+			/* Frame count from host exceeds frags[] capacity */
+			dev_kfree_skb_any(skb);
+			if (fp->rx.skb == skb)
+				fp->rx.skb = NULL;
+			dev->stats.rx_length_errors++;
+			break;
+		}
 
 		if (skb->len == 0) { /* First fragment */
 			skb->protocol = htons(ETH_P_PHONET);
@@ -665,10 +677,8 @@ static struct usb_function *phonet_alloc(struct usb_function_instance *fi)
 {
 	struct f_phonet *fp;
 	struct f_phonet_opts *opts;
-	int size;
 
-	size = sizeof(*fp) + (phonet_rxq_size * sizeof(struct usb_request *));
-	fp = kzalloc(size, GFP_KERNEL);
+	fp = kzalloc(struct_size(fp, out_reqv, phonet_rxq_size), GFP_KERNEL);
 	if (!fp)
 		return ERR_PTR(-ENOMEM);
 
@@ -728,4 +738,5 @@ void gphonet_cleanup(struct net_device *dev)
 
 DECLARE_USB_FUNCTION_INIT(phonet, phonet_alloc_inst, phonet_alloc);
 MODULE_AUTHOR("Rémi Denis-Courmont");
+MODULE_DESCRIPTION("USB CDC Phonet function");
 MODULE_LICENSE("GPL");

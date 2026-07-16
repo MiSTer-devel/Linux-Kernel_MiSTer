@@ -413,7 +413,7 @@ static void sci_controller_event_completion(struct isci_host *ihost, u32 ent)
 				dev_warn(&ihost->pdev->dev,
 					 "%s: SCIC Controller 0x%p received "
 					 "event 0x%x for io request object "
-					 "that doesnt exist.\n",
+					 "that doesn't exist.\n",
 					 __func__,
 					 ihost,
 					 ent);
@@ -428,7 +428,7 @@ static void sci_controller_event_completion(struct isci_host *ihost, u32 ent)
 				dev_warn(&ihost->pdev->dev,
 					 "%s: SCIC Controller 0x%p received "
 					 "event 0x%x for remote device object "
-					 "that doesnt exist.\n",
+					 "that doesn't exist.\n",
 					 __func__,
 					 ihost,
 					 ent);
@@ -462,7 +462,7 @@ static void sci_controller_event_completion(struct isci_host *ihost, u32 ent)
 		} else
 			dev_err(&ihost->pdev->dev,
 				"%s: SCIC Controller 0x%p received event 0x%x "
-				"for remote device object 0x%0x that doesnt "
+				"for remote device object 0x%0x that doesn't "
 				"exist.\n",
 				__func__,
 				ihost,
@@ -958,7 +958,7 @@ static enum sci_status sci_controller_start_next_phy(struct isci_host *ihost)
 
 static void phy_startup_timeout(struct timer_list *t)
 {
-	struct sci_timer *tmr = from_timer(tmr, t, timer);
+	struct sci_timer *tmr = timer_container_of(tmr, t, timer);
 	struct isci_host *ihost = container_of(tmr, typeof(*ihost), phy_timer);
 	unsigned long flags;
 	enum sci_status status;
@@ -1252,6 +1252,9 @@ void isci_host_deinit(struct isci_host *ihost)
 
 	wait_for_stop(ihost);
 
+	/* No further IRQ-driven scheduling can happen past wait_for_stop(). */
+	tasklet_kill(&ihost->completion_tasklet);
+
 	/* phy stop is after controller stop to allow port and device to
 	 * go idle before shutting down the phys, but the expectation is
 	 * that i/o has been shut off well before we reach this
@@ -1271,22 +1274,22 @@ void isci_host_deinit(struct isci_host *ihost)
 	/* Cancel any/all outstanding port timers */
 	for (i = 0; i < ihost->logical_port_entries; i++) {
 		struct isci_port *iport = &ihost->ports[i];
-		del_timer_sync(&iport->timer.timer);
+		timer_delete_sync(&iport->timer.timer);
 	}
 
 	/* Cancel any/all outstanding phy timers */
 	for (i = 0; i < SCI_MAX_PHYS; i++) {
 		struct isci_phy *iphy = &ihost->phys[i];
-		del_timer_sync(&iphy->sata_timer.timer);
+		timer_delete_sync(&iphy->sata_timer.timer);
 	}
 
-	del_timer_sync(&ihost->port_agent.timer.timer);
+	timer_delete_sync(&ihost->port_agent.timer.timer);
 
-	del_timer_sync(&ihost->power_control.timer.timer);
+	timer_delete_sync(&ihost->power_control.timer.timer);
 
-	del_timer_sync(&ihost->timer.timer);
+	timer_delete_sync(&ihost->timer.timer);
 
-	del_timer_sync(&ihost->phy_timer.timer);
+	timer_delete_sync(&ihost->phy_timer.timer);
 }
 
 static void __iomem *scu_base(struct isci_host *isci_host)
@@ -1592,7 +1595,7 @@ static const struct sci_base_state sci_controller_state_table[] = {
 
 static void controller_timeout(struct timer_list *t)
 {
-	struct sci_timer *tmr = from_timer(tmr, t, timer);
+	struct sci_timer *tmr = timer_container_of(tmr, t, timer);
 	struct isci_host *ihost = container_of(tmr, typeof(*ihost), timer);
 	struct sci_base_state_machine *sm = &ihost->sm;
 	unsigned long flags;
@@ -1737,7 +1740,7 @@ static u8 max_spin_up(struct isci_host *ihost)
 
 static void power_control_timeout(struct timer_list *t)
 {
-	struct sci_timer *tmr = from_timer(tmr, t, timer);
+	struct sci_timer *tmr = timer_container_of(tmr, t, timer);
 	struct isci_host *ihost = container_of(tmr, typeof(*ihost), power_control.timer);
 	struct isci_phy *iphy;
 	unsigned long flags;

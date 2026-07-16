@@ -15,6 +15,7 @@
  */
 
 #include <linux/io.h>
+#include <linux/irq.h>
 #include <linux/err.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
@@ -23,11 +24,10 @@
 #include <linux/usb/usb_phy_generic.h>
 #include <linux/platform_data/usb-omap.h>
 #include <linux/sizes.h>
+#include <linux/string_choices.h>
 
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_address.h>
-#include <linux/of_irq.h>
 #include <linux/usb/of.h>
 
 #include <linux/debugfs.h>
@@ -201,7 +201,7 @@ static void dsps_musb_disable(struct musb *musb)
 	musb_writel(reg_base, wrp->coreintr_clear, wrp->usb_bitmap);
 	musb_writel(reg_base, wrp->epintr_clear,
 			 wrp->txep_bitmap | wrp->rxep_bitmap);
-	del_timer_sync(&musb->dev_timer);
+	timer_delete_sync(&musb->dev_timer);
 }
 
 /* Caller must take musb->lock */
@@ -215,7 +215,7 @@ static int dsps_check_status(struct musb *musb, void *unused)
 	int skip_session = 0;
 
 	if (glue->vbus_irq)
-		del_timer(&musb->dev_timer);
+		timer_delete(&musb->dev_timer);
 
 	/*
 	 * We poll because DSPS IP's won't expose several OTG-critical
@@ -278,7 +278,7 @@ static int dsps_check_status(struct musb *musb, void *unused)
 
 static void otg_timer(struct timer_list *t)
 {
-	struct musb *musb = from_timer(musb, t, dev_timer);
+	struct musb *musb = timer_container_of(musb, t, dev_timer);
 	struct device *dev = musb->controller;
 	unsigned long flags;
 	int err;
@@ -379,7 +379,7 @@ static irqreturn_t dsps_interrupt(int irq, void *hci)
 
 		/* NOTE: this must complete power-on within 100 ms. */
 		dev_dbg(musb->controller, "VBUS %s (%s)%s, devctl %02x\n",
-				drvvbus ? "on" : "off",
+				str_on_off(drvvbus),
 				usb_otg_state_string(musb->xceiv->otg->state),
 				err ? " ERROR" : "",
 				devctl);
@@ -499,7 +499,7 @@ static int dsps_musb_exit(struct musb *musb)
 	struct device *dev = musb->controller;
 	struct dsps_glue *glue = dev_get_drvdata(dev->parent);
 
-	del_timer_sync(&musb->dev_timer);
+	timer_delete_sync(&musb->dev_timer);
 	phy_power_off(musb->phy);
 	phy_exit(musb->phy);
 	debugfs_remove_recursive(glue->dbgfs_root);
@@ -739,12 +739,14 @@ static int dsps_create_musb_pdev(struct dsps_glue *glue,
 	}
 	resources[0] = *res;
 
-	res = platform_get_resource_byname(parent, IORESOURCE_IRQ, "mc");
-	if (!res) {
-		dev_err(dev, "failed to get irq.\n");
-		return -EINVAL;
-	}
-	resources[1] = *res;
+	ret = platform_get_irq_byname(parent, "mc");
+	if (ret < 0)
+		return ret;
+
+	resources[1].start = ret;
+	resources[1].end = ret;
+	resources[1].flags = IORESOURCE_IRQ | irq_get_trigger_type(ret);
+	resources[1].name = "mc";
 
 	/* allocate the child platform device */
 	musb = platform_device_alloc("musb-hdrc",
@@ -837,7 +839,7 @@ static int dsps_setup_optional_vbus_irq(struct platform_device *pdev,
 {
 	int error;
 
-	glue->vbus_irq = platform_get_irq_byname(pdev, "vbus");
+	glue->vbus_irq = platform_get_irq_byname_optional(pdev, "vbus");
 	if (glue->vbus_irq == -EPROBE_DEFER)
 		return -EPROBE_DEFER;
 
@@ -848,7 +850,7 @@ static int dsps_setup_optional_vbus_irq(struct platform_device *pdev,
 
 	error = devm_request_threaded_irq(glue->dev, glue->vbus_irq,
 					  NULL, dsps_vbus_threaded_irq,
-					  IRQF_ONESHOT,
+					  IRQF_SHARED,
 					  "vbus", glue);
 	if (error) {
 		glue->vbus_irq = 0;
@@ -912,7 +914,7 @@ err:
 	return ret;
 }
 
-static int dsps_remove(struct platform_device *pdev)
+static void dsps_remove(struct platform_device *pdev)
 {
 	struct dsps_glue *glue = platform_get_drvdata(pdev);
 
@@ -920,8 +922,6 @@ static int dsps_remove(struct platform_device *pdev)
 
 	pm_runtime_disable(&pdev->dev);
 	iounmap(glue->usbss_base);
-
-	return 0;
 }
 
 static const struct dsps_musb_wrapper am33xx_driver_data = {
@@ -983,7 +983,7 @@ static int dsps_suspend(struct device *dev)
 		return ret;
 	}
 
-	del_timer_sync(&musb->dev_timer);
+	timer_delete_sync(&musb->dev_timer);
 
 	mbase = musb->ctrl_base;
 	glue->context.control = musb_readl(mbase, wrp->control);

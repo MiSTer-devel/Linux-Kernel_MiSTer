@@ -87,10 +87,6 @@
  */
 extern cpm_cpm2_t __iomem *cpmp; /* Pointer to comm processor */
 
-#define cpm_dpalloc cpm_muram_alloc
-#define cpm_dpfree cpm_muram_free
-#define cpm_dpram_addr cpm_muram_addr
-
 extern void cpm2_reset(void);
 
 /* Baud rate generators.
@@ -1080,6 +1076,9 @@ typedef struct im_idma {
 #define FCC2_MEM_OFFSET FCC_MEM_OFFSET(1)
 #define FCC3_MEM_OFFSET FCC_MEM_OFFSET(2)
 
+/* Pipeline Maximum Depth */
+#define MPC82XX_BCR_PLDP 0x00800000
+
 /* Clocks and GRG's */
 
 enum cpm_clk_dir {
@@ -1133,8 +1132,8 @@ enum cpm_clk {
 	CPM_CLK_DUMMY
 };
 
-extern int cpm2_clk_setup(enum cpm_clk_target target, int clock, int mode);
-extern int cpm2_smc_clk_setup(enum cpm_clk_target target, int clock);
+int __init cpm2_clk_setup(enum cpm_clk_target target, int clock, int mode);
+int __init cpm2_smc_clk_setup(enum cpm_clk_target target, int clock);
 
 #define CPM_PIN_INPUT     0
 #define CPM_PIN_OUTPUT    1
@@ -1143,7 +1142,7 @@ extern int cpm2_smc_clk_setup(enum cpm_clk_target target, int clock);
 #define CPM_PIN_GPIO      4
 #define CPM_PIN_OPENDRAIN 8
 
-void cpm2_set_pin(int port, int pin, int flags);
+void __init cpm2_set_pin(int port, int pin, int flags);
 
 #endif /* __CPM2__ */
 #endif /* __KERNEL__ */

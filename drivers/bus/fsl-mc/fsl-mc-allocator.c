@@ -103,26 +103,32 @@ static int __must_check fsl_mc_resource_pool_remove_device(struct fsl_mc_device
 	struct fsl_mc_resource *resource;
 	int error = -EINVAL;
 
-	if (!fsl_mc_is_allocatable(mc_dev))
-		goto out;
-
-	resource = mc_dev->resource;
-	if (!resource || resource->data != mc_dev)
-		goto out;
-
 	mc_bus_dev = to_fsl_mc_device(mc_dev->dev.parent);
 	mc_bus = to_fsl_mc_bus(mc_bus_dev);
-	res_pool = resource->parent_pool;
-	if (res_pool != &mc_bus->resource_pools[resource->type])
+
+	resource = mc_dev->resource;
+	if (!resource || resource->data != mc_dev) {
+		dev_err(&mc_bus_dev->dev, "resource mismatch\n");
 		goto out;
+	}
+
+	res_pool = resource->parent_pool;
+	if (res_pool != &mc_bus->resource_pools[resource->type]) {
+		dev_err(&mc_bus_dev->dev, "pool mismatch\n");
+		goto out;
+	}
 
 	mutex_lock(&res_pool->mutex);
 
-	if (res_pool->max_count <= 0)
+	if (res_pool->max_count <= 0) {
+		dev_err(&mc_bus_dev->dev, "max_count underflow\n");
 		goto out_unlock;
+	}
 	if (res_pool->free_count <= 0 ||
-	    res_pool->free_count > res_pool->max_count)
+	    res_pool->free_count > res_pool->max_count) {
+		dev_err(&mc_bus_dev->dev, "free_count mismatch\n");
 		goto out_unlock;
+	}
 
 	/*
 	 * If the device is currently allocated, its resource is not
@@ -350,7 +356,6 @@ int fsl_mc_populate_irq_pool(struct fsl_mc_device *mc_bus_dev,
 			     unsigned int irq_count)
 {
 	unsigned int i;
-	struct msi_desc *msi_desc;
 	struct fsl_mc_device_irq *irq_resources;
 	struct fsl_mc_device_irq *mc_dev_irq;
 	int error;
@@ -388,14 +393,10 @@ int fsl_mc_populate_irq_pool(struct fsl_mc_device *mc_bus_dev,
 		mc_dev_irq->resource.type = res_pool->type;
 		mc_dev_irq->resource.data = mc_dev_irq;
 		mc_dev_irq->resource.parent_pool = res_pool;
+		mc_dev_irq->virq = msi_get_virq(&mc_bus_dev->dev, i);
+		mc_dev_irq->resource.id = mc_dev_irq->virq;
 		INIT_LIST_HEAD(&mc_dev_irq->resource.node);
 		list_add_tail(&mc_dev_irq->resource.node, &res_pool->free_list);
-	}
-
-	for_each_msi_entry(msi_desc, &mc_bus_dev->dev) {
-		mc_dev_irq = &irq_resources[msi_desc->fsl_mc.msi_index];
-		mc_dev_irq->msi_desc = msi_desc;
-		mc_dev_irq->resource.id = msi_desc->irq;
 	}
 
 	res_pool->max_count = irq_count;
@@ -554,30 +555,6 @@ void fsl_mc_init_all_resource_pools(struct fsl_mc_device *mc_bus_dev)
 	}
 }
 
-static void fsl_mc_cleanup_resource_pool(struct fsl_mc_device *mc_bus_dev,
-					 enum fsl_mc_pool_type pool_type)
-{
-	struct fsl_mc_resource *resource;
-	struct fsl_mc_resource *next;
-	struct fsl_mc_bus *mc_bus = to_fsl_mc_bus(mc_bus_dev);
-	struct fsl_mc_resource_pool *res_pool =
-					&mc_bus->resource_pools[pool_type];
-	int free_count = 0;
-
-	list_for_each_entry_safe(resource, next, &res_pool->free_list, node) {
-		free_count++;
-		devm_kfree(&mc_bus_dev->dev, resource);
-	}
-}
-
-void fsl_mc_cleanup_all_resource_pools(struct fsl_mc_device *mc_bus_dev)
-{
-	int pool_type;
-
-	for (pool_type = 0; pool_type < FSL_MC_NUM_POOL_TYPES; pool_type++)
-		fsl_mc_cleanup_resource_pool(mc_bus_dev, pool_type);
-}
-
 /*
  * fsl_mc_allocator_probe - callback invoked when an allocatable device is
  * being added to the system
@@ -614,22 +591,18 @@ static int fsl_mc_allocator_probe(struct fsl_mc_device *mc_dev)
  * fsl_mc_allocator_remove - callback invoked when an allocatable device is
  * being removed from the system
  */
-static int fsl_mc_allocator_remove(struct fsl_mc_device *mc_dev)
+static void fsl_mc_allocator_remove(struct fsl_mc_device *mc_dev)
 {
 	int error;
-
-	if (!fsl_mc_is_allocatable(mc_dev))
-		return -EINVAL;
 
 	if (mc_dev->resource) {
 		error = fsl_mc_resource_pool_remove_device(mc_dev);
 		if (error < 0)
-			return error;
+			return;
 	}
 
 	dev_dbg(&mc_dev->dev,
 		"Allocatable fsl-mc device unbound from fsl_mc_allocator driver");
-	return 0;
 }
 
 static const struct fsl_mc_device_id match_id_table[] = {
@@ -661,9 +634,4 @@ static struct fsl_mc_driver fsl_mc_allocator_driver = {
 int __init fsl_mc_allocator_driver_init(void)
 {
 	return fsl_mc_driver_register(&fsl_mc_allocator_driver);
-}
-
-void fsl_mc_allocator_driver_exit(void)
-{
-	fsl_mc_driver_unregister(&fsl_mc_allocator_driver);
 }

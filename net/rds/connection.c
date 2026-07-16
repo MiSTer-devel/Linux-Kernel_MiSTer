@@ -57,16 +57,17 @@ static struct hlist_head *rds_conn_bucket(const struct in6_addr *laddr,
 	static u32 rds6_hash_secret __read_mostly;
 	static u32 rds_hash_secret __read_mostly;
 
-	u32 lhash, fhash, hash;
+	__be32 lhash, fhash;
+	u32 hash;
 
 	net_get_random_once(&rds_hash_secret, sizeof(rds_hash_secret));
 	net_get_random_once(&rds6_hash_secret, sizeof(rds6_hash_secret));
 
-	lhash = (__force u32)laddr->s6_addr32[3];
+	lhash = laddr->s6_addr32[3];
 #if IS_ENABLED(CONFIG_IPV6)
-	fhash = __ipv6_addr_jhash(faddr, rds6_hash_secret);
+	fhash = (__force __be32)__ipv6_addr_jhash(faddr, rds6_hash_secret);
 #else
-	fhash = (__force u32)faddr->s6_addr32[3];
+	fhash = faddr->s6_addr32[3];
 #endif
 	hash = __inet_ehashfn(lhash, 0, fhash, 0, rds_hash_secret);
 
@@ -253,6 +254,7 @@ static struct rds_connection *__rds_conn_create(struct net *net,
 				 * should end up here, but if it
 				 * does, reset/destroy the connection.
 				 */
+				kfree(conn->c_path);
 				kmem_cache_free(rds_conn_slab, conn);
 				conn = ERR_PTR(-EOPNOTSUPP);
 				goto out;
@@ -380,6 +382,8 @@ void rds_conn_shutdown(struct rds_conn_path *cp)
 		if (!rds_conn_path_transition(cp, RDS_CONN_UP,
 					      RDS_CONN_DISCONNECTING) &&
 		    !rds_conn_path_transition(cp, RDS_CONN_ERROR,
+					      RDS_CONN_DISCONNECTING) &&
+		    !rds_conn_path_transition(cp, RDS_CONN_RESETTING,
 					      RDS_CONN_DISCONNECTING)) {
 			rds_conn_path_error(cp,
 					    "shutdown called in state %d\n",
@@ -425,6 +429,8 @@ void rds_conn_shutdown(struct rds_conn_path *cp)
 	 * to the conn hash, so we never trigger a reconnect on this
 	 * conn - the reconnect is always triggered by the active peer. */
 	cancel_delayed_work_sync(&cp->cp_conn_w);
+
+	clear_bit(RDS_RECONNECT_PENDING, &cp->cp_flags);
 	rcu_read_lock();
 	if (!hlist_unhashed(&conn->c_hash_node)) {
 		rcu_read_unlock();
@@ -668,6 +674,13 @@ void rds_for_each_conn_info(struct socket *sock, unsigned int len,
 	     i++, head++) {
 		hlist_for_each_entry_rcu(conn, head, c_hash_node) {
 
+			/* Zero the per-item buffer before handing it to the
+			 * visitor so any field the visitor does not write -
+			 * including implicit alignment padding - cannot leak
+			 * stack contents to user space via rds_info_copy().
+			 */
+			memset(buffer, 0, item_len);
+
 			/* XXX no c_lock usage.. */
 			if (!visitor(conn, buffer))
 				continue;
@@ -717,6 +730,13 @@ static void rds_walk_conn_path_info(struct socket *sock, unsigned int len,
 			 */
 			cp = conn->c_path;
 
+			/* Zero the per-item buffer for the same reason as
+			 * rds_for_each_conn_info(): any byte the visitor
+			 * does not write (including alignment padding) must
+			 * not leak stack contents via rds_info_copy().
+			 */
+			memset(buffer, 0, item_len);
+
 			/* XXX no cp_lock usage.. */
 			if (!visitor(cp, buffer))
 				continue;
@@ -748,8 +768,7 @@ static int rds_conn_info_visitor(struct rds_conn_path *cp, void *buffer)
 	cinfo->laddr = conn->c_laddr.s6_addr32[3];
 	cinfo->faddr = conn->c_faddr.s6_addr32[3];
 	cinfo->tos = conn->c_tos;
-	strncpy(cinfo->transport, conn->c_trans->t_name,
-		sizeof(cinfo->transport));
+	strscpy_pad(cinfo->transport, conn->c_trans->t_name);
 	cinfo->flags = 0;
 
 	rds_conn_info_set(cinfo->flags, test_bit(RDS_IN_XMIT, &cp->cp_flags),
@@ -774,8 +793,7 @@ static int rds6_conn_info_visitor(struct rds_conn_path *cp, void *buffer)
 	cinfo6->next_rx_seq = cp->cp_next_rx_seq;
 	cinfo6->laddr = conn->c_laddr;
 	cinfo6->faddr = conn->c_faddr;
-	strncpy(cinfo6->transport, conn->c_trans->t_name,
-		sizeof(cinfo6->transport));
+	strscpy_pad(cinfo6->transport, conn->c_trans->t_name);
 	cinfo6->flags = 0;
 
 	rds_conn_info_set(cinfo6->flags, test_bit(RDS_IN_XMIT, &cp->cp_flags),
@@ -828,9 +846,7 @@ int rds_conn_init(void)
 	if (ret)
 		return ret;
 
-	rds_conn_slab = kmem_cache_create("rds_connection",
-					  sizeof(struct rds_connection),
-					  0, 0, NULL);
+	rds_conn_slab = KMEM_CACHE(rds_connection, 0);
 	if (!rds_conn_slab) {
 		rds_loop_net_exit();
 		return -ENOMEM;

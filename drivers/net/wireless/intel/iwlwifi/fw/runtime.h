@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
  * Copyright (C) 2017 Intel Deutschland GmbH
- * Copyright (C) 2018-2020 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  */
 #ifndef __iwl_fw_runtime_h__
 #define __iwl_fw_runtime_h__
@@ -12,18 +12,20 @@
 #include "fw/api/debug.h"
 #include "fw/api/paging.h"
 #include "fw/api/power.h"
-#include "iwl-eeprom-parse.h"
+#include "iwl-nvm-utils.h"
 #include "fw/acpi.h"
+#include "fw/regulatory.h"
 
 struct iwl_fw_runtime_ops {
-	int (*dump_start)(void *ctx);
+	void (*dump_start)(void *ctx);
 	void (*dump_end)(void *ctx);
-	bool (*fw_running)(void *ctx);
 	int (*send_hcmd)(void *ctx, struct iwl_host_cmd *host_cmd);
 	bool (*d3_debug_enable)(void *ctx);
 };
 
 #define MAX_NUM_LMAC 2
+#define MAX_NUM_TCM 2
+#define MAX_NUM_RCM 2
 struct iwl_fwrt_shared_mem_cfg {
 	int num_lmacs;
 	int num_txfifo_entries;
@@ -43,6 +45,12 @@ struct iwl_fwrt_shared_mem_cfg {
  * struct iwl_fwrt_dump_data - dump data
  * @trig: trigger the worker was scheduled upon
  * @fw_pkt: packet received from FW
+ * @desc: dump descriptor
+ * @monitor_only: only dump for monitor
+ *
+ * Note that the decision which part of the union is used
+ * is based on iwl_trans_dbg_ini_valid(): the 'trig' part
+ * is used if it is %true, the 'desc' part otherwise.
  */
 struct iwl_fwrt_dump_data {
 	union {
@@ -51,6 +59,7 @@ struct iwl_fwrt_dump_data {
 			struct iwl_rx_packet *fw_pkt;
 		};
 		struct {
+			/* must be first to be same as 'trig' */
 			const struct iwl_fw_dump_desc *desc;
 			bool monitor_only;
 		};
@@ -61,6 +70,7 @@ struct iwl_fwrt_dump_data {
  * struct iwl_fwrt_wk_data - dump worker data struct
  * @idx: index of the worker
  * @wk: worker
+ * @dump_data: dump data
  */
 struct iwl_fwrt_wk_data  {
 	u8 idx;
@@ -84,8 +94,8 @@ struct iwl_txf_iter_data {
 
 /**
  * struct iwl_fw_runtime - runtime data for firmware
+ * @trans: transport pointer
  * @fw: firmware image
- * @cfg: NIC configuration
  * @dev: device pointer
  * @ops: user ops
  * @ops_ctx: user ops context
@@ -96,6 +106,37 @@ struct iwl_txf_iter_data {
  * @cur_fw_img: current firmware image, must be maintained by
  *	the driver by calling &iwl_fw_set_current_image()
  * @dump: debug dump data
+ * @uats_table: AP type table
+ * @uats_valid: is AP type table valid
+ * @uefi_tables_lock_status: The status of the WIFI GUID UEFI variables lock:
+ *	0: Unlocked, 1 and 2: Locked.
+ *	Only read the UEFI variables if locked.
+ * @sar_profiles: sar profiles as read from WRDS/EWRD BIOS tables
+ * @geo_profiles: geographic profiles as read from WGDS BIOS table
+ * @phy_filters: specific phy filters as read from WPFC BIOS table
+ * @ppag_bios_rev: PPAG BIOS revision
+ * @ppag_bios_source: see &enum bios_source
+ * @acpi_dsm_funcs_valid: bitmap indicating which DSM values are valid,
+ *	zero (default initialization) means it hasn't been read yet,
+ *	and BIT(0) is set when it has since function 0 also has this
+ *	bitmap and is always supported
+ * @geo_enabled: WGDS table is present
+ * @geo_num_profiles: number of geo profiles
+ * @geo_rev: geo profiles table revision
+ * @ppag_chains: PPAG table data
+ * @ppag_flags: PPAG flags
+ * @reduced_power_flags: reduced power flags
+ * @sanitize_ctx: context for dump sanitizer
+ * @sanitize_ops: dump sanitizer ops
+ * @sar_chain_a_profile: SAR chain A profile
+ * @sar_chain_b_profile: SAR chain B profile
+ * @sgom_enabled: SGOM enabled
+ * @sgom_table: SGOM table
+ * @timestamp: timestamp marker data
+ * @timestamp.wk: timestamp marking worker
+ * @timestamp.seq: timestamp marking sequence
+ * @timestamp.delay: timestamp marking worker delay
+ * @tpc_enabled: TPC enabled
  */
 struct iwl_fw_runtime {
 	struct iwl_trans *trans;
@@ -104,6 +145,9 @@ struct iwl_fw_runtime {
 
 	const struct iwl_fw_runtime_ops *ops;
 	void *ops_ctx;
+
+	const struct iwl_dump_sanitize_ops *sanitize_ops;
+	void *sanitize_ctx;
 
 	/* Paging */
 	struct iwl_fw_paging fw_paging_db[NUM_OF_FW_PAGING_BLOCKS];
@@ -139,28 +183,45 @@ struct iwl_fw_runtime {
 			u32 umac_minor;
 		} fw_ver;
 	} dump;
-#ifdef CONFIG_IWLWIFI_DEBUGFS
 	struct {
+#ifdef CONFIG_IWLWIFI_DEBUGFS
 		struct delayed_work wk;
 		u32 delay;
+#endif
 		u64 seq;
 	} timestamp;
+#ifdef CONFIG_IWLWIFI_DEBUGFS
 	bool tpc_enabled;
 #endif /* CONFIG_IWLWIFI_DEBUGFS */
-#ifdef CONFIG_ACPI
-	struct iwl_sar_profile sar_profiles[ACPI_SAR_PROFILE_NUM];
+	struct iwl_sar_profile sar_profiles[BIOS_SAR_MAX_PROFILE_NUM];
 	u8 sar_chain_a_profile;
 	u8 sar_chain_b_profile;
-	struct iwl_geo_profile geo_profiles[ACPI_NUM_GEO_PROFILES];
+	u8 reduced_power_flags;
+	struct iwl_geo_profile geo_profiles[BIOS_GEO_MAX_PROFILE_NUM];
 	u32 geo_rev;
-	union iwl_ppag_table_cmd ppag_table;
-	u32 ppag_ver;
+	u32 geo_num_profiles;
+	bool geo_enabled;
+	struct iwl_ppag_chain ppag_chains[IWL_NUM_CHAIN_LIMITS];
+	u32 ppag_flags;
+	u8 ppag_bios_rev;
+	u8 ppag_bios_source;
+	struct iwl_sar_offset_mapping_cmd sgom_table;
+	bool sgom_enabled;
+	struct iwl_mcc_allowed_ap_type_cmd uats_table;
+	bool uats_valid;
+	u8 uefi_tables_lock_status;
+	struct iwl_phy_specific_cfg phy_filters;
+
+#ifdef CONFIG_ACPI
+	u32 acpi_dsm_funcs_valid;
 #endif
 };
 
 void iwl_fw_runtime_init(struct iwl_fw_runtime *fwrt, struct iwl_trans *trans,
 			const struct iwl_fw *fw,
 			const struct iwl_fw_runtime_ops *ops, void *ops_ctx,
+			const struct iwl_dump_sanitize_ops *sanitize_ops,
+			void *sanitize_ctx,
 			struct dentry *dbgfs_dir);
 
 static inline void iwl_fw_runtime_free(struct iwl_fw_runtime *fwrt)

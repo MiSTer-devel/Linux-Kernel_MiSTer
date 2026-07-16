@@ -9,16 +9,22 @@
 #include <linux/sizes.h>
 
 		.macro	__nop
-#ifdef CONFIG_EFI_STUB
-		@ This is almost but not quite a NOP, since it does clobber the
-		@ condition flags. But it is the best we can do for EFI, since
-		@ PE/COFF expects the magic string "MZ" at offset 0, while the
-		@ ARM/Linux boot protocol expects an executable instruction
-		@ there.
-		.inst	MZ_MAGIC | (0x1310 << 16)	@ tstne r0, #0x4d000
-#else
  AR_CLASS(	mov	r0, r0		)
   M_CLASS(	nop.w			)
+		.endm
+
+		.macro __initial_nops
+#ifdef CONFIG_EFI_STUB
+		@ This is a two-instruction NOP, which happens to bear the
+		@ PE/COFF signature "MZ" in the first two bytes, so the kernel
+		@ is accepted as an EFI binary. Booting via the UEFI stub
+		@ will not execute those instructions, but the ARM/Linux
+		@ boot protocol does, so we need some NOPs here.
+		.inst	IMAGE_DOS_SIGNATURE | (0xe225 << 16) @ eor r5, r5, 0x4d000
+		eor	r5, r5, 0x4d000			@ undo previous insn
+#else
+		__nop
+		__nop
 #endif
 		.endm
 
@@ -37,7 +43,7 @@
 		.long	pe_header - start		@ Offset to the PE header.
 
 pe_header:
-		.long	PE_MAGIC
+		.long	IMAGE_NT_SIGNATURE
 
 coff_header:
 		.short	IMAGE_FILE_MACHINE_THUMB	@ Machine
@@ -54,7 +60,7 @@ coff_header:
 #define __pecoff_code_size (__pecoff_data_start - __efi_start)
 
 optional_header:
-		.short	PE_OPT_MAGIC_PE32		@ PE32 format
+		.short	IMAGE_NT_OPTIONAL_HDR32_MAGIC	@ PE32 format
 		.byte	0x02				@ MajorLinkerVersion
 		.byte	0x14				@ MinorLinkerVersion
 		.long	__pecoff_code_size		@ SizeOfCode

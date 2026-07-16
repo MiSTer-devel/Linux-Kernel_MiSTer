@@ -197,16 +197,16 @@ int ipoib_transport_dev_init(struct net_device *dev, struct ib_device *ca)
 	init_attr.send_cq = priv->send_cq;
 	init_attr.recv_cq = priv->recv_cq;
 
-	if (priv->hca_caps & IB_DEVICE_UD_TSO)
+	if (priv->kernel_caps & IBK_UD_TSO)
 		init_attr.create_flags |= IB_QP_CREATE_IPOIB_UD_LSO;
 
-	if (priv->hca_caps & IB_DEVICE_BLOCK_MULTICAST_LOOPBACK)
+	if (priv->kernel_caps & IBK_BLOCK_MULTICAST_LOOPBACK)
 		init_attr.create_flags |= IB_QP_CREATE_BLOCK_MULTICAST_LOOPBACK;
 
 	if (priv->hca_caps & IB_DEVICE_MANAGED_FLOW_STEERING)
 		init_attr.create_flags |= IB_QP_CREATE_NETIF_QP;
 
-	if (priv->hca_caps & IB_DEVICE_RDMA_NETDEV_OPA)
+	if (priv->kernel_caps & IBK_RDMA_NETDEV_OPA)
 		init_attr.create_flags |= IB_QP_CREATE_NETDEV_USE;
 
 	priv->qp = ib_create_qp(priv->pd, &init_attr);
@@ -280,15 +280,15 @@ void ipoib_event(struct ib_event_handler *handler,
 		  dev_name(&record->device->dev), record->element.port_num);
 
 	if (record->event == IB_EVENT_CLIENT_REREGISTER) {
-		queue_work(ipoib_workqueue, &priv->flush_light);
+		ipoib_queue_work(priv, IPOIB_FLUSH_LIGHT);
 	} else if (record->event == IB_EVENT_PORT_ERR ||
 		   record->event == IB_EVENT_PORT_ACTIVE ||
 		   record->event == IB_EVENT_LID_CHANGE) {
-		queue_work(ipoib_workqueue, &priv->flush_normal);
+		ipoib_queue_work(priv, IPOIB_FLUSH_NORMAL);
 	} else if (record->event == IB_EVENT_PKEY_CHANGE) {
-		queue_work(ipoib_workqueue, &priv->flush_heavy);
+		ipoib_queue_work(priv, IPOIB_FLUSH_HEAVY);
 	} else if (record->event == IB_EVENT_GID_CHANGE &&
 		   !test_bit(IPOIB_FLAG_DEV_ADDR_SET, &priv->flags)) {
-		queue_work(ipoib_workqueue, &priv->flush_light);
+		ipoib_queue_work(priv, IPOIB_FLUSH_LIGHT);
 	}
 }

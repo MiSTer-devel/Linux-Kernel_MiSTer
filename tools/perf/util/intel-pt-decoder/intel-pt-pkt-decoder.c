@@ -8,7 +8,9 @@
 #include <string.h>
 #include <endian.h>
 #include <byteswap.h>
+#include <linux/kernel.h>
 #include <linux/compiler.h>
+#include <linux/unaligned.h>
 
 #include "intel-pt-pkt-decoder.h"
 
@@ -16,18 +18,12 @@
 
 #define BIT63		((uint64_t)1 << 63)
 
-#if __BYTE_ORDER == __BIG_ENDIAN
-#define le16_to_cpu bswap_16
-#define le32_to_cpu bswap_32
-#define le64_to_cpu bswap_64
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #define memcpy_le64(d, s, n) do { \
 	memcpy((d), (s), (n));    \
 	*(d) = le64_to_cpu(*(d)); \
 } while (0)
 #else
-#define le16_to_cpu
-#define le32_to_cpu
-#define le64_to_cpu
 #define memcpy_le64 memcpy
 #endif
 
@@ -64,6 +60,9 @@ static const char * const packet_name[] = {
 	[INTEL_PT_BIP]		= "BIP",
 	[INTEL_PT_BEP]		= "BEP",
 	[INTEL_PT_BEP_IP]	= "BEP",
+	[INTEL_PT_CFE]		= "CFE",
+	[INTEL_PT_CFE_IP]	= "CFE",
+	[INTEL_PT_EVD]		= "EVD",
 };
 
 const char *intel_pt_pkt_name(enum intel_pt_pkt_type type)
@@ -80,7 +79,7 @@ static int intel_pt_get_long_tnt(const unsigned char *buf, size_t len,
 	if (len < 8)
 		return INTEL_PT_NEED_MORE_BYTES;
 
-	payload = le64_to_cpu(*(uint64_t *)buf);
+	payload = get_unaligned_le64(buf);
 
 	for (count = 47; count; count--) {
 		if (payload & BIT63)
@@ -121,26 +120,21 @@ static int intel_pt_get_cbr(const unsigned char *buf, size_t len,
 	if (len < 4)
 		return INTEL_PT_NEED_MORE_BYTES;
 	packet->type = INTEL_PT_CBR;
-	packet->payload = le16_to_cpu(*(uint16_t *)(buf + 2));
+	packet->payload = get_unaligned_le16(buf + 2);
 	return 4;
 }
 
 static int intel_pt_get_vmcs(const unsigned char *buf, size_t len,
 			     struct intel_pt_pkt *packet)
 {
-	unsigned int count = (52 - 5) >> 3;
-
-	if (count < 1 || count > 7)
-		return INTEL_PT_BAD_PACKET;
-
-	if (len < count + 2)
+	if (len < 7)
 		return INTEL_PT_NEED_MORE_BYTES;
 
 	packet->type = INTEL_PT_VMCS;
-	packet->count = count;
-	memcpy_le64(&packet->payload, buf + 2, count);
+	packet->count = 5;
+	memcpy_le64(&packet->payload, buf + 2, 5);
 
-	return count + 2;
+	return 7;
 }
 
 static int intel_pt_get_ovf(struct intel_pt_pkt *packet)
@@ -196,9 +190,8 @@ static int intel_pt_get_mnt(const unsigned char *buf, size_t len,
 	if (len < 11)
 		return INTEL_PT_NEED_MORE_BYTES;
 	packet->type = INTEL_PT_MNT;
-	memcpy_le64(&packet->payload, buf + 3, 8);
-	return 11
-;
+	packet->payload = get_unaligned_le64(buf + 3);
+	return 11;
 }
 
 static int intel_pt_get_3byte(const unsigned char *buf, size_t len,
@@ -226,12 +219,12 @@ static int intel_pt_get_ptwrite(const unsigned char *buf, size_t len,
 	case 0:
 		if (len < 6)
 			return INTEL_PT_NEED_MORE_BYTES;
-		packet->payload = le32_to_cpu(*(uint32_t *)(buf + 2));
+		packet->payload = get_unaligned_le32(buf + 2);
 		return 6;
 	case 1:
 		if (len < 10)
 			return INTEL_PT_NEED_MORE_BYTES;
-		packet->payload = le64_to_cpu(*(uint64_t *)(buf + 2));
+		packet->payload = get_unaligned_le64(buf + 2);
 		return 10;
 	default:
 		return INTEL_PT_BAD_PACKET;
@@ -256,7 +249,7 @@ static int intel_pt_get_mwait(const unsigned char *buf, size_t len,
 	if (len < 10)
 		return INTEL_PT_NEED_MORE_BYTES;
 	packet->type = INTEL_PT_MWAIT;
-	packet->payload = le64_to_cpu(*(uint64_t *)(buf + 2));
+	packet->payload = get_unaligned_le64(buf + 2);
 	return 10;
 }
 
@@ -309,7 +302,7 @@ static int intel_pt_get_bip_8(const unsigned char *buf, size_t len,
 		return INTEL_PT_NEED_MORE_BYTES;
 	packet->type = INTEL_PT_BIP;
 	packet->count = buf[0] >> 3;
-	memcpy_le64(&packet->payload, buf + 1, 8);
+	packet->payload = get_unaligned_le64(buf + 1);
 	return 9;
 }
 
@@ -327,6 +320,29 @@ static int intel_pt_get_bep_ip(size_t len, struct intel_pt_pkt *packet)
 		return INTEL_PT_NEED_MORE_BYTES;
 	packet->type = INTEL_PT_BEP_IP;
 	return 2;
+}
+
+static int intel_pt_get_cfe(const unsigned char *buf, size_t len,
+			    struct intel_pt_pkt *packet)
+{
+	if (len < 4)
+		return INTEL_PT_NEED_MORE_BYTES;
+	packet->type = buf[2] & 0x80 ? INTEL_PT_CFE_IP : INTEL_PT_CFE;
+	packet->count = buf[2] & 0x1f;
+	packet->payload = buf[3];
+	return 4;
+}
+
+static int intel_pt_get_evd(const unsigned char *buf, size_t len,
+			    struct intel_pt_pkt *packet)
+{
+	if (len < 11)
+		return INTEL_PT_NEED_MORE_BYTES;
+	packet->type = INTEL_PT_EVD;
+	packet->count = buf[2] & 0x3f;
+	packet->payload = buf[3];
+	packet->payload = get_unaligned_le64(buf + 3);
+	return 11;
 }
 
 static int intel_pt_get_ext(const unsigned char *buf, size_t len,
@@ -375,6 +391,10 @@ static int intel_pt_get_ext(const unsigned char *buf, size_t len,
 		return intel_pt_get_bep(len, packet);
 	case 0xb3: /* BEP with IP */
 		return intel_pt_get_bep_ip(len, packet);
+	case 0x13: /* CFE */
+		return intel_pt_get_cfe(buf, len, packet);
+	case 0x53: /* EVD */
+		return intel_pt_get_evd(buf, len, packet);
 	default:
 		return INTEL_PT_BAD_PACKET;
 	}
@@ -436,13 +456,13 @@ static int intel_pt_get_ip(enum intel_pt_pkt_type type, unsigned int byte,
 		if (len < 3)
 			return INTEL_PT_NEED_MORE_BYTES;
 		ip_len = 2;
-		packet->payload = le16_to_cpu(*(uint16_t *)(buf + 1));
+		packet->payload = get_unaligned_le16(buf + 1);
 		break;
 	case 2:
 		if (len < 5)
 			return INTEL_PT_NEED_MORE_BYTES;
 		ip_len = 4;
-		packet->payload = le32_to_cpu(*(uint32_t *)(buf + 1));
+		packet->payload = get_unaligned_le32(buf + 1);
 		break;
 	case 3:
 	case 4:
@@ -455,7 +475,7 @@ static int intel_pt_get_ip(enum intel_pt_pkt_type type, unsigned int byte,
 		if (len < 9)
 			return INTEL_PT_NEED_MORE_BYTES;
 		ip_len = 8;
-		packet->payload = le64_to_cpu(*(uint64_t *)(buf + 1));
+		packet->payload = get_unaligned_le64(buf + 1);
 		break;
 	default:
 		return INTEL_PT_BAD_PACKET;
@@ -475,6 +495,7 @@ static int intel_pt_get_mode(const unsigned char *buf, size_t len,
 	switch (buf[1] >> 5) {
 	case 0:
 		packet->type = INTEL_PT_MODE_EXEC;
+		packet->count = buf[1];
 		switch (buf[1] & 3) {
 		case 0:
 			packet->payload = 16;
@@ -624,6 +645,9 @@ void intel_pt_upd_pkt_ctx(const struct intel_pt_pkt *packet,
 	case INTEL_PT_MWAIT:
 	case INTEL_PT_BEP:
 	case INTEL_PT_BEP_IP:
+	case INTEL_PT_CFE:
+	case INTEL_PT_CFE_IP:
+	case INTEL_PT_EVD:
 		*ctx = INTEL_PT_NO_CTX;
 		break;
 	case INTEL_PT_BBP:
@@ -697,7 +721,7 @@ int intel_pt_pkt_desc(const struct intel_pt_pkt *packet, char *buf,
 	case INTEL_PT_FUP:
 		if (!(packet->count))
 			return snprintf(buf, buf_len, "%s no ip", name);
-		__fallthrough;
+		fallthrough;
 	case INTEL_PT_CYC:
 	case INTEL_PT_VMCS:
 	case INTEL_PT_MTC:
@@ -709,7 +733,8 @@ int intel_pt_pkt_desc(const struct intel_pt_pkt *packet, char *buf,
 		return snprintf(buf, buf_len, "%s CTC 0x%x FC 0x%x", name,
 				(unsigned)payload, packet->count);
 	case INTEL_PT_MODE_EXEC:
-		return snprintf(buf, buf_len, "%s %lld", name, payload);
+		return snprintf(buf, buf_len, "%s IF:%d %lld",
+				name, !!(packet->count & 4), payload);
 	case INTEL_PT_MODE_TSX:
 		return snprintf(buf, buf_len, "%s TXAbort:%u InTX:%u",
 				name, (unsigned)(payload >> 1) & 1,
@@ -750,6 +775,13 @@ int intel_pt_pkt_desc(const struct intel_pt_pkt *packet, char *buf,
 				name, packet->count ? "4" : "8", payload);
 	case INTEL_PT_BIP:
 		return snprintf(buf, buf_len, "%s ID 0x%02x Value 0x%llx",
+				name, packet->count, payload);
+	case INTEL_PT_CFE:
+	case INTEL_PT_CFE_IP:
+		return snprintf(buf, buf_len, "%s IP:%d Type 0x%02x Vector 0x%llx",
+				name, packet->type == INTEL_PT_CFE_IP, packet->count, payload);
+	case INTEL_PT_EVD:
+		return snprintf(buf, buf_len, "%s Type 0x%02x Payload 0x%llx",
 				name, packet->count, payload);
 	default:
 		break;

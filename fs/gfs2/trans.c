@@ -226,14 +226,36 @@ out:
 	unlock_buffer(bh);
 }
 
+void gfs2_trans_add_databufs(struct gfs2_glock *gl, struct folio *folio,
+			     size_t from, size_t len)
+{
+	struct buffer_head *head = folio_buffers(folio);
+	unsigned int bsize = head->b_size;
+	struct buffer_head *bh;
+	size_t to = from + len;
+	size_t start, end;
+
+	for (bh = head, start = 0; bh != head || !start;
+	     bh = bh->b_this_page, start = end) {
+		end = start + bsize;
+		if (end <= from)
+			continue;
+		if (start >= to)
+			break;
+		set_buffer_uptodate(bh);
+		gfs2_trans_add_data(gl, bh);
+	}
+}
+
 void gfs2_trans_add_meta(struct gfs2_glock *gl, struct buffer_head *bh)
 {
 
 	struct gfs2_sbd *sdp = gl->gl_name.ln_sbd;
+	struct super_block *sb = sdp->sd_vfs;
 	struct gfs2_bufdata *bd;
 	struct gfs2_meta_header *mh;
 	struct gfs2_trans *tr = current->journal_info;
-	enum gfs2_freeze_state state = atomic_read(&sdp->sd_freeze_state);
+	bool withdraw = false;
 
 	lock_buffer(bh);
 	if (buffer_pinned(bh)) {
@@ -245,12 +267,12 @@ void gfs2_trans_add_meta(struct gfs2_glock *gl, struct buffer_head *bh)
 	if (bd == NULL) {
 		gfs2_log_unlock(sdp);
 		unlock_buffer(bh);
-		lock_page(bh->b_page);
+		folio_lock(bh->b_folio);
 		if (bh->b_private == NULL)
 			bd = gfs2_alloc_bufdata(gl, bh);
 		else
 			bd = bh->b_private;
-		unlock_page(bh->b_page);
+		folio_unlock(bh->b_folio);
 		lock_buffer(bh);
 		gfs2_log_lock(sdp);
 	}
@@ -267,13 +289,15 @@ void gfs2_trans_add_meta(struct gfs2_glock *gl, struct buffer_head *bh)
 		       (unsigned long long)bd->bd_bh->b_blocknr);
 		BUG();
 	}
-	if (unlikely(state == SFS_FROZEN)) {
-		fs_info(sdp, "GFS2:adding buf while frozen\n");
-		gfs2_assert_withdraw(sdp, 0);
-	}
-	if (unlikely(gfs2_withdrawn(sdp))) {
+	if (gfs2_withdrawing_or_withdrawn(sdp)) {
 		fs_info(sdp, "GFS2:adding buf while withdrawn! 0x%llx\n",
 			(unsigned long long)bd->bd_bh->b_blocknr);
+		goto out_unlock;
+	}
+	if (unlikely(sb->s_writers.frozen == SB_FREEZE_COMPLETE)) {
+		fs_info(sdp, "GFS2:adding buf while frozen\n");
+		withdraw = true;
+		goto out_unlock;
 	}
 	gfs2_pin(sdp, bd->bd_bh);
 	mh->__pad0 = cpu_to_be64(0);
@@ -282,6 +306,8 @@ void gfs2_trans_add_meta(struct gfs2_glock *gl, struct buffer_head *bh)
 	tr->tr_num_buf_new++;
 out_unlock:
 	gfs2_log_unlock(sdp);
+	if (withdraw)
+		gfs2_assert_withdraw(sdp, 0);
 out:
 	unlock_buffer(bh);
 }

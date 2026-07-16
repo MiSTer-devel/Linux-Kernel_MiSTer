@@ -11,7 +11,7 @@
 #include "ipoib.h"
 #include "hfi.h"
 
-static u32 qpn_from_mac(u8 *mac_arr)
+static u32 qpn_from_mac(const u8 *mac_arr)
 {
 	return (u32)mac_arr[1] << 16 | mac_arr[2] << 8 | mac_arr[3];
 }
@@ -20,8 +20,6 @@ static int hfi1_ipoib_dev_init(struct net_device *dev)
 {
 	struct hfi1_ipoib_dev_priv *priv = hfi1_ipoib_priv(dev);
 	int ret;
-
-	dev->tstats = netdev_alloc_pcpu_stats(struct pcpu_sw_netstats);
 
 	ret = priv->netdev_ops->ndo_init(dev);
 	if (ret)
@@ -98,7 +96,6 @@ static const struct net_device_ops hfi1_ipoib_netdev_ops = {
 	.ndo_uninit       = hfi1_ipoib_dev_uninit,
 	.ndo_open         = hfi1_ipoib_dev_open,
 	.ndo_stop         = hfi1_ipoib_dev_stop,
-	.ndo_get_stats64  = dev_get_tstats64,
 };
 
 static int hfi1_ipoib_mcast_attach(struct net_device *dev,
@@ -164,14 +161,6 @@ static void hfi1_ipoib_netdev_dtor(struct net_device *dev)
 
 	hfi1_ipoib_txreq_deinit(priv);
 	hfi1_ipoib_rxq_deinit(priv->netdev);
-
-	free_percpu(dev->tstats);
-}
-
-static void hfi1_ipoib_free_rdma_netdev(struct net_device *dev)
-{
-	hfi1_ipoib_netdev_dtor(dev);
-	free_netdev(dev);
 }
 
 static void hfi1_ipoib_set_id(struct net_device *dev, int id)
@@ -211,26 +200,26 @@ static int hfi1_ipoib_setup_rn(struct ib_device *device,
 	priv->port_num = port_num;
 	priv->netdev_ops = netdev->netdev_ops;
 
-	netdev->netdev_ops = &hfi1_ipoib_netdev_ops;
-
 	ib_query_pkey(device, port_num, priv->pkey_index, &priv->pkey);
 
 	rc = hfi1_ipoib_txreq_init(priv);
 	if (rc) {
 		dd_dev_err(dd, "IPoIB netdev TX init - failed(%d)\n", rc);
-		hfi1_ipoib_free_rdma_netdev(netdev);
 		return rc;
 	}
 
 	rc = hfi1_ipoib_rxq_init(netdev);
 	if (rc) {
 		dd_dev_err(dd, "IPoIB netdev RX init - failed(%d)\n", rc);
-		hfi1_ipoib_free_rdma_netdev(netdev);
+		hfi1_ipoib_txreq_deinit(priv);
 		return rc;
 	}
 
+	netdev->netdev_ops = &hfi1_ipoib_netdev_ops;
+
 	netdev->priv_destructor = hfi1_ipoib_netdev_dtor;
 	netdev->needs_free_netdev = true;
+	netdev->pcpu_stat_type = NETDEV_PCPU_STAT_TSTATS;
 
 	return 0;
 }

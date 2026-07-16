@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
- * Copyright (C) 2012-2014, 2019-2020 Intel Corporation
+ * Copyright (C) 2012-2014, 2019-2022, 2024-2025 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2016-2017 Intel Deutschland GmbH
  */
 #ifndef __iwl_fw_api_phy_h__
 #define __iwl_fw_api_phy_h__
+#include <linux/types.h>
+#include <linux/bits.h>
 
 /**
  * enum iwl_phy_ops_subcmd_ids - PHY group commands
@@ -19,7 +21,7 @@ enum iwl_phy_ops_subcmd_ids {
 	CMD_DTS_MEASUREMENT_TRIGGER_WIDE = 0x0,
 
 	/**
-	 * @CTDP_CONFIG_CMD: &struct iwl_mvm_ctdp_cmd
+	 * @CTDP_CONFIG_CMD: &struct iwl_ctdp_cmd
 	 */
 	CTDP_CONFIG_CMD = 0x03,
 
@@ -29,14 +31,23 @@ enum iwl_phy_ops_subcmd_ids {
 	TEMP_REPORTING_THRESHOLDS_CMD = 0x04,
 
 	/**
-	 * @GEO_TX_POWER_LIMIT: &struct iwl_geo_tx_power_profiles_cmd
+	 * @PER_CHAIN_LIMIT_OFFSET_CMD: &struct iwl_geo_tx_power_profiles_cmd_v1,
+	 * &struct iwl_geo_tx_power_profiles_cmd_v2,
+	 * &struct iwl_geo_tx_power_profiles_cmd_v3,
+	 * &struct iwl_geo_tx_power_profiles_cmd_v4 or
+	 * &struct iwl_geo_tx_power_profiles_cmd_v5
 	 */
-	GEO_TX_POWER_LIMIT = 0x05,
+	PER_CHAIN_LIMIT_OFFSET_CMD = 0x05,
 
 	/**
-	 * @PER_PLATFORM_ANT_GAIN_CMD: &struct iwl_ppag_table_cmd
+	 * @PER_PLATFORM_ANT_GAIN_CMD: &union iwl_ppag_table_cmd
 	 */
 	PER_PLATFORM_ANT_GAIN_CMD = 0x07,
+
+	/**
+	 * @AP_TX_POWER_CONSTRAINTS_CMD: &struct iwl_txpower_constraints_cmd
+	 */
+	AP_TX_POWER_CONSTRAINTS_CMD = 0x0C,
 
 	/**
 	 * @CT_KILL_NOTIFICATION: &struct ct_kill_notif
@@ -46,7 +57,7 @@ enum iwl_phy_ops_subcmd_ids {
 	/**
 	 * @DTS_MEASUREMENT_NOTIF_WIDE:
 	 * &struct iwl_dts_measurement_notif_v1 or
-	 * &struct iwl_dts_measurement_notif_v2
+	 * &struct iwl_dts_measurement_notif
 	 */
 	DTS_MEASUREMENT_NOTIF_WIDE = 0xFF,
 };
@@ -143,13 +154,13 @@ struct iwl_dts_measurement_notif_v1 {
 } __packed; /* TEMPERATURE_MEASUREMENT_TRIGGER_NTFY_S_VER_1*/
 
 /**
- * struct iwl_dts_measurement_notif_v2 - measurements notification
+ * struct iwl_dts_measurement_notif - measurements notification
  *
  * @temp: the measured temperature
  * @voltage: the measured voltage
  * @threshold_idx: the trip index that was crossed
  */
-struct iwl_dts_measurement_notif_v2 {
+struct iwl_dts_measurement_notif {
 	__le32 temp;
 	__le32 voltage;
 	__le32 threshold_idx;
@@ -166,35 +177,45 @@ struct iwl_dts_measurement_resp {
 
 /**
  * struct ct_kill_notif - CT-kill entry notification
+ * This structure represent both versions of this notification.
  *
  * @temperature: the current temperature in celsius
- * @reserved: reserved
+ * @dts: only in v2: DTS that trigger the CT Kill bitmap:
+ *			bit 0: ToP master
+ *			bit 1: PA chain A master
+ *			bit 2: PA chain B master
+ *			bit 3: ToP slave
+ *			bit 4: PA chain A slave
+ *			bit 5: PA chain B slave)
+ *			bits 6,7: reserved (set to 0)
+ * @scheme: only for v2: scheme that trigger the CT Kill (0-SW, 1-HW)
  */
 struct ct_kill_notif {
 	__le16 temperature;
-	__le16 reserved;
-} __packed; /* GRP_PHY_CT_KILL_NTF */
+	u8 dts;
+	u8 scheme;
+} __packed; /* CT_KILL_NOTIFICATION_API_S_VER_1, CT_KILL_NOTIFICATION_API_S_VER_2 */
 
 /**
-* enum ctdp_cmd_operation - CTDP command operations
+* enum iwl_ctdp_cmd_operation - CTDP command operations
 * @CTDP_CMD_OPERATION_START: update the current budget
 * @CTDP_CMD_OPERATION_STOP: stop ctdp
 * @CTDP_CMD_OPERATION_REPORT: get the average budget
 */
-enum iwl_mvm_ctdp_cmd_operation {
+enum iwl_ctdp_cmd_operation {
 	CTDP_CMD_OPERATION_START	= 0x1,
 	CTDP_CMD_OPERATION_STOP		= 0x2,
 	CTDP_CMD_OPERATION_REPORT	= 0x4,
 };/* CTDP_CMD_OPERATION_TYPE_E */
 
 /**
- * struct iwl_mvm_ctdp_cmd - track and manage the FW power consumption budget
+ * struct iwl_ctdp_cmd - track and manage the FW power consumption budget
  *
- * @operation: see &enum iwl_mvm_ctdp_cmd_operation
+ * @operation: see &enum iwl_ctdp_cmd_operation
  * @budget: the budget in milliwatt
  * @window_size: defined in API but not used
  */
-struct iwl_mvm_ctdp_cmd {
+struct iwl_ctdp_cmd {
 	__le32 operation;
 	__le32 budget;
 	__le32 window_size;

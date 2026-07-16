@@ -25,15 +25,15 @@
  *
  * Locking interrupts looks like this:
  *
- *    rsil a15, TOPLEVEL
+ *    rsil a14, TOPLEVEL
  *    <code>
- *    wsr  a15, PS
+ *    wsr  a14, PS
  *    rsync
  *
- * Note that a15 is used here because the register allocation
+ * Note that a14 is used here because the register allocation
  * done by the compiler is not guaranteed and a window overflow
  * may not occur between the rsil and wsr instructions. By using
- * a15 in the rsil, the machine is guaranteed to be in a state
+ * a14 in the rsil, the machine is guaranteed to be in a state
  * where no register reference will cause an overflow.
  */
 
@@ -185,15 +185,15 @@ static inline void arch_atomic_##op(int i, atomic_t * v)		\
 	unsigned int vval;						\
 									\
 	__asm__ __volatile__(						\
-			"       rsil    a15, "__stringify(TOPLEVEL)"\n"	\
+			"       rsil    a14, "__stringify(TOPLEVEL)"\n"	\
 			"       l32i    %[result], %[mem]\n"		\
 			"       " #op " %[result], %[result], %[i]\n"	\
 			"       s32i    %[result], %[mem]\n"		\
-			"       wsr     a15, ps\n"			\
+			"       wsr     a14, ps\n"			\
 			"       rsync\n"				\
 			: [result] "=&a" (vval), [mem] "+m" (*v)	\
 			: [i] "a" (i)					\
-			: "a15", "memory"				\
+			: "a14", "memory"				\
 			);						\
 }									\
 
@@ -203,15 +203,15 @@ static inline int arch_atomic_##op##_return(int i, atomic_t * v)	\
 	unsigned int vval;						\
 									\
 	__asm__ __volatile__(						\
-			"       rsil    a15,"__stringify(TOPLEVEL)"\n"	\
+			"       rsil    a14,"__stringify(TOPLEVEL)"\n"	\
 			"       l32i    %[result], %[mem]\n"		\
 			"       " #op " %[result], %[result], %[i]\n"	\
 			"       s32i    %[result], %[mem]\n"		\
-			"       wsr     a15, ps\n"			\
+			"       wsr     a14, ps\n"			\
 			"       rsync\n"				\
 			: [result] "=&a" (vval), [mem] "+m" (*v)	\
 			: [i] "a" (i)					\
-			: "a15", "memory"				\
+			: "a14", "memory"				\
 			);						\
 									\
 	return vval;							\
@@ -223,16 +223,16 @@ static inline int arch_atomic_fetch_##op(int i, atomic_t * v)		\
 	unsigned int tmp, vval;						\
 									\
 	__asm__ __volatile__(						\
-			"       rsil    a15,"__stringify(TOPLEVEL)"\n"	\
+			"       rsil    a14,"__stringify(TOPLEVEL)"\n"	\
 			"       l32i    %[result], %[mem]\n"		\
 			"       " #op " %[tmp], %[result], %[i]\n"	\
 			"       s32i    %[tmp], %[mem]\n"		\
-			"       wsr     a15, ps\n"			\
+			"       wsr     a14, ps\n"			\
 			"       rsync\n"				\
 			: [result] "=&a" (vval), [tmp] "=&a" (tmp),	\
 			  [mem] "+m" (*v)				\
 			: [i] "a" (i)					\
-			: "a15", "memory"				\
+			: "a14", "memory"				\
 			);						\
 									\
 	return vval;							\
@@ -245,6 +245,11 @@ static inline int arch_atomic_fetch_##op(int i, atomic_t * v)		\
 ATOMIC_OPS(add)
 ATOMIC_OPS(sub)
 
+#define arch_atomic_add_return			arch_atomic_add_return
+#define arch_atomic_sub_return			arch_atomic_sub_return
+#define arch_atomic_fetch_add			arch_atomic_fetch_add
+#define arch_atomic_fetch_sub			arch_atomic_fetch_sub
+
 #undef ATOMIC_OPS
 #define ATOMIC_OPS(op) ATOMIC_OP(op) ATOMIC_FETCH_OP(op)
 
@@ -252,12 +257,13 @@ ATOMIC_OPS(and)
 ATOMIC_OPS(or)
 ATOMIC_OPS(xor)
 
+#define arch_atomic_fetch_and			arch_atomic_fetch_and
+#define arch_atomic_fetch_or			arch_atomic_fetch_or
+#define arch_atomic_fetch_xor			arch_atomic_fetch_xor
+
 #undef ATOMIC_OPS
 #undef ATOMIC_FETCH_OP
 #undef ATOMIC_OP_RETURN
 #undef ATOMIC_OP
-
-#define arch_atomic_cmpxchg(v, o, n) ((int)arch_cmpxchg(&((v)->counter), (o), (n)))
-#define arch_atomic_xchg(v, new) (arch_xchg(&((v)->counter), new))
 
 #endif /* _XTENSA_ATOMIC_H */

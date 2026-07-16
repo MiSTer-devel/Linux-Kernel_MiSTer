@@ -40,7 +40,7 @@ static void jsri_2_lrw_jsr(uint32_t *location)
 	}
 }
 #else
-static void inline jsri_2_lrw_jsr(uint32_t *location)
+static inline void jsri_2_lrw_jsr(uint32_t *location)
 {
 	return;
 }
@@ -68,7 +68,7 @@ int apply_relocate_add(Elf32_Shdr *sechdrs, const char *strtab,
 			*location = rel[i].r_addend + sym->st_value;
 			break;
 		case R_CSKY_PC32:
-			/* Add the value, subtract its postition */
+			/* Add the value, subtract its position */
 			*location = rel[i].r_addend + sym->st_value
 							- (uint32_t)location;
 			break;

@@ -30,6 +30,7 @@ enum nci_flag {
 	NCI_UP,
 	NCI_DATA_EXCHANGE,
 	NCI_DATA_EXCHANGE_TO,
+	NCI_UNREG,
 };
 
 /* NCI device states */
@@ -51,7 +52,7 @@ enum nci_state {
 #define NCI_RF_DISC_SELECT_TIMEOUT		5000
 #define NCI_RF_DEACTIVATE_TIMEOUT		30000
 #define NCI_CMD_TIMEOUT				5000
-#define NCI_DATA_TIMEOUT			700
+#define NCI_DATA_TIMEOUT			3000
 
 struct nci_dev;
 
@@ -264,6 +265,10 @@ struct nci_dev {
 	/* stored during intf_activated_ntf */
 	__u8 remote_gb[NFC_MAX_GT_LEN];
 	__u8 remote_gb_len;
+
+	/* stored during intf_activated_ntf */
+	__u8 target_ats[NFC_ATS_MAXSIZE];
+	__u8 target_ats_len;
 };
 
 /* ----- NCI Devices ----- */

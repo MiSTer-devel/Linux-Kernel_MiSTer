@@ -2,14 +2,9 @@
 /******************************************************************************
  *
  * Copyright(c) 2003 - 2014 Intel Corporation. All rights reserved.
- * Copyright(c) 2018 - 2020 Intel Corporation
+ * Copyright(c) 2018 - 2021, 2024-2025 Intel Corporation
  *
  * Portions of this file are derived from the ipw3945 project.
- *
- * Contact Information:
- *  Intel Linux Wireless <linuxwifi@intel.com>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
- *
  *****************************************************************************/
 
 #ifndef __iwl_debug_h__
@@ -27,9 +22,16 @@ static inline bool iwl_have_debug_level(u32 level)
 #endif
 }
 
+enum iwl_err_mode {
+	IWL_ERR_MODE_REGULAR,
+	IWL_ERR_MODE_RFKILL,
+	IWL_ERR_MODE_TRACE_ONLY,
+	IWL_ERR_MODE_RATELIMIT,
+};
+
 struct device;
-void __iwl_err(struct device *dev, bool rfkill_prefix, bool only_trace,
-		const char *fmt, ...) __printf(4, 5);
+void __iwl_err(struct device *dev, enum iwl_err_mode mode, const char *fmt, ...)
+	__printf(3, 4);
 void __iwl_warn(struct device *dev, const char *fmt, ...) __printf(2, 3);
 void __iwl_info(struct device *dev, const char *fmt, ...) __printf(2, 3);
 void __iwl_crit(struct device *dev, const char *fmt, ...) __printf(2, 3);
@@ -38,13 +40,17 @@ void __iwl_crit(struct device *dev, const char *fmt, ...) __printf(2, 3);
 #define CHECK_FOR_NEWLINE(f) BUILD_BUG_ON(f[sizeof(f) - 2] != '\n')
 
 /* No matter what is m (priv, bus, trans), this will work */
-#define IWL_ERR_DEV(d, f, a...)						\
+#define __IWL_ERR_DEV(d, mode, f, a...)					\
 	do {								\
 		CHECK_FOR_NEWLINE(f);					\
-		__iwl_err((d), false, false, f, ## a);			\
+		__iwl_err((d), mode, f, ## a);				\
 	} while (0)
+#define IWL_ERR_DEV(d, f, a...)						\
+	__IWL_ERR_DEV(d, IWL_ERR_MODE_REGULAR, f, ## a)
 #define IWL_ERR(m, f, a...)						\
 	IWL_ERR_DEV((m)->dev, f, ## a)
+#define IWL_ERR_LIMIT(m, f, a...)					\
+	__IWL_ERR_DEV((m)->dev, IWL_ERR_MODE_RATELIMIT, f, ## a)
 #define IWL_WARN(m, f, a...)						\
 	do {								\
 		CHECK_FOR_NEWLINE(f);					\
@@ -150,6 +156,7 @@ do {                                            			\
 #define IWL_DL_FW		0x00010000
 #define IWL_DL_RF_KILL		0x00020000
 #define IWL_DL_TPT		0x00040000
+#define IWL_DL_PTP		0x00080000
 /* 0x00F00000 - 0x00100000 */
 #define IWL_DL_RATE		0x00100000
 #define IWL_DL_CALIB		0x00200000
@@ -159,7 +166,7 @@ do {                                            			\
 #define IWL_DL_RX		0x01000000
 #define IWL_DL_ISR		0x02000000
 #define IWL_DL_HT		0x04000000
-#define IWL_DL_EXTERNAL		0x08000000
+#define IWL_DL_EHT		0x08000000
 /* 0xF0000000 - 0x10000000 */
 #define IWL_DL_11H		0x10000000
 #define IWL_DL_STATS		0x20000000
@@ -169,7 +176,6 @@ do {                                            			\
 #define IWL_DEBUG_INFO(p, f, a...)	IWL_DEBUG(p, IWL_DL_INFO, f, ## a)
 #define IWL_DEBUG_TDLS(p, f, a...)	IWL_DEBUG(p, IWL_DL_TDLS, f, ## a)
 #define IWL_DEBUG_MAC80211(p, f, a...)	IWL_DEBUG(p, IWL_DL_MAC80211, f, ## a)
-#define IWL_DEBUG_EXTERNAL(p, f, a...)	IWL_DEBUG(p, IWL_DL_EXTERNAL, f, ## a)
 #define IWL_DEBUG_TEMP(p, f, a...)	IWL_DEBUG(p, IWL_DL_TEMP, f, ## a)
 #define IWL_DEBUG_SCAN(p, f, a...)	IWL_DEBUG(p, IWL_DL_SCAN, f, ## a)
 #define IWL_DEBUG_RX(p, f, a...)	IWL_DEBUG(p, IWL_DL_RX, f, ## a)
@@ -203,11 +209,13 @@ do {                                            			\
 #define IWL_DEBUG_RADIO(p, f, a...)	IWL_DEBUG(p, IWL_DL_RADIO, f, ## a)
 #define IWL_DEBUG_DEV_RADIO(p, f, a...)	IWL_DEBUG_DEV(p, IWL_DL_RADIO, f, ## a)
 #define IWL_DEBUG_POWER(p, f, a...)	IWL_DEBUG(p, IWL_DL_POWER, f, ## a)
+#define IWL_DEBUG_DEV_POWER(p, f, a...)	IWL_DEBUG_DEV(p, IWL_DL_POWER, f, ## a)
 #define IWL_DEBUG_11H(p, f, a...)	IWL_DEBUG(p, IWL_DL_11H, f, ## a)
 #define IWL_DEBUG_TPT(p, f, a...)	IWL_DEBUG(p, IWL_DL_TPT, f, ## a)
 #define IWL_DEBUG_WOWLAN(p, f, a...)	IWL_DEBUG(p, IWL_DL_WOWLAN, f, ## a)
 #define IWL_DEBUG_LAR(p, f, a...)	IWL_DEBUG(p, IWL_DL_LAR, f, ## a)
 #define IWL_DEBUG_FW_INFO(p, f, a...)		\
 		IWL_DEBUG(p, IWL_DL_INFO | IWL_DL_FW, f, ## a)
-
+#define IWL_DEBUG_PTP(p, f, a...)	IWL_DEBUG(p, IWL_DL_PTP, f, ## a)
+#define IWL_DEBUG_EHT(p, f, a...)	IWL_DEBUG(p, IWL_DL_EHT, f, ## a)
 #endif

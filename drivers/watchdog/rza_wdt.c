@@ -9,9 +9,9 @@
 #include <linux/bitops.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/watchdog.h>
 
@@ -169,7 +169,6 @@ static int rza_wdt_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct rza_wdt *priv;
 	unsigned long rate;
-	int ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -189,8 +188,8 @@ static int rza_wdt_probe(struct platform_device *pdev)
 		return -ENOENT;
 	}
 
-	priv->wdev.info = &rza_wdt_ident,
-	priv->wdev.ops = &rza_wdt_ops,
+	priv->wdev.info = &rza_wdt_ident;
+	priv->wdev.ops = &rza_wdt_ops;
 	priv->wdev.parent = dev;
 
 	priv->cks = (u8)(uintptr_t) of_device_get_match_data(dev);
@@ -218,11 +217,7 @@ static int rza_wdt_probe(struct platform_device *pdev)
 	watchdog_init_timeout(&priv->wdev, 0, dev);
 	watchdog_set_drvdata(&priv->wdev, priv);
 
-	ret = devm_watchdog_register_device(dev, &priv->wdev);
-	if (ret)
-		dev_err(dev, "Cannot register watchdog device\n");
-
-	return ret;
+	return devm_watchdog_register_device(dev, &priv->wdev);
 }
 
 static const struct of_device_id rza_wdt_of_match[] = {

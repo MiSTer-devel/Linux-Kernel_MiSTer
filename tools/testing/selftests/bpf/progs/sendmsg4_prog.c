@@ -18,13 +18,9 @@
 #define DST_PORT		4040
 #define DST_REWRITE_PORT4	4444
 
-int _version SEC("version") = 1;
-
 SEC("cgroup/sendmsg4")
 int sendmsg_v4_prog(struct bpf_sock_addr *ctx)
 {
-	int prio;
-
 	if (ctx->type != SOCK_DGRAM)
 		return 0;
 
@@ -51,6 +47,12 @@ int sendmsg_v4_prog(struct bpf_sock_addr *ctx)
 	}
 
 	return 1;
+}
+
+SEC("cgroup/sendmsg4")
+int sendmsg_v4_deny_prog(struct bpf_sock_addr *ctx)
+{
+	return 0;
 }
 
 char _license[] SEC("license") = "GPL";

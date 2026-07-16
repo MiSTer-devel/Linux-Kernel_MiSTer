@@ -259,7 +259,7 @@ static int as102_alloc_usb_stream_buffer(struct as102_dev_t *dev)
 	for (i = 0; i < MAX_STREAM_URB; i++) {
 		struct urb *urb;
 
-		urb = usb_alloc_urb(0, GFP_ATOMIC);
+		urb = usb_alloc_urb(0, GFP_KERNEL);
 		if (urb == NULL) {
 			as102_free_usb_stream_buffer(dev);
 			return -ENOMEM;
@@ -303,10 +303,8 @@ static void as102_usb_release(struct kref *kref)
 	struct as102_dev_t *as102_dev;
 
 	as102_dev = container_of(kref, struct as102_dev_t, kref);
-	if (as102_dev != NULL) {
-		usb_put_dev(as102_dev->bus_adap.usb_dev);
-		kfree(as102_dev);
-	}
+	usb_put_dev(as102_dev->bus_adap.usb_dev);
+	kfree(as102_dev);
 }
 
 static void as102_usb_disconnect(struct usb_interface *intf)
@@ -405,7 +403,9 @@ static int as102_usb_probe(struct usb_interface *intf,
 failed_dvb:
 	as102_free_usb_stream_buffer(as102_dev);
 failed_stream:
+	usb_set_intfdata(intf, NULL);
 	usb_deregister_dev(intf, &as102_usb_class_driver);
+	return ret;
 failed:
 	usb_put_dev(as102_dev->bus_adap.usb_dev);
 	usb_set_intfdata(intf, NULL);

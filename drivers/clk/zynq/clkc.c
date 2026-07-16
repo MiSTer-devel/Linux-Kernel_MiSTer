@@ -42,6 +42,7 @@ static void __iomem *zynq_clkc_base;
 #define SLCR_SWDT_CLK_SEL		(zynq_clkc_base + 0x204)
 
 #define NUM_MIO_PINS	54
+#define CLK_NAME_LEN	16
 
 #define DBG_CLK_CTRL_CLKACT_TRC		BIT(0)
 #define DBG_CLK_CTRL_CPU_1XCLKACT	BIT(1)
@@ -215,7 +216,7 @@ static void __init zynq_clk_setup(struct device_node *np)
 	int i;
 	u32 tmp;
 	int ret;
-	char *clk_name;
+	char clk_name[CLK_NAME_LEN];
 	unsigned int fclk_enable = 0;
 	const char *clk_output_name[clk_max];
 	const char *cpu_parents[4];
@@ -349,19 +350,20 @@ static void __init zynq_clk_setup(struct device_node *np)
 	/* Peripheral clocks */
 	for (i = fclk0; i <= fclk3; i++) {
 		int enable = !!(fclk_enable & BIT(i - fclk0));
+
 		zynq_clk_register_fclk(i, clk_output_name[i],
 				SLCR_FPGA0_CLK_CTRL + 0x10 * (i - fclk0),
 				periph_parents, enable);
 	}
 
-	zynq_clk_register_periph_clk(lqspi, 0, clk_output_name[lqspi], NULL,
-			SLCR_LQSPI_CLK_CTRL, periph_parents, 0);
+	zynq_clk_register_periph_clk(lqspi, clk_max, clk_output_name[lqspi], NULL,
+				     SLCR_LQSPI_CLK_CTRL, periph_parents, 0);
 
-	zynq_clk_register_periph_clk(smc, 0, clk_output_name[smc], NULL,
-			SLCR_SMC_CLK_CTRL, periph_parents, 0);
+	zynq_clk_register_periph_clk(smc, clk_max, clk_output_name[smc], NULL,
+				     SLCR_SMC_CLK_CTRL, periph_parents, 0);
 
-	zynq_clk_register_periph_clk(pcap, 0, clk_output_name[pcap], NULL,
-			SLCR_PCAP_CLK_CTRL, periph_parents, 0);
+	zynq_clk_register_periph_clk(pcap, clk_max, clk_output_name[pcap], NULL,
+				     SLCR_PCAP_CLK_CTRL, periph_parents, 0);
 
 	zynq_clk_register_periph_clk(sdio0, sdio1, clk_output_name[sdio0],
 			clk_output_name[sdio1], SLCR_SDIO_CLK_CTRL,
@@ -425,12 +427,10 @@ static void __init zynq_clk_setup(struct device_node *np)
 			"gem1_emio_mux", CLK_SET_RATE_PARENT,
 			SLCR_GEM1_CLK_CTRL, 0, 0, &gem1clk_lock);
 
-	tmp = strlen("mio_clk_00x");
-	clk_name = kmalloc(tmp, GFP_KERNEL);
 	for (i = 0; i < NUM_MIO_PINS; i++) {
 		int idx;
 
-		snprintf(clk_name, tmp, "mio_clk_%2.2d", i);
+		snprintf(clk_name, CLK_NAME_LEN, "mio_clk_%2.2d", i);
 		idx = of_property_match_string(np, "clock-names", clk_name);
 		if (idx >= 0)
 			can_mio_mux_parents[i] = of_clk_get_parent_name(np,
@@ -438,7 +438,6 @@ static void __init zynq_clk_setup(struct device_node *np)
 		else
 			can_mio_mux_parents[i] = dummy_nm;
 	}
-	kfree(clk_name);
 	clk_register_mux(NULL, "can_mux", periph_parents, 4,
 			CLK_SET_RATE_NO_REPARENT, SLCR_CAN_CLK_CTRL, 4, 2, 0,
 			&canclk_lock);

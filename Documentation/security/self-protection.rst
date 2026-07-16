@@ -81,8 +81,7 @@ of the kernel, gaining the protection of the kernel's strict memory
 permissions as described above.
 
 For variables that are initialized once at ``__init`` time, these can
-be marked with the (new and under development) ``__ro_after_init``
-attribute.
+be marked with the ``__ro_after_init`` attribute.
 
 What remains are variables that are updated rarely (e.g. GDT). These
 will need another infrastructure (similar to the temporary exceptions
@@ -304,7 +303,7 @@ Memory poisoning
 
 When releasing memory, it is best to poison the contents, to avoid reuse
 attacks that rely on the old contents of memory. E.g., clear stack on a
-syscall return (``CONFIG_GCC_PLUGIN_STACKLEAK``), wipe heap memory on a
+syscall return (``CONFIG_KSTACK_ERASE``), wipe heap memory on a
 free. This frustrates many uninitialized variable attacks, stack content
 exposures, heap content exposures, and use-after-free attacks.
 

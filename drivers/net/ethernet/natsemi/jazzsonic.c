@@ -114,6 +114,7 @@ static int sonic_probe1(struct net_device *dev)
 	struct sonic_local *lp = netdev_priv(dev);
 	int err = -ENODEV;
 	int i;
+	unsigned char addr[ETH_ALEN];
 
 	if (!request_mem_region(dev->base_addr, SONIC_MEM_SIZE, jazz_sonic_string))
 		return -EBUSY;
@@ -143,9 +144,10 @@ static int sonic_probe1(struct net_device *dev)
 	SONIC_WRITE(SONIC_CEP,0);
 	for (i=0; i<3; i++) {
 		val = SONIC_READ(SONIC_CAP0-i);
-		dev->dev_addr[i*2] = val;
-		dev->dev_addr[i*2+1] = val >> 8;
+		addr[i*2] = val;
+		addr[i*2+1] = val >> 8;
 	}
+	eth_hw_addr_set(dev, addr);
 
 	lp->dma_bitmode = SONIC_BITMODE32;
 
@@ -225,7 +227,7 @@ MODULE_ALIAS("platform:jazzsonic");
 
 #include "sonic.c"
 
-static int jazz_sonic_device_remove(struct platform_device *pdev)
+static void jazz_sonic_device_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct sonic_local* lp = netdev_priv(dev);
@@ -235,13 +237,11 @@ static int jazz_sonic_device_remove(struct platform_device *pdev)
 	                  lp->descriptors, lp->descriptors_laddr);
 	release_mem_region(dev->base_addr, SONIC_MEM_SIZE);
 	free_netdev(dev);
-
-	return 0;
 }
 
 static struct platform_driver jazz_sonic_driver = {
 	.probe	= jazz_sonic_probe,
-	.remove	= jazz_sonic_device_remove,
+	.remove = jazz_sonic_device_remove,
 	.driver	= {
 		.name	= jazz_sonic_string,
 	},

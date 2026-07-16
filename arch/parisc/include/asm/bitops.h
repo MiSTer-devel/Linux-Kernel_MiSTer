@@ -104,8 +104,6 @@ static __inline__ int test_and_change_bit(int nr, volatile unsigned long * addr)
 
 #include <asm-generic/bitops/non-atomic.h>
 
-#ifdef __KERNEL__
-
 /**
  * __ffs - find first bit in word. returns 0 to "BITS_PER_LONG-1".
  * @word: The word to search
@@ -125,7 +123,7 @@ static __inline__ int test_and_change_bit(int nr, volatile unsigned long * addr)
  * cycles for each mispredicted branch.
  */
 
-static __inline__ unsigned long __ffs(unsigned long x)
+static __inline__ __attribute_const__ unsigned long __ffs(unsigned long x)
 {
 	unsigned long ret;
 
@@ -163,7 +161,7 @@ static __inline__ unsigned long __ffs(unsigned long x)
  * This is defined the same way as the libc and compiler builtin
  * ffs routines, therefore differs in spirit from the above ffz (man ffs).
  */
-static __inline__ int ffs(int x)
+static __inline__ __attribute_const__ int ffs(int x)
 {
 	return x ? (__ffs((unsigned long)x) + 1) : 0;
 }
@@ -173,7 +171,7 @@ static __inline__ int ffs(int x)
  * fls(0) = 0, fls(1) = 1, fls(0x80000000) = 32.
  */
 
-static __inline__ int fls(unsigned int x)
+static __inline__ __attribute_const__ int fls(unsigned int x)
 {
 	int ret;
 	if (!x)
@@ -205,16 +203,7 @@ static __inline__ int fls(unsigned int x)
 #include <asm-generic/bitops/hweight.h>
 #include <asm-generic/bitops/lock.h>
 #include <asm-generic/bitops/sched.h>
-
-#endif /* __KERNEL__ */
-
-#include <asm-generic/bitops/find.h>
-
-#ifdef __KERNEL__
-
 #include <asm-generic/bitops/le.h>
 #include <asm-generic/bitops/ext2-atomic-setbit.h>
-
-#endif	/* __KERNEL__ */
 
 #endif /* _PARISC_BITOPS_H */

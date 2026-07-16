@@ -130,11 +130,15 @@
 #include <linux/spinlock.h>
 #include <linux/usb.h>
 #include <linux/proc_fs.h>
-
 #include <linux/atomic.h>
 #include <linux/blkdev.h>
-#include "../../scsi/scsi.h"
+
+#include <scsi/scsi.h>
+#include <scsi/scsi_cmnd.h>
+#include <scsi/scsi_device.h>
+#include <scsi/scsi_eh.h>
 #include <scsi/scsi_host.h>
+#include <scsi/scsi_tcq.h>
 
 #include "microtek.h"
 
@@ -318,15 +322,9 @@ static inline void mts_urb_abort(struct mts_desc* desc) {
 	usb_kill_urb( desc->urb );
 }
 
-static int mts_slave_alloc (struct scsi_device *s)
+static int mts_sdev_init (struct scsi_device *s)
 {
 	s->inquiry_len = 0x24;
-	return 0;
-}
-
-static int mts_slave_configure (struct scsi_device *s)
-{
-	blk_queue_dma_alignment(s->request_queue, (512 - 1));
 	return 0;
 }
 
@@ -561,10 +559,9 @@ mts_build_transfer_context(struct scsi_cmnd *srb, struct mts_desc* desc)
 	desc->context.data_pipe = pipe;
 }
 
-
-static int
-mts_scsi_queuecommand_lck(struct scsi_cmnd *srb, mts_scsi_cmnd_callback callback)
+static int mts_scsi_queuecommand_lck(struct scsi_cmnd *srb)
 {
+	mts_scsi_cmnd_callback callback = scsi_done;
 	struct mts_desc* desc = (struct mts_desc*)(srb->device->host->hostdata[0]);
 	int res;
 
@@ -617,7 +614,7 @@ out:
 
 static DEF_SCSI_QCMD(mts_scsi_queuecommand)
 
-static struct scsi_host_template mts_scsi_host_template = {
+static const struct scsi_host_template mts_scsi_host_template = {
 	.module			= THIS_MODULE,
 	.name			= "microtekX6",
 	.proc_name		= "microtekX6",
@@ -628,8 +625,8 @@ static struct scsi_host_template mts_scsi_host_template = {
 	.can_queue =		1,
 	.this_id =		-1,
 	.emulated =		1,
-	.slave_alloc =		mts_slave_alloc,
-	.slave_configure =	mts_slave_configure,
+	.dma_alignment =	511,
+	.sdev_init =		mts_sdev_init,
 	.max_sectors=		256, /* 128 K */
 };
 

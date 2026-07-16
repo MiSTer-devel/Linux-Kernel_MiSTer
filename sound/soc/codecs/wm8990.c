@@ -897,10 +897,10 @@ static int wm8990_set_dai_fmt(struct snd_soc_dai *codec_dai,
 
 	/* set master/slave audio interface */
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		audio3 &= ~WM8990_AIF_MSTR1;
 		break;
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		audio3 |= WM8990_AIF_MSTR1;
 		break;
 	default:
@@ -1217,11 +1217,9 @@ static const struct snd_soc_component_driver soc_component_dev_wm8990 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
-static int wm8990_i2c_probe(struct i2c_client *i2c,
-			    const struct i2c_device_id *id)
+static int wm8990_i2c_probe(struct i2c_client *i2c)
 {
 	struct wm8990_priv *wm8990;
 	int ret;
@@ -1240,7 +1238,7 @@ static int wm8990_i2c_probe(struct i2c_client *i2c,
 }
 
 static const struct i2c_device_id wm8990_i2c_id[] = {
-	{ "wm8990", 0 },
+	{ "wm8990" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm8990_i2c_id);
@@ -1249,7 +1247,7 @@ static struct i2c_driver wm8990_i2c_driver = {
 	.driver = {
 		.name = "wm8990",
 	},
-	.probe =    wm8990_i2c_probe,
+	.probe = wm8990_i2c_probe,
 	.id_table = wm8990_i2c_id,
 };
 

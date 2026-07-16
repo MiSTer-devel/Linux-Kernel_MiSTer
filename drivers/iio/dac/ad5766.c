@@ -5,13 +5,16 @@
  * Copyright 2019-2020 Analog Devices Inc.
  */
 #include <linux/bitfield.h>
+#include <linux/bitops.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/gpio/consumer.h>
 #include <linux/iio/iio.h>
+#include <linux/iio/triggered_buffer.h>
+#include <linux/iio/trigger_consumer.h>
 #include <linux/module.h>
 #include <linux/spi/spi.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #define AD5766_UPPER_WORD_SPI_MASK		GENMASK(31, 16)
 #define AD5766_LOWER_WORD_SPI_MASK		GENMASK(15, 0)
@@ -120,7 +123,7 @@ struct ad5766_state {
 		u32	d32;
 		u16	w16[2];
 		u8	b8[4];
-	} data[3] ____cacheline_aligned;
+	} data[3] __aligned(IIO_DMA_MINALIGN);
 };
 
 struct ad5766_span_tbl {
@@ -145,13 +148,11 @@ static int __ad5766_spi_read(struct ad5766_state *st, u8 dac, int *val)
 	struct spi_transfer xfers[] = {
 		{
 			.tx_buf = &st->data[0].d32,
-			.bits_per_word = 8,
 			.len = 3,
 			.cs_change = 1,
 		}, {
 			.tx_buf = &st->data[1].d32,
 			.rx_buf = &st->data[2].d32,
-			.bits_per_word = 8,
 			.len = 3,
 		},
 	};
@@ -423,14 +424,6 @@ static ssize_t ad5766_write_ext(struct iio_dev *indio_dev,
 	.shared = _shared, \
 }
 
-#define IIO_ENUM_AVAILABLE_SHARED(_name, _shared, _e) \
-{ \
-	.name = (_name "_available"), \
-	.shared = _shared, \
-	.read = iio_enum_available_read, \
-	.private = (uintptr_t)(_e), \
-}
-
 static const struct iio_chan_spec_ext_info ad5766_ext_info[] = {
 
 	_AD5766_CHAN_EXT_INFO("dither_enable", AD5766_DITHER_ENABLE,
@@ -440,10 +433,9 @@ static const struct iio_chan_spec_ext_info ad5766_ext_info[] = {
 	_AD5766_CHAN_EXT_INFO("dither_source", AD5766_DITHER_SOURCE,
 			      IIO_SEPARATE),
 	IIO_ENUM("dither_scale", IIO_SEPARATE, &ad5766_dither_scale_enum),
-	IIO_ENUM_AVAILABLE_SHARED("dither_scale",
-				  IIO_SEPARATE,
-				  &ad5766_dither_scale_enum),
-	{}
+	IIO_ENUM_AVAILABLE("dither_scale", IIO_SEPARATE,
+			   &ad5766_dither_scale_enum),
+	{ }
 };
 
 #define AD576x_CHANNEL(_chan, _bits) {					\
@@ -455,6 +447,7 @@ static const struct iio_chan_spec_ext_info ad5766_ext_info[] = {
 	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),			\
 	.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_OFFSET) |		\
 		BIT(IIO_CHAN_INFO_SCALE),				\
+	.scan_index = (_chan),						\
 	.scan_type = {							\
 		.sign = 'u',						\
 		.realbits = (_bits),					\
@@ -503,13 +496,13 @@ static int ad5766_get_output_range(struct ad5766_state *st)
 	int i, ret, min, max, tmp[2];
 
 	ret = device_property_read_u32_array(&st->spi->dev,
-					     "output-range-voltage",
+					     "output-range-microvolts",
 					     tmp, 2);
 	if (ret)
 		return ret;
 
-	min = tmp[0] / 1000;
-	max = tmp[1] / 1000;
+	min = tmp[0] / 1000000;
+	max = tmp[1] / 1000000;
 	for (i = 0; i < ARRAY_SIZE(ad5766_span_tbl); i++) {
 		if (ad5766_span_tbl[i].min != min ||
 		    ad5766_span_tbl[i].max != max)
@@ -576,6 +569,35 @@ static int ad5766_default_setup(struct ad5766_state *st)
 	return  __ad5766_spi_write(st, AD5766_CMD_SPAN_REG, st->crt_range);
 }
 
+static irqreturn_t ad5766_trigger_handler(int irq, void *p)
+{
+	struct iio_poll_func *pf = p;
+	struct iio_dev *indio_dev = pf->indio_dev;
+	struct iio_buffer *buffer = indio_dev->buffer;
+	struct ad5766_state *st = iio_priv(indio_dev);
+	int ret, ch, i;
+	u16 data[ARRAY_SIZE(ad5766_channels)];
+
+	ret = iio_pop_from_buffer(buffer, data);
+	if (ret)
+		goto done;
+
+	i = 0;
+	mutex_lock(&st->lock);
+	for_each_set_bit(ch, indio_dev->active_scan_mask,
+			 st->chip_info->num_channels - 1)
+		__ad5766_spi_write(st, AD5766_CMD_WR_IN_REG(ch), data[i++]);
+
+	__ad5766_spi_write(st, AD5766_CMD_SW_LDAC,
+			   *indio_dev->active_scan_mask);
+	mutex_unlock(&st->lock);
+
+done:
+	iio_trigger_notify_done(indio_dev->trig);
+
+	return IRQ_HANDLED;
+}
+
 static int ad5766_probe(struct spi_device *spi)
 {
 	enum ad5766_type type;
@@ -609,20 +631,29 @@ static int ad5766_probe(struct spi_device *spi)
 	if (ret)
 		return ret;
 
+	/* Configure trigger buffer */
+	ret = devm_iio_triggered_buffer_setup_ext(&spi->dev, indio_dev, NULL,
+						  ad5766_trigger_handler,
+						  IIO_BUFFER_DIRECTION_OUT,
+						  NULL,
+						  NULL);
+	if (ret)
+		return ret;
+
 	return devm_iio_device_register(&spi->dev, indio_dev);
 }
 
 static const struct of_device_id ad5766_dt_match[] = {
 	{ .compatible = "adi,ad5766" },
 	{ .compatible = "adi,ad5767" },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ad5766_dt_match);
 
 static const struct spi_device_id ad5766_spi_ids[] = {
 	{ "ad5766", ID_AD5766 },
 	{ "ad5767", ID_AD5767 },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad5766_spi_ids);
 

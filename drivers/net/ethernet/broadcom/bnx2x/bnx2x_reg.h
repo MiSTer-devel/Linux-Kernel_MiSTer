@@ -868,6 +868,8 @@
 #define DORQ_REG_VF_TYPE_VALUE_0				 0x170258
 #define DORQ_REG_VF_USAGE_CT_LIMIT				 0x170340
 
+extern const u32 dmae_reg_go_c[];
+
 /* [RW 4] Initial activity counter value on the load request; when the
    shortcut is done. */
 #define DORQ_REG_SHRT_ACT_CNT					 0x170070
@@ -2212,7 +2214,7 @@
  * MAC DA 2. The reset default is set to mask out all parameters.
  */
 #define NIG_REG_P0_LLH_PTP_PARAM_MASK				 0x187a0
-/* [RW 14] Mask regiser for the rules used in detecting PTP packets. Set
+/* [RW 14] Mask register for the rules used in detecting PTP packets. Set
  * each bit to 1 to mask out that particular rule. 0-{IPv4 DA 0; UDP DP 0} .
  * 1-{IPv4 DA 0; UDP DP 1} . 2-{IPv4 DA 1; UDP DP 0} . 3-{IPv4 DA 1; UDP DP
  * 1} . 4-{IPv6 DA 0; UDP DP 0} . 5-{IPv6 DA 0; UDP DP 1} . 6-{IPv6 DA 1;
@@ -2381,7 +2383,7 @@
  * MAC DA 2. The reset default is set to mask out all parameters.
  */
 #define NIG_REG_P1_LLH_PTP_PARAM_MASK				 0x187c8
-/* [RW 14] Mask regiser for the rules used in detecting PTP packets. Set
+/* [RW 14] Mask register for the rules used in detecting PTP packets. Set
  * each bit to 1 to mask out that particular rule. 0-{IPv4 DA 0; UDP DP 0} .
  * 1-{IPv4 DA 0; UDP DP 1} . 2-{IPv4 DA 1; UDP DP 0} . 3-{IPv4 DA 1; UDP DP
  * 1} . 4-{IPv6 DA 0; UDP DP 0} . 5-{IPv6 DA 0; UDP DP 1} . 6-{IPv6 DA 1;
@@ -2493,7 +2495,7 @@
  * MAC DA 2. The reset default is set to mask out all parameters.
  */
 #define NIG_REG_P0_TLLH_PTP_PARAM_MASK				 0x187f0
-/* [RW 14] Mask regiser for the rules used in detecting PTP packets. Set
+/* [RW 14] Mask register for the rules used in detecting PTP packets. Set
  * each bit to 1 to mask out that particular rule. 0-{IPv4 DA 0; UDP DP 0} .
  * 1-{IPv4 DA 0; UDP DP 1} . 2-{IPv4 DA 1; UDP DP 0} . 3-{IPv4 DA 1; UDP DP
  * 1} . 4-{IPv6 DA 0; UDP DP 0} . 5-{IPv6 DA 0; UDP DP 1} . 6-{IPv6 DA 1;
@@ -2529,7 +2531,7 @@
  * MAC DA 2. The reset default is set to mask out all parameters.
  */
 #define NIG_REG_P1_TLLH_PTP_PARAM_MASK				 0x187f8
-/* [RW 14] Mask regiser for the rules used in detecting PTP packets. Set
+/* [RW 14] Mask register for the rules used in detecting PTP packets. Set
  * each bit to 1 to mask out that particular rule. 0-{IPv4 DA 0; UDP DP 0} .
  * 1-{IPv4 DA 0; UDP DP 1} . 2-{IPv4 DA 1; UDP DP 0} . 3-{IPv4 DA 1; UDP DP
  * 1} . 4-{IPv6 DA 0; UDP DP 0} . 5-{IPv6 DA 0; UDP DP 1} . 6-{IPv6 DA 1;
@@ -6218,7 +6220,7 @@
 #define AEU_INPUTS_ATTN_BITS_GPIO0_FUNCTION_0			 (0x1<<2)
 #define AEU_INPUTS_ATTN_BITS_IGU_PARITY_ERROR			 (0x1<<12)
 #define AEU_INPUTS_ATTN_BITS_MCP_LATCHED_ROM_PARITY		 (0x1<<28)
-#define AEU_INPUTS_ATTN_BITS_MCP_LATCHED_SCPAD_PARITY		 (0x1<<31)
+#define AEU_INPUTS_ATTN_BITS_MCP_LATCHED_SCPAD_PARITY		 (0x1U<<31)
 #define AEU_INPUTS_ATTN_BITS_MCP_LATCHED_UMP_RX_PARITY		 (0x1<<29)
 #define AEU_INPUTS_ATTN_BITS_MCP_LATCHED_UMP_TX_PARITY		 (0x1<<30)
 #define AEU_INPUTS_ATTN_BITS_MISC_HW_INTERRUPT			 (0x1<<15)

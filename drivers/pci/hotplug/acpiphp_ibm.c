@@ -84,7 +84,7 @@ static int ibm_get_attention_status(struct hotplug_slot *slot, u8 *status);
 static void ibm_handle_events(acpi_handle handle, u32 event, void *context);
 static int ibm_get_table_from_acpi(char **bufp);
 static ssize_t ibm_read_apci_table(struct file *filp, struct kobject *kobj,
-				   struct bin_attribute *bin_attr,
+				   const struct bin_attribute *bin_attr,
 				   char *buffer, loff_t pos, size_t size);
 static acpi_status __init ibm_find_acpi_device(acpi_handle handle,
 		u32 lvl, void *context, void **rv);
@@ -353,7 +353,7 @@ read_table_done:
  * our solution is to only allow reading the table in all at once.
  */
 static ssize_t ibm_read_apci_table(struct file *filp, struct kobject *kobj,
-				   struct bin_attribute *bin_attr,
+				   const struct bin_attribute *bin_attr,
 				   char *buffer, loff_t pos, size_t size)
 {
 	int bytes_read = -EINVAL;
@@ -433,8 +433,9 @@ static int __init ibm_acpiphp_init(void)
 		goto init_return;
 	}
 	pr_debug("%s: found IBM aPCI device\n", __func__);
-	if (acpi_bus_get_device(ibm_acpi_handle, &device)) {
-		pr_err("%s: acpi_bus_get_device failed\n", __func__);
+	device = acpi_fetch_acpi_dev(ibm_acpi_handle);
+	if (!device) {
+		pr_err("%s: acpi_fetch_acpi_dev failed\n", __func__);
 		retval = -ENODEV;
 		goto init_return;
 	}

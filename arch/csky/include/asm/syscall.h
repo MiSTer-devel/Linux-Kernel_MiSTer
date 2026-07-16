@@ -63,9 +63,13 @@ static inline void
 syscall_set_arguments(struct task_struct *task, struct pt_regs *regs,
 		      const unsigned long *args)
 {
-	regs->orig_a0 = args[0];
-	args++;
-	memcpy(&regs->a1, args, 5 * sizeof(regs->a1));
+	memcpy(&regs->a0, args, 6 * sizeof(regs->a0));
+	/*
+	 * Also copy the first argument into orig_a0
+	 * so that syscall_get_arguments() would return it
+	 * instead of the previous value.
+	 */
+	regs->orig_a0 = regs->a0;
 }
 
 static inline int

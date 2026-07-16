@@ -581,7 +581,7 @@ static void fr_set_link_state(int reliable, struct net_device *dev)
 
 static void fr_timer(struct timer_list *t)
 {
-	struct frad_state *st = from_timer(st, t, timer);
+	struct frad_state *st = timer_container_of(st, t, timer);
 	struct net_device *dev = st->dev;
 	hdlc_device *hdlc = dev_to_hdlc(dev);
 	int i, cnt = 0, reliable;
@@ -1025,7 +1025,7 @@ static void fr_stop(struct net_device *dev)
 	printk(KERN_DEBUG "fr_stop\n");
 #endif
 	if (state(hdlc)->settings.lmi != LMI_NONE)
-		del_timer_sync(&state(hdlc)->timer);
+		timer_delete_sync(&state(hdlc)->timer);
 	fr_set_link_state(0, dev);
 }
 
@@ -1093,7 +1093,9 @@ static int fr_add_pvc(struct net_device *frad, unsigned int dlci, int type)
 		dev->priv_flags &= ~IFF_TX_SKB_SHARING;
 		eth_hw_addr_random(dev);
 	} else {
-		*(__be16 *)dev->dev_addr = htons(dlci);
+		__be16 addr = htons(dlci);
+
+		dev_addr_set(dev, (u8 *)&addr);
 		dlci_to_q922(dev->broadcast, dlci);
 	}
 	dev->netdev_ops = &pvc_ops;

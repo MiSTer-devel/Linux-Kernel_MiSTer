@@ -47,12 +47,16 @@ struct hfi_platform_codec_freq_data {
 };
 
 struct hfi_platform {
-	unsigned long (*codec_vpp_freq)(u32 session_type, u32 codec);
-	unsigned long (*codec_vsp_freq)(u32 session_type, u32 codec);
-	unsigned long (*codec_lp_freq)(u32 session_type, u32 codec);
-	void (*codecs)(u32 *enc_codecs, u32 *dec_codecs, u32 *count);
-	const struct hfi_plat_caps *(*capabilities)(unsigned int *entries);
-	u8 (*num_vpp_pipes)(void);
+	unsigned long (*codec_vpp_freq)(struct venus_core *core,
+					u32 session_type, u32 codec);
+	unsigned long (*codec_vsp_freq)(struct venus_core *core,
+					u32 session_type, u32 codec);
+	unsigned long (*codec_lp_freq)(struct venus_core *core,
+				       u32 session_type, u32 codec);
+	void (*codecs)(struct venus_core *core, u32 *enc_codecs,
+		       u32 *dec_codecs, u32 *count);
+	const struct hfi_plat_caps *(*capabilities)(struct venus_core *core,
+						    unsigned int *entries);
 	int (*bufreq)(struct hfi_plat_buffers_params *params, u32 session_type,
 		      u32 buftype, struct hfi_buffer_requirements *bufreq);
 };
@@ -61,11 +65,15 @@ extern const struct hfi_platform hfi_plat_v4;
 extern const struct hfi_platform hfi_plat_v6;
 
 const struct hfi_platform *hfi_platform_get(enum hfi_version version);
-unsigned long hfi_platform_get_codec_vpp_freq(enum hfi_version version, u32 codec,
-					      u32 session_type);
-unsigned long hfi_platform_get_codec_vsp_freq(enum hfi_version version, u32 codec,
-					      u32 session_type);
-unsigned long hfi_platform_get_codec_lp_freq(enum hfi_version version, u32 codec,
-					     u32 session_type);
-u8 hfi_platform_num_vpp_pipes(enum hfi_version version);
+unsigned long hfi_platform_get_codec_vpp_freq(struct venus_core *core,
+					      enum hfi_version version,
+					      u32 codec, u32 session_type);
+unsigned long hfi_platform_get_codec_vsp_freq(struct venus_core *core,
+					      enum hfi_version version,
+					      u32 codec, u32 session_type);
+unsigned long hfi_platform_get_codec_lp_freq(struct venus_core *core,
+					     enum hfi_version version,
+					     u32 codec, u32 session_type);
+int hfi_platform_get_codecs(struct venus_core *core, u32 *enc_codecs,
+			    u32 *dec_codecs, u32 *count);
 #endif

@@ -302,7 +302,7 @@ void fcoe_ctlr_destroy(struct fcoe_ctlr *fip)
 	fcoe_ctlr_set_state(fip, FIP_ST_DISABLED);
 	fcoe_ctlr_reset_fcfs(fip);
 	mutex_unlock(&fip->ctlr_mutex);
-	del_timer_sync(&fip->timer);
+	timer_delete_sync(&fip->timer);
 	cancel_work_sync(&fip->timer_work);
 }
 EXPORT_SYMBOL(fcoe_ctlr_destroy);
@@ -478,7 +478,7 @@ EXPORT_SYMBOL(fcoe_ctlr_link_up);
 static void fcoe_ctlr_reset(struct fcoe_ctlr *fip)
 {
 	fcoe_ctlr_reset_fcfs(fip);
-	del_timer(&fip->timer);
+	timer_delete(&fip->timer);
 	fip->ctlr_ka_time = 0;
 	fip->port_ka_time = 0;
 	fip->sol_time = 0;
@@ -824,22 +824,21 @@ static unsigned long fcoe_ctlr_age_fcfs(struct fcoe_ctlr *fip)
 	unsigned long deadline;
 	unsigned long sel_time = 0;
 	struct list_head del_list;
-	struct fc_stats *stats;
 
 	INIT_LIST_HEAD(&del_list);
-
-	stats = per_cpu_ptr(fip->lp->stats, get_cpu());
 
 	list_for_each_entry_safe(fcf, next, &fip->fcfs, list) {
 		deadline = fcf->time + fcf->fka_period + fcf->fka_period / 2;
 		if (fip->sel_fcf == fcf) {
 			if (time_after(jiffies, deadline)) {
-				stats->MissDiscAdvCount++;
+				u64 miss_cnt;
+
+				miss_cnt = this_cpu_inc_return(fip->lp->stats->MissDiscAdvCount);
 				printk(KERN_INFO "libfcoe: host%d: "
 				       "Missing Discovery Advertisement "
 				       "for fab %16.16llx count %lld\n",
 				       fip->lp->host->host_no, fcf->fabric_name,
-				       stats->MissDiscAdvCount);
+				       miss_cnt);
 			} else if (time_after(next_timer, deadline))
 				next_timer = deadline;
 		}
@@ -855,7 +854,7 @@ static unsigned long fcoe_ctlr_age_fcfs(struct fcoe_ctlr *fip)
 			 */
 			list_del(&fcf->list);
 			list_add(&fcf->list, &del_list);
-			stats->VLinkFailureCount++;
+			this_cpu_inc(fip->lp->stats->VLinkFailureCount);
 		} else {
 			if (time_after(next_timer, deadline))
 				next_timer = deadline;
@@ -864,7 +863,6 @@ static unsigned long fcoe_ctlr_age_fcfs(struct fcoe_ctlr *fip)
 				sel_time = fcf->time;
 		}
 	}
-	put_cpu();
 
 	list_for_each_entry_safe(fcf, next, &del_list, list) {
 		/* Removes fcf from current list */
@@ -1142,7 +1140,6 @@ static void fcoe_ctlr_recv_els(struct fcoe_ctlr *fip, struct sk_buff *skb)
 	struct fip_desc *desc;
 	struct fip_encaps *els;
 	struct fcoe_fcf *sel;
-	struct fc_stats *stats;
 	enum fip_desc_type els_dtype = 0;
 	u8 els_op;
 	u8 sub;
@@ -1286,10 +1283,8 @@ static void fcoe_ctlr_recv_els(struct fcoe_ctlr *fip, struct sk_buff *skb)
 	fr_dev(fp) = lport;
 	fr_encaps(fp) = els_dtype;
 
-	stats = per_cpu_ptr(lport->stats, get_cpu());
-	stats->RxFrames++;
-	stats->RxWords += skb->len / FIP_BPW;
-	put_cpu();
+	this_cpu_inc(lport->stats->RxFrames);
+	this_cpu_add(lport->stats->RxWords, skb->len / FIP_BPW);
 
 	fc_exch_recv(lport, fp);
 	return;
@@ -1391,7 +1386,7 @@ static void fcoe_ctlr_recv_clr_vlink(struct fcoe_ctlr *fip,
 
 	while (rlen >= sizeof(*desc)) {
 		dlen = desc->fip_dlen * FIP_BPW;
-		if (dlen > rlen)
+		if (dlen < sizeof(*desc) || dlen > rlen)
 			goto err;
 		/* Drop CVL if there are duplicate critical descriptors */
 		if ((desc->fip_dtype < 32) &&
@@ -1427,9 +1422,7 @@ static void fcoe_ctlr_recv_clr_vlink(struct fcoe_ctlr *fip,
 						      ntoh24(vp->fd_fc_id));
 			if (vn_port && (vn_port == lport)) {
 				mutex_lock(&fip->ctlr_mutex);
-				per_cpu_ptr(lport->stats,
-					    get_cpu())->VLinkFailureCount++;
-				put_cpu();
+				this_cpu_inc(lport->stats->VLinkFailureCount);
 				fcoe_ctlr_reset(fip);
 				mutex_unlock(&fip->ctlr_mutex);
 			}
@@ -1457,8 +1450,7 @@ static void fcoe_ctlr_recv_clr_vlink(struct fcoe_ctlr *fip,
 		 * followed by physical port
 		 */
 		mutex_lock(&fip->ctlr_mutex);
-		per_cpu_ptr(lport->stats, get_cpu())->VLinkFailureCount++;
-		put_cpu();
+		this_cpu_inc(lport->stats->VLinkFailureCount);
 		fcoe_ctlr_reset(fip);
 		mutex_unlock(&fip->ctlr_mutex);
 
@@ -1781,7 +1773,7 @@ unlock:
  */
 static void fcoe_ctlr_timeout(struct timer_list *t)
 {
-	struct fcoe_ctlr *fip = from_timer(fip, t, timer);
+	struct fcoe_ctlr *fip = timer_container_of(fip, t, timer);
 
 	schedule_work(&fip->timer_work);
 }
@@ -1969,7 +1961,7 @@ EXPORT_SYMBOL(fcoe_ctlr_recv_flogi);
  *
  * Returns: u64 fc world wide name
  */
-u64 fcoe_wwn_from_mac(unsigned char mac[MAX_ADDR_LEN],
+u64 fcoe_wwn_from_mac(unsigned char mac[ETH_ALEN],
 		      unsigned int scheme, unsigned int port)
 {
 	u64 wwn;
@@ -2241,7 +2233,7 @@ static void fcoe_ctlr_vn_restart(struct fcoe_ctlr *fip)
 
 	if (fip->probe_tries < FIP_VN_RLIM_COUNT) {
 		fip->probe_tries++;
-		wait = prandom_u32() % FIP_VN_PROBE_WAIT;
+		wait = get_random_u32_below(FIP_VN_PROBE_WAIT);
 	} else
 		wait = FIP_VN_RLIM_INT;
 	mod_timer(&fip->timer, jiffies + msecs_to_jiffies(wait));
@@ -3133,7 +3125,7 @@ static void fcoe_ctlr_vn_timeout(struct fcoe_ctlr *fip)
 					  fcoe_all_vn2vn, 0);
 			fip->port_ka_time = jiffies +
 				 msecs_to_jiffies(FIP_VN_BEACON_INT +
-					(prandom_u32() % FIP_VN_BEACON_FUZZ));
+					get_random_u32_below(FIP_VN_BEACON_FUZZ));
 		}
 		if (time_before(fip->port_ka_time, next_time))
 			next_time = fip->port_ka_time;

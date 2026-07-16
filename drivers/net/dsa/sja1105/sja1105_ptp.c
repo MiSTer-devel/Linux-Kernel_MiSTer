@@ -58,103 +58,64 @@ enum sja1105_ptp_clk_mode {
 #define ptp_data_to_sja1105(d) \
 		container_of((d), struct sja1105_private, ptp_data)
 
-/* Must be called only with priv->tagger_data.state bit
- * SJA1105_HWTS_RX_EN cleared
- */
-static int sja1105_change_rxtstamping(struct sja1105_private *priv,
-				      bool on)
-{
-	struct sja1105_tagger_data *tagger_data = &priv->tagger_data;
-	struct sja1105_ptp_data *ptp_data = &priv->ptp_data;
-	struct sja1105_general_params_entry *general_params;
-	struct sja1105_table *table;
-
-	table = &priv->static_config.tables[BLK_IDX_GENERAL_PARAMS];
-	general_params = table->entries;
-	general_params->send_meta1 = on;
-	general_params->send_meta0 = on;
-
-	/* Initialize the meta state machine to a known state */
-	if (priv->tagger_data.stampable_skb) {
-		kfree_skb(priv->tagger_data.stampable_skb);
-		priv->tagger_data.stampable_skb = NULL;
-	}
-	ptp_cancel_worker_sync(ptp_data->clock);
-	skb_queue_purge(&tagger_data->skb_txtstamp_queue);
-	skb_queue_purge(&ptp_data->skb_rxtstamp_queue);
-
-	return sja1105_static_config_reload(priv, SJA1105_RX_HWTSTAMPING);
-}
-
-int sja1105_hwtstamp_set(struct dsa_switch *ds, int port, struct ifreq *ifr)
+int sja1105_hwtstamp_set(struct dsa_switch *ds, int port,
+			 struct kernel_hwtstamp_config *config,
+			 struct netlink_ext_ack *extack)
 {
 	struct sja1105_private *priv = ds->priv;
-	struct hwtstamp_config config;
-	bool rx_on;
-	int rc;
+	unsigned long hwts_tx_en, hwts_rx_en;
 
-	if (copy_from_user(&config, ifr->ifr_data, sizeof(config)))
-		return -EFAULT;
+	hwts_tx_en = priv->hwts_tx_en;
+	hwts_rx_en = priv->hwts_rx_en;
 
-	switch (config.tx_type) {
+	switch (config->tx_type) {
 	case HWTSTAMP_TX_OFF:
-		priv->ports[port].hwts_tx_en = false;
+		hwts_tx_en &= ~BIT(port);
 		break;
 	case HWTSTAMP_TX_ON:
-		priv->ports[port].hwts_tx_en = true;
+		hwts_tx_en |= BIT(port);
 		break;
 	default:
 		return -ERANGE;
 	}
 
-	switch (config.rx_filter) {
+	switch (config->rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
-		rx_on = false;
+		hwts_rx_en &= ~BIT(port);
+		break;
+	case HWTSTAMP_FILTER_PTP_V2_L2_EVENT:
+		hwts_rx_en |= BIT(port);
 		break;
 	default:
-		rx_on = true;
-		break;
+		return -ERANGE;
 	}
 
-	if (rx_on != test_bit(SJA1105_HWTS_RX_EN, &priv->tagger_data.state)) {
-		clear_bit(SJA1105_HWTS_RX_EN, &priv->tagger_data.state);
+	priv->hwts_tx_en = hwts_tx_en;
+	priv->hwts_rx_en = hwts_rx_en;
 
-		rc = sja1105_change_rxtstamping(priv, rx_on);
-		if (rc < 0) {
-			dev_err(ds->dev,
-				"Failed to change RX timestamping: %d\n", rc);
-			return rc;
-		}
-		if (rx_on)
-			set_bit(SJA1105_HWTS_RX_EN, &priv->tagger_data.state);
-	}
-
-	if (copy_to_user(ifr->ifr_data, &config, sizeof(config)))
-		return -EFAULT;
 	return 0;
 }
 
-int sja1105_hwtstamp_get(struct dsa_switch *ds, int port, struct ifreq *ifr)
+int sja1105_hwtstamp_get(struct dsa_switch *ds, int port,
+			 struct kernel_hwtstamp_config *config)
 {
 	struct sja1105_private *priv = ds->priv;
-	struct hwtstamp_config config;
 
-	config.flags = 0;
-	if (priv->ports[port].hwts_tx_en)
-		config.tx_type = HWTSTAMP_TX_ON;
+	config->flags = 0;
+	if (priv->hwts_tx_en & BIT(port))
+		config->tx_type = HWTSTAMP_TX_ON;
 	else
-		config.tx_type = HWTSTAMP_TX_OFF;
-	if (test_bit(SJA1105_HWTS_RX_EN, &priv->tagger_data.state))
-		config.rx_filter = HWTSTAMP_FILTER_PTP_V2_L2_EVENT;
+		config->tx_type = HWTSTAMP_TX_OFF;
+	if (priv->hwts_rx_en & BIT(port))
+		config->rx_filter = HWTSTAMP_FILTER_PTP_V2_L2_EVENT;
 	else
-		config.rx_filter = HWTSTAMP_FILTER_NONE;
+		config->rx_filter = HWTSTAMP_FILTER_NONE;
 
-	return copy_to_user(ifr->ifr_data, &config, sizeof(config)) ?
-		-EFAULT : 0;
+	return 0;
 }
 
 int sja1105_get_ts_info(struct dsa_switch *ds, int port,
-			struct ethtool_ts_info *info)
+			struct kernel_ethtool_ts_info *info)
 {
 	struct sja1105_private *priv = ds->priv;
 	struct sja1105_ptp_data *ptp_data = &priv->ptp_data;
@@ -403,7 +364,7 @@ static long sja1105_rxtstamp_work(struct ptp_clock_info *ptp)
 		ts = sja1105_tstamp_reconstruct(ds, ticks, ts);
 
 		shwt->hwtstamp = ns_to_ktime(sja1105_ticks_to_ns(ts));
-		netif_rx_ni(skb);
+		netif_rx(skb);
 	}
 
 	if (ptp_data->extts_enabled)
@@ -420,7 +381,7 @@ bool sja1105_rxtstamp(struct dsa_switch *ds, int port, struct sk_buff *skb)
 	struct sja1105_private *priv = ds->priv;
 	struct sja1105_ptp_data *ptp_data = &priv->ptp_data;
 
-	if (!test_bit(SJA1105_HWTS_RX_EN, &priv->tagger_data.state))
+	if (!(priv->hwts_rx_en & BIT(port)))
 		return false;
 
 	/* We need to read the full PTP clock to reconstruct the Rx
@@ -453,6 +414,39 @@ bool sja1105_port_rxtstamp(struct dsa_switch *ds, int port,
 	return priv->info->rxtstamp(ds, port, skb);
 }
 
+void sja1110_process_meta_tstamp(struct dsa_switch *ds, int port, u8 ts_id,
+				 enum sja1110_meta_tstamp dir, u64 tstamp)
+{
+	struct sja1105_private *priv = ds->priv;
+	struct sja1105_ptp_data *ptp_data = &priv->ptp_data;
+	struct sk_buff *skb, *skb_tmp, *skb_match = NULL;
+	struct skb_shared_hwtstamps shwt = {0};
+
+	/* We don't care about RX timestamps on the CPU port */
+	if (dir == SJA1110_META_TSTAMP_RX)
+		return;
+
+	spin_lock(&ptp_data->skb_txtstamp_queue.lock);
+
+	skb_queue_walk_safe(&ptp_data->skb_txtstamp_queue, skb, skb_tmp) {
+		if (SJA1105_SKB_CB(skb)->ts_id != ts_id)
+			continue;
+
+		__skb_unlink(skb, &ptp_data->skb_txtstamp_queue);
+		skb_match = skb;
+
+		break;
+	}
+
+	spin_unlock(&ptp_data->skb_txtstamp_queue.lock);
+
+	if (WARN_ON(!skb_match))
+		return;
+
+	shwt.hwtstamp = ns_to_ktime(sja1105_ticks_to_ns(tstamp));
+	skb_complete_tx_timestamp(skb_match, &shwt);
+}
+
 /* In addition to cloning the skb which is done by the common
  * sja1105_port_txtstamp, we need to generate a timestamp ID and save the
  * packet to the TX timestamping queue.
@@ -461,22 +455,22 @@ void sja1110_txtstamp(struct dsa_switch *ds, int port, struct sk_buff *skb)
 {
 	struct sk_buff *clone = SJA1105_SKB_CB(skb)->clone;
 	struct sja1105_private *priv = ds->priv;
-	struct sja1105_port *sp = &priv->ports[port];
+	struct sja1105_ptp_data *ptp_data = &priv->ptp_data;
 	u8 ts_id;
 
 	skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
 
-	spin_lock(&sp->data->meta_lock);
+	spin_lock(&priv->ts_id_lock);
 
-	ts_id = sp->data->ts_id;
+	ts_id = priv->ts_id;
 	/* Deal automatically with 8-bit wraparound */
-	sp->data->ts_id++;
+	priv->ts_id++;
 
 	SJA1105_SKB_CB(clone)->ts_id = ts_id;
 
-	spin_unlock(&sp->data->meta_lock);
+	spin_unlock(&priv->ts_id_lock);
 
-	skb_queue_tail(&sp->data->skb_txtstamp_queue, clone);
+	skb_queue_tail(&ptp_data->skb_txtstamp_queue, clone);
 }
 
 /* Called from dsa_skb_tx_timestamp. This callback is just to clone
@@ -486,10 +480,9 @@ void sja1110_txtstamp(struct dsa_switch *ds, int port, struct sk_buff *skb)
 void sja1105_port_txtstamp(struct dsa_switch *ds, int port, struct sk_buff *skb)
 {
 	struct sja1105_private *priv = ds->priv;
-	struct sja1105_port *sp = &priv->ports[port];
 	struct sk_buff *clone;
 
-	if (!sp->hwts_tx_en)
+	if (!(priv->hwts_tx_en & BIT(port)))
 		return;
 
 	clone = skb_clone_sk(skb);
@@ -738,10 +731,6 @@ static int sja1105_per_out_enable(struct sja1105_private *priv,
 	if (perout->index != 0)
 		return -EOPNOTSUPP;
 
-	/* Reject requests with unsupported flags */
-	if (perout->flags)
-		return -EOPNOTSUPP;
-
 	mutex_lock(&ptp_data->lock);
 
 	rc = sja1105_change_ptp_clk_pin_func(priv, PTP_PF_PEROUT);
@@ -821,13 +810,6 @@ static int sja1105_extts_enable(struct sja1105_private *priv,
 	if (extts->index != 0)
 		return -EOPNOTSUPP;
 
-	/* Reject requests with unsupported flags */
-	if (extts->flags & ~(PTP_ENABLE_FEATURE |
-			     PTP_RISING_EDGE |
-			     PTP_FALLING_EDGE |
-			     PTP_STRICT_FLAGS))
-		return -EOPNOTSUPP;
-
 	/* We can only enable time stamping on both edges, sadly. */
 	if ((extts->flags & PTP_STRICT_FLAGS) &&
 	    (extts->flags & PTP_ENABLE_FEATURE) &&
@@ -843,7 +825,7 @@ static int sja1105_extts_enable(struct sja1105_private *priv,
 	if (on)
 		sja1105_ptp_extts_setup_timer(&priv->ptp_data);
 	else
-		del_timer_sync(&priv->ptp_data.extts_timer);
+		timer_delete_sync(&priv->ptp_data.extts_timer);
 
 	return 0;
 }
@@ -896,7 +878,6 @@ static struct ptp_pin_desc sja1105_ptp_pin = {
 int sja1105_ptp_clock_register(struct dsa_switch *ds)
 {
 	struct sja1105_private *priv = ds->priv;
-	struct sja1105_tagger_data *tagger_data = &priv->tagger_data;
 	struct sja1105_ptp_data *ptp_data = &priv->ptp_data;
 
 	ptp_data->caps = (struct ptp_clock_info) {
@@ -914,13 +895,15 @@ int sja1105_ptp_clock_register(struct dsa_switch *ds)
 		.n_pins		= 1,
 		.n_ext_ts	= 1,
 		.n_per_out	= 1,
+		.supported_extts_flags = PTP_RISING_EDGE |
+					 PTP_FALLING_EDGE |
+					 PTP_STRICT_FLAGS,
 	};
 
 	/* Only used on SJA1105 */
 	skb_queue_head_init(&ptp_data->skb_rxtstamp_queue);
 	/* Only used on SJA1110 */
-	skb_queue_head_init(&tagger_data->skb_txtstamp_queue);
-	spin_lock_init(&tagger_data->meta_lock);
+	skb_queue_head_init(&ptp_data->skb_txtstamp_queue);
 
 	ptp_data->clock = ptp_clock_register(&ptp_data->caps, ds->dev);
 	if (IS_ERR_OR_NULL(ptp_data->clock))
@@ -937,15 +920,14 @@ int sja1105_ptp_clock_register(struct dsa_switch *ds)
 void sja1105_ptp_clock_unregister(struct dsa_switch *ds)
 {
 	struct sja1105_private *priv = ds->priv;
-	struct sja1105_tagger_data *tagger_data = &priv->tagger_data;
 	struct sja1105_ptp_data *ptp_data = &priv->ptp_data;
 
 	if (IS_ERR_OR_NULL(ptp_data->clock))
 		return;
 
-	del_timer_sync(&ptp_data->extts_timer);
+	timer_delete_sync(&ptp_data->extts_timer);
 	ptp_cancel_worker_sync(ptp_data->clock);
-	skb_queue_purge(&tagger_data->skb_txtstamp_queue);
+	skb_queue_purge(&ptp_data->skb_txtstamp_queue);
 	skb_queue_purge(&ptp_data->skb_rxtstamp_queue);
 	ptp_clock_unregister(ptp_data->clock);
 	ptp_data->clock = NULL;

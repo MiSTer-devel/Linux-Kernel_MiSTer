@@ -29,9 +29,10 @@
 #include <linux/syscalls.h>
 #include <linux/sysctl.h>
 
-#ifdef CONFIG_HAVE_ARCH_SECCOMP_FILTER
 #include <asm/syscall.h>
-#endif
+
+/* Not exposed in headers: strictly internal use only. */
+#define SECCOMP_MODE_DEAD	(SECCOMP_MODE_FILTER + 1)
 
 #ifdef CONFIG_SECCOMP_FILTER
 #include <linux/file.h>
@@ -39,7 +40,6 @@
 #include <linux/pid.h>
 #include <linux/ptrace.h>
 #include <linux/capability.h>
-#include <linux/tracehook.h>
 #include <linux/uaccess.h>
 #include <linux/anon_inodes.h>
 #include <linux/lockdep.h>
@@ -108,11 +108,13 @@ struct seccomp_knotif {
  * @flags: The flags for the new file descriptor. At the moment, only O_CLOEXEC
  *         is allowed.
  * @ioctl_flags: The flags used for the seccomp_addfd ioctl.
+ * @setfd: whether or not SECCOMP_ADDFD_FLAG_SETFD was set during notify_addfd
  * @ret: The return value of the installing process. It is set to the fd num
  *       upon success (>= 0).
  * @completion: Indicates that the installing process has completed fd
  *              installation, or gone away (either due to successful
  *              reply, or signal)
+ * @list: list_head for chaining seccomp_kaddfd together.
  *
  */
 struct seccomp_kaddfd {
@@ -136,14 +138,17 @@ struct seccomp_kaddfd {
  * structure is fairly large, we store the notification-specific stuff in a
  * separate structure.
  *
- * @request: A semaphore that users of this notification can wait on for
- *           changes. Actual reads and writes are still controlled with
- *           filter->notify_lock.
+ * @requests: A semaphore that users of this notification can wait on for
+ *            changes. Actual reads and writes are still controlled with
+ *            filter->notify_lock.
+ * @flags: A set of SECCOMP_USER_NOTIF_FD_* flags.
  * @next_id: The id of the next request.
  * @notifications: A list of struct seccomp_knotif elements.
  */
+
 struct notification {
-	struct semaphore request;
+	atomic_t requests;
+	u32 flags;
 	u64 next_id;
 	struct list_head notifications;
 };
@@ -198,6 +203,8 @@ static inline void seccomp_cache_prepare(struct seccomp_filter *sfilter)
  *	   the filter can be freed.
  * @cache: cache of arch/syscall mappings to actions
  * @log: true if all actions except for SECCOMP_RET_ALLOW should be logged
+ * @wait_killable_recv: Put notifying process in killable state once the
+ *			notification is received by the userspace listener.
  * @prev: points to a previously installed, or inherited, filter
  * @prog: the BPF program to evaluate
  * @notif: the struct that holds all notification related information
@@ -218,6 +225,7 @@ struct seccomp_filter {
 	refcount_t refs;
 	refcount_t users;
 	bool log;
+	bool wait_killable_recv;
 	struct action_cache cache;
 	struct seccomp_filter *prev;
 	struct bpf_prog *prog;
@@ -383,6 +391,7 @@ static inline bool seccomp_cache_check_allow(const struct seccomp_filter *sfilte
 }
 #endif /* SECCOMP_ARCH_NATIVE */
 
+#define ACTION_ONLY(ret) ((s32)((ret) & (SECCOMP_RET_ACTION_FULL)))
 /**
  * seccomp_run_filters - evaluates all seccomp filters against @sd
  * @sd: optional seccomp data to be passed to filters
@@ -392,7 +401,6 @@ static inline bool seccomp_cache_check_allow(const struct seccomp_filter *sfilte
  *
  * Returns valid seccomp BPF response codes.
  */
-#define ACTION_ONLY(ret) ((s32)((ret) & (SECCOMP_RET_ACTION_FULL)))
 static u32 seccomp_run_filters(const struct seccomp_data *sd,
 			       struct seccomp_filter **match)
 {
@@ -492,6 +500,9 @@ static inline pid_t seccomp_can_sync_threads(void)
 		/* Skip current, since it is initiating the sync. */
 		if (thread == caller)
 			continue;
+		/* Skip exited threads. */
+		if (thread->flags & PF_EXITING)
+			continue;
 
 		if (thread->seccomp.mode == SECCOMP_MODE_DISABLED ||
 		    (thread->seccomp.mode == SECCOMP_MODE_FILTER &&
@@ -550,24 +561,34 @@ static void __seccomp_filter_release(struct seccomp_filter *orig)
  *			    drop its reference count, and notify
  *			    about unused filters
  *
+ * @tsk: task the filter should be released from.
+ *
  * This function should only be called when the task is exiting as
- * it detaches it from its filter tree. As such, READ_ONCE() and
- * barriers are not needed here, as would normally be needed.
+ * it detaches it from its filter tree. PF_EXITING has to be set
+ * for the task.
  */
 void seccomp_filter_release(struct task_struct *tsk)
 {
-	struct seccomp_filter *orig = tsk->seccomp.filter;
+	struct seccomp_filter *orig;
 
-	/* We are effectively holding the siglock by not having any sighand. */
-	WARN_ON(tsk->sighand != NULL);
+	if (WARN_ON((tsk->flags & PF_EXITING) == 0))
+		return;
 
+	if (READ_ONCE(tsk->seccomp.filter) == NULL)
+		return;
+
+	spin_lock_irq(&tsk->sighand->siglock);
+	orig = tsk->seccomp.filter;
 	/* Detach task from its filter tree. */
 	tsk->seccomp.filter = NULL;
+	spin_unlock_irq(&tsk->sighand->siglock);
 	__seccomp_filter_release(orig);
 }
 
 /**
  * seccomp_sync_threads: sets all threads to use current's filter
+ *
+ * @flags: SECCOMP_FILTER_FLAG_* flags to set during sync.
  *
  * Expects sighand and cred_guard_mutex locks to be held, and for
  * seccomp_can_sync_threads() to have returned success already
@@ -581,11 +602,25 @@ static inline void seccomp_sync_threads(unsigned long flags)
 	BUG_ON(!mutex_is_locked(&current->signal->cred_guard_mutex));
 	assert_spin_locked(&current->sighand->siglock);
 
+	/*
+	 * Don't touch any of the threads if the process is being killed.
+	 * This allows for a lockless check in seccomp_filter_release.
+	 */
+	if (current->signal->flags & SIGNAL_GROUP_EXIT)
+		return;
+
 	/* Synchronize all threads. */
 	caller = current;
 	for_each_thread(caller, thread) {
 		/* Skip current, since it needs no changes. */
 		if (thread == caller)
+			continue;
+
+		/*
+		 * Skip exited threads. seccomp_filter_release could have
+		 * been already called for this task.
+		 */
+		if (thread->flags & PF_EXITING)
 			continue;
 
 		/* Get a task reference for the new leaf node. */
@@ -706,6 +741,26 @@ out:
 }
 
 #ifdef SECCOMP_ARCH_NATIVE
+static bool seccomp_uprobe_exception(struct seccomp_data *sd)
+{
+#if defined __NR_uretprobe || defined __NR_uprobe
+#ifdef SECCOMP_ARCH_COMPAT
+	if (sd->arch == SECCOMP_ARCH_NATIVE)
+#endif
+	{
+#ifdef __NR_uretprobe
+		if (sd->nr == __NR_uretprobe)
+			return true;
+#endif
+#ifdef __NR_uprobe
+		if (sd->nr == __NR_uprobe)
+			return true;
+#endif
+	}
+#endif
+	return false;
+}
+
 /**
  * seccomp_is_const_allow - check if filter is constant allow with given data
  * @fprog: The BPF programs
@@ -721,6 +776,10 @@ static bool seccomp_is_const_allow(struct sock_fprog_kern *fprog,
 
 	if (WARN_ON_ONCE(!fprog))
 		return false;
+
+	/* Our single exception to filtering. */
+	if (seccomp_uprobe_exception(sd))
+		return true;
 
 	for (pc = 0; pc < fprog->len; pc++) {
 		struct sock_filter *insn = &fprog->filter[pc];
@@ -891,6 +950,10 @@ static long seccomp_attach_filter(unsigned int flags,
 	if (flags & SECCOMP_FILTER_FLAG_LOG)
 		filter->log = true;
 
+	/* Set wait killable flag, if present. */
+	if (flags & SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV)
+		filter->wait_killable_recv = true;
+
 	/*
 	 * If there is an existing filter, make it the prev and don't drop its
 	 * task reference.
@@ -992,6 +1055,12 @@ static inline void seccomp_log(unsigned long syscall, long signr, u32 action,
  */
 static const int mode1_syscalls[] = {
 	__NR_seccomp_read, __NR_seccomp_write, __NR_seccomp_exit, __NR_seccomp_sigreturn,
+#ifdef __NR_uretprobe
+	__NR_uretprobe,
+#endif
+#ifdef __NR_uprobe
+	__NR_uprobe,
+#endif
 	-1, /* negative terminated */
 };
 
@@ -1010,6 +1079,7 @@ static void __secure_computing_strict(int this_syscall)
 #ifdef SECCOMP_DEBUG
 	dump_stack();
 #endif
+	current->seccomp.mode = SECCOMP_MODE_DEAD;
 	seccomp_log(this_syscall, SIGKILL, SECCOMP_RET_KILL_THREAD, true);
 	do_exit(SIGKILL);
 }
@@ -1029,6 +1099,13 @@ void secure_computing_strict(int this_syscall)
 		__secure_computing_strict(this_syscall);
 	else
 		BUG();
+}
+int __secure_computing(void)
+{
+	int this_syscall = syscall_get_nr(current, current_pt_regs());
+
+	secure_computing_strict(this_syscall);
+	return 0;
 }
 #else
 
@@ -1053,7 +1130,7 @@ static void seccomp_handle_addfd(struct seccomp_kaddfd *addfd, struct seccomp_kn
 	 */
 	list_del_init(&addfd->list);
 	if (!addfd->setfd)
-		fd = receive_fd(addfd->file, addfd->flags);
+		fd = receive_fd(addfd->file, NULL, addfd->flags);
 	else
 		fd = receive_fd_replace(addfd->fd, addfd->file, addfd->flags);
 	addfd->ret = fd;
@@ -1077,6 +1154,12 @@ static void seccomp_handle_addfd(struct seccomp_kaddfd *addfd, struct seccomp_kn
 	complete(&addfd->completion);
 }
 
+static bool should_sleep_killable(struct seccomp_filter *match,
+				  struct seccomp_knotif *n)
+{
+	return match->wait_killable_recv && n->state >= SECCOMP_NOTIFY_SENT;
+}
+
 static int seccomp_do_user_notification(int this_syscall,
 					struct seccomp_filter *match,
 					const struct seccomp_data *sd)
@@ -1097,21 +1180,36 @@ static int seccomp_do_user_notification(int this_syscall,
 	n.data = sd;
 	n.id = seccomp_next_notify_id(match);
 	init_completion(&n.ready);
-	list_add(&n.list, &match->notif->notifications);
+	list_add_tail(&n.list, &match->notif->notifications);
 	INIT_LIST_HEAD(&n.addfd);
 
-	up(&match->notif->request);
-	wake_up_poll(&match->wqh, EPOLLIN | EPOLLRDNORM);
+	atomic_inc(&match->notif->requests);
+	if (match->notif->flags & SECCOMP_USER_NOTIF_FD_SYNC_WAKE_UP)
+		wake_up_poll_on_current_cpu(&match->wqh, EPOLLIN | EPOLLRDNORM);
+	else
+		wake_up_poll(&match->wqh, EPOLLIN | EPOLLRDNORM);
 
 	/*
 	 * This is where we wait for a reply from userspace.
 	 */
 	do {
+		bool wait_killable = should_sleep_killable(match, &n);
+
 		mutex_unlock(&match->notify_lock);
-		err = wait_for_completion_interruptible(&n.ready);
+		if (wait_killable)
+			err = wait_for_completion_killable(&n.ready);
+		else
+			err = wait_for_completion_interruptible(&n.ready);
 		mutex_lock(&match->notify_lock);
-		if (err != 0)
-			goto interrupted;
+
+		if (err != 0) {
+			/*
+			 * Check to see whether we should switch to wait
+			 * killable. Only return the interrupted error if not.
+			 */
+			if (!(!wait_killable && should_sleep_killable(match, &n)))
+				goto interrupted;
+		}
 
 		addfd = list_first_entry_or_null(&n.addfd,
 						 struct seccomp_kaddfd, list);
@@ -1158,13 +1256,12 @@ out:
 	return -1;
 }
 
-static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
-			    const bool recheck_after_trace)
+static int __seccomp_filter(int this_syscall, const bool recheck_after_trace)
 {
 	u32 filter_ret, action;
+	struct seccomp_data sd;
 	struct seccomp_filter *match = NULL;
 	int data;
-	struct seccomp_data sd_local;
 
 	/*
 	 * Make sure that any changes to mode from another thread have
@@ -1172,12 +1269,9 @@ static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
 	 */
 	smp_rmb();
 
-	if (!sd) {
-		populate_seccomp_data(&sd_local);
-		sd = &sd_local;
-	}
+	populate_seccomp_data(&sd);
 
-	filter_ret = seccomp_run_filters(sd, &match);
+	filter_ret = seccomp_run_filters(&sd, &match);
 	data = filter_ret & SECCOMP_RET_DATA;
 	action = filter_ret & SECCOMP_RET_ACTION_FULL;
 
@@ -1235,13 +1329,13 @@ static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
 		 * a reload of all registers. This does not goto skip since
 		 * a skip would have already been reported.
 		 */
-		if (__seccomp_filter(this_syscall, NULL, true))
+		if (__seccomp_filter(this_syscall, true))
 			return -1;
 
 		return 0;
 
 	case SECCOMP_RET_USER_NOTIF:
-		if (seccomp_do_user_notification(this_syscall, match, sd))
+		if (seccomp_do_user_notification(this_syscall, match, &sd))
 			goto skip;
 
 		return 0;
@@ -1261,6 +1355,7 @@ static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
 	case SECCOMP_RET_KILL_THREAD:
 	case SECCOMP_RET_KILL_PROCESS:
 	default:
+		current->seccomp.mode = SECCOMP_MODE_DEAD;
 		seccomp_log(this_syscall, SIGSYS, action, true);
 		/* Dump core only if this is the last remaining thread. */
 		if (action != SECCOMP_RET_KILL_THREAD ||
@@ -1282,8 +1377,7 @@ skip:
 	return -1;
 }
 #else
-static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
-			    const bool recheck_after_trace)
+static int __seccomp_filter(int this_syscall, const bool recheck_after_trace)
 {
 	BUG();
 
@@ -1291,7 +1385,7 @@ static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
 }
 #endif
 
-int __secure_computing(const struct seccomp_data *sd)
+int __secure_computing(void)
 {
 	int mode = current->seccomp.mode;
 	int this_syscall;
@@ -1300,15 +1394,19 @@ int __secure_computing(const struct seccomp_data *sd)
 	    unlikely(current->ptrace & PT_SUSPEND_SECCOMP))
 		return 0;
 
-	this_syscall = sd ? sd->nr :
-		syscall_get_nr(current, current_pt_regs());
+	this_syscall = syscall_get_nr(current, current_pt_regs());
 
 	switch (mode) {
 	case SECCOMP_MODE_STRICT:
 		__secure_computing_strict(this_syscall);  /* may call do_exit */
 		return 0;
 	case SECCOMP_MODE_FILTER:
-		return __seccomp_filter(this_syscall, sd, false);
+		return __seccomp_filter(this_syscall, false);
+	/* Surviving SECCOMP_RET_KILL_* must be proactively impossible. */
+	case SECCOMP_MODE_DEAD:
+		WARN_ON_ONCE(1);
+		do_exit(SIGKILL);
+		return -1;
 	default:
 		BUG();
 	}
@@ -1414,6 +1512,42 @@ find_notification(struct seccomp_filter *filter, u64 id)
 	return NULL;
 }
 
+static int recv_wake_function(wait_queue_entry_t *wait, unsigned int mode, int sync,
+				  void *key)
+{
+	/* Avoid a wakeup if event not interesting for us. */
+	if (key && !(key_to_poll(key) & (EPOLLIN | EPOLLERR | EPOLLHUP)))
+		return 0;
+	return autoremove_wake_function(wait, mode, sync, key);
+}
+
+static int recv_wait_event(struct seccomp_filter *filter)
+{
+	DEFINE_WAIT_FUNC(wait, recv_wake_function);
+	int ret;
+
+	if (refcount_read(&filter->users) == 0)
+		return 0;
+
+	if (atomic_dec_if_positive(&filter->notif->requests) >= 0)
+		return 0;
+
+	for (;;) {
+		ret = prepare_to_wait_event(&filter->wqh, &wait, TASK_INTERRUPTIBLE);
+
+		if (atomic_dec_if_positive(&filter->notif->requests) >= 0)
+			break;
+		if (refcount_read(&filter->users) == 0)
+			break;
+
+		if (ret)
+			return ret;
+
+		schedule();
+	}
+	finish_wait(&filter->wqh, &wait);
+	return 0;
+}
 
 static long seccomp_notify_recv(struct seccomp_filter *filter,
 				void __user *buf)
@@ -1431,7 +1565,7 @@ static long seccomp_notify_recv(struct seccomp_filter *filter,
 
 	memset(&unotif, 0, sizeof(unotif));
 
-	ret = down_interruptible(&filter->notif->request);
+	ret = recv_wait_event(filter);
 	if (ret < 0)
 		return ret;
 
@@ -1475,8 +1609,12 @@ out:
 		mutex_lock(&filter->notify_lock);
 		knotif = find_notification(filter, unotif.id);
 		if (knotif) {
+			/* Reset the process to make sure it's not stuck */
+			if (should_sleep_killable(filter, knotif))
+				complete(&knotif->ready);
 			knotif->state = SECCOMP_NOTIFY_INIT;
-			up(&filter->notif->request);
+			atomic_inc(&filter->notif->requests);
+			wake_up_poll(&filter->wqh, EPOLLIN | EPOLLRDNORM);
 		}
 		mutex_unlock(&filter->notify_lock);
 	}
@@ -1522,7 +1660,10 @@ static long seccomp_notify_send(struct seccomp_filter *filter,
 	knotif->error = resp.error;
 	knotif->val = resp.val;
 	knotif->flags = resp.flags;
-	complete(&knotif->ready);
+	if (filter->notif->flags & SECCOMP_USER_NOTIF_FD_SYNC_WAKE_UP)
+		complete_on_current_cpu(&knotif->ready);
+	else
+		complete(&knotif->ready);
 out:
 	mutex_unlock(&filter->notify_lock);
 	return ret;
@@ -1550,6 +1691,22 @@ static long seccomp_notify_id_valid(struct seccomp_filter *filter,
 
 	mutex_unlock(&filter->notify_lock);
 	return ret;
+}
+
+static long seccomp_notify_set_flags(struct seccomp_filter *filter,
+				    unsigned long flags)
+{
+	long ret;
+
+	if (flags & ~SECCOMP_USER_NOTIF_FD_SYNC_WAKE_UP)
+		return -EINVAL;
+
+	ret = mutex_lock_interruptible(&filter->notify_lock);
+	if (ret < 0)
+		return ret;
+	filter->notif->flags = flags;
+	mutex_unlock(&filter->notify_lock);
+	return 0;
 }
 
 static long seccomp_notify_addfd(struct seccomp_filter *filter,
@@ -1681,6 +1838,8 @@ static long seccomp_notify_ioctl(struct file *file, unsigned int cmd,
 	case SECCOMP_IOCTL_NOTIF_ID_VALID_WRONG_DIR:
 	case SECCOMP_IOCTL_NOTIF_ID_VALID:
 		return seccomp_notify_id_valid(filter, buf);
+	case SECCOMP_IOCTL_NOTIF_SET_FLAGS:
+		return seccomp_notify_set_flags(filter, arg);
 	}
 
 	/* Extensible Argument ioctls */
@@ -1738,7 +1897,6 @@ static struct file *init_listener(struct seccomp_filter *filter)
 	if (!filter->notif)
 		goto out;
 
-	sema_init(&filter->notif->request, 0);
 	filter->notif->next_id = get_random_u64();
 	INIT_LIST_HEAD(&filter->notif->notifications);
 
@@ -1818,6 +1976,14 @@ static long seccomp_set_mode_filter(unsigned int flags,
 	if ((flags & SECCOMP_FILTER_FLAG_TSYNC) &&
 	    (flags & SECCOMP_FILTER_FLAG_NEW_LISTENER) &&
 	    ((flags & SECCOMP_FILTER_FLAG_TSYNC_ESRCH) == 0))
+		return -EINVAL;
+
+	/*
+	 * The SECCOMP_FILTER_FLAG_WAIT_KILLABLE_SENT flag doesn't make sense
+	 * without the SECCOMP_FILTER_FLAG_NEW_LISTENER flag.
+	 */
+	if ((flags & SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV) &&
+	    ((flags & SECCOMP_FILTER_FLAG_NEW_LISTENER) == 0))
 		return -EINVAL;
 
 	/* Prepare the new filter before holding any locks. */
@@ -2223,7 +2389,7 @@ static bool seccomp_actions_logged_from_names(u32 *actions_logged, char *names)
 	return true;
 }
 
-static int read_actions_logged(struct ctl_table *ro_table, void *buffer,
+static int read_actions_logged(const struct ctl_table *ro_table, void *buffer,
 			       size_t *lenp, loff_t *ppos)
 {
 	char names[sizeof(seccomp_actions_avail)];
@@ -2241,7 +2407,7 @@ static int read_actions_logged(struct ctl_table *ro_table, void *buffer,
 	return proc_dostring(&table, 0, buffer, lenp, ppos);
 }
 
-static int write_actions_logged(struct ctl_table *ro_table, void *buffer,
+static int write_actions_logged(const struct ctl_table *ro_table, void *buffer,
 				size_t *lenp, loff_t *ppos, u32 *actions_logged)
 {
 	char names[sizeof(seccomp_actions_avail)];
@@ -2302,7 +2468,7 @@ static void audit_actions_logged(u32 actions_logged, u32 old_actions_logged,
 	return audit_seccomp_actions_logged(new, old, !ret);
 }
 
-static int seccomp_actions_logged_handler(struct ctl_table *ro_table, int write,
+static int seccomp_actions_logged_handler(const struct ctl_table *ro_table, int write,
 					  void *buffer, size_t *lenp,
 					  loff_t *ppos)
 {
@@ -2321,13 +2487,7 @@ static int seccomp_actions_logged_handler(struct ctl_table *ro_table, int write,
 	return ret;
 }
 
-static struct ctl_path seccomp_sysctl_path[] = {
-	{ .procname = "kernel", },
-	{ .procname = "seccomp", },
-	{ }
-};
-
-static struct ctl_table seccomp_sysctl_table[] = {
+static const struct ctl_table seccomp_sysctl_table[] = {
 	{
 		.procname	= "actions_avail",
 		.data		= (void *) &seccomp_actions_avail,
@@ -2340,19 +2500,11 @@ static struct ctl_table seccomp_sysctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= seccomp_actions_logged_handler,
 	},
-	{ }
 };
 
 static int __init seccomp_sysctl_init(void)
 {
-	struct ctl_table_header *hdr;
-
-	hdr = register_sysctl_paths(seccomp_sysctl_path, seccomp_sysctl_table);
-	if (!hdr)
-		pr_warn("sysctl registration failed\n");
-	else
-		kmemleak_not_leak(hdr);
-
+	register_sysctl_init("kernel/seccomp", seccomp_sysctl_table);
 	return 0;
 }
 

@@ -18,7 +18,7 @@ struct ingenic_battery {
 	struct iio_channel *channel;
 	struct power_supply_desc desc;
 	struct power_supply *battery;
-	struct power_supply_battery_info info;
+	struct power_supply_battery_info *info;
 };
 
 static int ingenic_battery_get_property(struct power_supply *psy,
@@ -26,13 +26,14 @@ static int ingenic_battery_get_property(struct power_supply *psy,
 					union power_supply_propval *val)
 {
 	struct ingenic_battery *bat = power_supply_get_drvdata(psy);
-	struct power_supply_battery_info *info = &bat->info;
+	struct power_supply_battery_info *info = bat->info;
 	int ret;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_HEALTH:
-		ret = iio_read_channel_processed(bat->channel, &val->intval);
-		val->intval *= 1000;
+		ret = iio_read_channel_processed_scale(bat->channel,
+						       &val->intval,
+						       1000);
 		if (val->intval < info->voltage_min_design_uv)
 			val->intval = POWER_SUPPLY_HEALTH_DEAD;
 		else if (val->intval > info->voltage_max_design_uv)
@@ -41,8 +42,9 @@ static int ingenic_battery_get_property(struct power_supply *psy,
 			val->intval = POWER_SUPPLY_HEALTH_GOOD;
 		return ret;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
-		ret = iio_read_channel_processed(bat->channel, &val->intval);
-		val->intval *= 1000;
+		ret = iio_read_channel_processed_scale(bat->channel,
+						       &val->intval,
+						       1000);
 		return ret;
 	case POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN:
 		val->intval = info->voltage_min_design_uv;
@@ -80,7 +82,7 @@ static int ingenic_battery_set_scale(struct ingenic_battery *bat)
 	if (ret != IIO_AVAIL_LIST || scale_type != IIO_VAL_FRACTIONAL_LOG2)
 		return -EINVAL;
 
-	max_mV = bat->info.voltage_max_design_uv / 1000;
+	max_mV = bat->info->voltage_max_design_uv / 1000;
 
 	for (i = 0; i < scale_len; i += 2) {
 		u64 scale_mV = (max_raw * scale_raw[i]) >> scale_raw[i + 1];
@@ -144,7 +146,7 @@ static int ingenic_battery_probe(struct platform_device *pdev)
 	desc->num_properties = ARRAY_SIZE(ingenic_battery_properties);
 	desc->get_property = ingenic_battery_get_property;
 	psy_cfg.drv_data = bat;
-	psy_cfg.of_node = dev->of_node;
+	psy_cfg.fwnode = dev_fwnode(dev);
 
 	bat->battery = devm_power_supply_register(dev, desc, &psy_cfg);
 	if (IS_ERR(bat->battery))
@@ -156,13 +158,13 @@ static int ingenic_battery_probe(struct platform_device *pdev)
 		dev_err(dev, "Unable to get battery info: %d\n", ret);
 		return ret;
 	}
-	if (bat->info.voltage_min_design_uv < 0) {
+	if (bat->info->voltage_min_design_uv < 0) {
 		dev_err(dev, "Unable to get voltage min design\n");
-		return bat->info.voltage_min_design_uv;
+		return bat->info->voltage_min_design_uv;
 	}
-	if (bat->info.voltage_max_design_uv < 0) {
+	if (bat->info->voltage_max_design_uv < 0) {
 		dev_err(dev, "Unable to get voltage max design\n");
-		return bat->info.voltage_max_design_uv;
+		return bat->info->voltage_max_design_uv;
 	}
 
 	return ingenic_battery_set_scale(bat);

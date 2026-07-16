@@ -96,10 +96,8 @@
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/slab.h>
-
-#include "../comedi_pci.h"
-
-#include "comedi_8254.h"
+#include <linux/comedi/comedi_pci.h>
+#include <linux/comedi/comedi_8254.h>
 
 /*
  * PCI224/234 i/o space 1 (PCIBAR2) registers.
@@ -1053,10 +1051,10 @@ pci224_auto_attach(struct comedi_device *dev, unsigned long context_model)
 	outw(devpriv->daccon | PCI224_DACCON_FIFORESET,
 	     dev->iobase + PCI224_DACCON);
 
-	dev->pacer = comedi_8254_init(devpriv->iobase1 + PCI224_Z2_BASE,
-				      I8254_OSC_BASE_10MHZ, I8254_IO8, 0);
-	if (!dev->pacer)
-		return -ENOMEM;
+	dev->pacer = comedi_8254_io_alloc(devpriv->iobase1 + PCI224_Z2_BASE,
+					  I8254_OSC_BASE_10MHZ, I8254_IO8, 0);
+	if (IS_ERR(dev->pacer))
+		return PTR_ERR(dev->pacer);
 
 	ret = comedi_alloc_subdevices(dev, 1);
 	if (ret)

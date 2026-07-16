@@ -531,7 +531,8 @@ static int __init com90xx_found(int ioaddr, int airq, u_long shmem,
 	}
 
 	/* get and check the station ID from offset 1 in shmem */
-	dev->dev_addr[0] = arcnet_readb(lp->mem_start, COM9026_REG_R_STATION);
+	arcnet_set_addr(dev, arcnet_readb(lp->mem_start,
+					  COM9026_REG_R_STATION));
 
 	dev->base_addr = ioaddr;
 
@@ -644,6 +645,7 @@ static void com90xx_copy_from_card(struct net_device *dev, int bufnum,
 	TIME(dev, "memcpy_fromio", count, memcpy_fromio(buf, memaddr, count));
 }
 
+MODULE_DESCRIPTION("ARCnet COM90xx normal chipset driver");
 MODULE_LICENSE("GPL");
 
 static int __init com90xx_init(void)

@@ -137,11 +137,11 @@ void bcm_vk_set_host_alert(struct bcm_vk *vk, u32 bit_mask)
 #define BCM_VK_HB_TIMER_VALUE (BCM_VK_HB_TIMER_S * HZ)
 #define BCM_VK_HB_LOST_MAX (27 / BCM_VK_HB_TIMER_S)
 
-static void bcm_vk_hb_poll(struct timer_list *t)
+static void bcm_vk_hb_poll(struct work_struct *work)
 {
 	u32 uptime_s;
-	struct bcm_vk_hb_ctrl *hb = container_of(t, struct bcm_vk_hb_ctrl,
-						 timer);
+	struct bcm_vk_hb_ctrl *hb = container_of(to_delayed_work(work), struct bcm_vk_hb_ctrl,
+						 work);
 	struct bcm_vk *vk = container_of(hb, struct bcm_vk, hb_ctrl);
 
 	if (bcm_vk_drv_access_ok(vk) && hb_mon_is_on()) {
@@ -177,22 +177,22 @@ static void bcm_vk_hb_poll(struct timer_list *t)
 		bcm_vk_set_host_alert(vk, ERR_LOG_HOST_HB_FAIL);
 	}
 	/* re-arm timer */
-	mod_timer(&hb->timer, jiffies + BCM_VK_HB_TIMER_VALUE);
+	schedule_delayed_work(&hb->work, BCM_VK_HB_TIMER_VALUE);
 }
 
 void bcm_vk_hb_init(struct bcm_vk *vk)
 {
 	struct bcm_vk_hb_ctrl *hb = &vk->hb_ctrl;
 
-	timer_setup(&hb->timer, bcm_vk_hb_poll, 0);
-	mod_timer(&hb->timer, jiffies + BCM_VK_HB_TIMER_VALUE);
+	INIT_DELAYED_WORK(&hb->work, bcm_vk_hb_poll);
+	schedule_delayed_work(&hb->work, BCM_VK_HB_TIMER_VALUE);
 }
 
 void bcm_vk_hb_deinit(struct bcm_vk *vk)
 {
 	struct bcm_vk_hb_ctrl *hb = &vk->hb_ctrl;
 
-	del_timer(&hb->timer);
+	cancel_delayed_work_sync(&hb->work);
 }
 
 static void bcm_vk_msgid_bitmap_clear(struct bcm_vk *vk,
@@ -703,12 +703,12 @@ int bcm_vk_send_shutdown_msg(struct bcm_vk *vk, u32 shut_type,
 	entry = kzalloc(struct_size(entry, to_v_msg, 1), GFP_KERNEL);
 	if (!entry)
 		return -ENOMEM;
+	entry->to_v_blks = 1;	/* always 1 block */
 
 	/* fill up necessary data */
 	entry->to_v_msg[0].function_id = VK_FID_SHUTDOWN;
 	set_q_num(&entry->to_v_msg[0], q_num);
 	set_msg_id(&entry->to_v_msg[0], VK_SIMPLEX_MSG_ID);
-	entry->to_v_blks = 1; /* always 1 block */
 
 	entry->to_v_msg[0].cmd = shut_type;
 	entry->to_v_msg[0].arg = pid;
@@ -757,20 +757,19 @@ static struct bcm_vk_wkent *bcm_vk_dequeue_pending(struct bcm_vk *vk,
 						   u16 q_num,
 						   u16 msg_id)
 {
-	bool found = false;
-	struct bcm_vk_wkent *entry;
+	struct bcm_vk_wkent *entry = NULL, *iter;
 
 	spin_lock(&chan->pendq_lock);
-	list_for_each_entry(entry, &chan->pendq[q_num], node) {
-		if (get_msg_id(&entry->to_v_msg[0]) == msg_id) {
-			list_del(&entry->node);
-			found = true;
+	list_for_each_entry(iter, &chan->pendq[q_num], node) {
+		if (get_msg_id(&iter->to_v_msg[0]) == msg_id) {
+			list_del(&iter->node);
+			entry = iter;
 			bcm_vk_msgid_bitmap_clear(vk, msg_id, 1);
 			break;
 		}
 	}
 	spin_unlock(&chan->pendq_lock);
-	return ((found) ? entry : NULL);
+	return entry;
 }
 
 s32 bcm_to_h_msg_dequeue(struct bcm_vk *vk)
@@ -1010,16 +1009,17 @@ ssize_t bcm_vk_read(struct file *p_file,
 					 miscdev);
 	struct device *dev = &vk->pdev->dev;
 	struct bcm_vk_msg_chan *chan = &vk->to_h_msg_chan;
-	struct bcm_vk_wkent *entry = NULL;
+	struct bcm_vk_wkent *entry = NULL, *iter;
+	struct vk_msg_blk tmp_msg;
+	u32 tmp_usr_msg_id;
+	u32 tmp_blks;
 	u32 q_num;
 	u32 rsp_length;
-	bool found = false;
 
 	if (!bcm_vk_drv_access_ok(vk))
 		return -EPERM;
 
 	dev_dbg(dev, "Buf count %zu\n", count);
-	found = false;
 
 	/*
 	 * search through the pendq on the to_h chan, and return only those
@@ -1028,15 +1028,18 @@ ssize_t bcm_vk_read(struct file *p_file,
 	 */
 	spin_lock(&chan->pendq_lock);
 	for (q_num = 0; q_num < chan->q_nr; q_num++) {
-		list_for_each_entry(entry, &chan->pendq[q_num], node) {
-			if (entry->ctx->idx == ctx->idx) {
+		list_for_each_entry(iter, &chan->pendq[q_num], node) {
+			if (iter->ctx->idx == ctx->idx) {
 				if (count >=
-				    (entry->to_h_blks * VK_MSGQ_BLK_SIZE)) {
-					list_del(&entry->node);
+				    (iter->to_h_blks * VK_MSGQ_BLK_SIZE)) {
+					list_del(&iter->node);
 					atomic_dec(&ctx->pend_cnt);
-					found = true;
+					entry = iter;
 				} else {
 					/* buffer not big enough */
+					tmp_msg = iter->to_h_msg[0];
+					tmp_usr_msg_id = iter->usr_msg_id;
+					tmp_blks = iter->to_h_blks;
 					rc = -EMSGSIZE;
 				}
 				goto read_loop_exit;
@@ -1046,7 +1049,7 @@ ssize_t bcm_vk_read(struct file *p_file,
 read_loop_exit:
 	spin_unlock(&chan->pendq_lock);
 
-	if (found) {
+	if (entry) {
 		/* retrieve the passed down msg_id */
 		set_msg_id(&entry->to_h_msg[0], entry->usr_msg_id);
 		rsp_length = entry->to_h_blks * VK_MSGQ_BLK_SIZE;
@@ -1055,14 +1058,12 @@ read_loop_exit:
 
 		bcm_vk_free_wkent(dev, entry);
 	} else if (rc == -EMSGSIZE) {
-		struct vk_msg_blk tmp_msg = entry->to_h_msg[0];
-
 		/*
 		 * in this case, return just the first block, so
 		 * that app knows what size it is looking for.
 		 */
-		set_msg_id(&tmp_msg, entry->usr_msg_id);
-		tmp_msg.size = entry->to_h_blks - 1;
+		set_msg_id(&tmp_msg, tmp_usr_msg_id);
+		tmp_msg.size = tmp_blks - 1;
 		if (copy_to_user(buf, &tmp_msg, VK_MSGQ_BLK_SIZE) != 0) {
 			dev_err(dev, "Error return 1st block in -EMSGSIZE\n");
 			rc = -EFAULT;

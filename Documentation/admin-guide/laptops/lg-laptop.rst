@@ -38,7 +38,7 @@ FN lock.
 Battery care limit
 ------------------
 
-Writing 80/100 to /sys/devices/platform/lg-laptop/battery_care_limit
+Writing 80/100 to /sys/class/power_supply/CMB0/charge_control_end_threshold
 sets the maximum capacity to charge the battery. Limiting the charge
 reduces battery capacity loss over time.
 
@@ -48,8 +48,8 @@ This value is reset to 100 when the kernel boots.
 Fan mode
 --------
 
-Writing 1/0 to /sys/devices/platform/lg-laptop/fan_mode disables/enables
-the fan silent mode.
+Writing 0/1/2 to /sys/devices/platform/lg-laptop/fan_mode sets fan mode to
+Optimal/Silent/Performance respectively.
 
 
 USB charge

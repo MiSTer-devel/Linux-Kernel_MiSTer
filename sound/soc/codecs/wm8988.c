@@ -589,10 +589,10 @@ static int wm8988_set_dai_fmt(struct snd_soc_dai *codec_dai,
 
 	/* set master/slave audio interface */
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		iface = 0x0040;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		break;
 	default:
 		return -EINVAL;
@@ -823,7 +823,6 @@ static const struct snd_soc_component_driver soc_component_dev_wm8988 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config wm8988_regmap = {
@@ -833,7 +832,7 @@ static const struct regmap_config wm8988_regmap = {
 	.max_register = WM8988_LPPB,
 	.writeable_reg = wm8988_writeable,
 
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.reg_defaults = wm8988_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8988_reg_defaults),
 };
@@ -872,8 +871,7 @@ static struct spi_driver wm8988_spi_driver = {
 #endif /* CONFIG_SPI_MASTER */
 
 #if IS_ENABLED(CONFIG_I2C)
-static int wm8988_i2c_probe(struct i2c_client *i2c,
-			    const struct i2c_device_id *id)
+static int wm8988_i2c_probe(struct i2c_client *i2c)
 {
 	struct wm8988_priv *wm8988;
 	int ret;
@@ -898,7 +896,7 @@ static int wm8988_i2c_probe(struct i2c_client *i2c,
 }
 
 static const struct i2c_device_id wm8988_i2c_id[] = {
-	{ "wm8988", 0 },
+	{ "wm8988" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm8988_i2c_id);
@@ -907,7 +905,7 @@ static struct i2c_driver wm8988_i2c_driver = {
 	.driver = {
 		.name = "wm8988",
 	},
-	.probe =    wm8988_i2c_probe,
+	.probe = wm8988_i2c_probe,
 	.id_table = wm8988_i2c_id,
 };
 #endif

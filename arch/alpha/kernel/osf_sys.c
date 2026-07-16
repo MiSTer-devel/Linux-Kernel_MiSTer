@@ -36,6 +36,7 @@
 #include <linux/types.h>
 #include <linux/ipc.h>
 #include <linux/namei.h>
+#include <linux/mount.h>
 #include <linux/uio.h>
 #include <linux/vfs.h>
 #include <linux/rcupdate.h>
@@ -96,7 +97,7 @@ struct osf_dirent {
 	unsigned int d_ino;
 	unsigned short d_reclen;
 	unsigned short d_namlen;
-	char d_name[1];
+	char d_name[];
 };
 
 struct osf_dirent_callback {
@@ -107,7 +108,7 @@ struct osf_dirent_callback {
 	int error;
 };
 
-static int
+static bool
 osf_filldir(struct dir_context *ctx, const char *name, int namlen,
 	    loff_t offset, u64 ino, unsigned int d_type)
 {
@@ -119,11 +120,11 @@ osf_filldir(struct dir_context *ctx, const char *name, int namlen,
 
 	buf->error = -EINVAL;	/* only used if we fail */
 	if (reclen > buf->count)
-		return -EINVAL;
+		return false;
 	d_ino = ino;
 	if (sizeof(d_ino) < sizeof(ino) && d_ino != ino) {
 		buf->error = -EOVERFLOW;
-		return -EOVERFLOW;
+		return false;
 	}
 	if (buf->basep) {
 		if (put_user(offset, buf->basep))
@@ -140,10 +141,10 @@ osf_filldir(struct dir_context *ctx, const char *name, int namlen,
 	dirent = (void __user *)dirent + reclen;
 	buf->dirent = dirent;
 	buf->count -= reclen;
-	return 0;
+	return true;
 Efault:
 	buf->error = -EFAULT;
-	return -EFAULT;
+	return false;
 }
 
 SYSCALL_DEFINE4(osf_getdirentries, unsigned int, fd,
@@ -151,7 +152,7 @@ SYSCALL_DEFINE4(osf_getdirentries, unsigned int, fd,
 		long __user *, basep)
 {
 	int error;
-	struct fd arg = fdget_pos(fd);
+	CLASS(fd_pos, arg)(fd);
 	struct osf_dirent_callback buf = {
 		.ctx.actor = osf_filldir,
 		.dirent = dirent,
@@ -159,16 +160,15 @@ SYSCALL_DEFINE4(osf_getdirentries, unsigned int, fd,
 		.count = count
 	};
 
-	if (!arg.file)
+	if (fd_empty(arg))
 		return -EBADF;
 
-	error = iterate_dir(arg.file, &buf.ctx);
+	error = iterate_dir(fd_file(arg), &buf.ctx);
 	if (error >= 0)
 		error = buf.error;
 	if (count != buf.count)
 		error = count - buf.count;
 
-	fdput_pos(arg);
 	return error;
 }
 
@@ -521,7 +521,7 @@ SYSCALL_DEFINE4(osf_mount, unsigned long, typenr, const char __user *, path,
 		break;
 	default:
 		retval = -EINVAL;
-		printk("osf_mount(%ld, %x)\n", typenr, flag);
+		printk_ratelimited("osf_mount(%ld, %x)\n", typenr, flag);
 	}
 
 	return retval;
@@ -1013,8 +1013,6 @@ SYSCALL_DEFINE2(osf_settimeofday, struct timeval32 __user *, tv,
 	return do_sys_settimeofday64(tv ? &kts : NULL, tz ? &ktz : NULL);
 }
 
-asmlinkage long sys_ni_posix_timers(void);
-
 SYSCALL_DEFINE2(osf_utimes, const char __user *, filename,
 		struct timeval32 __user *, tvs)
 {
@@ -1212,36 +1210,26 @@ SYSCALL_DEFINE1(old_adjtimex, struct timex32 __user *, txc_p)
 	return ret;
 }
 
-/* Get an address range which is currently unmapped.  Similar to the
-   generic version except that we know how to honor ADDR_LIMIT_32BIT.  */
+/* Get an address range which is currently unmapped. */
 
 static unsigned long
 arch_get_unmapped_area_1(unsigned long addr, unsigned long len,
 		         unsigned long limit)
 {
-	struct vm_unmapped_area_info info;
+	struct vm_unmapped_area_info info = {};
 
-	info.flags = 0;
 	info.length = len;
 	info.low_limit = addr;
 	info.high_limit = limit;
-	info.align_mask = 0;
-	info.align_offset = 0;
 	return vm_unmapped_area(&info);
 }
 
 unsigned long
 arch_get_unmapped_area(struct file *filp, unsigned long addr,
 		       unsigned long len, unsigned long pgoff,
-		       unsigned long flags)
+		       unsigned long flags, vm_flags_t vm_flags)
 {
-	unsigned long limit;
-
-	/* "32 bit" actually means 31 bit, since pointers sign extend.  */
-	if (current->personality & ADDR_LIMIT_32BIT)
-		limit = 0x80000000;
-	else
-		limit = TASK_SIZE;
+	unsigned long limit = TASK_SIZE;
 
 	if (len > limit)
 		return -ENOMEM;
@@ -1275,48 +1263,6 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
 	addr = arch_get_unmapped_area_1 (PAGE_SIZE, len, limit);
 
 	return addr;
-}
-
-#ifdef CONFIG_OSF4_COMPAT
-/* Clear top 32 bits of iov_len in the user's buffer for
-   compatibility with old versions of OSF/1 where iov_len
-   was defined as int. */
-static int
-osf_fix_iov_len(const struct iovec __user *iov, unsigned long count)
-{
-	unsigned long i;
-
-	for (i = 0 ; i < count ; i++) {
-		int __user *iov_len_high = (int __user *)&iov[i].iov_len + 1;
-
-		if (put_user(0, iov_len_high))
-			return -EFAULT;
-	}
-	return 0;
-}
-#endif
-
-SYSCALL_DEFINE3(osf_readv, unsigned long, fd,
-		const struct iovec __user *, vector, unsigned long, count)
-{
-#ifdef CONFIG_OSF4_COMPAT
-	if (unlikely(personality(current->personality) == PER_OSF4))
-		if (osf_fix_iov_len(vector, count))
-			return -EFAULT;
-#endif
-
-	return sys_readv(fd, vector, count);
-}
-
-SYSCALL_DEFINE3(osf_writev, unsigned long, fd,
-		const struct iovec __user *, vector, unsigned long, count)
-{
-#ifdef CONFIG_OSF4_COMPAT
-	if (unlikely(personality(current->personality) == PER_OSF4))
-		if (osf_fix_iov_len(vector, count))
-			return -EFAULT;
-#endif
-	return sys_writev(fd, vector, count);
 }
 
 SYSCALL_DEFINE2(osf_getpriority, int, which, int, who)

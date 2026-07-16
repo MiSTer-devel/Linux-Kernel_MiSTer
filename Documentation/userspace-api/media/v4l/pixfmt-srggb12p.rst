@@ -6,7 +6,7 @@
 .. _v4l2-pix-fmt-sgrbg12p:
 
 *******************************************************************************************************************************
-V4L2_PIX_FMT_SRGGB12P ('pRCC'), V4L2_PIX_FMT_SGRBG12P ('pgCC'), V4L2_PIX_FMT_SGBRG12P ('pGCC'), V4L2_PIX_FMT_SBGGR12P ('pBCC'),
+V4L2_PIX_FMT_SRGGB12P ('pRCC'), V4L2_PIX_FMT_SGRBG12P ('pgCC'), V4L2_PIX_FMT_SGBRG12P ('pGCC'), V4L2_PIX_FMT_SBGGR12P ('pBCC')
 *******************************************************************************************************************************
 
 
@@ -20,7 +20,7 @@ Description
 These four pixel formats are packed raw sRGB / Bayer formats with 12
 bits per colour. Every two consecutive samples are packed into three
 bytes. Each of the first two bytes contain the 8 high order bits of
-the pixels, and the third byte contains the four least significants
+the pixels, and the third byte contains the four least significant
 bits of each pixel, in the same order.
 
 Each n-pixel row contains n/2 green samples and n/2 blue or red
@@ -60,7 +60,7 @@ Each cell is one byte.
           G\ :sub:`10low`\ (bits 3--0)
        -  G\ :sub:`12high`
        -  R\ :sub:`13high`
-       -  R\ :sub:`13low`\ (bits 3--2)
+       -  R\ :sub:`13low`\ (bits 7--4)
 
           G\ :sub:`12low`\ (bits 3--0)
     -  -  start + 12:
@@ -82,6 +82,6 @@ Each cell is one byte.
           G\ :sub:`30low`\ (bits 3--0)
        -  G\ :sub:`32high`
        -  R\ :sub:`33high`
-       -  R\ :sub:`33low`\ (bits 3--2)
+       -  R\ :sub:`33low`\ (bits 7--4)
 
           G\ :sub:`32low`\ (bits 3--0)

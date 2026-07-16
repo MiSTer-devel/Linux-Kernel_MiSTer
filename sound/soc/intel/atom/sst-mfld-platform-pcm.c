@@ -273,7 +273,7 @@ static int sst_platform_init_stream(struct snd_pcm_substream *substream)
 {
 	struct sst_runtime_stream *stream =
 			substream->runtime->private_data;
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	int ret_val;
 
 	dev_dbg(rtd->dev, "setting buffer ptr param\n");
@@ -467,6 +467,7 @@ static const struct snd_soc_dai_ops sst_media_dai_ops = {
 };
 
 static const struct snd_soc_dai_ops sst_compr_dai_ops = {
+	.compress_new = snd_soc_new_compress,
 	.mute_stream = sst_media_digital_mute,
 };
 
@@ -510,7 +511,6 @@ static struct snd_soc_dai_driver sst_platform_dai[] = {
 },
 {
 	.name = "compress-cpu-dai",
-	.compress_new = snd_soc_new_compress,
 	.ops = &sst_compr_dai_ops,
 	.playback = {
 		.stream_name = "Compress Playback",
@@ -593,7 +593,7 @@ static int sst_soc_trigger(struct snd_soc_component *component,
 	int ret_val = 0, str_id;
 	struct sst_runtime_stream *stream;
 	int status;
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 
 	dev_dbg(rtd->dev, "%s called\n", __func__);
 	if (substream->pcm->internal)
@@ -641,7 +641,7 @@ static snd_pcm_uframes_t sst_soc_pointer(struct snd_soc_component *component,
 	struct sst_runtime_stream *stream;
 	int ret_val, status;
 	struct pcm_stream_info *str_info;
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 
 	stream = substream->runtime->private_data;
 	status = sst_get_stream_status(stream);
@@ -653,22 +653,32 @@ static snd_pcm_uframes_t sst_soc_pointer(struct snd_soc_component *component,
 		dev_err(rtd->dev, "sst: error code = %d\n", ret_val);
 		return ret_val;
 	}
-	substream->runtime->delay = str_info->pcm_delay;
 	return str_info->buffer_ptr;
+}
+
+static snd_pcm_sframes_t sst_soc_delay(struct snd_soc_component *component,
+				       struct snd_pcm_substream *substream)
+{
+	struct sst_runtime_stream *stream = substream->runtime->private_data;
+	struct pcm_stream_info *str_info = &stream->stream_info;
+
+	if (sst_get_stream_status(stream) == SST_PLATFORM_INIT)
+		return 0;
+
+	return str_info->pcm_delay;
 }
 
 static int sst_soc_pcm_new(struct snd_soc_component *component,
 			   struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_dai *dai = asoc_rtd_to_cpu(rtd, 0);
+	struct snd_soc_dai *dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct snd_pcm *pcm = rtd->pcm;
 
 	if (dai->driver->playback.channels_min ||
 			dai->driver->capture.channels_min) {
-		snd_pcm_set_managed_buffer_all(pcm,
-			SNDRV_DMA_TYPE_CONTINUOUS,
-			snd_dma_continuous_data(GFP_DMA),
-			SST_MIN_BUFFER, SST_MAX_BUFFER);
+		snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV,
+					       pcm->card->dev,
+					       SST_MIN_BUFFER, SST_MAX_BUFFER);
 	}
 	return 0;
 }
@@ -695,6 +705,7 @@ static const struct snd_soc_component_driver sst_soc_platform_drv  = {
 	.open		= sst_soc_open,
 	.trigger	= sst_soc_trigger,
 	.pointer	= sst_soc_pointer,
+	.delay		= sst_soc_delay,
 	.compress_ops	= &sst_platform_compress_ops,
 	.pcm_construct	= sst_soc_pcm_new,
 };
@@ -730,10 +741,9 @@ static int sst_platform_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int sst_platform_remove(struct platform_device *pdev)
+static void sst_platform_remove(struct platform_device *pdev)
 {
 	dev_dbg(&pdev->dev, "sst_platform_remove success\n");
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -752,7 +762,7 @@ static int sst_soc_prepare(struct device *dev)
 
 	/* set the SSPs to idle */
 	for_each_card_rtds(drv->soc_card, rtd) {
-		struct snd_soc_dai *dai = asoc_rtd_to_cpu(rtd, 0);
+		struct snd_soc_dai *dai = snd_soc_rtd_to_cpu(rtd, 0);
 
 		if (snd_soc_dai_active(dai)) {
 			send_ssp_cmd(dai, dai->name, 0);
@@ -773,7 +783,7 @@ static void sst_soc_complete(struct device *dev)
 
 	/* restart SSPs */
 	for_each_card_rtds(drv->soc_card, rtd) {
-		struct snd_soc_dai *dai = asoc_rtd_to_cpu(rtd, 0);
+		struct snd_soc_dai *dai = snd_soc_rtd_to_cpu(rtd, 0);
 
 		if (snd_soc_dai_active(dai)) {
 			sst_handle_vb_timer(dai, true);

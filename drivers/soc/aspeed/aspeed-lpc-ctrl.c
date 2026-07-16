@@ -10,6 +10,7 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/of_address.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/poll.h>
 #include <linux/regmap.h>
@@ -254,17 +255,8 @@ static int aspeed_lpc_ctrl_probe(struct platform_device *pdev)
 	dev_set_drvdata(&pdev->dev, lpc_ctrl);
 
 	/* If memory-region is described in device tree then store */
-	node = of_parse_phandle(dev->of_node, "memory-region", 0);
-	if (!node) {
-		dev_dbg(dev, "Didn't find reserved memory\n");
-	} else {
-		rc = of_address_to_resource(node, 0, &resm);
-		of_node_put(node);
-		if (rc) {
-			dev_err(dev, "Couldn't address to resource for reserved memory\n");
-			return -ENXIO;
-		}
-
+	rc = of_reserved_mem_region_to_resource(dev->of_node, 0, &resm);
+	if (!rc) {
 		lpc_ctrl->mem_size = resource_size(&resm);
 		lpc_ctrl->mem_base = resm.start;
 
@@ -306,10 +298,9 @@ static int aspeed_lpc_ctrl_probe(struct platform_device *pdev)
 	}
 
 	lpc_ctrl->clk = devm_clk_get(dev, NULL);
-	if (IS_ERR(lpc_ctrl->clk)) {
-		dev_err(dev, "couldn't get clock\n");
-		return PTR_ERR(lpc_ctrl->clk);
-	}
+	if (IS_ERR(lpc_ctrl->clk))
+		return dev_err_probe(dev, PTR_ERR(lpc_ctrl->clk),
+				     "couldn't get clock\n");
 	rc = clk_prepare_enable(lpc_ctrl->clk);
 	if (rc) {
 		dev_err(dev, "couldn't enable clock\n");
@@ -333,14 +324,12 @@ err:
 	return rc;
 }
 
-static int aspeed_lpc_ctrl_remove(struct platform_device *pdev)
+static void aspeed_lpc_ctrl_remove(struct platform_device *pdev)
 {
 	struct aspeed_lpc_ctrl *lpc_ctrl = dev_get_drvdata(&pdev->dev);
 
 	misc_deregister(&lpc_ctrl->miscdev);
 	clk_disable_unprepare(lpc_ctrl->clk);
-
-	return 0;
 }
 
 static const struct of_device_id aspeed_lpc_ctrl_match[] = {

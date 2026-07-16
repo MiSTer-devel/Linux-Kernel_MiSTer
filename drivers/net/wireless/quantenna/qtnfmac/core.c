@@ -179,7 +179,7 @@ static int qtnf_netdev_set_mac_address(struct net_device *ndev, void *addr)
 					     sa->sa_data);
 
 	if (ret)
-		memcpy(ndev->dev_addr, old_addr, ETH_ALEN);
+		eth_hw_addr_set(ndev, old_addr);
 
 	return ret;
 }
@@ -196,27 +196,12 @@ static int qtnf_netdev_port_parent_id(struct net_device *ndev,
 	return 0;
 }
 
-static int qtnf_netdev_alloc_pcpu_stats(struct net_device *dev)
-{
-	dev->tstats = netdev_alloc_pcpu_stats(struct pcpu_sw_netstats);
-
-	return dev->tstats ? 0 : -ENOMEM;
-}
-
-static void qtnf_netdev_free_pcpu_stats(struct net_device *dev)
-{
-	free_percpu(dev->tstats);
-}
-
 /* Network device ops handlers */
 const struct net_device_ops qtnf_netdev_ops = {
-	.ndo_init = qtnf_netdev_alloc_pcpu_stats,
-	.ndo_uninit = qtnf_netdev_free_pcpu_stats,
 	.ndo_open = qtnf_netdev_open,
 	.ndo_stop = qtnf_netdev_close,
 	.ndo_start_xmit = qtnf_netdev_hard_start_xmit,
 	.ndo_tx_timeout = qtnf_netdev_tx_timeout,
-	.ndo_get_stats64 = dev_get_tstats64,
 	.ndo_set_mac_address = qtnf_netdev_set_mac_address,
 	.ndo_get_port_parent_id = qtnf_netdev_port_parent_id,
 };
@@ -478,11 +463,12 @@ int qtnf_core_net_attach(struct qtnf_wmac *mac, struct qtnf_vif *vif,
 	dev->needs_free_netdev = true;
 	dev_net_set(dev, wiphy_net(wiphy));
 	dev->ieee80211_ptr = &vif->wdev;
-	ether_addr_copy(dev->dev_addr, vif->mac_addr);
+	eth_hw_addr_set(dev, vif->mac_addr);
 	dev->flags |= IFF_BROADCAST | IFF_MULTICAST;
 	dev->watchdog_timeo = QTNF_DEF_WDOG_TIMEOUT;
 	dev->tx_queue_len = 100;
 	dev->ethtool_ops = &qtnf_ethtool_ops;
+	dev->pcpu_stat_type = NETDEV_PCPU_STAT_TSTATS;
 
 	if (qtnf_hwcap_is_set(&mac->bus->hw_info, QLINK_HW_CAPAB_HW_BRIDGE))
 		dev->needed_tailroom = sizeof(struct qtnf_frame_meta_info);
@@ -535,7 +521,7 @@ static void qtnf_core_mac_detach(struct qtnf_bus *bus, unsigned int macid)
 		if (!wiphy->bands[band])
 			continue;
 
-		kfree(wiphy->bands[band]->iftype_data);
+		kfree((__force void *)wiphy->bands[band]->iftype_data);
 		wiphy->bands[band]->n_iftype_data = 0;
 
 		kfree(wiphy->bands[band]->channels);
@@ -811,13 +797,11 @@ void qtnf_core_detach(struct qtnf_bus *bus)
 	bus->fw_state = QTNF_FW_STATE_DETACHED;
 
 	if (bus->workqueue) {
-		flush_workqueue(bus->workqueue);
 		destroy_workqueue(bus->workqueue);
 		bus->workqueue = NULL;
 	}
 
 	if (bus->hprio_workqueue) {
-		flush_workqueue(bus->hprio_workqueue);
 		destroy_workqueue(bus->hprio_workqueue);
 		bus->hprio_workqueue = NULL;
 	}

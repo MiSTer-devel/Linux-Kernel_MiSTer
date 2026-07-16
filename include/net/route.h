@@ -27,6 +27,8 @@
 #include <net/ip_fib.h>
 #include <net/arp.h>
 #include <net/ndisc.h>
+#include <net/inet_dscp.h>
+#include <net/sock.h>
 #include <linux/in_route.h>
 #include <linux/rtnetlink.h>
 #include <linux/rcupdate.h>
@@ -35,14 +37,20 @@
 #include <linux/cache.h>
 #include <linux/security.h>
 
-/* IPv4 datagram length is stored into 16bit field (tot_len) */
-#define IP_MAX_MTU	0xFFFFU
+static inline __u8 ip_sock_rt_scope(const struct sock *sk)
+{
+	if (sock_flag(sk, SOCK_LOCALROUTE))
+		return RT_SCOPE_LINK;
 
-#define RTO_ONLINK	0x01
+	return RT_SCOPE_UNIVERSE;
+}
 
-#define RT_CONN_FLAGS(sk)   (RT_TOS(inet_sk(sk)->tos) | sock_flag(sk, SOCK_LOCALROUTE))
-#define RT_CONN_FLAGS_TOS(sk,tos)   (RT_TOS(tos) | sock_flag(sk, SOCK_LOCALROUTE))
+static inline __u8 ip_sock_rt_tos(const struct sock *sk)
+{
+	return READ_ONCE(inet_sk(sk)->tos) & INET_DSCP_MASK;
+}
 
+struct ip_tunnel_info;
 struct fib_nh;
 struct fib_info;
 struct uncached_list;
@@ -67,10 +75,18 @@ struct rtable {
 	/* Miscellaneous cached information */
 	u32			rt_mtu_locked:1,
 				rt_pmtu:31;
-
-	struct list_head	rt_uncached;
-	struct uncached_list	*rt_uncached_list;
 };
+
+#define dst_rtable(_ptr) container_of_const(_ptr, struct rtable, dst)
+
+/**
+ * skb_rtable - Returns the skb &rtable
+ * @skb: buffer
+ */
+static inline struct rtable *skb_rtable(const struct sk_buff *skb)
+{
+	return dst_rtable(skb_dst(skb));
+}
 
 static inline bool rt_is_input_route(const struct rtable *rt)
 {
@@ -114,6 +130,33 @@ struct in_device;
 int ip_rt_init(void);
 void rt_cache_flush(struct net *net);
 void rt_flush_dev(struct net_device *dev);
+
+static inline void inet_sk_init_flowi4(const struct inet_sock *inet,
+				       struct flowi4 *fl4)
+{
+	const struct ip_options_rcu *ip4_opt;
+	const struct sock *sk;
+	__be32 daddr;
+
+	rcu_read_lock();
+	ip4_opt = rcu_dereference(inet->inet_opt);
+
+	/* Source routing option overrides the socket destination address */
+	if (ip4_opt && ip4_opt->opt.srr)
+		daddr = ip4_opt->opt.faddr;
+	else
+		daddr = inet->inet_daddr;
+	rcu_read_unlock();
+
+	sk = &inet->sk;
+	flowi4_init_output(fl4, sk->sk_bound_dev_if, READ_ONCE(sk->sk_mark),
+			   ip_sock_rt_tos(sk), ip_sock_rt_scope(sk),
+			   sk->sk_protocol, inet_sk_flowi_flags(sk), daddr,
+			   inet->inet_saddr, inet->inet_dport,
+			   inet->inet_sport, sk_uid(sk));
+	security_sk_classify_flow(sk, flowi4_to_flowi_common(fl4));
+}
+
 struct rtable *ip_route_output_key_hash(struct net *net, struct flowi4 *flp,
 					const struct sk_buff *skb);
 struct rtable *ip_route_output_key_hash_rcu(struct net *net, struct flowi4 *flp,
@@ -128,12 +171,6 @@ static inline struct rtable *__ip_route_output_key(struct net *net,
 
 struct rtable *ip_route_output_flow(struct net *, struct flowi4 *flp,
 				    const struct sock *sk);
-struct rtable *ip_route_output_tunnel(struct sk_buff *skb,
-				      struct net_device *dev,
-				      struct net *net, __be32 *saddr,
-				      const struct ip_tunnel_info *info,
-				      u8 protocol, bool use_cache);
-
 struct dst_entry *ipv4_blackhole_route(struct net *net,
 				       struct dst_entry *dst_orig);
 
@@ -142,74 +179,68 @@ static inline struct rtable *ip_route_output_key(struct net *net, struct flowi4 
 	return ip_route_output_flow(net, flp, NULL);
 }
 
+/* Simplistic IPv4 route lookup function.
+ * This is only suitable for some particular use cases: since the flowi4
+ * structure is only partially set, it may bypass some fib-rules.
+ */
 static inline struct rtable *ip_route_output(struct net *net, __be32 daddr,
-					     __be32 saddr, u8 tos, int oif)
+					     __be32 saddr, dscp_t dscp,
+					     int oif, __u8 scope)
 {
 	struct flowi4 fl4 = {
 		.flowi4_oif = oif,
-		.flowi4_tos = tos,
+		.flowi4_dscp = dscp,
+		.flowi4_scope = scope,
 		.daddr = daddr,
 		.saddr = saddr,
 	};
+
 	return ip_route_output_key(net, &fl4);
 }
 
 static inline struct rtable *ip_route_output_ports(struct net *net, struct flowi4 *fl4,
-						   struct sock *sk,
+						   const struct sock *sk,
 						   __be32 daddr, __be32 saddr,
 						   __be16 dport, __be16 sport,
 						   __u8 proto, __u8 tos, int oif)
 {
-	flowi4_init_output(fl4, oif, sk ? sk->sk_mark : 0, tos,
-			   RT_SCOPE_UNIVERSE, proto,
-			   sk ? inet_sk_flowi_flags(sk) : 0,
+	flowi4_init_output(fl4, oif, sk ? READ_ONCE(sk->sk_mark) : 0, tos,
+			   sk ? ip_sock_rt_scope(sk) : RT_SCOPE_UNIVERSE,
+			   proto, sk ? inet_sk_flowi_flags(sk) : 0,
 			   daddr, saddr, dport, sport, sock_net_uid(net, sk));
 	if (sk)
 		security_sk_classify_flow(sk, flowi4_to_flowi_common(fl4));
 	return ip_route_output_flow(net, fl4, sk);
 }
 
-static inline struct rtable *ip_route_output_gre(struct net *net, struct flowi4 *fl4,
-						 __be32 daddr, __be32 saddr,
-						 __be32 gre_key, __u8 tos, int oif)
-{
-	memset(fl4, 0, sizeof(*fl4));
-	fl4->flowi4_oif = oif;
-	fl4->daddr = daddr;
-	fl4->saddr = saddr;
-	fl4->flowi4_tos = tos;
-	fl4->flowi4_proto = IPPROTO_GRE;
-	fl4->fl4_gre_key = gre_key;
-	return ip_route_output_key(net, fl4);
-}
-int ip_mc_validate_source(struct sk_buff *skb, __be32 daddr, __be32 saddr,
-			  u8 tos, struct net_device *dev,
-			  struct in_device *in_dev, u32 *itag);
-int ip_route_input_noref(struct sk_buff *skb, __be32 dst, __be32 src,
-			 u8 tos, struct net_device *devin);
-int ip_route_input_rcu(struct sk_buff *skb, __be32 dst, __be32 src,
-		       u8 tos, struct net_device *devin,
-		       struct fib_result *res);
+enum skb_drop_reason
+ip_mc_validate_source(struct sk_buff *skb, __be32 daddr, __be32 saddr,
+		      dscp_t dscp, struct net_device *dev,
+		      struct in_device *in_dev, u32 *itag);
+enum skb_drop_reason
+ip_route_input_noref(struct sk_buff *skb, __be32 daddr, __be32 saddr,
+		     dscp_t dscp, struct net_device *dev);
+enum skb_drop_reason
+ip_route_use_hint(struct sk_buff *skb, __be32 daddr, __be32 saddr,
+		  dscp_t dscp, struct net_device *dev,
+		  const struct sk_buff *hint);
 
-int ip_route_use_hint(struct sk_buff *skb, __be32 dst, __be32 src,
-		      u8 tos, struct net_device *devin,
-		      const struct sk_buff *hint);
-
-static inline int ip_route_input(struct sk_buff *skb, __be32 dst, __be32 src,
-				 u8 tos, struct net_device *devin)
+static inline enum skb_drop_reason
+ip_route_input(struct sk_buff *skb, __be32 dst, __be32 src, dscp_t dscp,
+	       struct net_device *devin)
 {
-	int err;
+	enum skb_drop_reason reason;
 
 	rcu_read_lock();
-	err = ip_route_input_noref(skb, dst, src, tos, devin);
-	if (!err) {
+	reason = ip_route_input_noref(skb, dst, src, dscp, devin);
+	if (!reason) {
 		skb_dst_force(skb);
 		if (!skb_dst(skb))
-			err = -EINVAL;
+			reason = SKB_DROP_REASON_NOT_SPECIFIED;
 	}
 	rcu_read_unlock();
 
-	return err;
+	return reason;
 }
 
 void ipv4_update_pmtu(struct sk_buff *skb, struct net *net, u32 mtu, int oif,
@@ -230,8 +261,7 @@ void ip_rt_multicast_event(struct in_device *);
 int ip_rt_ioctl(struct net *, unsigned int cmd, struct rtentry *rt);
 void ip_rt_get_source(u8 *src, struct sk_buff *skb, struct rtable *rt);
 struct rtable *rt_dst_alloc(struct net_device *dev,
-			     unsigned int flags, u16 type,
-			     bool nopolicy, bool noxfrm);
+			    unsigned int flags, u16 type, bool noxfrm);
 struct rtable *rt_dst_clone(struct net_device *dev, struct rtable *rt);
 
 struct in_ifaddr;
@@ -254,8 +284,6 @@ static inline void ip_rt_put(struct rtable *rt)
 	BUILD_BUG_ON(offsetof(struct rtable, dst) != 0);
 	dst_release(&rt->dst);
 }
-
-#define IPTOS_RT_MASK	(IPTOS_TOS_MASK & ~3)
 
 extern const __u8 ip_tos2prio[16];
 
@@ -288,39 +316,40 @@ static inline char rt_tos2priority(u8 tos)
  * ip_route_newports() calls.
  */
 
-static inline void ip_route_connect_init(struct flowi4 *fl4, __be32 dst, __be32 src,
-					 u32 tos, int oif, u8 protocol,
+static inline void ip_route_connect_init(struct flowi4 *fl4, __be32 dst,
+					 __be32 src, int oif, u8 protocol,
 					 __be16 sport, __be16 dport,
-					 struct sock *sk)
+					 const struct sock *sk)
 {
 	__u8 flow_flags = 0;
 
-	if (inet_sk(sk)->transparent)
+	if (inet_test_bit(TRANSPARENT, sk))
 		flow_flags |= FLOWI_FLAG_ANYSRC;
 
-	flowi4_init_output(fl4, oif, sk->sk_mark, tos, RT_SCOPE_UNIVERSE,
-			   protocol, flow_flags, dst, src, dport, sport,
-			   sk->sk_uid);
+	if (IS_ENABLED(CONFIG_IP_ROUTE_MULTIPATH) && !sport)
+		flow_flags |= FLOWI_FLAG_ANY_SPORT;
+
+	flowi4_init_output(fl4, oif, READ_ONCE(sk->sk_mark), ip_sock_rt_tos(sk),
+			   ip_sock_rt_scope(sk), protocol, flow_flags, dst,
+			   src, dport, sport, sk_uid(sk));
 }
 
-static inline struct rtable *ip_route_connect(struct flowi4 *fl4,
-					      __be32 dst, __be32 src, u32 tos,
-					      int oif, u8 protocol,
+static inline struct rtable *ip_route_connect(struct flowi4 *fl4, __be32 dst,
+					      __be32 src, int oif, u8 protocol,
 					      __be16 sport, __be16 dport,
-					      struct sock *sk)
+					      const struct sock *sk)
 {
 	struct net *net = sock_net(sk);
 	struct rtable *rt;
 
-	ip_route_connect_init(fl4, dst, src, tos, oif, protocol,
-			      sport, dport, sk);
+	ip_route_connect_init(fl4, dst, src, oif, protocol, sport, dport, sk);
 
 	if (!dst || !src) {
 		rt = __ip_route_output_key(net, fl4);
 		if (IS_ERR(rt))
 			return rt;
 		ip_rt_put(rt);
-		flowi4_update_output(fl4, oif, tos, fl4->daddr, fl4->saddr);
+		flowi4_update_output(fl4, oif, fl4->daddr, fl4->saddr);
 	}
 	security_sk_classify_flow(sk, flowi4_to_flowi_common(fl4));
 	return ip_route_output_flow(net, fl4, sk);
@@ -329,14 +358,13 @@ static inline struct rtable *ip_route_connect(struct flowi4 *fl4,
 static inline struct rtable *ip_route_newports(struct flowi4 *fl4, struct rtable *rt,
 					       __be16 orig_sport, __be16 orig_dport,
 					       __be16 sport, __be16 dport,
-					       struct sock *sk)
+					       const struct sock *sk)
 {
 	if (sport != orig_sport || dport != orig_dport) {
 		fl4->fl4_dport = dport;
 		fl4->fl4_sport = sport;
 		ip_rt_put(rt);
-		flowi4_update_output(fl4, sk->sk_bound_dev_if,
-				     RT_CONN_FLAGS(sk), fl4->daddr,
+		flowi4_update_output(fl4, sk->sk_bound_dev_if, fl4->daddr,
 				     fl4->saddr);
 		security_sk_classify_flow(sk, flowi4_to_flowi_common(fl4));
 		return ip_route_output_flow(sock_net(sk), fl4, sk);
@@ -357,10 +385,15 @@ static inline int inet_iif(const struct sk_buff *skb)
 static inline int ip4_dst_hoplimit(const struct dst_entry *dst)
 {
 	int hoplimit = dst_metric_raw(dst, RTAX_HOPLIMIT);
-	struct net *net = dev_net(dst->dev);
 
-	if (hoplimit == 0)
-		hoplimit = net->ipv4.sysctl_ip_default_ttl;
+	if (hoplimit == 0) {
+		const struct net *net;
+
+		rcu_read_lock();
+		net = dst_dev_net_rcu(dst);
+		hoplimit = READ_ONCE(net->ipv4.sysctl_ip_default_ttl);
+		rcu_read_unlock();
+	}
 	return hoplimit;
 }
 
@@ -369,7 +402,7 @@ static inline struct neighbour *ip_neigh_gw4(struct net_device *dev,
 {
 	struct neighbour *neigh;
 
-	neigh = __ipv4_neigh_lookup_noref(dev, daddr);
+	neigh = __ipv4_neigh_lookup_noref(dev, (__force u32)daddr);
 	if (unlikely(!neigh))
 		neigh = __neigh_create(&arp_tbl, &daddr, dev, false);
 

@@ -319,7 +319,7 @@ static int tegra_rtc_probe(struct platform_device *pdev)
 	writel(0xffffffff, info->base + TEGRA_RTC_REG_INTR_STATUS);
 	writel(0, info->base + TEGRA_RTC_REG_INTR_MASK);
 
-	device_init_wakeup(&pdev->dev, 1);
+	device_init_wakeup(&pdev->dev, true);
 
 	ret = devm_request_irq(&pdev->dev, info->irq, tegra_rtc_irq_handler,
 			       IRQF_TRIGGER_HIGH, dev_name(&pdev->dev),
@@ -342,13 +342,11 @@ disable_clk:
 	return ret;
 }
 
-static int tegra_rtc_remove(struct platform_device *pdev)
+static void tegra_rtc_remove(struct platform_device *pdev)
 {
 	struct tegra_rtc_info *info = platform_get_drvdata(pdev);
 
 	clk_disable_unprepare(info->clk);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

@@ -4,6 +4,7 @@
  * Author: Mathieu Poirier <mathieu.poirier@linaro.org>
  */
 
+#include <linux/bitfield.h>
 #include <linux/coresight.h>
 #include <linux/coresight-pmu.h>
 #include <linux/cpumask.h>
@@ -22,6 +23,7 @@
 #include "coresight-etm-perf.h"
 #include "coresight-priv.h"
 #include "coresight-syscfg.h"
+#include "coresight-trace-id.h"
 
 static struct pmu etm_pmu;
 static bool etm_perf_up;
@@ -52,6 +54,7 @@ static DEFINE_PER_CPU(struct coresight_device *, csdev_src);
  * The PMU formats were orignally for ETMv3.5/PTM's ETMCR 'config';
  * now take them as general formats and apply on all ETMs.
  */
+PMU_FORMAT_ATTR(branch_broadcast, "config:"__stringify(ETM_OPT_BRANCH_BROADCAST));
 PMU_FORMAT_ATTR(cycacc,		"config:" __stringify(ETM_OPT_CYCACC));
 /* contextid1 enables tracing CONTEXTIDR_EL1 for ETMv4 */
 PMU_FORMAT_ATTR(contextid1,	"config:" __stringify(ETM_OPT_CTXTID));
@@ -65,6 +68,7 @@ PMU_FORMAT_ATTR(preset,		"config:0-3");
 PMU_FORMAT_ATTR(sinkid,		"config2:0-31");
 /* config ID - set if a system configuration is selected */
 PMU_FORMAT_ATTR(configid,	"config2:32-63");
+PMU_FORMAT_ATTR(cc_threshold,	"config3:0-11");
 
 
 /*
@@ -97,6 +101,8 @@ static struct attribute *etm_config_formats_attr[] = {
 	&format_attr_sinkid.attr,
 	&format_attr_preset.attr,
 	&format_attr_configid.attr,
+	&format_attr_branch_broadcast.attr,
+	&format_attr_cc_threshold.attr,
 	NULL,
 };
 
@@ -130,13 +136,13 @@ static const struct attribute_group *etm_pmu_attr_groups[] = {
 	NULL,
 };
 
-static inline struct list_head **
+static inline struct coresight_path **
 etm_event_cpu_path_ptr(struct etm_event_data *data, int cpu)
 {
 	return per_cpu_ptr(data->path, cpu);
 }
 
-static inline struct list_head *
+static inline struct coresight_path *
 etm_event_cpu_path(struct etm_event_data *data, int cpu)
 {
 	return *etm_event_cpu_path_ptr(data, cpu);
@@ -220,11 +226,24 @@ static void free_event_data(struct work_struct *work)
 		cscfg_deactivate_config(event_data->cfg_hash);
 
 	for_each_cpu(cpu, mask) {
-		struct list_head **ppath;
+		struct coresight_path **ppath;
 
 		ppath = etm_event_cpu_path_ptr(event_data, cpu);
-		if (!(IS_ERR_OR_NULL(*ppath)))
+		if (!(IS_ERR_OR_NULL(*ppath))) {
+			struct coresight_device *sink = coresight_get_sink(*ppath);
+
+			/*
+			 * Mark perf event as done for trace id allocator, but don't call
+			 * coresight_trace_id_put_cpu_id_map() on individual IDs. Perf sessions
+			 * never free trace IDs to ensure that the ID associated with a CPU
+			 * cannot change during their and other's concurrent sessions. Instead,
+			 * a refcount is used so that the last event to call
+			 * coresight_trace_id_perf_stop() frees all IDs.
+			 */
+			coresight_trace_id_perf_stop(&sink->perf_sink_id_map);
+
 			coresight_release_path(*ppath);
+		}
 		*ppath = NULL;
 	}
 
@@ -257,7 +276,7 @@ static void *alloc_event_data(int cpu)
 	 * unused memory when dealing with single CPU trace scenarios is small
 	 * compared to the cost of searching through an optimized array.
 	 */
-	event_data->path = alloc_percpu(struct list_head *);
+	event_data->path = alloc_percpu(struct coresight_path *);
 
 	if (!event_data->path) {
 		kfree(event_data);
@@ -332,7 +351,7 @@ static void *etm_setup_aux(struct perf_event *event, void **pages,
 	 * CPUs, we can handle it and fail the session.
 	 */
 	for_each_cpu(cpu, mask) {
-		struct list_head *path;
+		struct coresight_path *path;
 		struct coresight_device *csdev;
 
 		csdev = per_cpu(csdev_src, cpu);
@@ -342,6 +361,18 @@ static void *etm_setup_aux(struct perf_event *event, void **pages,
 		 * on this CPU, we handle it accordingly.
 		 */
 		if (!csdev) {
+			cpumask_clear_cpu(cpu, mask);
+			continue;
+		}
+
+		/*
+		 * If AUX pause feature is enabled but the ETM driver does not
+		 * support the operations, clear this CPU from the mask and
+		 * continue to next one.
+		 */
+		if (event->attr.aux_start_paused &&
+		    (!source_ops(csdev)->pause_perf || !source_ops(csdev)->resume_perf)) {
+			dev_err_once(&csdev->dev, "AUX pause is not supported.\n");
 			cpumask_clear_cpu(cpu, mask);
 			continue;
 		}
@@ -386,6 +417,15 @@ static void *etm_setup_aux(struct perf_event *event, void **pages,
 			continue;
 		}
 
+		/* ensure we can allocate a trace ID for this CPU */
+		coresight_path_assign_trace_id(path, CS_MODE_PERF);
+		if (!IS_VALID_CS_TRACE_ID(path->trace_id)) {
+			cpumask_clear_cpu(cpu, mask);
+			coresight_release_path(path);
+			continue;
+		}
+
+		coresight_trace_id_perf_start(&sink->perf_sink_id_map);
 		*etm_event_cpu_path_ptr(event_data, cpu) = path;
 	}
 
@@ -422,6 +462,15 @@ err:
 	goto out;
 }
 
+static int etm_event_resume(struct coresight_device *csdev,
+			     struct etm_ctxt *ctxt)
+{
+	if (!ctxt->event_data)
+		return 0;
+
+	return coresight_resume_source(csdev);
+}
+
 static void etm_event_start(struct perf_event *event, int flags)
 {
 	int cpu = smp_processor_id();
@@ -429,10 +478,19 @@ static void etm_event_start(struct perf_event *event, int flags)
 	struct etm_ctxt *ctxt = this_cpu_ptr(&etm_ctxt);
 	struct perf_output_handle *handle = &ctxt->handle;
 	struct coresight_device *sink, *csdev = per_cpu(csdev_src, cpu);
-	struct list_head *path;
+	struct coresight_path *path;
+	u64 hw_id;
 
 	if (!csdev)
 		goto fail;
+
+	if (flags & PERF_EF_RESUME) {
+		if (etm_event_resume(csdev, ctxt) < 0) {
+			dev_err(&csdev->dev, "Failed to resume ETM event.\n");
+			goto fail;
+		}
+		return;
+	}
 
 	/* Have we messed up our tracking ? */
 	if (WARN_ON(ctxt->event_data))
@@ -452,11 +510,17 @@ static void etm_event_start(struct perf_event *event, int flags)
 	 * sink from this ETM. We can't do much in this case if
 	 * the sink was specified or hinted to the driver. For
 	 * now, simply don't record anything on this ETM.
+	 *
+	 * As such we pretend that everything is fine, and let
+	 * it continue without actually tracing. The event could
+	 * continue tracing when it moves to a CPU where it is
+	 * reachable to a sink.
 	 */
 	if (!cpumask_test_cpu(cpu, &event_data->mask))
-		goto fail_end_stop;
+		goto out;
 
 	path = etm_event_cpu_path(event_data, cpu);
+	path->handle = handle;
 	/* We need a sink, no need to continue without one */
 	sink = coresight_get_sink(path);
 	if (WARN_ON_ONCE(!sink))
@@ -466,26 +530,98 @@ static void etm_event_start(struct perf_event *event, int flags)
 	if (coresight_enable_path(path, CS_MODE_PERF, handle))
 		goto fail_end_stop;
 
-	/* Tell the perf core the event is alive */
-	event->hw.state = 0;
-
 	/* Finally enable the tracer */
-	if (source_ops(csdev)->enable(csdev, event, CS_MODE_PERF))
+	if (source_ops(csdev)->enable(csdev, event, CS_MODE_PERF, path))
 		goto fail_disable_path;
 
+	/*
+	 * output cpu / trace ID in perf record, once for the lifetime
+	 * of the event.
+	 */
+	if (!cpumask_test_cpu(cpu, &event_data->aux_hwid_done)) {
+		cpumask_set_cpu(cpu, &event_data->aux_hwid_done);
+
+		hw_id = FIELD_PREP(CS_AUX_HW_ID_MAJOR_VERSION_MASK,
+				CS_AUX_HW_ID_MAJOR_VERSION);
+		hw_id |= FIELD_PREP(CS_AUX_HW_ID_MINOR_VERSION_MASK,
+				CS_AUX_HW_ID_MINOR_VERSION);
+		hw_id |= FIELD_PREP(CS_AUX_HW_ID_TRACE_ID_MASK, path->trace_id);
+		hw_id |= FIELD_PREP(CS_AUX_HW_ID_SINK_ID_MASK, coresight_get_sink_id(sink));
+
+		perf_report_aux_output_id(event, hw_id);
+	}
+
+out:
+	/* Tell the perf core the event is alive */
+	event->hw.state = 0;
 	/* Save the event_data for this ETM */
 	ctxt->event_data = event_data;
-out:
 	return;
 
 fail_disable_path:
 	coresight_disable_path(path);
 fail_end_stop:
-	perf_aux_output_flag(handle, PERF_AUX_FLAG_TRUNCATED);
-	perf_aux_output_end(handle, 0);
+	/*
+	 * Check if the handle is still associated with the event,
+	 * to handle cases where if the sink failed to start the
+	 * trace and TRUNCATED the handle already.
+	 */
+	if (READ_ONCE(handle->event)) {
+		perf_aux_output_flag(handle, PERF_AUX_FLAG_TRUNCATED);
+		perf_aux_output_end(handle, 0);
+	}
 fail:
 	event->hw.state = PERF_HES_STOPPED;
-	goto out;
+	return;
+}
+
+static void etm_event_pause(struct perf_event *event,
+			    struct coresight_device *csdev,
+			    struct etm_ctxt *ctxt)
+{
+	int cpu = smp_processor_id();
+	struct coresight_device *sink;
+	struct perf_output_handle *handle = &ctxt->handle;
+	struct coresight_path *path;
+	unsigned long size;
+
+	if (!ctxt->event_data)
+		return;
+
+	/* Stop tracer */
+	coresight_pause_source(csdev);
+
+	path = etm_event_cpu_path(ctxt->event_data, cpu);
+	sink = coresight_get_sink(path);
+	if (WARN_ON_ONCE(!sink))
+		return;
+
+	/*
+	 * The per CPU sink has own interrupt handling, it might have
+	 * race condition with updating buffer on AUX trace pause if
+	 * it is invoked from NMI.  To avoid the race condition,
+	 * disallows updating buffer for the per CPU sink case.
+	 */
+	if (coresight_is_percpu_sink(sink))
+		return;
+
+	if (WARN_ON_ONCE(handle->event != event))
+		return;
+
+	if (!sink_ops(sink)->update_buffer)
+		return;
+
+	size = sink_ops(sink)->update_buffer(sink, handle,
+					     ctxt->event_data->snk_config);
+	if (READ_ONCE(handle->event)) {
+		if (!size)
+			return;
+
+		perf_aux_output_end(handle, size);
+		perf_aux_output_begin(handle, event);
+	} else {
+		WARN_ON_ONCE(size);
+	}
 }
 
 static void etm_event_stop(struct perf_event *event, int mode)
@@ -496,7 +632,10 @@ static void etm_event_stop(struct perf_event *event, int mode)
 	struct etm_ctxt *ctxt = this_cpu_ptr(&etm_ctxt);
 	struct perf_output_handle *handle = &ctxt->handle;
 	struct etm_event_data *event_data;
-	struct list_head *path;
+	struct coresight_path *path;
+
+	if (mode & PERF_EF_PAUSE)
+		return etm_event_pause(event, csdev, ctxt);
 
 	/*
 	 * If we still have access to the event_data via handle,
@@ -517,6 +656,19 @@ static void etm_event_stop(struct perf_event *event, int mode)
 	if (WARN_ON(!event_data))
 		return;
 
+	/*
+	 * Check if this ETM was allowed to trace, as decided at
+	 * etm_setup_aux(). If it wasn't allowed to trace, then
+	 * nothing needs to be torn down other than outputting a
+	 * zero sized record.
+	 */
+	if (handle->event && (mode & PERF_EF_UPDATE) &&
+	    !cpumask_test_cpu(cpu, &event_data->mask)) {
+		event->hw.state = PERF_HES_STOPPED;
+		perf_aux_output_end(handle, 0);
+		return;
+	}
+
 	if (!csdev)
 		return;
 
@@ -529,7 +681,7 @@ static void etm_event_stop(struct perf_event *event, int mode)
 		return;
 
 	/* stop tracer */
-	source_ops(csdev)->disable(csdev, event);
+	coresight_disable_source(csdev, event);
 
 	/* tell the core */
 	event->hw.state = PERF_HES_STOPPED;
@@ -550,7 +702,21 @@ static void etm_event_stop(struct perf_event *event, int mode)
 
 		size = sink_ops(sink)->update_buffer(sink, handle,
 					      event_data->snk_config);
-		perf_aux_output_end(handle, size);
+		/*
+		 * Make sure the handle is still valid as the
+		 * sink could have closed it from an IRQ.
+		 * The sink driver must handle the race with
+		 * update_buffer() and IRQ. Thus either we
+		 * should get a valid handle and valid size
+		 * (which may be 0).
+		 *
+		 * But we should never get a non-zero size with
+		 * an invalid handle.
+		 */
+		if (READ_ONCE(handle->event))
+			perf_aux_output_end(handle, size);
+		else
+			WARN_ON(size);
 	}
 
 	/* Disabling the path make its elements available to other sessions */
@@ -686,7 +852,7 @@ static ssize_t etm_perf_sink_name_show(struct device *dev,
 	struct dev_ext_attribute *ea;
 
 	ea = container_of(dattr, struct dev_ext_attribute, attr);
-	return scnprintf(buf, PAGE_SIZE, "0x%lx\n", (unsigned long)(ea->var));
+	return scnprintf(buf, PAGE_SIZE, "0x%px\n", ea->var);
 }
 
 static struct dev_ext_attribute *
@@ -778,7 +944,7 @@ static ssize_t etm_perf_cscfg_event_show(struct device *dev,
 	struct dev_ext_attribute *ea;
 
 	ea = container_of(dattr, struct dev_ext_attribute, attr);
-	return scnprintf(buf, PAGE_SIZE, "configid=0x%lx\n", (unsigned long)(ea->var));
+	return scnprintf(buf, PAGE_SIZE, "configid=0x%px\n", ea->var);
 }
 
 int etm_perf_add_symlink_cscfg(struct device *dev, struct cscfg_config_desc *config_desc)
@@ -815,7 +981,8 @@ int __init etm_perf_init(void)
 	int ret;
 
 	etm_pmu.capabilities		= (PERF_PMU_CAP_EXCLUSIVE |
-					   PERF_PMU_CAP_ITRACE);
+					   PERF_PMU_CAP_ITRACE |
+					   PERF_PMU_CAP_AUX_PAUSE);
 
 	etm_pmu.attr_groups		= etm_pmu_attr_groups;
 	etm_pmu.task_ctx_nr		= perf_sw_context;
@@ -830,6 +997,7 @@ int __init etm_perf_init(void)
 	etm_pmu.addr_filters_sync	= etm_addr_filters_sync;
 	etm_pmu.addr_filters_validate	= etm_addr_filters_validate;
 	etm_pmu.nr_addr_filters		= ETM_ADDR_CMP_MAX;
+	etm_pmu.module			= THIS_MODULE;
 
 	ret = perf_pmu_register(&etm_pmu, CORESIGHT_ETM_PMU_NAME, -1);
 	if (ret == 0)

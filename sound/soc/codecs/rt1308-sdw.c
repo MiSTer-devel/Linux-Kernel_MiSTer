@@ -17,6 +17,7 @@
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
+#include <sound/sdw.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
 #include <sound/initval.h>
@@ -50,6 +51,10 @@ static bool rt1308_volatile_register(struct device *dev, unsigned int reg)
 	case 0x3008:
 	case 0x300a:
 	case 0xc000:
+	case 0xc710:
+	case 0xcf01:
+	case 0xc860 ... 0xc863:
+	case 0xc870 ... 0xc873:
 		return true;
 	default:
 		return false;
@@ -64,7 +69,7 @@ static const struct regmap_config rt1308_sdw_regmap = {
 	.max_register = 0xcfff,
 	.reg_defaults = rt1308_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(rt1308_reg_defaults),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.use_single_read = true,
 	.use_single_write = true,
 };
@@ -159,46 +164,12 @@ static int rt1308_read_prop(struct sdw_slave *slave)
 	return 0;
 }
 
-static int rt1308_io_init(struct device *dev, struct sdw_slave *slave)
+static void rt1308_apply_calib_params(struct rt1308_sdw_priv *rt1308)
 {
-	struct rt1308_sdw_priv *rt1308 = dev_get_drvdata(dev);
-	int ret = 0;
 	unsigned int efuse_m_btl_l, efuse_m_btl_r, tmp;
 	unsigned int efuse_c_btl_l, efuse_c_btl_r;
 
-	if (rt1308->hw_init)
-		return 0;
-
-	if (rt1308->first_hw_init) {
-		regcache_cache_only(rt1308->regmap, false);
-		regcache_cache_bypass(rt1308->regmap, true);
-	}
-
-	/*
-	 * PM runtime is only enabled when a Slave reports as Attached
-	 */
-	if (!rt1308->first_hw_init) {
-		/* set autosuspend parameters */
-		pm_runtime_set_autosuspend_delay(&slave->dev, 3000);
-		pm_runtime_use_autosuspend(&slave->dev);
-
-		/* update count of parent 'active' children */
-		pm_runtime_set_active(&slave->dev);
-
-		/* make sure the device does not suspend immediately */
-		pm_runtime_mark_last_busy(&slave->dev);
-
-		pm_runtime_enable(&slave->dev);
-	}
-
-	pm_runtime_get_noresume(&slave->dev);
-
-	/* sw reset */
-	regmap_write(rt1308->regmap, RT1308_SDW_RESET, 0);
-
-	/* read efuse */
-	regmap_write(rt1308->regmap, 0xc360, 0x01);
-	regmap_write(rt1308->regmap, 0xc361, 0x80);
+	/* read efuse to apply calibration parameters */
 	regmap_write(rt1308->regmap, 0xc7f0, 0x04);
 	regmap_write(rt1308->regmap, 0xc7f1, 0xfe);
 	msleep(100);
@@ -222,10 +193,55 @@ static int rt1308_io_init(struct device *dev, struct sdw_slave *slave)
 	efuse_c_btl_r = tmp;
 	regmap_read(rt1308->regmap, 0xc872, &tmp);
 	efuse_c_btl_r = efuse_c_btl_r | (tmp << 8);
-	dev_dbg(&slave->dev, "%s m_btl_l=0x%x, m_btl_r=0x%x\n", __func__,
+	dev_dbg(&rt1308->sdw_slave->dev, "%s m_btl_l=0x%x, m_btl_r=0x%x\n", __func__,
 		efuse_m_btl_l, efuse_m_btl_r);
-	dev_dbg(&slave->dev, "%s c_btl_l=0x%x, c_btl_r=0x%x\n", __func__,
+	dev_dbg(&rt1308->sdw_slave->dev, "%s c_btl_l=0x%x, c_btl_r=0x%x\n", __func__,
 		efuse_c_btl_l, efuse_c_btl_r);
+}
+
+static void rt1308_apply_bq_params(struct rt1308_sdw_priv *rt1308)
+{
+	unsigned int i, reg, data;
+
+	for (i = 0; i < rt1308->bq_params_cnt; i += 3) {
+		reg = rt1308->bq_params[i] | (rt1308->bq_params[i + 1] << 8);
+		data = rt1308->bq_params[i + 2];
+		regmap_write(rt1308->regmap, reg, data);
+	}
+}
+
+static int rt1308_io_init(struct device *dev, struct sdw_slave *slave)
+{
+	struct rt1308_sdw_priv *rt1308 = dev_get_drvdata(dev);
+	int ret = 0;
+	unsigned int tmp, hibernation_flag;
+
+	if (rt1308->hw_init)
+		return 0;
+
+	regcache_cache_only(rt1308->regmap, false);
+	if (rt1308->first_hw_init)
+		regcache_cache_bypass(rt1308->regmap, true);
+
+	/*
+	 * PM runtime status is marked as 'active' only when a Slave reports as Attached
+	 */
+	if (!rt1308->first_hw_init)
+		/* update count of parent 'active' children */
+		pm_runtime_set_active(&slave->dev);
+
+	pm_runtime_get_noresume(&slave->dev);
+
+	regmap_read(rt1308->regmap, 0xcf01, &hibernation_flag);
+	if ((hibernation_flag != 0x00) && rt1308->first_hw_init)
+		goto _preset_ready_;
+
+	/* sw reset */
+	regmap_write(rt1308->regmap, RT1308_SDW_RESET, 0);
+
+	regmap_read(rt1308->regmap, 0xc710, &tmp);
+	rt1308->hw_ver = tmp;
+	dev_dbg(dev, "%s, hw_ver=0x%x\n", __func__, rt1308->hw_ver);
 
 	/* initial settings */
 	regmap_write(rt1308->regmap, 0xc103, 0xc0);
@@ -242,8 +258,14 @@ static int rt1308_io_init(struct device *dev, struct sdw_slave *slave)
 	regmap_write(rt1308->regmap, 0xc062, 0x05);
 	regmap_write(rt1308->regmap, 0xc171, 0x07);
 	regmap_write(rt1308->regmap, 0xc173, 0x0d);
-	regmap_write(rt1308->regmap, 0xc311, 0x7f);
-	regmap_write(rt1308->regmap, 0xc900, 0x90);
+	if (rt1308->hw_ver == RT1308_VER_C) {
+		regmap_write(rt1308->regmap, 0xc311, 0x7f);
+		regmap_write(rt1308->regmap, 0xc300, 0x09);
+	} else {
+		regmap_write(rt1308->regmap, 0xc311, 0x4f);
+		regmap_write(rt1308->regmap, 0xc300, 0x0b);
+	}
+	regmap_write(rt1308->regmap, 0xc900, 0x5a);
 	regmap_write(rt1308->regmap, 0xc1a0, 0x84);
 	regmap_write(rt1308->regmap, 0xc1a1, 0x01);
 	regmap_write(rt1308->regmap, 0xc360, 0x78);
@@ -253,8 +275,13 @@ static int rt1308_io_init(struct device *dev, struct sdw_slave *slave)
 	regmap_write(rt1308->regmap, 0xc070, 0x00);
 	regmap_write(rt1308->regmap, 0xc100, 0xd7);
 	regmap_write(rt1308->regmap, 0xc101, 0xd7);
-	regmap_write(rt1308->regmap, 0xc300, 0x09);
 
+	/* apply BQ params */
+	rt1308_apply_bq_params(rt1308);
+
+	regmap_write(rt1308->regmap, 0xcf01, 0x01);
+
+_preset_ready_:
 	if (rt1308->first_hw_init) {
 		regcache_cache_bypass(rt1308->regmap, false);
 		regcache_mark_dirty(rt1308->regmap);
@@ -264,7 +291,6 @@ static int rt1308_io_init(struct device *dev, struct sdw_slave *slave)
 	/* Mark Slave initialization complete */
 	rt1308->hw_init = true;
 
-	pm_runtime_mark_last_busy(&slave->dev);
 	pm_runtime_put_autosuspend(&slave->dev);
 
 	dev_dbg(&slave->dev, "%s hw_init complete\n", __func__);
@@ -277,9 +303,6 @@ static int rt1308_update_status(struct sdw_slave *slave,
 {
 	struct  rt1308_sdw_priv *rt1308 = dev_get_drvdata(&slave->dev);
 
-	/* Update the status */
-	rt1308->status = status;
-
 	if (status == SDW_SLAVE_UNATTACHED)
 		rt1308->hw_init = false;
 
@@ -287,7 +310,7 @@ static int rt1308_update_status(struct sdw_slave *slave,
 	 * Perform initialization only if slave status is present and
 	 * hw_init flag is false
 	 */
-	if (rt1308->hw_init || rt1308->status != SDW_SLAVE_ATTACHED)
+	if (rt1308->hw_init || status != SDW_SLAVE_ATTACHED)
 		return 0;
 
 	/* perform I/O transfers required for Slave initialization */
@@ -323,6 +346,8 @@ static int rt1308_classd_event(struct snd_soc_dapm_widget *w,
 {
 	struct snd_soc_component *component =
 		snd_soc_dapm_to_component(w->dapm);
+	struct rt1308_sdw_priv *rt1308 =
+		snd_soc_component_get_drvdata(component);
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
@@ -331,6 +356,7 @@ static int rt1308_classd_event(struct snd_soc_dapm_widget *w,
 			RT1308_SDW_OFFSET | (RT1308_POWER_STATUS << 4),
 			0x3,	0x3);
 		msleep(40);
+		rt1308_apply_calib_params(rt1308);
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
 		snd_soc_component_update_bits(component,
@@ -466,22 +492,7 @@ static const struct snd_soc_dapm_route rt1308_dapm_routes[] = {
 static int rt1308_set_sdw_stream(struct snd_soc_dai *dai, void *sdw_stream,
 				int direction)
 {
-	struct sdw_stream_data *stream;
-
-	if (!sdw_stream)
-		return 0;
-
-	stream = kzalloc(sizeof(*stream), GFP_KERNEL);
-	if (!stream)
-		return -ENOMEM;
-
-	stream->sdw_stream = sdw_stream;
-
-	/* Use tx_mask or rx_mask to configure stream tag and set dma_data */
-	if (direction == SNDRV_PCM_STREAM_PLAYBACK)
-		dai->playback_dma_data = stream;
-	else
-		dai->capture_dma_data = stream;
+	snd_soc_dai_dma_data_set(dai, direction, sdw_stream);
 
 	return 0;
 }
@@ -489,11 +500,7 @@ static int rt1308_set_sdw_stream(struct snd_soc_dai *dai, void *sdw_stream,
 static void rt1308_sdw_shutdown(struct snd_pcm_substream *substream,
 				struct snd_soc_dai *dai)
 {
-	struct sdw_stream_data *stream;
-
-	stream = snd_soc_dai_get_dma_data(dai, substream);
 	snd_soc_dai_set_dma_data(dai, substream, NULL);
-	kfree(stream);
 }
 
 static int rt1308_sdw_set_tdm_slot(struct snd_soc_dai *dai,
@@ -524,48 +531,36 @@ static int rt1308_sdw_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_component *component = dai->component;
 	struct rt1308_sdw_priv *rt1308 =
 		snd_soc_component_get_drvdata(component);
-	struct sdw_stream_config stream_config;
-	struct sdw_port_config port_config;
-	enum sdw_data_direction direction;
-	struct sdw_stream_data *stream;
-	int retval, port, num_channels, ch_mask;
+	struct sdw_stream_config stream_config = {0};
+	struct sdw_port_config port_config = {0};
+	struct sdw_stream_runtime *sdw_stream;
+	int retval;
 
 	dev_dbg(dai->dev, "%s %s", __func__, dai->name);
-	stream = snd_soc_dai_get_dma_data(dai, substream);
+	sdw_stream = snd_soc_dai_get_dma_data(dai, substream);
 
-	if (!stream)
+	if (!sdw_stream)
 		return -EINVAL;
 
 	if (!rt1308->sdw_slave)
 		return -EINVAL;
 
 	/* SoundWire specific configuration */
+	snd_sdw_params_to_config(substream, params, &stream_config, &port_config);
+
 	/* port 1 for playback */
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
-		direction = SDW_DATA_DIR_RX;
-		port = 1;
-	} else {
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+		port_config.num = 1;
+	else
 		return -EINVAL;
-	}
 
 	if (rt1308->slots) {
-		num_channels = rt1308->slots;
-		ch_mask = rt1308->rx_mask;
-	} else {
-		num_channels = params_channels(params);
-		ch_mask = (1 << num_channels) - 1;
+		stream_config.ch_count = rt1308->slots;
+		port_config.ch_mask = rt1308->rx_mask;
 	}
 
-	stream_config.frame_rate = params_rate(params);
-	stream_config.ch_count = num_channels;
-	stream_config.bps = snd_pcm_format_width(params_format(params));
-	stream_config.direction = direction;
-
-	port_config.ch_mask = ch_mask;
-	port_config.num = port;
-
 	retval = sdw_stream_add_slave(rt1308->sdw_slave, &stream_config,
-				&port_config, 1, stream->sdw_stream);
+				&port_config, 1, sdw_stream);
 	if (retval) {
 		dev_err(dai->dev, "Unable to configure port\n");
 		return retval;
@@ -580,13 +575,13 @@ static int rt1308_sdw_pcm_hw_free(struct snd_pcm_substream *substream,
 	struct snd_soc_component *component = dai->component;
 	struct rt1308_sdw_priv *rt1308 =
 		snd_soc_component_get_drvdata(component);
-	struct sdw_stream_data *stream =
+	struct sdw_stream_runtime *sdw_stream =
 		snd_soc_dai_get_dma_data(dai, substream);
 
 	if (!rt1308->sdw_slave)
 		return -EINVAL;
 
-	sdw_stream_remove_slave(rt1308->sdw_slave, stream->sdw_stream);
+	sdw_stream_remove_slave(rt1308->sdw_slave, sdw_stream);
 	return 0;
 }
 
@@ -601,19 +596,63 @@ static const struct sdw_slave_ops rt1308_slave_ops = {
 	.bus_config = rt1308_bus_config,
 };
 
+static int rt1308_sdw_parse_dt(struct rt1308_sdw_priv *rt1308, struct device *dev)
+{
+	int ret = 0;
+
+	device_property_read_u32(dev, "realtek,bq-params-cnt", &rt1308->bq_params_cnt);
+	if (rt1308->bq_params_cnt) {
+		rt1308->bq_params = devm_kzalloc(dev, rt1308->bq_params_cnt, GFP_KERNEL);
+		if (!rt1308->bq_params) {
+			dev_err(dev, "Could not allocate bq_params memory\n");
+			ret = -ENOMEM;
+		} else {
+			ret = device_property_read_u8_array(dev, "realtek,bq-params", rt1308->bq_params, rt1308->bq_params_cnt);
+			if (ret < 0)
+				dev_err(dev, "Could not read list of realtek,bq-params\n");
+		}
+	}
+
+	dev_dbg(dev, "bq_params_cnt=%d\n", rt1308->bq_params_cnt);
+	return ret;
+}
+
+static int rt1308_sdw_component_probe(struct snd_soc_component *component)
+{
+	struct rt1308_sdw_priv *rt1308 = snd_soc_component_get_drvdata(component);
+	int ret;
+
+	rt1308->component = component;
+	rt1308_sdw_parse_dt(rt1308, &rt1308->sdw_slave->dev);
+
+	if (!rt1308->first_hw_init)
+		return 0;
+
+	ret = pm_runtime_resume(component->dev);
+	if (ret < 0 && ret != -EACCES)
+		return ret;
+
+	/* apply BQ params */
+	rt1308_apply_bq_params(rt1308);
+
+	return 0;
+}
+
 static const struct snd_soc_component_driver soc_component_sdw_rt1308 = {
+	.probe = rt1308_sdw_component_probe,
 	.controls = rt1308_snd_controls,
 	.num_controls = ARRAY_SIZE(rt1308_snd_controls),
 	.dapm_widgets = rt1308_dapm_widgets,
 	.num_dapm_widgets = ARRAY_SIZE(rt1308_dapm_widgets),
 	.dapm_routes = rt1308_dapm_routes,
 	.num_dapm_routes = ARRAY_SIZE(rt1308_dapm_routes),
+	.endianness = 1,
 };
 
 static const struct snd_soc_dai_ops rt1308_aif_dai_ops = {
 	.hw_params = rt1308_sdw_hw_params,
 	.hw_free	= rt1308_sdw_pcm_hw_free,
-	.set_sdw_stream	= rt1308_set_sdw_stream,
+	.set_stream	= rt1308_set_sdw_stream,
 	.shutdown	= rt1308_sdw_shutdown,
 	.set_tdm_slot	= rt1308_sdw_set_tdm_slot,
 };
@@ -651,6 +690,8 @@ static int rt1308_sdw_init(struct device *dev, struct regmap *regmap,
 	rt1308->sdw_slave = slave;
 	rt1308->regmap = regmap;
 
+	regcache_cache_only(rt1308->regmap, true);
+
 	/*
 	 * Mark hw_init to false
 	 * HW init will be performed when device reports present
@@ -662,10 +703,27 @@ static int rt1308_sdw_init(struct device *dev, struct regmap *regmap,
 				&soc_component_sdw_rt1308,
 				rt1308_sdw_dai,
 				ARRAY_SIZE(rt1308_sdw_dai));
+	if (ret < 0)
+		return ret;
 
-	dev_dbg(&slave->dev, "%s\n", __func__);
+	/* set autosuspend parameters */
+	pm_runtime_set_autosuspend_delay(dev, 3000);
+	pm_runtime_use_autosuspend(dev);
 
-	return ret;
+	/* make sure the device does not suspend immediately */
+	pm_runtime_mark_last_busy(dev);
+
+	pm_runtime_enable(dev);
+
+	/* important note: the device is NOT tagged as 'active' and will remain
+	 * 'suspended' until the hardware is enumerated/initialized. This is required
+	 * to make sure the ASoC framework use of pm_runtime_get_sync() does not silently
+	 * fail with -EACCESS because of race conditions between card creation and enumeration
+	 */
+
+	dev_dbg(dev, "%s\n", __func__);
+
+	return 0;
 }
 
 static int rt1308_sdw_probe(struct sdw_slave *slave,
@@ -678,7 +736,12 @@ static int rt1308_sdw_probe(struct sdw_slave *slave,
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
-	rt1308_sdw_init(&slave->dev, regmap, slave);
+	return rt1308_sdw_init(&slave->dev, regmap, slave);
+}
+
+static int rt1308_sdw_remove(struct sdw_slave *slave)
+{
+	pm_runtime_disable(&slave->dev);
 
 	return 0;
 }
@@ -689,7 +752,7 @@ static const struct sdw_device_id rt1308_id[] = {
 };
 MODULE_DEVICE_TABLE(sdw, rt1308_id);
 
-static int __maybe_unused rt1308_dev_suspend(struct device *dev)
+static int rt1308_dev_suspend(struct device *dev)
 {
 	struct rt1308_sdw_priv *rt1308 = dev_get_drvdata(dev);
 
@@ -703,7 +766,7 @@ static int __maybe_unused rt1308_dev_suspend(struct device *dev)
 
 #define RT1308_PROBE_TIMEOUT 5000
 
-static int __maybe_unused rt1308_dev_resume(struct device *dev)
+static int rt1308_dev_resume(struct device *dev)
 {
 	struct sdw_slave *slave = dev_to_sdw_dev(dev);
 	struct rt1308_sdw_priv *rt1308 = dev_get_drvdata(dev);
@@ -719,6 +782,8 @@ static int __maybe_unused rt1308_dev_resume(struct device *dev)
 				msecs_to_jiffies(RT1308_PROBE_TIMEOUT));
 	if (!time) {
 		dev_err(&slave->dev, "Initialization not complete, timed out\n");
+		sdw_show_ping_status(slave->bus, true);
+
 		return -ETIMEDOUT;
 	}
 
@@ -731,17 +796,17 @@ regmap_sync:
 }
 
 static const struct dev_pm_ops rt1308_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(rt1308_dev_suspend, rt1308_dev_resume)
-	SET_RUNTIME_PM_OPS(rt1308_dev_suspend, rt1308_dev_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(rt1308_dev_suspend, rt1308_dev_resume)
+	RUNTIME_PM_OPS(rt1308_dev_suspend, rt1308_dev_resume, NULL)
 };
 
 static struct sdw_driver rt1308_sdw_driver = {
 	.driver = {
 		.name = "rt1308",
-		.owner = THIS_MODULE,
-		.pm = &rt1308_pm,
+		.pm = pm_ptr(&rt1308_pm),
 	},
 	.probe = rt1308_sdw_probe,
+	.remove = rt1308_sdw_remove,
 	.ops = &rt1308_slave_ops,
 	.id_table = rt1308_id,
 };

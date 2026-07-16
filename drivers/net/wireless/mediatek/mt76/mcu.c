@@ -6,18 +6,20 @@
 #include "mt76.h"
 
 struct sk_buff *
-mt76_mcu_msg_alloc(struct mt76_dev *dev, const void *data,
-		   int data_len)
+__mt76_mcu_msg_alloc(struct mt76_dev *dev, const void *data,
+		     int len, int data_len, gfp_t gfp)
 {
 	const struct mt76_mcu_ops *ops = dev->mcu_ops;
-	int length = ops->headroom + data_len + ops->tailroom;
 	struct sk_buff *skb;
 
-	skb = alloc_skb(length, GFP_KERNEL);
+	len = max_t(int, len, data_len);
+	len = ops->headroom + len + ops->tailroom;
+
+	skb = alloc_skb(len, gfp);
 	if (!skb)
 		return NULL;
 
-	memset(skb->head, 0, length);
+	memset(skb->head, 0, len);
 	skb_reserve(skb, ops->headroom);
 
 	if (data && data_len)
@@ -25,7 +27,7 @@ mt76_mcu_msg_alloc(struct mt76_dev *dev, const void *data,
 
 	return skb;
 }
-EXPORT_SYMBOL_GPL(mt76_mcu_msg_alloc);
+EXPORT_SYMBOL_GPL(__mt76_mcu_msg_alloc);
 
 struct sk_buff *mt76_mcu_get_response(struct mt76_dev *dev,
 				      unsigned long expires)
@@ -71,14 +73,31 @@ int mt76_mcu_skb_send_and_get_msg(struct mt76_dev *dev, struct sk_buff *skb,
 				  int cmd, bool wait_resp,
 				  struct sk_buff **ret_skb)
 {
+	unsigned int retry = 0;
+	struct sk_buff *orig_skb = NULL;
 	unsigned long expires;
 	int ret, seq;
+
+	if (mt76_is_sdio(dev))
+		if (test_bit(MT76_RESET, &dev->phy.state) && atomic_read(&dev->bus_hung))
+			return -EIO;
 
 	if (ret_skb)
 		*ret_skb = NULL;
 
 	mutex_lock(&dev->mcu.mutex);
 
+	if (dev->mcu_ops->mcu_skb_prepare_msg) {
+		orig_skb = skb;
+		ret = dev->mcu_ops->mcu_skb_prepare_msg(dev, skb, cmd, &seq);
+		if (ret < 0)
+			goto out;
+	}
+
+retry:
+	/* orig skb might be needed for retry, mcu_skb_send_msg consumes it */
+	if (orig_skb)
+		skb_get(orig_skb);
 	ret = dev->mcu_ops->mcu_skb_send_msg(dev, skb, cmd, &seq);
 	if (ret < 0)
 		goto out;
@@ -92,6 +111,14 @@ int mt76_mcu_skb_send_and_get_msg(struct mt76_dev *dev, struct sk_buff *skb,
 
 	do {
 		skb = mt76_mcu_get_response(dev, expires);
+		if (!skb && !test_bit(MT76_MCU_RESET, &dev->phy.state) &&
+		    orig_skb && retry++ < dev->mcu_ops->max_retry) {
+			dev_err(dev->dev, "Retry message %08x (seq %d)\n",
+				cmd, seq);
+			skb = orig_skb;
+			goto retry;
+		}
+
 		ret = dev->mcu_ops->mcu_parse_response(dev, cmd, skb, seq);
 		if (!ret && ret_skb)
 			*ret_skb = skb;
@@ -99,20 +126,22 @@ int mt76_mcu_skb_send_and_get_msg(struct mt76_dev *dev, struct sk_buff *skb,
 			dev_kfree_skb(skb);
 	} while (ret == -EAGAIN);
 
+
 out:
+	dev_kfree_skb(orig_skb);
 	mutex_unlock(&dev->mcu.mutex);
 
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt76_mcu_skb_send_and_get_msg);
 
-int mt76_mcu_send_firmware(struct mt76_dev *dev, int cmd, const void *data,
-			   int len)
+int __mt76_mcu_send_firmware(struct mt76_dev *dev, int cmd, const void *data,
+			     int len, int max_len)
 {
 	int err, cur_len;
 
 	while (len > 0) {
-		cur_len = min_t(int, 4096 - dev->mcu_ops->headroom, len);
+		cur_len = min_t(int, max_len, len);
 
 		err = mt76_mcu_send_msg(dev, cmd, data, cur_len, false);
 		if (err)
@@ -129,4 +158,4 @@ int mt76_mcu_send_firmware(struct mt76_dev *dev, int cmd, const void *data,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(mt76_mcu_send_firmware);
+EXPORT_SYMBOL_GPL(__mt76_mcu_send_firmware);

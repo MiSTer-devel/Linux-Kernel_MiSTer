@@ -446,7 +446,7 @@ static irqreturn_t meson_mx_mmc_irq_thread(int irq, void *irq_data)
 	if (WARN_ON(!cmd))
 		return IRQ_HANDLED;
 
-	del_timer_sync(&host->cmd_timeout);
+	timer_delete_sync(&host->cmd_timeout);
 
 	if (cmd->data) {
 		dma_unmap_sg(mmc_dev(host->mmc), cmd->data->sg,
@@ -467,7 +467,8 @@ static irqreturn_t meson_mx_mmc_irq_thread(int irq, void *irq_data)
 
 static void meson_mx_mmc_timeout(struct timer_list *t)
 {
-	struct meson_mx_mmc_host *host = from_timer(host, t, cmd_timeout);
+	struct meson_mx_mmc_host *host = timer_container_of(host, t,
+							    cmd_timeout);
 	unsigned long irqflags;
 	u32 irqc;
 
@@ -662,6 +663,11 @@ static int meson_mx_mmc_probe(struct platform_device *pdev)
 	}
 
 	irq = platform_get_irq(pdev, 0);
+	if (irq < 0) {
+		ret = irq;
+		goto error_free_mmc;
+	}
+
 	ret = devm_request_threaded_irq(host->controller_dev, irq,
 					meson_mx_mmc_irq,
 					meson_mx_mmc_irq_thread, IRQF_ONESHOT,
@@ -723,12 +729,12 @@ error_unregister_slot_pdev:
 	return ret;
 }
 
-static int meson_mx_mmc_remove(struct platform_device *pdev)
+static void meson_mx_mmc_remove(struct platform_device *pdev)
 {
 	struct meson_mx_mmc_host *host = platform_get_drvdata(pdev);
 	struct device *slot_dev = mmc_dev(host->mmc);
 
-	del_timer_sync(&host->cmd_timeout);
+	timer_delete_sync(&host->cmd_timeout);
 
 	mmc_remove_host(host->mmc);
 
@@ -738,8 +744,6 @@ static int meson_mx_mmc_remove(struct platform_device *pdev)
 	clk_disable_unprepare(host->core_clk);
 
 	mmc_free_host(host->mmc);
-
-	return 0;
 }
 
 static const struct of_device_id meson_mx_mmc_of_match[] = {
@@ -751,7 +755,7 @@ MODULE_DEVICE_TABLE(of, meson_mx_mmc_of_match);
 
 static struct platform_driver meson_mx_mmc_driver = {
 	.probe   = meson_mx_mmc_probe,
-	.remove  = meson_mx_mmc_remove,
+	.remove = meson_mx_mmc_remove,
 	.driver  = {
 		.name = "meson-mx-sdio",
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,

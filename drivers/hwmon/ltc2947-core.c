@@ -11,7 +11,8 @@
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/mod_devicetable.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 
 #include "ltc2947.h"
@@ -396,7 +397,7 @@ static int ltc2947_read_temp(struct device *dev, const u32 attr, long *val,
 		return ret;
 
 	/* in milidegrees celcius, temp is given by: */
-	*val = (__val * 204) + 550;
+	*val = (__val * 204) + 5500;
 
 	return 0;
 }
@@ -901,7 +902,7 @@ static umode_t ltc2947_is_visible(const void *data,
 	}
 }
 
-static const struct hwmon_channel_info *ltc2947_info[] = {
+static const struct hwmon_channel_info * const ltc2947_info[] = {
 	HWMON_CHANNEL_INFO(in,
 			   HWMON_I_INPUT | HWMON_I_LOWEST | HWMON_I_HIGHEST |
 			   HWMON_I_MAX | HWMON_I_MIN | HWMON_I_RESET_HISTORY |
@@ -956,13 +957,6 @@ static struct attribute *ltc2947_attrs[] = {
 };
 ATTRIBUTE_GROUPS(ltc2947);
 
-static void ltc2947_clk_disable(void *data)
-{
-	struct clk *extclk = data;
-
-	clk_disable_unprepare(extclk);
-}
-
 static int ltc2947_setup(struct ltc2947_data *st)
 {
 	int ret;
@@ -989,7 +983,7 @@ static int ltc2947_setup(struct ltc2947_data *st)
 		return ret;
 
 	/* check external clock presence */
-	extclk = devm_clk_get_optional(st->dev, NULL);
+	extclk = devm_clk_get_optional_enabled(st->dev, NULL);
 	if (IS_ERR(extclk))
 		return dev_err_probe(st->dev, PTR_ERR(extclk),
 				     "Failed to get external clock\n");
@@ -1007,14 +1001,6 @@ static int ltc2947_setup(struct ltc2947_data *st)
 			return -EINVAL;
 		}
 
-		ret = clk_prepare_enable(extclk);
-		if (ret)
-			return ret;
-
-		ret = devm_add_action_or_reset(st->dev, ltc2947_clk_disable,
-					       extclk);
-		if (ret)
-			return ret;
 		/* as in table 1 of the datasheet */
 		if (rate_hz >= LTC2947_CLK_MIN && rate_hz <= 1000000)
 			pre = 0;
@@ -1049,9 +1035,8 @@ static int ltc2947_setup(struct ltc2947_data *st)
 		/* 19.89E-6 * 10E9 */
 		st->lsb_energy = 19890;
 	}
-	ret = of_property_read_u32_array(st->dev->of_node,
-					 "adi,accumulator-ctl-pol", accum,
-					  ARRAY_SIZE(accum));
+	ret = device_property_read_u32_array(st->dev, "adi,accumulator-ctl-pol",
+					     accum, ARRAY_SIZE(accum));
 	if (!ret) {
 		u32 accum_reg = LTC2947_ACCUM_POL_1(accum[0]) |
 				LTC2947_ACCUM_POL_2(accum[1]);
@@ -1060,9 +1045,9 @@ static int ltc2947_setup(struct ltc2947_data *st)
 		if (ret)
 			return ret;
 	}
-	ret = of_property_read_u32(st->dev->of_node,
-				   "adi,accumulation-deadband-microamp",
-				   &deadband);
+	ret = device_property_read_u32(st->dev,
+				       "adi,accumulation-deadband-microamp",
+				       &deadband);
 	if (!ret) {
 		/* the LSB is the same as the current, so 3mA */
 		ret = regmap_write(st->map, LTC2947_REG_ACCUM_DEADBAND,
@@ -1071,7 +1056,7 @@ static int ltc2947_setup(struct ltc2947_data *st)
 			return ret;
 	}
 	/* check gpio cfg */
-	ret = of_property_read_u32(st->dev->of_node, "adi,gpio-out-pol", &pol);
+	ret = device_property_read_u32(st->dev, "adi,gpio-out-pol", &pol);
 	if (!ret) {
 		/* setup GPIO as output */
 		u32 gpio_ctl = LTC2947_GPIO_EN(1) | LTC2947_GPIO_FAN_EN(1) |
@@ -1082,8 +1067,8 @@ static int ltc2947_setup(struct ltc2947_data *st)
 		if (ret)
 			return ret;
 	}
-	ret = of_property_read_u32_array(st->dev->of_node, "adi,gpio-in-accum",
-					 accum, ARRAY_SIZE(accum));
+	ret = device_property_read_u32_array(st->dev, "adi,gpio-in-accum",
+					     accum, ARRAY_SIZE(accum));
 	if (!ret) {
 		/*
 		 * Setup the accum options. The gpioctl is already defined as
@@ -1135,7 +1120,7 @@ int ltc2947_core_probe(struct regmap *map, const char *name)
 }
 EXPORT_SYMBOL_GPL(ltc2947_core_probe);
 
-static int __maybe_unused ltc2947_resume(struct device *dev)
+static int ltc2947_resume(struct device *dev)
 {
 	struct ltc2947_data *st = dev_get_drvdata(dev);
 	u32 ctrl = 0;
@@ -1164,7 +1149,7 @@ static int __maybe_unused ltc2947_resume(struct device *dev)
 				  LTC2947_CONT_MODE_MASK, LTC2947_CONT_MODE(1));
 }
 
-static int __maybe_unused ltc2947_suspend(struct device *dev)
+static int ltc2947_suspend(struct device *dev)
 {
 	struct ltc2947_data *st = dev_get_drvdata(dev);
 
@@ -1172,8 +1157,7 @@ static int __maybe_unused ltc2947_suspend(struct device *dev)
 				  LTC2947_SHUTDOWN_MASK, 1);
 }
 
-SIMPLE_DEV_PM_OPS(ltc2947_pm_ops, ltc2947_suspend, ltc2947_resume);
-EXPORT_SYMBOL_GPL(ltc2947_pm_ops);
+EXPORT_SIMPLE_DEV_PM_OPS(ltc2947_pm_ops, ltc2947_suspend, ltc2947_resume);
 
 const struct of_device_id ltc2947_of_match[] = {
 	{ .compatible = "adi,ltc2947" },

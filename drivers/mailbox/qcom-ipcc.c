@@ -13,9 +13,8 @@
 
 #include <dt-bindings/mailbox/qcom-ipcc.h>
 
-#define IPCC_MBOX_MAX_CHAN		48
-
 /* IPCC Register offsets */
+#define IPCC_REG_CONFIG			0x08
 #define IPCC_REG_SEND_ID		0x0c
 #define IPCC_REG_RECV_ID		0x10
 #define IPCC_REG_RECV_SIGNAL_ENABLE	0x14
@@ -23,6 +22,7 @@
 #define IPCC_REG_RECV_SIGNAL_CLEAR	0x1c
 #define IPCC_REG_CLIENT_CLEAR		0x38
 
+#define IPCC_CLEAR_ON_RECV_RD		BIT(0)
 #define IPCC_SIGNAL_ID_MASK		GENMASK(15, 0)
 #define IPCC_CLIENT_ID_MASK		GENMASK(31, 16)
 
@@ -43,18 +43,20 @@ struct qcom_ipcc_chan_info {
  * @dev:		Device associated with this instance
  * @base:		Base address of the IPCC frame associated to APSS
  * @irq_domain:		The irq_domain associated with this instance
- * @chan:		The mailbox channels array
+ * @chans:		The mailbox channels array
  * @mchan:		The per-mailbox channel info array
  * @mbox:		The mailbox controller
+ * @num_chans:		Number of @chans elements
  * @irq:		Summary irq
  */
 struct qcom_ipcc {
 	struct device *dev;
 	void __iomem *base;
 	struct irq_domain *irq_domain;
-	struct mbox_chan chan[IPCC_MBOX_MAX_CHAN];
-	struct qcom_ipcc_chan_info mchan[IPCC_MBOX_MAX_CHAN];
+	struct mbox_chan *chans;
+	struct qcom_ipcc_chan_info *mchan;
 	struct mbox_controller mbox;
+	int num_chans;
 	int irq;
 };
 
@@ -166,25 +168,37 @@ static struct mbox_chan *qcom_ipcc_mbox_xlate(struct mbox_controller *mbox,
 	struct qcom_ipcc *ipcc = to_qcom_ipcc(mbox);
 	struct qcom_ipcc_chan_info *mchan;
 	struct mbox_chan *chan;
-	unsigned int i;
+	struct device *dev;
+	int chan_id;
+
+	dev = ipcc->dev;
 
 	if (ph->args_count != 2)
 		return ERR_PTR(-EINVAL);
 
-	for (i = 0; i < IPCC_MBOX_MAX_CHAN; i++) {
-		chan = &ipcc->chan[i];
-		if (!chan->con_priv) {
-			mchan = &ipcc->mchan[i];
-			mchan->client_id = ph->args[0];
-			mchan->signal_id = ph->args[1];
-			chan->con_priv = mchan;
-			break;
-		}
+	for (chan_id = 0; chan_id < mbox->num_chans; chan_id++) {
+		chan = &ipcc->chans[chan_id];
+		mchan = chan->con_priv;
 
-		chan = NULL;
+		if (!mchan)
+			break;
+		else if (mchan->client_id == ph->args[0] &&
+				mchan->signal_id == ph->args[1])
+			return ERR_PTR(-EBUSY);
 	}
 
-	return chan ?: ERR_PTR(-EBUSY);
+	if (chan_id >= mbox->num_chans)
+		return ERR_PTR(-EBUSY);
+
+	mchan = devm_kzalloc(dev, sizeof(*mchan), GFP_KERNEL);
+	if (!mchan)
+		return ERR_PTR(-ENOMEM);
+
+	mchan->client_id = ph->args[0];
+	mchan->signal_id = ph->args[1];
+	chan->con_priv = mchan;
+
+	return chan;
 }
 
 static const struct mbox_chan_ops ipcc_mbox_chan_ops = {
@@ -192,15 +206,47 @@ static const struct mbox_chan_ops ipcc_mbox_chan_ops = {
 	.shutdown = qcom_ipcc_mbox_shutdown,
 };
 
-static int qcom_ipcc_setup_mbox(struct qcom_ipcc *ipcc)
+static int qcom_ipcc_setup_mbox(struct qcom_ipcc *ipcc,
+				struct device_node *controller_dn)
 {
+	struct of_phandle_args curr_ph;
+	struct device_node *client_dn;
 	struct mbox_controller *mbox;
 	struct device *dev = ipcc->dev;
+	int i, j, ret;
+
+	/*
+	 * Find out the number of clients interested in this mailbox
+	 * and create channels accordingly.
+	 */
+	ipcc->num_chans = 0;
+	for_each_node_with_property(client_dn, "mboxes") {
+		if (!of_device_is_available(client_dn))
+			continue;
+		i = of_count_phandle_with_args(client_dn,
+						"mboxes", "#mbox-cells");
+		for (j = 0; j < i; j++) {
+			ret = of_parse_phandle_with_args(client_dn, "mboxes",
+						"#mbox-cells", j, &curr_ph);
+			of_node_put(curr_ph.np);
+			if (!ret && curr_ph.np == controller_dn)
+				ipcc->num_chans++;
+		}
+	}
+
+	/* If no clients are found, skip registering as a mbox controller */
+	if (!ipcc->num_chans)
+		return 0;
+
+	ipcc->chans = devm_kcalloc(dev, ipcc->num_chans,
+					sizeof(struct mbox_chan), GFP_KERNEL);
+	if (!ipcc->chans)
+		return -ENOMEM;
 
 	mbox = &ipcc->mbox;
 	mbox->dev = dev;
-	mbox->num_chans = IPCC_MBOX_MAX_CHAN;
-	mbox->chans = ipcc->chan;
+	mbox->num_chans = ipcc->num_chans;
+	mbox->chans = ipcc->chans;
 	mbox->ops = &ipcc_mbox_chan_ops;
 	mbox->of_xlate = qcom_ipcc_mbox_xlate;
 	mbox->txdone_irq = false;
@@ -209,9 +255,30 @@ static int qcom_ipcc_setup_mbox(struct qcom_ipcc *ipcc)
 	return devm_mbox_controller_register(dev, mbox);
 }
 
+static int qcom_ipcc_pm_resume(struct device *dev)
+{
+	struct qcom_ipcc *ipcc = dev_get_drvdata(dev);
+	u32 hwirq;
+	int virq;
+
+	hwirq = readl(ipcc->base + IPCC_REG_RECV_ID);
+	if (hwirq == IPCC_NO_PENDING_IRQ)
+		return 0;
+
+	virq = irq_find_mapping(ipcc->irq_domain, hwirq);
+
+	dev_dbg(dev, "virq: %d triggered client-id: %ld; signal-id: %ld\n", virq,
+		FIELD_GET(IPCC_CLIENT_ID_MASK, hwirq), FIELD_GET(IPCC_SIGNAL_ID_MASK, hwirq));
+
+	return 0;
+}
+
 static int qcom_ipcc_probe(struct platform_device *pdev)
 {
 	struct qcom_ipcc *ipcc;
+	u32 config_value;
+	static int id;
+	char *name;
 	int ret;
 
 	ipcc = devm_kzalloc(&pdev->dev, sizeof(*ipcc), GFP_KERNEL);
@@ -224,45 +291,62 @@ static int qcom_ipcc_probe(struct platform_device *pdev)
 	if (IS_ERR(ipcc->base))
 		return PTR_ERR(ipcc->base);
 
+	/*
+	 * It is possible that boot firmware is using the same IPCC instance
+	 * as of the HLOS and it has kept CLEAR_ON_RECV_RD set which basically
+	 * means Interrupt pending registers are cleared when RECV_ID is read.
+	 * The register automatically updates to the next pending interrupt/client
+	 * status based on priority.
+	 */
+	config_value = readl(ipcc->base + IPCC_REG_CONFIG);
+	if (config_value & IPCC_CLEAR_ON_RECV_RD) {
+		config_value &= ~(IPCC_CLEAR_ON_RECV_RD);
+		writel(config_value, ipcc->base + IPCC_REG_CONFIG);
+	}
+
 	ipcc->irq = platform_get_irq(pdev, 0);
 	if (ipcc->irq < 0)
 		return ipcc->irq;
 
-	ipcc->irq_domain = irq_domain_add_tree(pdev->dev.of_node,
-					       &qcom_ipcc_irq_ops, ipcc);
+	name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "ipcc_%d", id++);
+	if (!name)
+		return -ENOMEM;
+
+	ipcc->irq_domain = irq_domain_create_tree(dev_fwnode(&pdev->dev), &qcom_ipcc_irq_ops, ipcc);
 	if (!ipcc->irq_domain)
 		return -ENOMEM;
 
-	ret = qcom_ipcc_setup_mbox(ipcc);
+	ret = qcom_ipcc_setup_mbox(ipcc, pdev->dev.of_node);
 	if (ret)
 		goto err_mbox;
 
 	ret = devm_request_irq(&pdev->dev, ipcc->irq, qcom_ipcc_irq_fn,
-			       IRQF_TRIGGER_HIGH, "ipcc", ipcc);
+			       IRQF_TRIGGER_HIGH | IRQF_NO_SUSPEND |
+			       IRQF_NO_THREAD, name, ipcc);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "Failed to register the irq: %d\n", ret);
-		goto err_mbox;
+		goto err_req_irq;
 	}
 
-	enable_irq_wake(ipcc->irq);
 	platform_set_drvdata(pdev, ipcc);
 
 	return 0;
 
+err_req_irq:
+	if (ipcc->num_chans)
+		mbox_controller_unregister(&ipcc->mbox);
 err_mbox:
 	irq_domain_remove(ipcc->irq_domain);
 
 	return ret;
 }
 
-static int qcom_ipcc_remove(struct platform_device *pdev)
+static void qcom_ipcc_remove(struct platform_device *pdev)
 {
 	struct qcom_ipcc *ipcc = platform_get_drvdata(pdev);
 
 	disable_irq_wake(ipcc->irq);
 	irq_domain_remove(ipcc->irq_domain);
-
-	return 0;
 }
 
 static const struct of_device_id qcom_ipcc_of_match[] = {
@@ -271,6 +355,10 @@ static const struct of_device_id qcom_ipcc_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, qcom_ipcc_of_match);
 
+static const struct dev_pm_ops qcom_ipcc_dev_pm_ops = {
+	NOIRQ_SYSTEM_SLEEP_PM_OPS(NULL, qcom_ipcc_pm_resume)
+};
+
 static struct platform_driver qcom_ipcc_driver = {
 	.probe = qcom_ipcc_probe,
 	.remove = qcom_ipcc_remove,
@@ -278,6 +366,7 @@ static struct platform_driver qcom_ipcc_driver = {
 		.name = "qcom-ipcc",
 		.of_match_table = qcom_ipcc_of_match,
 		.suppress_bind_attrs = true,
+		.pm = pm_sleep_ptr(&qcom_ipcc_dev_pm_ops),
 	},
 };
 

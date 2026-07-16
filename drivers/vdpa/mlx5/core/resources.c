@@ -198,12 +198,11 @@ void mlx5_vdpa_dealloc_transport_domain(struct mlx5_vdpa_dev *mvdev, u32 tdn)
 	mlx5_cmd_exec_in(mvdev->mdev, dealloc_transport_domain, in);
 }
 
-int mlx5_vdpa_create_mkey(struct mlx5_vdpa_dev *mvdev, struct mlx5_core_mkey *mkey, u32 *in,
+int mlx5_vdpa_create_mkey(struct mlx5_vdpa_dev *mvdev, u32 *mkey, u32 *in,
 			  int inlen)
 {
 	u32 lout[MLX5_ST_SZ_DW(create_mkey_out)] = {};
 	u32 mkey_index;
-	void *mkc;
 	int err;
 
 	MLX5_SET(create_mkey_in, in, opcode, MLX5_CMD_OP_CREATE_MKEY);
@@ -213,22 +212,18 @@ int mlx5_vdpa_create_mkey(struct mlx5_vdpa_dev *mvdev, struct mlx5_core_mkey *mk
 	if (err)
 		return err;
 
-	mkc = MLX5_ADDR_OF(create_mkey_in, in, memory_key_mkey_entry);
 	mkey_index = MLX5_GET(create_mkey_out, lout, mkey_index);
-	mkey->iova = MLX5_GET64(mkc, mkc, start_addr);
-	mkey->size = MLX5_GET64(mkc, mkc, len);
-	mkey->key |= mlx5_idx_to_mkey(mkey_index);
-	mkey->pd = MLX5_GET(mkc, mkc, pd);
+	*mkey = mlx5_idx_to_mkey(mkey_index);
 	return 0;
 }
 
-int mlx5_vdpa_destroy_mkey(struct mlx5_vdpa_dev *mvdev, struct mlx5_core_mkey *mkey)
+int mlx5_vdpa_destroy_mkey(struct mlx5_vdpa_dev *mvdev, u32 mkey)
 {
 	u32 in[MLX5_ST_SZ_DW(destroy_mkey_in)] = {};
 
 	MLX5_SET(destroy_mkey_in, in, uid, mvdev->res.uid);
 	MLX5_SET(destroy_mkey_in, in, opcode, MLX5_CMD_OP_DESTROY_MKEY);
-	MLX5_SET(destroy_mkey_in, in, mkey_index, mlx5_mkey_to_idx(mkey->key));
+	MLX5_SET(destroy_mkey_in, in, mkey_index, mlx5_mkey_to_idx(mkey));
 	return mlx5_cmd_exec_in(mvdev->mdev, destroy_mkey, in);
 }
 
@@ -238,6 +233,7 @@ static int init_ctrl_vq(struct mlx5_vdpa_dev *mvdev)
 	if (!mvdev->cvq.iotlb)
 		return -ENOMEM;
 
+	spin_lock_init(&mvdev->cvq.iommu_lock);
 	vringh_set_iotlb(&mvdev->cvq.vring, mvdev->cvq.iotlb, &mvdev->cvq.iommu_lock);
 
 	return 0;
@@ -260,7 +256,6 @@ int mlx5_vdpa_alloc_resources(struct mlx5_vdpa_dev *mvdev)
 		mlx5_vdpa_warn(mvdev, "resources already allocated\n");
 		return -EINVAL;
 	}
-	mutex_init(&mvdev->mr.mkey_mtx);
 	res->uar = mlx5_get_uars_page(mdev);
 	if (IS_ERR(res->uar)) {
 		err = PTR_ERR(res->uar);
@@ -305,7 +300,6 @@ err_pd:
 err_uctx:
 	mlx5_put_uars_page(mdev, res->uar);
 err_uars:
-	mutex_destroy(&mvdev->mr.mkey_mtx);
 	return err;
 }
 
@@ -322,6 +316,78 @@ void mlx5_vdpa_free_resources(struct mlx5_vdpa_dev *mvdev)
 	dealloc_pd(mvdev, res->pdn, res->uid);
 	destroy_uctx(mvdev, res->uid);
 	mlx5_put_uars_page(mvdev->mdev, res->uar);
-	mutex_destroy(&mvdev->mr.mkey_mtx);
 	res->valid = false;
+}
+
+static void virtqueue_cmd_callback(int status, struct mlx5_async_work *context)
+{
+	struct mlx5_vdpa_async_cmd *cmd =
+		container_of(context, struct mlx5_vdpa_async_cmd, cb_work);
+
+	cmd->err = mlx5_cmd_check(context->ctx->dev, status, cmd->in, cmd->out);
+	complete(&cmd->cmd_done);
+}
+
+static int issue_async_cmd(struct mlx5_vdpa_dev *mvdev,
+			   struct mlx5_vdpa_async_cmd *cmds,
+			   int issued,
+			   int *completed)
+
+{
+	struct mlx5_vdpa_async_cmd *cmd = &cmds[issued];
+	int err;
+
+retry:
+	err = mlx5_cmd_exec_cb(&mvdev->async_ctx,
+			       cmd->in, cmd->inlen,
+			       cmd->out, cmd->outlen,
+			       virtqueue_cmd_callback,
+			       &cmd->cb_work);
+	if (err == -EBUSY) {
+		if (*completed < issued) {
+			/* Throttled by own commands: wait for oldest completion. */
+			wait_for_completion(&cmds[*completed].cmd_done);
+			(*completed)++;
+
+			goto retry;
+		} else {
+			/* Throttled by external commands: switch to sync api. */
+			err = mlx5_cmd_exec(mvdev->mdev,
+					    cmd->in, cmd->inlen,
+					    cmd->out, cmd->outlen);
+			if (!err)
+				(*completed)++;
+		}
+	}
+
+	return err;
+}
+
+int mlx5_vdpa_exec_async_cmds(struct mlx5_vdpa_dev *mvdev,
+			      struct mlx5_vdpa_async_cmd *cmds,
+			      int num_cmds)
+{
+	int completed = 0;
+	int issued = 0;
+	int err = 0;
+
+	for (int i = 0; i < num_cmds; i++)
+		init_completion(&cmds[i].cmd_done);
+
+	while (issued < num_cmds) {
+
+		err = issue_async_cmd(mvdev, cmds, issued, &completed);
+		if (err) {
+			mlx5_vdpa_err(mvdev, "error issuing command %d of %d: %d\n",
+				      issued, num_cmds, err);
+			break;
+		}
+
+		issued++;
+	}
+
+	while (completed < issued)
+		wait_for_completion(&cmds[completed++].cmd_done);
+
+	return err;
 }

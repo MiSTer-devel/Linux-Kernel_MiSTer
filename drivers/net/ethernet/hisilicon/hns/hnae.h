@@ -499,7 +499,7 @@ struct hnae_ae_ops {
 				   u32 *tx_usecs_high, u32 *rx_usecs_high);
 	void (*set_promisc_mode)(struct hnae_handle *handle, u32 en);
 	int (*get_mac_addr)(struct hnae_handle *handle, void **p);
-	int (*set_mac_addr)(struct hnae_handle *handle, void *p);
+	int (*set_mac_addr)(struct hnae_handle *handle, const void *p);
 	int (*add_uc_addr)(struct hnae_handle *handle,
 			   const unsigned char *addr);
 	int (*rm_uc_addr)(struct hnae_handle *handle,
@@ -512,7 +512,7 @@ struct hnae_ae_ops {
 			     struct net_device_stats *net_stats);
 	void (*get_stats)(struct hnae_handle *handle, u64 *data);
 	void (*get_strings)(struct hnae_handle *handle,
-			    u32 stringset, u8 *data);
+			    u32 stringset, u8 **data);
 	int (*get_sset_count)(struct hnae_handle *handle, int stringset);
 	void (*update_led_status)(struct hnae_handle *handle);
 	int (*set_led_id)(struct hnae_handle *handle,
@@ -558,7 +558,7 @@ struct hnae_handle {
 	enum hnae_media_type media_type;
 	struct list_head node;    /* list to hnae_ae_dev->handle_list */
 	struct hnae_buf_ops *bops; /* operation for the buffer */
-	struct hnae_queue **qs;  /* array base of all queues */
+	struct hnae_queue *qs[];  /* flexible array of all queues */
 };
 
 #define ring_to_dev(ring) ((ring)->q->dev->dev)

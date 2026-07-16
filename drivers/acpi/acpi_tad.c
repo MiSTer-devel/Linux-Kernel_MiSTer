@@ -27,6 +27,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/suspend.h>
 
+MODULE_DESCRIPTION("ACPI Time and Alarm (TAD) Device Driver");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Rafael J. Wysocki");
 
@@ -232,7 +233,7 @@ static ssize_t time_show(struct device *dev, struct device_attribute *attr,
 	if (ret)
 		return ret;
 
-	return sprintf(buf, "%u:%u:%u:%u:%u:%u:%d:%u\n",
+	return sysfs_emit(buf, "%u:%u:%u:%u:%u:%u:%d:%u\n",
 		       rt.year, rt.month, rt.day, rt.hour, rt.minute, rt.second,
 		       rt.tz, rt.daylight);
 }
@@ -427,7 +428,7 @@ static ssize_t caps_show(struct device *dev, struct device_attribute *attr,
 {
 	struct acpi_tad_driver_data *dd = dev_get_drvdata(dev);
 
-	return sprintf(buf, "0x%02X\n", dd->capabilities);
+	return sysfs_emit(buf, "0x%02X\n", dd->capabilities);
 }
 
 static DEVICE_ATTR_RO(caps);
@@ -554,14 +555,18 @@ static int acpi_tad_disable_timer(struct device *dev, u32 timer_id)
 	return acpi_tad_wake_set(dev, "_STV", timer_id, ACPI_TAD_WAKE_DISABLED);
 }
 
-static int acpi_tad_remove(struct platform_device *pdev)
+static void acpi_tad_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	acpi_handle handle = ACPI_HANDLE(dev);
 	struct acpi_tad_driver_data *dd = dev_get_drvdata(dev);
 
 	device_init_wakeup(dev, false);
 
 	pm_runtime_get_sync(dev);
+
+	if (dd->capabilities & ACPI_TAD_RT)
+		sysfs_remove_group(&dev->kobj, &acpi_tad_time_attr_group);
 
 	if (dd->capabilities & ACPI_TAD_DC_WAKE)
 		sysfs_remove_group(&dev->kobj, &acpi_tad_dc_attr_group);
@@ -577,7 +582,7 @@ static int acpi_tad_remove(struct platform_device *pdev)
 
 	pm_runtime_put_sync(dev);
 	pm_runtime_disable(dev);
-	return 0;
+	acpi_remove_cmos_rtc_space_handler(handle);
 }
 
 static int acpi_tad_probe(struct platform_device *pdev)
@@ -589,6 +594,11 @@ static int acpi_tad_probe(struct platform_device *pdev)
 	unsigned long long caps;
 	int ret;
 
+	ret = acpi_install_cmos_rtc_space_handler(handle);
+	if (ret < 0) {
+		dev_info(dev, "Unable to install space handler\n");
+		return -ENODEV;
+	}
 	/*
 	 * Initialization failure messages are mostly about firmware issues, so
 	 * print them at the "info" level.
@@ -596,22 +606,27 @@ static int acpi_tad_probe(struct platform_device *pdev)
 	status = acpi_evaluate_integer(handle, "_GCP", NULL, &caps);
 	if (ACPI_FAILURE(status)) {
 		dev_info(dev, "Unable to get capabilities\n");
-		return -ENODEV;
+		ret = -ENODEV;
+		goto remove_handler;
 	}
 
 	if (!(caps & ACPI_TAD_AC_WAKE)) {
 		dev_info(dev, "Unsupported capabilities\n");
-		return -ENODEV;
+		ret = -ENODEV;
+		goto remove_handler;
 	}
 
 	if (!acpi_has_method(handle, "_PRW")) {
 		dev_info(dev, "Missing _PRW\n");
-		return -ENODEV;
+		ret = -ENODEV;
+		goto remove_handler;
 	}
 
 	dd = devm_kzalloc(dev, sizeof(*dd), GFP_KERNEL);
-	if (!dd)
-		return -ENOMEM;
+	if (!dd) {
+		ret = -ENOMEM;
+		goto remove_handler;
+	}
 
 	dd->capabilities = caps;
 	dev_set_drvdata(dev, dd);
@@ -653,6 +668,11 @@ static int acpi_tad_probe(struct platform_device *pdev)
 
 fail:
 	acpi_tad_remove(pdev);
+	/* Don't fallthrough because cmos rtc space handler is removed in acpi_tad_remove() */
+	return ret;
+
+remove_handler:
+	acpi_remove_cmos_rtc_space_handler(handle);
 	return ret;
 }
 

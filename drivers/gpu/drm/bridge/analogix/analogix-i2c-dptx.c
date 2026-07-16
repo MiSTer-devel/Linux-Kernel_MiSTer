@@ -5,10 +5,12 @@
  * Based on anx7808 driver obtained from chromeos with copyright:
  * Copyright(c) 2013, Google Inc.
  */
+
+#include <linux/export.h>
 #include <linux/regmap.h>
 
+#include <drm/display/drm_dp_helper.h>
 #include <drm/drm.h>
-#include <drm/drm_dp_helper.h>
 #include <drm/drm_print.h>
 
 #include "analogix-i2c-dptx.h"

@@ -8,6 +8,8 @@
 #include "../../arch/arm64/include/asm/barrier.h"
 #elif defined(__powerpc__)
 #include "../../arch/powerpc/include/asm/barrier.h"
+#elif defined(__riscv)
+#include "../../arch/riscv/include/asm/barrier.h"
 #elif defined(__s390__)
 #include "../../arch/s390/include/asm/barrier.h"
 #elif defined(__sh__)
@@ -24,8 +26,6 @@
 #include "../../arch/ia64/include/asm/barrier.h"
 #elif defined(__xtensa__)
 #include "../../arch/xtensa/include/asm/barrier.h"
-#elif defined(__nds32__)
-#include "../../arch/nds32/include/asm/barrier.h"
 #else
 #include <asm-generic/barrier.h>
 #endif

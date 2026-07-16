@@ -11,6 +11,7 @@
  * of the boot process, for example.
  */
 
+#include <linux/console.h>
 #include <linux/device.h>
 #include <linux/serial.h>
 #include <linux/tty.h>
@@ -39,7 +40,7 @@ static struct ttyprintk_port tpk_port;
 
 static int tpk_curr;
 
-static char tpk_buffer[TPK_STR_SIZE + 4];
+static u8 tpk_buffer[TPK_STR_SIZE + 4];
 
 static void tpk_flush(void)
 {
@@ -50,9 +51,9 @@ static void tpk_flush(void)
 	}
 }
 
-static int tpk_printk(const unsigned char *buf, int count)
+static int tpk_printk(const u8 *buf, size_t count)
 {
-	int i;
+	size_t i;
 
 	for (i = 0; i < count; i++) {
 		if (tpk_curr >= TPK_STR_SIZE) {
@@ -102,8 +103,7 @@ static void tpk_close(struct tty_struct *tty, struct file *filp)
 /*
  * TTY operations write function.
  */
-static int tpk_write(struct tty_struct *tty,
-		const unsigned char *buf, int count)
+static ssize_t tpk_write(struct tty_struct *tty, const u8 *buf, size_t count)
 {
 	struct ttyprintk_port *tpkp = tty->driver_data;
 	unsigned long flags;
@@ -163,6 +163,18 @@ static const struct tty_port_operations tpk_port_ops = {
 
 static struct tty_driver *ttyprintk_driver;
 
+static struct tty_driver *ttyprintk_console_device(struct console *c,
+						   int *index)
+{
+	*index = 0;
+	return ttyprintk_driver;
+}
+
+static struct console ttyprintk_console = {
+	.name = "ttyprintk",
+	.device = ttyprintk_console_device,
+};
+
 static int __init ttyprintk_init(void)
 {
 	int ret;
@@ -195,6 +207,8 @@ static int __init ttyprintk_init(void)
 		goto error;
 	}
 
+	register_console(&ttyprintk_console);
+
 	return 0;
 
 error:
@@ -205,6 +219,7 @@ error:
 
 static void __exit ttyprintk_exit(void)
 {
+	unregister_console(&ttyprintk_console);
 	tty_unregister_driver(ttyprintk_driver);
 	tty_driver_kref_put(ttyprintk_driver);
 	tty_port_destroy(&tpk_port.port);
@@ -213,4 +228,5 @@ static void __exit ttyprintk_exit(void)
 device_initcall(ttyprintk_init);
 module_exit(ttyprintk_exit);
 
+MODULE_DESCRIPTION("TTY driver to output user messages via printk");
 MODULE_LICENSE("GPL");

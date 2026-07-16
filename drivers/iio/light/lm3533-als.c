@@ -417,7 +417,7 @@ static ssize_t show_thresh_either_en(struct device *dev,
 		enable = 0;
 	}
 
-	return scnprintf(buf, PAGE_SIZE, "%u\n", enable);
+	return sysfs_emit(buf, "%u\n", enable);
 }
 
 static ssize_t store_thresh_either_en(struct device *dev,
@@ -474,7 +474,7 @@ static ssize_t show_zone(struct device *dev,
 	if (ret)
 		return ret;
 
-	return scnprintf(buf, PAGE_SIZE, "%u\n", zone);
+	return sysfs_emit(buf, "%u\n", zone);
 }
 
 enum lm3533_als_attribute_type {
@@ -530,7 +530,7 @@ static ssize_t show_als_attr(struct device *dev,
 	if (ret)
 		return ret;
 
-	return scnprintf(buf, PAGE_SIZE, "%u\n", val);
+	return sysfs_emit(buf, "%u\n", val);
 }
 
 static ssize_t store_als_attr(struct device *dev,
@@ -754,7 +754,7 @@ static int lm3533_als_set_resistor(struct lm3533_als *als, u8 val)
 }
 
 static int lm3533_als_setup(struct lm3533_als *als,
-			    struct lm3533_als_platform_data *pdata)
+			    const struct lm3533_als_platform_data *pdata)
 {
 	int ret;
 
@@ -828,8 +828,8 @@ static const struct iio_info lm3533_als_info = {
 
 static int lm3533_als_probe(struct platform_device *pdev)
 {
+	const struct lm3533_als_platform_data *pdata;
 	struct lm3533 *lm3533;
-	struct lm3533_als_platform_data *pdata;
 	struct lm3533_als *als;
 	struct iio_dev *indio_dev;
 	int ret;
@@ -838,7 +838,7 @@ static int lm3533_als_probe(struct platform_device *pdev)
 	if (!lm3533)
 		return -EINVAL;
 
-	pdata = pdev->dev.platform_data;
+	pdata = dev_get_platdata(&pdev->dev);
 	if (!pdata) {
 		dev_err(&pdev->dev, "no platform data\n");
 		return -EINVAL;
@@ -895,7 +895,7 @@ err_free_irq:
 	return ret;
 }
 
-static int lm3533_als_remove(struct platform_device *pdev)
+static void lm3533_als_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct lm3533_als *als = iio_priv(indio_dev);
@@ -905,8 +905,6 @@ static int lm3533_als_remove(struct platform_device *pdev)
 	lm3533_als_disable(als);
 	if (als->irq)
 		free_irq(als->irq, indio_dev);
-
-	return 0;
 }
 
 static struct platform_driver lm3533_als_driver = {

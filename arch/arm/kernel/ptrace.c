@@ -22,7 +22,6 @@
 #include <linux/hw_breakpoint.h>
 #include <linux/regset.h>
 #include <linux/audit.h>
-#include <linux/tracehook.h>
 #include <linux/unistd.h>
 
 #include <asm/syscall.h>
@@ -585,8 +584,6 @@ static int fpa_set(struct task_struct *target,
 {
 	struct thread_info *thread = task_thread_info(target);
 
-	thread->used_cp[1] = thread->used_cp[2] = 1;
-
 	return user_regset_copyin(&pos, &count, &kbuf, &ubuf,
 		&thread->fpstate,
 		0, sizeof(struct user_fp));
@@ -652,11 +649,9 @@ static int vfp_set(struct task_struct *target,
 	if (ret)
 		return ret;
 
-	ret = user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
-				user_fpregs_offset + sizeof(new_vfp.fpregs),
-				user_fpscr_offset);
-	if (ret)
-		return ret;
+	user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
+				  user_fpregs_offset + sizeof(new_vfp.fpregs),
+				  user_fpscr_offset);
 
 	ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf,
 				 &new_vfp.fpscr,
@@ -682,7 +677,7 @@ enum arm_regset {
 
 static const struct user_regset arm_regsets[] = {
 	[REGSET_GPR] = {
-		.core_note_type = NT_PRSTATUS,
+		USER_REGSET_NOTE_TYPE(PRSTATUS),
 		.n = ELF_NGREG,
 		.size = sizeof(u32),
 		.align = sizeof(u32),
@@ -694,7 +689,7 @@ static const struct user_regset arm_regsets[] = {
 		 * For the FPA regs in fpstate, the real fields are a mixture
 		 * of sizes, so pretend that the registers are word-sized:
 		 */
-		.core_note_type = NT_PRFPREG,
+		USER_REGSET_NOTE_TYPE(PRFPREG),
 		.n = sizeof(struct user_fp) / sizeof(u32),
 		.size = sizeof(u32),
 		.align = sizeof(u32),
@@ -707,7 +702,7 @@ static const struct user_regset arm_regsets[] = {
 		 * Pretend that the VFP regs are word-sized, since the FPSCR is
 		 * a single word dangling at the end of struct user_vfp:
 		 */
-		.core_note_type = NT_ARM_VFP,
+		USER_REGSET_NOTE_TYPE(ARM_VFP),
 		.n = ARM_VFPREGS_SIZE / sizeof(u32),
 		.size = sizeof(u32),
 		.align = sizeof(u32),
@@ -786,8 +781,9 @@ long arch_ptrace(struct task_struct *child, long request,
 			break;
 
 		case PTRACE_SET_SYSCALL:
-			task_thread_info(child)->abi_syscall = data &
-							__NR_SYSCALL_MASK;
+			if (data != -1)
+				data &= __NR_SYSCALL_MASK;
+			task_thread_info(child)->abi_syscall = data;
 			ret = 0;
 			break;
 
@@ -831,8 +827,7 @@ enum ptrace_syscall_dir {
 	PTRACE_SYSCALL_EXIT,
 };
 
-static void tracehook_report_syscall(struct pt_regs *regs,
-				    enum ptrace_syscall_dir dir)
+static void report_syscall(struct pt_regs *regs, enum ptrace_syscall_dir dir)
 {
 	unsigned long ip;
 
@@ -844,8 +839,8 @@ static void tracehook_report_syscall(struct pt_regs *regs,
 	regs->ARM_ip = dir;
 
 	if (dir == PTRACE_SYSCALL_EXIT)
-		tracehook_report_syscall_exit(regs, 0);
-	else if (tracehook_report_syscall_entry(regs))
+		ptrace_report_syscall_exit(regs, 0);
+	else if (ptrace_report_syscall_entry(regs))
 		current_thread_info()->abi_syscall = -1;
 
 	regs->ARM_ip = ip;
@@ -856,7 +851,7 @@ asmlinkage int syscall_trace_enter(struct pt_regs *regs)
 	int scno;
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE))
-		tracehook_report_syscall(regs, PTRACE_SYSCALL_ENTER);
+		report_syscall(regs, PTRACE_SYSCALL_ENTER);
 
 	/* Do seccomp after ptrace; syscall may have changed. */
 #ifdef CONFIG_HAVE_ARCH_SECCOMP_FILTER
@@ -897,5 +892,5 @@ asmlinkage void syscall_trace_exit(struct pt_regs *regs)
 		trace_sys_exit(regs, regs_return_value(regs));
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE))
-		tracehook_report_syscall(regs, PTRACE_SYSCALL_EXIT);
+		report_syscall(regs, PTRACE_SYSCALL_EXIT);
 }

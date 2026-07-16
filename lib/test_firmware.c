@@ -22,18 +22,23 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/delay.h>
+#include <linux/kstrtox.h>
 #include <linux/kthread.h>
 #include <linux/vmalloc.h>
 #include <linux/efi_embedded_fw.h>
+#include <linux/string_choices.h>
 
-MODULE_IMPORT_NS(TEST_FIRMWARE);
+MODULE_IMPORT_NS("TEST_FIRMWARE");
 
 #define TEST_FIRMWARE_NAME	"test-firmware.bin"
 #define TEST_FIRMWARE_NUM_REQS	4
 #define TEST_FIRMWARE_BUF_SIZE	SZ_1K
+#define TEST_UPLOAD_MAX_SIZE	SZ_2K
+#define TEST_UPLOAD_BLK_SIZE	37	/* Avoid powers of two in testing */
 
 static DEFINE_MUTEX(test_fw_mutex);
 static const struct firmware *test_firmware;
+static LIST_HEAD(test_upload_list);
 
 struct test_batched_req {
 	u8 idx;
@@ -41,13 +46,14 @@ struct test_batched_req {
 	bool sent;
 	const struct firmware *fw;
 	const char *name;
+	const char *fw_buf;
 	struct completion completion;
 	struct task_struct *task;
 	struct device *dev;
 };
 
 /**
- * test_config - represents configuration for the test for different triggers
+ * struct test_config - represents configuration for the test for different triggers
  *
  * @name: the name of the firmware file to look for
  * @into_buf: when the into_buf is used if this is true
@@ -63,6 +69,7 @@ struct test_batched_req {
  * @reqs: stores all requests information
  * @read_fw_idx: index of thread from which we want to read firmware results
  *	from through the read_fw trigger.
+ * @upload_name: firmware name to be used with upload_read sysfs node
  * @test_result: a test may use this to collect the result from the call
  *	of the request_firmware*() calls used in their tests. In order of
  *	priority we always keep first any setup error. If no setup errors were
@@ -101,6 +108,7 @@ struct test_config {
 	bool send_uevent;
 	u8 num_requests;
 	u8 read_fw_idx;
+	char *upload_name;
 
 	/*
 	 * These below don't belong her but we'll move them once we create
@@ -112,7 +120,33 @@ struct test_config {
 			    struct device *device);
 };
 
+struct upload_inject_err {
+	const char *prog;
+	enum fw_upload_err err_code;
+};
+
+struct test_firmware_upload {
+	char *name;
+	struct list_head node;
+	char *buf;
+	size_t size;
+	bool cancel_request;
+	struct upload_inject_err inject;
+	struct fw_upload *fwl;
+};
+
 static struct test_config *test_fw_config;
+
+static struct test_firmware_upload *upload_lookup_name(const char *name)
+{
+	struct test_firmware_upload *tst;
+
+	list_for_each_entry(tst, &test_upload_list, node)
+		if (strncmp(name, tst->name, strlen(tst->name)) == 0)
+			return tst;
+
+	return NULL;
+}
 
 static ssize_t test_fw_misc_read(struct file *f, char __user *buf,
 				 size_t size, loff_t *offset)
@@ -143,8 +177,14 @@ static void __test_release_all_firmware(void)
 
 	for (i = 0; i < test_fw_config->num_requests; i++) {
 		req = &test_fw_config->reqs[i];
-		if (req->fw)
+		if (req->fw) {
+			if (req->fw_buf) {
+				kfree_const(req->fw_buf);
+				req->fw_buf = NULL;
+			}
 			release_firmware(req->fw);
+			req->fw = NULL;
+		}
 	}
 
 	vfree(test_fw_config->reqs);
@@ -175,7 +215,7 @@ static int __kstrncpy(char **dst, const char *name, size_t count, gfp_t gfp)
 {
 	*dst = kstrndup(name, count, gfp);
 	if (!*dst)
-		return -ENOSPC;
+		return -ENOMEM;
 	return count;
 }
 
@@ -198,6 +238,7 @@ static int __test_firmware_config_init(void)
 	test_fw_config->req_firmware = request_firmware;
 	test_fw_config->test_result = 0;
 	test_fw_config->reqs = NULL;
+	test_fw_config->upload_name = NULL;
 
 	return 0;
 
@@ -252,7 +293,7 @@ static ssize_t config_show(struct device *dev,
 				test_fw_config->name);
 	else
 		len += scnprintf(buf + len, PAGE_SIZE - len,
-				"name:\tEMTPY\n");
+				"name:\tEMPTY\n");
 
 	len += scnprintf(buf + len, PAGE_SIZE - len,
 			"num_requests:\t%u\n", test_fw_config->num_requests);
@@ -264,19 +305,26 @@ static ssize_t config_show(struct device *dev,
 			"FW_ACTION_NOUEVENT");
 	len += scnprintf(buf + len, PAGE_SIZE - len,
 			"into_buf:\t\t%s\n",
-			test_fw_config->into_buf ? "true" : "false");
+			str_true_false(test_fw_config->into_buf));
 	len += scnprintf(buf + len, PAGE_SIZE - len,
 			"buf_size:\t%zu\n", test_fw_config->buf_size);
 	len += scnprintf(buf + len, PAGE_SIZE - len,
 			"file_offset:\t%zu\n", test_fw_config->file_offset);
 	len += scnprintf(buf + len, PAGE_SIZE - len,
 			"partial:\t\t%s\n",
-			test_fw_config->partial ? "true" : "false");
+			str_true_false(test_fw_config->partial));
 	len += scnprintf(buf + len, PAGE_SIZE - len,
 			"sync_direct:\t\t%s\n",
-			test_fw_config->sync_direct ? "true" : "false");
+			str_true_false(test_fw_config->sync_direct));
 	len += scnprintf(buf + len, PAGE_SIZE - len,
 			"read_fw_idx:\t%u\n", test_fw_config->read_fw_idx);
+	if (test_fw_config->upload_name)
+		len += scnprintf(buf + len, PAGE_SIZE - len,
+				"upload_name:\t%s\n",
+				test_fw_config->upload_name);
+	else
+		len += scnprintf(buf + len, PAGE_SIZE - len,
+				"upload_name:\tEMPTY\n");
 
 	mutex_unlock(&test_fw_mutex);
 
@@ -313,16 +361,26 @@ static ssize_t config_test_show_str(char *dst,
 	return len;
 }
 
+static inline int __test_dev_config_update_bool(const char *buf, size_t size,
+				       bool *cfg)
+{
+	int ret;
+
+	if (kstrtobool(buf, cfg) < 0)
+		ret = -EINVAL;
+	else
+		ret = size;
+
+	return ret;
+}
+
 static int test_dev_config_update_bool(const char *buf, size_t size,
 				       bool *cfg)
 {
 	int ret;
 
 	mutex_lock(&test_fw_mutex);
-	if (strtobool(buf, cfg) < 0)
-		ret = -EINVAL;
-	else
-		ret = size;
+	ret = __test_dev_config_update_bool(buf, size, cfg);
 	mutex_unlock(&test_fw_mutex);
 
 	return ret;
@@ -333,7 +391,8 @@ static ssize_t test_dev_config_show_bool(char *buf, bool val)
 	return snprintf(buf, PAGE_SIZE, "%d\n", val);
 }
 
-static int test_dev_config_update_size_t(const char *buf,
+static int __test_dev_config_update_size_t(
+					 const char *buf,
 					 size_t size,
 					 size_t *cfg)
 {
@@ -344,9 +403,7 @@ static int test_dev_config_update_size_t(const char *buf,
 	if (ret)
 		return ret;
 
-	mutex_lock(&test_fw_mutex);
 	*(size_t *)cfg = new;
-	mutex_unlock(&test_fw_mutex);
 
 	/* Always return full write size even if we didn't consume all */
 	return size;
@@ -362,7 +419,7 @@ static ssize_t test_dev_config_show_int(char *buf, int val)
 	return snprintf(buf, PAGE_SIZE, "%d\n", val);
 }
 
-static int test_dev_config_update_u8(const char *buf, size_t size, u8 *cfg)
+static int __test_dev_config_update_u8(const char *buf, size_t size, u8 *cfg)
 {
 	u8 val;
 	int ret;
@@ -371,12 +428,21 @@ static int test_dev_config_update_u8(const char *buf, size_t size, u8 *cfg)
 	if (ret)
 		return ret;
 
-	mutex_lock(&test_fw_mutex);
 	*(u8 *)cfg = val;
-	mutex_unlock(&test_fw_mutex);
 
 	/* Always return full write size even if we didn't consume all */
 	return size;
+}
+
+static int test_dev_config_update_u8(const char *buf, size_t size, u8 *cfg)
+{
+	int ret;
+
+	mutex_lock(&test_fw_mutex);
+	ret = __test_dev_config_update_u8(buf, size, cfg);
+	mutex_unlock(&test_fw_mutex);
+
+	return ret;
 }
 
 static ssize_t test_dev_config_show_u8(char *buf, u8 val)
@@ -392,6 +458,32 @@ static ssize_t config_name_show(struct device *dev,
 }
 static DEVICE_ATTR_RW(config_name);
 
+static ssize_t config_upload_name_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct test_firmware_upload *tst;
+	int ret = count;
+
+	mutex_lock(&test_fw_mutex);
+	tst = upload_lookup_name(buf);
+	if (tst)
+		test_fw_config->upload_name = tst->name;
+	else
+		ret = -EINVAL;
+	mutex_unlock(&test_fw_mutex);
+
+	return ret;
+}
+
+static ssize_t config_upload_name_show(struct device *dev,
+				       struct device_attribute *attr,
+				       char *buf)
+{
+	return config_test_show_str(buf, test_fw_config->upload_name);
+}
+static DEVICE_ATTR_RW(config_upload_name);
+
 static ssize_t config_num_requests_store(struct device *dev,
 					 struct device_attribute *attr,
 					 const char *buf, size_t count)
@@ -405,10 +497,10 @@ static ssize_t config_num_requests_store(struct device *dev,
 		mutex_unlock(&test_fw_mutex);
 		goto out;
 	}
-	mutex_unlock(&test_fw_mutex);
 
-	rc = test_dev_config_update_u8(buf, count,
-				       &test_fw_config->num_requests);
+	rc = __test_dev_config_update_u8(buf, count,
+					 &test_fw_config->num_requests);
+	mutex_unlock(&test_fw_mutex);
 
 out:
 	return rc;
@@ -452,10 +544,10 @@ static ssize_t config_buf_size_store(struct device *dev,
 		mutex_unlock(&test_fw_mutex);
 		goto out;
 	}
-	mutex_unlock(&test_fw_mutex);
 
-	rc = test_dev_config_update_size_t(buf, count,
-					   &test_fw_config->buf_size);
+	rc = __test_dev_config_update_size_t(buf, count,
+					     &test_fw_config->buf_size);
+	mutex_unlock(&test_fw_mutex);
 
 out:
 	return rc;
@@ -482,10 +574,10 @@ static ssize_t config_file_offset_store(struct device *dev,
 		mutex_unlock(&test_fw_mutex);
 		goto out;
 	}
-	mutex_unlock(&test_fw_mutex);
 
-	rc = test_dev_config_update_size_t(buf, count,
-					   &test_fw_config->file_offset);
+	rc = __test_dev_config_update_size_t(buf, count,
+					     &test_fw_config->file_offset);
+	mutex_unlock(&test_fw_mutex);
 
 out:
 	return rc;
@@ -580,12 +672,14 @@ static ssize_t trigger_request_store(struct device *dev,
 
 	name = kstrndup(buf, count, GFP_KERNEL);
 	if (!name)
-		return -ENOSPC;
+		return -ENOMEM;
 
 	pr_info("loading '%s'\n", name);
 
 	mutex_lock(&test_fw_mutex);
 	release_firmware(test_firmware);
+	if (test_fw_config->reqs)
+		__test_release_all_firmware();
 	test_firmware = NULL;
 	rc = request_firmware(&test_firmware, name, dev);
 	if (rc) {
@@ -626,7 +720,7 @@ static ssize_t trigger_request_platform_store(struct device *dev,
 
 	name = kstrndup(buf, count, GFP_KERNEL);
 	if (!name)
-		return -ENOSPC;
+		return -ENOMEM;
 
 	pr_info("inserting test platform fw '%s'\n", name);
 	efi_embedded_fw.name = name;
@@ -679,13 +773,15 @@ static ssize_t trigger_async_request_store(struct device *dev,
 
 	name = kstrndup(buf, count, GFP_KERNEL);
 	if (!name)
-		return -ENOSPC;
+		return -ENOMEM;
 
 	pr_info("loading '%s'\n", name);
 
 	mutex_lock(&test_fw_mutex);
 	release_firmware(test_firmware);
 	test_firmware = NULL;
+	if (test_fw_config->reqs)
+		__test_release_all_firmware();
 	rc = request_firmware_nowait(THIS_MODULE, 1, name, dev, GFP_KERNEL,
 				     NULL, trigger_async_request_cb);
 	if (rc) {
@@ -722,12 +818,14 @@ static ssize_t trigger_custom_fallback_store(struct device *dev,
 
 	name = kstrndup(buf, count, GFP_KERNEL);
 	if (!name)
-		return -ENOSPC;
+		return -ENOMEM;
 
 	pr_info("loading '%s' using custom fallback mechanism\n", name);
 
 	mutex_lock(&test_fw_mutex);
 	release_firmware(test_firmware);
+	if (test_fw_config->reqs)
+		__test_release_all_firmware();
 	test_firmware = NULL;
 	rc = request_firmware_nowait(THIS_MODULE, FW_ACTION_NOUEVENT, name,
 				     dev, GFP_KERNEL, NULL,
@@ -771,7 +869,7 @@ static int test_fw_run_batch_request(void *data)
 
 		test_buf = kzalloc(TEST_FIRMWARE_BUF_SIZE, GFP_KERNEL);
 		if (!test_buf)
-			return -ENOSPC;
+			return -ENOMEM;
 
 		if (test_fw_config->partial)
 			req->rc = request_partial_firmware_into_buf
@@ -790,6 +888,8 @@ static int test_fw_run_batch_request(void *data)
 						 test_fw_config->buf_size);
 		if (!req->fw)
 			kfree(test_buf);
+		else
+			req->fw_buf = test_buf;
 	} else {
 		req->rc = test_fw_config->req_firmware(&req->fw,
 						       req->name,
@@ -829,6 +929,11 @@ static ssize_t trigger_batched_requests_store(struct device *dev,
 
 	mutex_lock(&test_fw_mutex);
 
+	if (test_fw_config->reqs) {
+		rc = -EBUSY;
+		goto out_bail;
+	}
+
 	test_fw_config->reqs =
 		vzalloc(array3_size(sizeof(struct test_batched_req),
 				    test_fw_config->num_requests, 2));
@@ -845,6 +950,7 @@ static ssize_t trigger_batched_requests_store(struct device *dev,
 		req->fw = NULL;
 		req->idx = i;
 		req->name = test_fw_config->name;
+		req->fw_buf = NULL;
 		req->dev = dev;
 		init_completion(&req->completion);
 		req->task = kthread_run(test_fw_run_batch_request, req,
@@ -927,6 +1033,11 @@ ssize_t trigger_batched_requests_async_store(struct device *dev,
 
 	mutex_lock(&test_fw_mutex);
 
+	if (test_fw_config->reqs) {
+		rc = -EBUSY;
+		goto out_bail;
+	}
+
 	test_fw_config->reqs =
 		vzalloc(array3_size(sizeof(struct test_batched_req),
 				    test_fw_config->num_requests, 2));
@@ -944,6 +1055,7 @@ ssize_t trigger_batched_requests_async_store(struct device *dev,
 	for (i = 0; i < test_fw_config->num_requests; i++) {
 		req = &test_fw_config->reqs[i];
 		req->name = test_fw_config->name;
+		req->fw_buf = NULL;
 		req->fw = NULL;
 		req->idx = i;
 		init_completion(&req->completion);
@@ -988,6 +1100,279 @@ out:
 	return rc;
 }
 static DEVICE_ATTR_WO(trigger_batched_requests_async);
+
+static void upload_release(struct test_firmware_upload *tst)
+{
+	firmware_upload_unregister(tst->fwl);
+	kfree(tst->buf);
+	kfree(tst->name);
+	kfree(tst);
+}
+
+static void upload_release_all(void)
+{
+	struct test_firmware_upload *tst, *tmp;
+
+	list_for_each_entry_safe(tst, tmp, &test_upload_list, node) {
+		list_del(&tst->node);
+		upload_release(tst);
+	}
+	test_fw_config->upload_name = NULL;
+}
+
+/*
+ * This table is replicated from .../firmware_loader/sysfs_upload.c
+ * and needs to be kept in sync.
+ */
+static const char * const fw_upload_err_str[] = {
+	[FW_UPLOAD_ERR_NONE]	     = "none",
+	[FW_UPLOAD_ERR_HW_ERROR]     = "hw-error",
+	[FW_UPLOAD_ERR_TIMEOUT]	     = "timeout",
+	[FW_UPLOAD_ERR_CANCELED]     = "user-abort",
+	[FW_UPLOAD_ERR_BUSY]	     = "device-busy",
+	[FW_UPLOAD_ERR_INVALID_SIZE] = "invalid-file-size",
+	[FW_UPLOAD_ERR_RW_ERROR]     = "read-write-error",
+	[FW_UPLOAD_ERR_WEAROUT]	     = "flash-wearout",
+	[FW_UPLOAD_ERR_FW_INVALID]   = "firmware-invalid",
+};
+
+static void upload_err_inject_error(struct test_firmware_upload *tst,
+				    const u8 *p, const char *prog)
+{
+	enum fw_upload_err err;
+
+	for (err = FW_UPLOAD_ERR_NONE + 1; err < FW_UPLOAD_ERR_MAX; err++) {
+		if (strncmp(p, fw_upload_err_str[err],
+			    strlen(fw_upload_err_str[err])) == 0) {
+			tst->inject.prog = prog;
+			tst->inject.err_code = err;
+			return;
+		}
+	}
+}
+
+static void upload_err_inject_prog(struct test_firmware_upload *tst,
+				   const u8 *p)
+{
+	static const char * const progs[] = {
+		"preparing:", "transferring:", "programming:"
+	};
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(progs); i++) {
+		if (strncmp(p, progs[i], strlen(progs[i])) == 0) {
+			upload_err_inject_error(tst, p + strlen(progs[i]),
+						progs[i]);
+			return;
+		}
+	}
+}
+
+#define FIVE_MINUTES_MS	(5 * 60 * 1000)
+static enum fw_upload_err
+fw_upload_wait_on_cancel(struct test_firmware_upload *tst)
+{
+	int ms_delay;
+
+	for (ms_delay = 0; ms_delay < FIVE_MINUTES_MS; ms_delay += 100) {
+		msleep(100);
+		if (tst->cancel_request)
+			return FW_UPLOAD_ERR_CANCELED;
+	}
+	return FW_UPLOAD_ERR_NONE;
+}
+
+static enum fw_upload_err test_fw_upload_prepare(struct fw_upload *fwl,
+						 const u8 *data, u32 size)
+{
+	struct test_firmware_upload *tst = fwl->dd_handle;
+	enum fw_upload_err ret = FW_UPLOAD_ERR_NONE;
+	const char *progress = "preparing:";
+
+	tst->cancel_request = false;
+
+	if (!size || size > TEST_UPLOAD_MAX_SIZE) {
+		ret = FW_UPLOAD_ERR_INVALID_SIZE;
+		goto err_out;
+	}
+
+	if (strncmp(data, "inject:", strlen("inject:")) == 0)
+		upload_err_inject_prog(tst, data + strlen("inject:"));
+
+	memset(tst->buf, 0, TEST_UPLOAD_MAX_SIZE);
+	tst->size = size;
+
+	if (tst->inject.err_code == FW_UPLOAD_ERR_NONE ||
+	    strncmp(tst->inject.prog, progress, strlen(progress)) != 0)
+		return FW_UPLOAD_ERR_NONE;
+
+	if (tst->inject.err_code == FW_UPLOAD_ERR_CANCELED)
+		ret = fw_upload_wait_on_cancel(tst);
+	else
+		ret = tst->inject.err_code;
+
+err_out:
+	/*
+	 * The cleanup op only executes if the prepare op succeeds.
+	 * If the prepare op fails, it must do it's own clean-up.
+	 */
+	tst->inject.err_code = FW_UPLOAD_ERR_NONE;
+	tst->inject.prog = NULL;
+
+	return ret;
+}
+
+static enum fw_upload_err test_fw_upload_write(struct fw_upload *fwl,
+					       const u8 *data, u32 offset,
+					       u32 size, u32 *written)
+{
+	struct test_firmware_upload *tst = fwl->dd_handle;
+	const char *progress = "transferring:";
+	u32 blk_size;
+
+	if (tst->cancel_request)
+		return FW_UPLOAD_ERR_CANCELED;
+
+	blk_size = min_t(u32, TEST_UPLOAD_BLK_SIZE, size);
+	memcpy(tst->buf + offset, data + offset, blk_size);
+
+	*written = blk_size;
+
+	if (tst->inject.err_code == FW_UPLOAD_ERR_NONE ||
+	    strncmp(tst->inject.prog, progress, strlen(progress)) != 0)
+		return FW_UPLOAD_ERR_NONE;
+
+	if (tst->inject.err_code == FW_UPLOAD_ERR_CANCELED)
+		return fw_upload_wait_on_cancel(tst);
+
+	return tst->inject.err_code;
+}
+
+static enum fw_upload_err test_fw_upload_complete(struct fw_upload *fwl)
+{
+	struct test_firmware_upload *tst = fwl->dd_handle;
+	const char *progress = "programming:";
+
+	if (tst->cancel_request)
+		return FW_UPLOAD_ERR_CANCELED;
+
+	if (tst->inject.err_code == FW_UPLOAD_ERR_NONE ||
+	    strncmp(tst->inject.prog, progress, strlen(progress)) != 0)
+		return FW_UPLOAD_ERR_NONE;
+
+	if (tst->inject.err_code == FW_UPLOAD_ERR_CANCELED)
+		return fw_upload_wait_on_cancel(tst);
+
+	return tst->inject.err_code;
+}
+
+static void test_fw_upload_cancel(struct fw_upload *fwl)
+{
+	struct test_firmware_upload *tst = fwl->dd_handle;
+
+	tst->cancel_request = true;
+}
+
+static void test_fw_cleanup(struct fw_upload *fwl)
+{
+	struct test_firmware_upload *tst = fwl->dd_handle;
+
+	tst->inject.err_code = FW_UPLOAD_ERR_NONE;
+	tst->inject.prog = NULL;
+}
+
+static const struct fw_upload_ops upload_test_ops = {
+	.prepare = test_fw_upload_prepare,
+	.write = test_fw_upload_write,
+	.poll_complete = test_fw_upload_complete,
+	.cancel = test_fw_upload_cancel,
+	.cleanup = test_fw_cleanup
+};
+
+static ssize_t upload_register_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct test_firmware_upload *tst;
+	struct fw_upload *fwl;
+	char *name;
+	int ret;
+
+	name = kstrndup(buf, count, GFP_KERNEL);
+	if (!name)
+		return -ENOMEM;
+
+	mutex_lock(&test_fw_mutex);
+	tst = upload_lookup_name(name);
+	if (tst) {
+		ret = -EEXIST;
+		goto free_name;
+	}
+
+	tst = kzalloc(sizeof(*tst), GFP_KERNEL);
+	if (!tst) {
+		ret = -ENOMEM;
+		goto free_name;
+	}
+
+	tst->name = name;
+	tst->buf = kzalloc(TEST_UPLOAD_MAX_SIZE, GFP_KERNEL);
+	if (!tst->buf) {
+		ret = -ENOMEM;
+		goto free_tst;
+	}
+
+	fwl = firmware_upload_register(THIS_MODULE, dev, tst->name,
+				       &upload_test_ops, tst);
+	if (IS_ERR(fwl)) {
+		ret = PTR_ERR(fwl);
+		goto free_buf;
+	}
+
+	tst->fwl = fwl;
+	list_add_tail(&tst->node, &test_upload_list);
+	mutex_unlock(&test_fw_mutex);
+	return count;
+
+free_buf:
+	kfree(tst->buf);
+
+free_tst:
+	kfree(tst);
+
+free_name:
+	mutex_unlock(&test_fw_mutex);
+	kfree(name);
+
+	return ret;
+}
+static DEVICE_ATTR_WO(upload_register);
+
+static ssize_t upload_unregister_store(struct device *dev,
+				       struct device_attribute *attr,
+				       const char *buf, size_t count)
+{
+	struct test_firmware_upload *tst;
+	int ret = count;
+
+	mutex_lock(&test_fw_mutex);
+	tst = upload_lookup_name(buf);
+	if (!tst) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	if (test_fw_config->upload_name == tst->name)
+		test_fw_config->upload_name = NULL;
+
+	list_del(&tst->node);
+	upload_release(tst);
+
+out:
+	mutex_unlock(&test_fw_mutex);
+	return ret;
+}
+static DEVICE_ATTR_WO(upload_unregister);
 
 static ssize_t test_result_show(struct device *dev,
 				struct device_attribute *attr,
@@ -1051,6 +1436,45 @@ out:
 }
 static DEVICE_ATTR_RO(read_firmware);
 
+static ssize_t upload_read_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct test_firmware_upload *tst = NULL;
+	struct test_firmware_upload *tst_iter;
+	int ret = -EINVAL;
+
+	if (!test_fw_config->upload_name) {
+		pr_err("Set config_upload_name before using upload_read\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&test_fw_mutex);
+	list_for_each_entry(tst_iter, &test_upload_list, node)
+		if (tst_iter->name == test_fw_config->upload_name) {
+			tst = tst_iter;
+			break;
+		}
+
+	if (!tst) {
+		pr_err("Firmware name not found: %s\n",
+		       test_fw_config->upload_name);
+		goto out;
+	}
+
+	if (tst->size > PAGE_SIZE) {
+		pr_err("Testing interface must use PAGE_SIZE firmware for now\n");
+		goto out;
+	}
+
+	memcpy(buf, tst->buf, tst->size);
+	ret = tst->size;
+out:
+	mutex_unlock(&test_fw_mutex);
+	return ret;
+}
+static DEVICE_ATTR_RO(upload_read);
+
 #define TEST_FW_DEV_ATTR(name)          &dev_attr_##name.attr
 
 static struct attribute *test_dev_attrs[] = {
@@ -1066,6 +1490,7 @@ static struct attribute *test_dev_attrs[] = {
 	TEST_FW_DEV_ATTR(config_sync_direct),
 	TEST_FW_DEV_ATTR(config_send_uevent),
 	TEST_FW_DEV_ATTR(config_read_fw_idx),
+	TEST_FW_DEV_ATTR(config_upload_name),
 
 	/* These don't use the config at all - they could be ported! */
 	TEST_FW_DEV_ATTR(trigger_request),
@@ -1082,6 +1507,9 @@ static struct attribute *test_dev_attrs[] = {
 	TEST_FW_DEV_ATTR(release_all_firmware),
 	TEST_FW_DEV_ATTR(test_result),
 	TEST_FW_DEV_ATTR(read_firmware),
+	TEST_FW_DEV_ATTR(upload_read),
+	TEST_FW_DEV_ATTR(upload_register),
+	TEST_FW_DEV_ATTR(upload_unregister),
 	NULL,
 };
 
@@ -1111,6 +1539,7 @@ static int __init test_firmware_init(void)
 
 	rc = misc_register(&test_fw_misc_device);
 	if (rc) {
+		__test_firmware_config_free();
 		kfree(test_fw_config);
 		pr_err("could not register misc device: %d\n", rc);
 		return rc;
@@ -1128,6 +1557,7 @@ static void __exit test_firmware_exit(void)
 	mutex_lock(&test_fw_mutex);
 	release_firmware(test_firmware);
 	misc_deregister(&test_fw_misc_device);
+	upload_release_all();
 	__test_firmware_config_free();
 	kfree(test_fw_config);
 	mutex_unlock(&test_fw_mutex);
@@ -1138,4 +1568,5 @@ static void __exit test_firmware_exit(void)
 module_exit(test_firmware_exit);
 
 MODULE_AUTHOR("Kees Cook <keescook@chromium.org>");
+MODULE_DESCRIPTION("interface to trigger and test firmware loading");
 MODULE_LICENSE("GPL");

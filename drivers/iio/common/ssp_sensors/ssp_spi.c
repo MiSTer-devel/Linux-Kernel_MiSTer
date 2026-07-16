@@ -104,7 +104,7 @@ static struct ssp_msg *ssp_create_msg(u8 cmd, u16 len, u16 opt, u32 data)
 /*
  * It is a bit heavy to do it this way but often the function is used to compose
  * the message from smaller chunks which are placed on the stack.  Often the
- * chunks are small so memcpy should be optimalized.
+ * chunks are small so memcpy should be optimized.
  */
 static inline void ssp_fill_buffer(struct ssp_msg *m, unsigned int offset,
 				   const void *src, unsigned int len)
@@ -331,12 +331,11 @@ static int ssp_parse_dataframe(struct ssp_data *data, char *dataframe, int len)
 /* threaded irq */
 int ssp_irq_msg(struct ssp_data *data)
 {
-	bool found = false;
 	char *buffer;
 	u8 msg_type;
 	int ret;
 	u16 length, msg_options;
-	struct ssp_msg *msg, *n;
+	struct ssp_msg *msg = NULL, *iter, *n;
 
 	ret = spi_read(data->spi, data->header_buffer, SSP_HEADER_BUFFER_SIZE);
 	if (ret < 0) {
@@ -362,15 +361,15 @@ int ssp_irq_msg(struct ssp_data *data)
 		 * received with no order
 		 */
 		mutex_lock(&data->pending_lock);
-		list_for_each_entry_safe(msg, n, &data->pending_list, list) {
-			if (msg->options == msg_options) {
-				list_del(&msg->list);
-				found = true;
+		list_for_each_entry_safe(iter, n, &data->pending_list, list) {
+			if (iter->options == msg_options) {
+				list_del(&iter->list);
+				msg = iter;
 				break;
 			}
 		}
 
-		if (!found) {
+		if (!msg) {
 			/*
 			 * here can be implemented dead messages handling
 			 * but the slave should not send such ones - it is to

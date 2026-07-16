@@ -57,12 +57,25 @@ a snapshot on any subdirectory (and its nested contents) in the
 system.  Snapshot creation and deletion are as simple as 'mkdir
 .snap/foo' and 'rmdir .snap/foo'.
 
-Ceph also provides some recursive accounting on directories for nested
-files and bytes.  That is, a 'getfattr -d foo' on any directory in the
-system will reveal the total number of nested regular files and
-subdirectories, and a summation of all nested file sizes.  This makes
-the identification of large disk space consumers relatively quick, as
-no 'du' or similar recursive scan of the file system is required.
+Snapshot names have two limitations:
+
+* They can not start with an underscore ('_'), as these names are reserved
+  for internal usage by the MDS.
+* They can not exceed 240 characters in size.  This is because the MDS makes
+  use of long snapshot names internally, which follow the format:
+  `_<SNAPSHOT-NAME>_<INODE-NUMBER>`.  Since filenames in general can't have
+  more than 255 characters, and `<node-id>` takes 13 characters, the long
+  snapshot names can take as much as 255 - 1 - 1 - 13 = 240.
+
+Ceph also provides some recursive accounting on directories for nested files
+and bytes.  You can run the commands::
+
+ getfattr -n ceph.dir.rfiles /some/dir
+ getfattr -n ceph.dir.rbytes /some/dir
+
+to get the total number of nested files and their combined size, respectively.
+This makes the identification of large disk space consumers relatively quick,
+as no 'du' or similar recursive scan of the file system is required.
 
 Finally, Ceph also allows quotas to be set on any directory in the system.
 The quota can restrict the number of bytes or the number of files stored
@@ -82,7 +95,7 @@ Mount Syntax
 
 The basic mount syntax is::
 
- # mount -t ceph monip[:port][,monip2[:port]...]:/[subdir] mnt
+ # mount -t ceph user@fsid.fs_name=/[subdir] mnt -o mon_addr=monip1[:port][/monip2[:port]]
 
 You only need to specify a single monitor, as the client will get the
 full list when it connects.  (However, if the monitor you specify
@@ -90,15 +103,34 @@ happens to be down, the mount won't succeed.)  The port can be left
 off if the monitor is using the default.  So if the monitor is at
 1.2.3.4::
 
- # mount -t ceph 1.2.3.4:/ /mnt/ceph
+ # mount -t ceph cephuser@07fe3187-00d9-42a3-814b-72a4d5e7d5be.cephfs=/ /mnt/ceph -o mon_addr=1.2.3.4
 
 is sufficient.  If /sbin/mount.ceph is installed, a hostname can be
-used instead of an IP address.
+used instead of an IP address and the cluster FSID can be left out
+(as the mount helper will fill it in by reading the ceph configuration
+file)::
 
+  # mount -t ceph cephuser@cephfs=/ /mnt/ceph -o mon_addr=mon-addr
 
+Multiple monitor addresses can be passed by separating each address with a slash (`/`)::
+
+  # mount -t ceph cephuser@cephfs=/ /mnt/ceph -o mon_addr=192.168.1.100/192.168.1.101
+
+When using the mount helper, monitor address can be read from ceph
+configuration file if available. Note that, the cluster FSID (passed as part
+of the device string) is validated by checking it with the FSID reported by
+the monitor.
 
 Mount Options
 =============
+
+  mon_addr=ip_address[:port][/ip_address[:port]]
+	Monitor address to the cluster. This is used to bootstrap the
+        connection to the cluster. Once connection is established, the
+        monitor addresses in the monitor map are followed.
+
+  fsid=cluster-id
+	FSID of the cluster (from `ceph fsid` command).
 
   ip=A.B.C.D[:N]
 	Specify the IP and/or port the client should bind to locally.
@@ -184,7 +216,6 @@ For more information on Ceph, see the home page at
 
 The Linux kernel client source tree is available at
 	- https://github.com/ceph/ceph-client.git
-	- git://git.kernel.org/pub/scm/linux/kernel/git/sage/ceph-client.git
 
 and the source for the full system is at
 	https://github.com/ceph/ceph.git

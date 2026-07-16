@@ -13,7 +13,6 @@
 #include <linux/hwmon-sysfs.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/vexpress.h>
 
@@ -73,7 +72,7 @@ static umode_t vexpress_hwmon_attr_is_visible(struct kobject *kobj,
 				struct device_attribute, attr);
 
 	if (dev_attr->show == vexpress_hwmon_label_show &&
-			!of_get_property(dev->of_node, "label", NULL))
+			!of_property_present(dev->of_node, "label"))
 		return 0;
 
 	return attr->mode;
@@ -207,7 +206,6 @@ MODULE_DEVICE_TABLE(of, vexpress_hwmon_of_match);
 
 static int vexpress_hwmon_probe(struct platform_device *pdev)
 {
-	const struct of_device_id *match;
 	struct vexpress_hwmon_data *data;
 	const struct vexpress_hwmon_type *type;
 
@@ -216,10 +214,9 @@ static int vexpress_hwmon_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, data);
 
-	match = of_match_device(vexpress_hwmon_of_match, &pdev->dev);
-	if (!match)
+	type = of_device_get_match_data(&pdev->dev);
+	if (!type)
 		return -ENODEV;
-	type = match->data;
 
 	data->reg = devm_regmap_init_vexpress_config(&pdev->dev);
 	if (IS_ERR(data->reg))

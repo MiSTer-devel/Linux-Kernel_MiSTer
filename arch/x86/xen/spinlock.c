@@ -18,7 +18,6 @@
 static DEFINE_PER_CPU(int, lock_kicker_irq) = -1;
 static DEFINE_PER_CPU(char *, irq_name);
 static DEFINE_PER_CPU(atomic_t, xen_qlock_wait_nest);
-static bool xen_pvspin = true;
 
 static void xen_qlock_kick(int cpu)
 {
@@ -68,13 +67,14 @@ void xen_init_lock_cpu(int cpu)
 	int irq;
 	char *name;
 
-	if (!xen_pvspin)
+	if (nopvspin)
 		return;
 
 	WARN(per_cpu(lock_kicker_irq, cpu) >= 0, "spinlock on CPU%d exists on IRQ%d!\n",
 	     cpu, per_cpu(lock_kicker_irq, cpu));
 
 	name = kasprintf(GFP_KERNEL, "spinlock%d", cpu);
+	per_cpu(irq_name, cpu) = name;
 	irq = bind_ipi_to_irqhandler(XEN_SPIN_UNLOCK_VECTOR,
 				     cpu,
 				     dummy_handler,
@@ -85,7 +85,6 @@ void xen_init_lock_cpu(int cpu)
 	if (irq >= 0) {
 		disable_irq(irq); /* make sure it's never delivered */
 		per_cpu(lock_kicker_irq, cpu) = irq;
-		per_cpu(irq_name, cpu) = name;
 	}
 
 	printk("cpu %d spinlock event irq %d\n", cpu, irq);
@@ -95,9 +94,11 @@ void xen_uninit_lock_cpu(int cpu)
 {
 	int irq;
 
-	if (!xen_pvspin)
+	if (nopvspin)
 		return;
 
+	kfree(per_cpu(irq_name, cpu));
+	per_cpu(irq_name, cpu) = NULL;
 	/*
 	 * When booting the kernel with 'mitigations=auto,nosmt', the secondary
 	 * CPUs are not activated, and lock_kicker_irq is not initialized.
@@ -108,8 +109,6 @@ void xen_uninit_lock_cpu(int cpu)
 
 	unbind_from_irqhandler(irq, NULL);
 	per_cpu(lock_kicker_irq, cpu) = -1;
-	kfree(per_cpu(irq_name, cpu));
-	per_cpu(irq_name, cpu) = NULL;
 }
 
 PV_CALLEE_SAVE_REGS_THUNK(xen_vcpu_stolen);
@@ -125,10 +124,10 @@ PV_CALLEE_SAVE_REGS_THUNK(xen_vcpu_stolen);
 void __init xen_init_spinlocks(void)
 {
 	/*  Don't need to use pvqspinlock code if there is only 1 vCPU. */
-	if (num_possible_cpus() == 1 || nopvspin)
-		xen_pvspin = false;
+	if (num_possible_cpus() == 1)
+		nopvspin = true;
 
-	if (!xen_pvspin) {
+	if (nopvspin) {
 		printk(KERN_DEBUG "xen: PV spinlocks disabled\n");
 		static_branch_disable(&virt_spin_lock_key);
 		return;
@@ -143,12 +142,3 @@ void __init xen_init_spinlocks(void)
 	pv_ops.lock.kick = xen_qlock_kick;
 	pv_ops.lock.vcpu_is_preempted = PV_CALLEE_SAVE(xen_vcpu_stolen);
 }
-
-static __init int xen_parse_nopvspin(char *arg)
-{
-	pr_notice("\"xen_nopvspin\" is deprecated, please use \"nopvspin\" instead\n");
-	xen_pvspin = false;
-	return 0;
-}
-early_param("xen_nopvspin", xen_parse_nopvspin);
-

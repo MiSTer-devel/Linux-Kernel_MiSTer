@@ -15,6 +15,7 @@
 #include <linux/interrupt.h>
 #include <linux/mfd/intel_soc_pmic.h>
 #include <linux/mfd/intel_soc_pmic_mrfld.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
@@ -24,7 +25,7 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/machine.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #define BCOVE_GPADCREQ			0xDC
 #define BCOVE_GPADCREQ_BUSY		BIT(0)
@@ -74,14 +75,14 @@ static int mrfld_adc_single_conv(struct iio_dev *indio_dev,
 	struct mrfld_adc *adc = iio_priv(indio_dev);
 	struct regmap *regmap = adc->regmap;
 	unsigned int req;
-	long timeout;
+	long time_left;
 	__be16 value;
 	int ret;
 
 	reinit_completion(&adc->completion);
 
-	regmap_update_bits(regmap, BCOVE_MADCIRQ, BCOVE_ADCIRQ_ALL, 0);
-	regmap_update_bits(regmap, BCOVE_MIRQLVL1, BCOVE_LVL1_ADC, 0);
+	regmap_clear_bits(regmap, BCOVE_MADCIRQ, BCOVE_ADCIRQ_ALL);
+	regmap_clear_bits(regmap, BCOVE_MIRQLVL1, BCOVE_LVL1_ADC);
 
 	ret = regmap_read_poll_timeout(regmap, BCOVE_GPADCREQ, req,
 				       !(req & BCOVE_GPADCREQ_BUSY),
@@ -94,13 +95,13 @@ static int mrfld_adc_single_conv(struct iio_dev *indio_dev,
 	if (ret)
 		goto done;
 
-	timeout = wait_for_completion_interruptible_timeout(&adc->completion,
-							    BCOVE_ADC_TIMEOUT);
-	if (timeout < 0) {
-		ret = timeout;
+	time_left = wait_for_completion_interruptible_timeout(&adc->completion,
+							      BCOVE_ADC_TIMEOUT);
+	if (time_left < 0) {
+		ret = time_left;
 		goto done;
 	}
-	if (timeout == 0) {
+	if (time_left == 0) {
 		ret = -ETIMEDOUT;
 		goto done;
 	}
@@ -163,7 +164,7 @@ static const struct iio_chan_spec mrfld_adc_channels[] = {
 	BCOVE_ADC_CHANNEL(IIO_TEMP,       8, "CH8", 0xC6),
 };
 
-static struct iio_map iio_maps[] = {
+static const struct iio_map iio_maps[] = {
 	IIO_MAP("CH0", "bcove-battery", "VBATRSLT"),
 	IIO_MAP("CH1", "bcove-battery", "BATTID"),
 	IIO_MAP("CH2", "bcove-battery", "IBATRSLT"),
@@ -173,7 +174,7 @@ static struct iio_map iio_maps[] = {
 	IIO_MAP("CH6", "bcove-temp",    "SYSTEMP0"),
 	IIO_MAP("CH7", "bcove-temp",    "SYSTEMP1"),
 	IIO_MAP("CH8", "bcove-temp",    "SYSTEMP2"),
-	{}
+	{ }
 };
 
 static int mrfld_adc_probe(struct platform_device *pdev)
@@ -205,8 +206,6 @@ static int mrfld_adc_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	platform_set_drvdata(pdev, indio_dev);
-
 	indio_dev->name = pdev->name;
 
 	indio_dev->channels = mrfld_adc_channels;
@@ -214,33 +213,16 @@ static int mrfld_adc_probe(struct platform_device *pdev)
 	indio_dev->info = &mrfld_adc_iio_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
-	ret = iio_map_array_register(indio_dev, iio_maps);
+	ret = devm_iio_map_array_register(dev, indio_dev, iio_maps);
 	if (ret)
 		return ret;
 
-	ret = devm_iio_device_register(dev, indio_dev);
-	if (ret < 0)
-		goto err_array_unregister;
-
-	return 0;
-
-err_array_unregister:
-	iio_map_array_unregister(indio_dev);
-	return ret;
-}
-
-static int mrfld_adc_remove(struct platform_device *pdev)
-{
-	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
-
-	iio_map_array_unregister(indio_dev);
-
-	return 0;
+	return devm_iio_device_register(dev, indio_dev);
 }
 
 static const struct platform_device_id mrfld_adc_id_table[] = {
 	{ .name = "mrfld_bcove_adc" },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(platform, mrfld_adc_id_table);
 
@@ -249,7 +231,6 @@ static struct platform_driver mrfld_adc_driver = {
 		.name = "mrfld_bcove_adc",
 	},
 	.probe = mrfld_adc_probe,
-	.remove = mrfld_adc_remove,
 	.id_table = mrfld_adc_id_table,
 };
 module_platform_driver(mrfld_adc_driver);

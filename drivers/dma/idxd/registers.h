@@ -3,9 +3,18 @@
 #ifndef _IDXD_REGISTERS_H_
 #define _IDXD_REGISTERS_H_
 
+#ifdef __KERNEL__
+#include <uapi/linux/idxd.h>
+#else
+#include <linux/idxd.h>
+#endif
+
 /* PCI Config */
-#define PCI_DEVICE_ID_INTEL_DSA_SPR0	0x0b25
-#define PCI_DEVICE_ID_INTEL_IAX_SPR0	0x0cfe
+#define PCI_DEVICE_ID_INTEL_DSA_GNRD	0x11fb
+#define PCI_DEVICE_ID_INTEL_DSA_DMR	0x1212
+#define PCI_DEVICE_ID_INTEL_IAA_DMR	0x1216
+#define PCI_DEVICE_ID_INTEL_IAA_PTL	0xb02d
+#define PCI_DEVICE_ID_INTEL_IAA_WCL	0xfd2d
 
 #define DEVICE_VERSION_1		0x100
 #define DEVICE_VERSION_2		0x200
@@ -31,16 +40,17 @@ union gen_cap_reg {
 		u64 rsvd:3;
 		u64 dest_readback:1;
 		u64 drain_readback:1;
-		u64 rsvd2:6;
+		u64 rsvd2:3;
+		u64 evl_support:2;
+		u64 batch_continuation:1;
 		u64 max_xfer_shift:5;
 		u64 max_batch_shift:4;
 		u64 max_ims_mult:6;
 		u64 config_en:1;
-		u64 max_descs_per_engine:8;
-		u64 rsvd3:24;
+		u64 rsvd3:32;
 	};
 	u64 bits;
-} __packed;
+};
 #define IDXD_GENCAP_OFFSET		0x10
 
 union wq_cap_reg {
@@ -55,23 +65,26 @@ union wq_cap_reg {
 		u64 priority:1;
 		u64 occupancy:1;
 		u64 occupancy_int:1;
-		u64 rsvd3:10;
+		u64 op_config:1;
+		u64 wq_prs_support:1;
+		u64 rsvd4:8;
 	};
 	u64 bits;
-} __packed;
+};
 #define IDXD_WQCAP_OFFSET		0x20
 #define IDXD_WQCFG_MIN			5
 
 union group_cap_reg {
 	struct {
 		u64 num_groups:8;
-		u64 total_tokens:8;
-		u64 token_en:1;
-		u64 token_limit:1;
-		u64 rsvd:46;
+		u64 total_rdbufs:8;	/* formerly total_tokens */
+		u64 rdbuf_ctrl:1;	/* formerly token_en */
+		u64 rdbuf_limit:1;	/* formerly token_limit */
+		u64 progress_limit:1;	/* descriptor and batch descriptor */
+		u64 rsvd:45;
 	};
 	u64 bits;
-} __packed;
+};
 #define IDXD_GRPCAP_OFFSET		0x30
 
 union engine_cap_reg {
@@ -80,7 +93,7 @@ union engine_cap_reg {
 		u64 rsvd:56;
 	};
 	u64 bits;
-} __packed;
+};
 
 #define IDXD_ENGCAP_OFFSET		0x38
 
@@ -90,6 +103,8 @@ union engine_cap_reg {
 struct opcap {
 	u64 bits[4];
 };
+
+#define IDXD_MAX_OPCAP_BITS		256U
 
 #define IDXD_OPCAP_OFFSET		0x40
 
@@ -104,30 +119,32 @@ union offsets_reg {
 		u64 rsvd:48;
 	};
 	u64 bits[2];
-} __packed;
+};
 
 #define IDXD_TABLE_MULT			0x100
 
 #define IDXD_GENCFG_OFFSET		0x80
 union gencfg_reg {
 	struct {
-		u32 token_limit:8;
+		u32 rdbuf_limit:8;
 		u32 rsvd:4;
 		u32 user_int_en:1;
-		u32 rsvd2:19;
+		u32 evl_en:1;
+		u32 rsvd2:18;
 	};
 	u32 bits;
-} __packed;
+};
 
 #define IDXD_GENCTRL_OFFSET		0x88
 union genctrl_reg {
 	struct {
 		u32 softerr_int_en:1;
 		u32 halt_int_en:1;
-		u32 rsvd:30;
+		u32 evl_int_en:1;
+		u32 rsvd:29;
 	};
 	u32 bits;
-} __packed;
+};
 
 #define IDXD_GENSTATS_OFFSET		0x90
 union gensts_reg {
@@ -137,7 +154,7 @@ union gensts_reg {
 		u32 rsvd:28;
 	};
 	u32 bits;
-} __packed;
+};
 
 enum idxd_device_status_state {
 	IDXD_DEVICE_STATE_DISABLED = 0,
@@ -158,6 +175,9 @@ enum idxd_device_reset_type {
 #define IDXD_INTC_CMD			0x02
 #define IDXD_INTC_OCCUPY			0x04
 #define IDXD_INTC_PERFMON_OVFL		0x08
+#define IDXD_INTC_HALT_STATE		0x10
+#define IDXD_INTC_EVL			0x20
+#define IDXD_INTC_INT_HANDLE_REVOKED	0x80000000
 
 #define IDXD_CMD_OFFSET			0xa0
 union idxd_command_reg {
@@ -168,7 +188,7 @@ union idxd_command_reg {
 		u32 int_req:1;
 	};
 	u32 bits;
-} __packed;
+};
 
 enum idxd_cmd {
 	IDXD_CMD_ENABLE_DEVICE = 1,
@@ -198,7 +218,7 @@ union cmdsts_reg {
 		u8 active:1;
 	};
 	u32 bits;
-} __packed;
+};
 #define IDXD_CMDSTS_ACTIVE		0x80000000
 #define IDXD_CMDSTS_ERR_MASK		0xff
 #define IDXD_CMDSTS_RES_SHIFT		8
@@ -269,7 +289,46 @@ union sw_err_reg {
 		u64 rsvd5;
 	};
 	u64 bits[4];
-} __packed;
+};
+
+union iaa_cap_reg {
+	struct {
+		u64 dec_aecs_format_ver:1;
+		u64 drop_init_bits:1;
+		u64 chaining:1;
+		u64 force_array_output_mod:1;
+		u64 load_part_aecs:1;
+		u64 comp_early_abort:1;
+		u64 nested_comp:1;
+		u64 diction_comp:1;
+		u64 header_gen:1;
+		u64 crypto_gcm:1;
+		u64 crypto_cfb:1;
+		u64 crypto_xts:1;
+		u64 rsvd:52;
+	};
+	u64 bits;
+};
+
+#define IDXD_IAACAP_OFFSET	0x180
+
+#define IDXD_EVLCFG_OFFSET	0xe0
+union evlcfg_reg {
+	struct {
+		u64 pasid_en:1;
+		u64 priv:1;
+		u64 rsvd:10;
+		u64 base_addr:52;
+
+		u64 size:16;
+		u64 pasid:20;
+		u64 rsvd2:28;
+	};
+	u64 bits[2];
+};
+
+#define IDXD_EVL_SIZE_MIN	0x0040
+#define IDXD_EVL_SIZE_MAX	0xffff
 
 union msix_perm {
 	struct {
@@ -280,27 +339,31 @@ union msix_perm {
 		u32 pasid:20;
 	};
 	u32 bits;
-} __packed;
+};
 
 union group_flags {
 	struct {
-		u32 tc_a:3;
-		u32 tc_b:3;
-		u32 rsvd:1;
-		u32 use_token_limit:1;
-		u32 tokens_reserved:8;
-		u32 rsvd2:4;
-		u32 tokens_allowed:8;
-		u32 rsvd3:4;
+		u64 tc_a:3;
+		u64 tc_b:3;
+		u64 rsvd:1;
+		u64 use_rdbuf_limit:1;
+		u64 rdbufs_reserved:8;
+		u64 rsvd2:4;
+		u64 rdbufs_allowed:8;
+		u64 rsvd3:4;
+		u64 desc_progress_limit:2;
+		u64 rsvd4:2;
+		u64 batch_progress_limit:2;
+		u64 rsvd5:26;
 	};
-	u32 bits;
-} __packed;
+	u64 bits;
+};
 
 struct grpcfg {
 	u64 wqs[4];
 	u64 engines;
 	union group_flags flags;
-} __packed;
+};
 
 union wqcfg {
 	struct {
@@ -316,7 +379,7 @@ union wqcfg {
 		u32 mode:1;	/* shared or dedicated */
 		u32 bof:1;	/* block on fault */
 		u32 wq_ats_disable:1;
-		u32 rsvd2:1;
+		u32 wq_prs_disable:1;
 		u32 priority:4;
 		u32 pasid:20;
 		u32 pasid_en:1;
@@ -347,11 +410,15 @@ union wqcfg {
 
 		/* bytes 28-31 */
 		u32 rsvd8;
+
+		/* bytes 32-63 */
+		u64 op_config[4];
 	};
-	u32 bits[8];
-} __packed;
+	u32 bits[16];
+};
 
 #define WQCFG_PASID_IDX                2
+#define WQCFG_PRIVL_IDX		2
 #define WQCFG_OCCUP_IDX		6
 
 #define WQCFG_OCCUP_MASK	0xffff
@@ -380,12 +447,14 @@ union wqcfg {
 /*
  * This macro calculates the offset into the GRPCFG register
  * idxd - struct idxd *
- * n - wq id
- * ofs - the index of the 32b dword for the config register
+ * n - group id
+ * ofs - the index of the 64b qword for the config register
  *
- * The WQCFG register block is divided into groups per each wq. The n index
- * allows us to move to the register group that's for that particular wq.
- * Each register is 32bits. The ofs gives us the number of register to access.
+ * The GRPCFG register block is divided into three sub-registers, which
+ * are GRPWQCFG, GRPENGCFG and GRPFLGCFG. The n index allows us to move
+ * to the register block that contains the three sub-registers.
+ * Each register block is 64bits. And the ofs gives us the offset
+ * within the GRPWQCFG register to access.
  */
 #define GRPWQCFG_OFFSET(idxd_dev, n, ofs) ((idxd_dev)->grpcfg_offset +\
 					   (n) * GRPCFG_SIZE + sizeof(u64) * (ofs))
@@ -410,7 +479,7 @@ union idxd_perfcap {
 		u64 rsvd3:8;
 	};
 	u64 bits;
-} __packed;
+};
 
 #define IDXD_EVNTCAP_OFFSET		0x80
 union idxd_evntcap {
@@ -419,7 +488,7 @@ union idxd_evntcap {
 		u64 rsvd:36;
 	};
 	u64 bits;
-} __packed;
+};
 
 struct idxd_event {
 	union {
@@ -429,7 +498,7 @@ struct idxd_event {
 		};
 		u32 val;
 	};
-} __packed;
+};
 
 #define IDXD_CNTRCAP_OFFSET		0x800
 struct idxd_cntrcap {
@@ -442,7 +511,7 @@ struct idxd_cntrcap {
 		u32 val;
 	};
 	struct idxd_event events[];
-} __packed;
+};
 
 #define IDXD_PERFRST_OFFSET		0x10
 union idxd_perfrst {
@@ -452,7 +521,7 @@ union idxd_perfrst {
 		u32 rsvd:30;
 	};
 	u32 val;
-} __packed;
+};
 
 #define IDXD_OVFSTATUS_OFFSET		0x30
 #define IDXD_PERFFRZ_OFFSET		0x20
@@ -469,7 +538,7 @@ union idxd_cntrcfg {
 		u64 rsvd3:4;
 	};
 	u64 val;
-} __packed;
+};
 
 #define IDXD_FLTCFG_OFFSET		0x300
 
@@ -479,7 +548,7 @@ union idxd_cntrdata {
 		u64 event_count_value;
 	};
 	u64 val;
-} __packed;
+};
 
 union event_cfg {
 	struct {
@@ -487,7 +556,7 @@ union event_cfg {
 		u64 event_enc:28;
 	};
 	u64 val;
-} __packed;
+};
 
 union filter_cfg {
 	struct {
@@ -498,6 +567,75 @@ union filter_cfg {
 		u64 eng:8;
 	};
 	u64 val;
-} __packed;
+};
+
+#define IDXD_EVLSTATUS_OFFSET		0xf0
+
+union evl_status_reg {
+	struct {
+		u32 head:16;
+		u32 rsvd:16;
+		u32 tail:16;
+		u32 rsvd2:14;
+		u32 int_pending:1;
+		u32 rsvd3:1;
+	};
+	struct {
+		u32 bits_lower32;
+		u32 bits_upper32;
+	};
+	u64 bits;
+};
+
+#define IDXD_MAX_BATCH_IDENT	256
+
+struct __evl_entry {
+	u64 rsvd:2;
+	u64 desc_valid:1;
+	u64 wq_idx_valid:1;
+	u64 batch:1;
+	u64 fault_rw:1;
+	u64 priv:1;
+	u64 err_info_valid:1;
+	u64 error:8;
+	u64 wq_idx:8;
+	u64 batch_id:8;
+	u64 operation:8;
+	u64 pasid:20;
+	u64 rsvd2:4;
+
+	u16 batch_idx;
+	u16 rsvd3;
+	union {
+		/* Invalid Flags 0x11 */
+		u32 invalid_flags;
+		/* Invalid Int Handle 0x19 */
+		/* Page fault 0x1a */
+		/* Page fault 0x06, 0x1f, only operand_id */
+		/* Page fault before drain or in batch, 0x26, 0x27 */
+		struct {
+			u16 int_handle;
+			u16 rci:1;
+			u16 ims:1;
+			u16 rcr:1;
+			u16 first_err_in_batch:1;
+			u16 rsvd4_2:9;
+			u16 operand_id:3;
+		};
+	};
+	u64 fault_addr;
+	u64 rsvd5;
+};
+
+struct dsa_evl_entry {
+	struct __evl_entry e;
+	struct dsa_completion_record cr;
+};
+
+struct iax_evl_entry {
+	struct __evl_entry e;
+	u64 rsvd[4];
+	struct iax_completion_record cr;
+};
 
 #endif

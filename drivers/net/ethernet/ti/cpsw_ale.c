@@ -10,6 +10,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/regmap.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/err.h>
@@ -45,10 +46,30 @@
 #define ALE_UNKNOWNVLAN_FORCE_UNTAG_EGRESS	0x9C
 #define ALE_VLAN_MASK_MUX(reg)			(0xc0 + (0x4 * (reg)))
 
+#define ALE_POLICER_PORT_OUI		0x100
+#define ALE_POLICER_DA_SA		0x104
+#define ALE_POLICER_VLAN		0x108
+#define ALE_POLICER_ETHERTYPE_IPSA	0x10c
+#define ALE_POLICER_IPDA		0x110
+#define ALE_POLICER_PIR			0x118
+#define ALE_POLICER_CIR			0x11c
+#define ALE_POLICER_TBL_CTL		0x120
+#define ALE_POLICER_CTL			0x124
+#define ALE_POLICER_TEST_CTL		0x128
+#define ALE_POLICER_HIT_STATUS		0x12c
+#define ALE_THREAD_DEF			0x134
+#define ALE_THREAD_CTL			0x138
+#define ALE_THREAD_VAL			0x13c
+
+#define ALE_POLICER_TBL_WRITE_ENABLE	BIT(31)
+#define ALE_POLICER_TBL_INDEX_MASK	GENMASK(4, 0)
+
 #define AM65_CPSW_ALE_THREAD_DEF_REG 0x134
 
 /* ALE_AGING_TIMER */
 #define ALE_AGING_TIMER_MASK	GENMASK(23, 0)
+
+#define ALE_RATE_LIMIT_MIN_PPS 1000
 
 /**
  * struct ale_entry_fld - The ALE tbl entry field description
@@ -74,7 +95,8 @@ enum {
  * @dev_id: ALE version/SoC id
  * @features: features supported by ALE
  * @tbl_entries: number of ALE entries
- * @major_ver_mask: mask of ALE Major Version Value in ALE_IDVER reg.
+ * @reg_fields: pointer to array of register field configuration
+ * @num_fields: number of fields in the reg_fields array
  * @nu_switch_ale: NU Switch ALE
  * @vlan_entry_tbl: ALE vlan entry fields description tbl
  */
@@ -82,7 +104,8 @@ struct cpsw_ale_dev_id {
 	const char *dev_id;
 	u32 features;
 	u32 tbl_entries;
-	u32 major_ver_mask;
+	const struct reg_field *reg_fields;
+	int num_fields;
 	bool nu_switch_ale;
 	const struct ale_entry_fld *vlan_entry_tbl;
 };
@@ -100,51 +123,77 @@ struct cpsw_ale_dev_id {
 #define ALE_UCAST_TOUCHED		3
 
 #define ALE_TABLE_SIZE_MULTIPLIER	1024
-#define ALE_STATUS_SIZE_MASK		0x1f
+#define ALE_POLICER_SIZE_MULTIPLIER	8
 
 static inline int cpsw_ale_get_field(u32 *ale_entry, u32 start, u32 bits)
 {
-	int idx;
+	int idx, idx2, index;
+	u32 hi_val = 0;
 
 	idx    = start / 32;
+	idx2 = (start + bits - 1) / 32;
+	/* Check if bits to be fetched exceed a word */
+	if (idx != idx2) {
+		index = 2 - idx2; /* flip */
+		hi_val = ale_entry[index] << ((idx2 * 32) - start);
+	}
 	start -= idx * 32;
 	idx    = 2 - idx; /* flip */
-	return (ale_entry[idx] >> start) & BITMASK(bits);
+	return (hi_val + (ale_entry[idx] >> start)) & BITMASK(bits);
 }
 
 static inline void cpsw_ale_set_field(u32 *ale_entry, u32 start, u32 bits,
 				      u32 value)
 {
-	int idx;
+	int idx, idx2, index;
 
 	value &= BITMASK(bits);
-	idx    = start / 32;
+	idx = start / 32;
+	idx2 = (start + bits - 1) / 32;
+	/* Check if bits to be set exceed a word */
+	if (idx != idx2) {
+		index = 2 - idx2; /* flip */
+		ale_entry[index] &= ~(BITMASK(bits + start - (idx2 * 32)));
+		ale_entry[index] |= (value >> ((idx2 * 32) - start));
+	}
 	start -= idx * 32;
-	idx    = 2 - idx; /* flip */
+	idx = 2 - idx; /* flip */
 	ale_entry[idx] &= ~(BITMASK(bits) << start);
 	ale_entry[idx] |=  (value << start);
 }
 
-#define DEFINE_ALE_FIELD(name, start, bits)				\
+#define DEFINE_ALE_FIELD_GET(name, start, bits)				\
 static inline int cpsw_ale_get_##name(u32 *ale_entry)			\
 {									\
 	return cpsw_ale_get_field(ale_entry, start, bits);		\
-}									\
+}
+
+#define DEFINE_ALE_FIELD_SET(name, start, bits)				\
 static inline void cpsw_ale_set_##name(u32 *ale_entry, u32 value)	\
 {									\
 	cpsw_ale_set_field(ale_entry, start, bits, value);		\
 }
 
-#define DEFINE_ALE_FIELD1(name, start)					\
+#define DEFINE_ALE_FIELD(name, start, bits)				\
+DEFINE_ALE_FIELD_GET(name, start, bits)					\
+DEFINE_ALE_FIELD_SET(name, start, bits)
+
+#define DEFINE_ALE_FIELD1_GET(name, start)				\
 static inline int cpsw_ale_get_##name(u32 *ale_entry, u32 bits)		\
 {									\
 	return cpsw_ale_get_field(ale_entry, start, bits);		\
-}									\
+}
+
+#define DEFINE_ALE_FIELD1_SET(name, start)				\
 static inline void cpsw_ale_set_##name(u32 *ale_entry, u32 value,	\
 		u32 bits)						\
 {									\
 	cpsw_ale_set_field(ale_entry, start, bits, value);		\
 }
+
+#define DEFINE_ALE_FIELD1(name, start)					\
+DEFINE_ALE_FIELD1_GET(name, start)					\
+DEFINE_ALE_FIELD1_SET(name, start)
 
 enum {
 	ALE_ENT_VID_MEMBER_LIST = 0,
@@ -201,14 +250,14 @@ static const struct ale_entry_fld vlan_entry_k3_cpswxg[] = {
 
 DEFINE_ALE_FIELD(entry_type,		60,	2)
 DEFINE_ALE_FIELD(vlan_id,		48,	12)
-DEFINE_ALE_FIELD(mcast_state,		62,	2)
+DEFINE_ALE_FIELD_SET(mcast_state,	62,	2)
 DEFINE_ALE_FIELD1(port_mask,		66)
 DEFINE_ALE_FIELD(super,			65,	1)
 DEFINE_ALE_FIELD(ucast_type,		62,     2)
-DEFINE_ALE_FIELD1(port_num,		66)
-DEFINE_ALE_FIELD(blocked,		65,     1)
-DEFINE_ALE_FIELD(secure,		64,     1)
-DEFINE_ALE_FIELD(mcast,			40,	1)
+DEFINE_ALE_FIELD1_SET(port_num,		66)
+DEFINE_ALE_FIELD_SET(blocked,		65,     1)
+DEFINE_ALE_FIELD_SET(secure,		64,     1)
+DEFINE_ALE_FIELD_GET(mcast,		40,	1)
 
 #define NU_VLAN_UNREG_MCAST_IDX	1
 
@@ -406,14 +455,13 @@ static void cpsw_ale_flush_mcast(struct cpsw_ale *ale, u32 *ale_entry,
 				      ale->port_mask_bits);
 	if ((mask & port_mask) == 0)
 		return; /* ports dont intersect, not interested */
-	mask &= ~port_mask;
+	mask &= (~port_mask | ALE_PORT_HOST);
 
-	/* free if only remaining port is host port */
-	if (mask)
+	if (mask == 0x0 || mask == ALE_PORT_HOST)
+		cpsw_ale_set_entry_type(ale_entry, ALE_TYPE_FREE);
+	else
 		cpsw_ale_set_port_mask(ale_entry, mask,
 				       ale->port_mask_bits);
-	else
-		cpsw_ale_set_entry_type(ale_entry, ALE_TYPE_FREE);
 }
 
 int cpsw_ale_flush_multicast(struct cpsw_ale *ale, int port_mask, int vid)
@@ -450,6 +498,7 @@ int cpsw_ale_flush_multicast(struct cpsw_ale *ale, int port_mask, int vid)
 	}
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_flush_multicast);
 
 static inline void cpsw_ale_set_vlan_entry_type(u32 *ale_entry,
 						int flags, u16 vid)
@@ -487,6 +536,7 @@ int cpsw_ale_add_ucast(struct cpsw_ale *ale, const u8 *addr, int port,
 	cpsw_ale_write(ale, idx, ale_entry);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_add_ucast);
 
 int cpsw_ale_del_ucast(struct cpsw_ale *ale, const u8 *addr, int port,
 		       int flags, u16 vid)
@@ -502,6 +552,7 @@ int cpsw_ale_del_ucast(struct cpsw_ale *ale, const u8 *addr, int port,
 	cpsw_ale_write(ale, idx, ale_entry);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_del_ucast);
 
 int cpsw_ale_add_mcast(struct cpsw_ale *ale, const u8 *addr, int port_mask,
 		       int flags, u16 vid, int mcast_state)
@@ -535,6 +586,7 @@ int cpsw_ale_add_mcast(struct cpsw_ale *ale, const u8 *addr, int port_mask,
 	cpsw_ale_write(ale, idx, ale_entry);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_add_mcast);
 
 int cpsw_ale_del_mcast(struct cpsw_ale *ale, const u8 *addr, int port_mask,
 		       int flags, u16 vid)
@@ -564,6 +616,7 @@ int cpsw_ale_del_mcast(struct cpsw_ale *ale, const u8 *addr, int port_mask,
 	cpsw_ale_write(ale, idx, ale_entry);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_del_mcast);
 
 /* ALE NetCP NU switch specific vlan functions */
 static void cpsw_ale_set_vlan_mcast(struct cpsw_ale *ale, u32 *ale_entry,
@@ -633,6 +686,7 @@ int cpsw_ale_add_vlan(struct cpsw_ale *ale, u16 vid, int port_mask, int untag,
 	cpsw_ale_write(ale, idx, ale_entry);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_add_vlan);
 
 static void cpsw_ale_vlan_del_modify_int(struct cpsw_ale *ale,  u32 *ale_entry,
 					 u16 vid, int port_mask)
@@ -690,6 +744,7 @@ int cpsw_ale_vlan_del_modify(struct cpsw_ale *ale, u16 vid, int port_mask)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_vlan_del_modify);
 
 int cpsw_ale_del_vlan(struct cpsw_ale *ale, u16 vid, int port_mask)
 {
@@ -724,6 +779,7 @@ int cpsw_ale_del_vlan(struct cpsw_ale *ale, u16 vid, int port_mask)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_del_vlan);
 
 int cpsw_ale_vlan_add_modify(struct cpsw_ale *ale, u16 vid, int port_mask,
 			     int untag_mask, int reg_mask, int unreg_mask)
@@ -763,6 +819,7 @@ int cpsw_ale_vlan_add_modify(struct cpsw_ale *ale, u16 vid, int port_mask,
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_vlan_add_modify);
 
 void cpsw_ale_set_unreg_mcast(struct cpsw_ale *ale, int unreg_mcast_mask,
 			      bool add)
@@ -790,6 +847,7 @@ void cpsw_ale_set_unreg_mcast(struct cpsw_ale *ale, int unreg_mcast_mask,
 		cpsw_ale_write(ale, idx, ale_entry);
 	}
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_set_unreg_mcast);
 
 static void cpsw_ale_vlan_set_unreg_mcast(struct cpsw_ale *ale, u32 *ale_entry,
 					  int allmulti)
@@ -855,6 +913,7 @@ void cpsw_ale_set_allmulti(struct cpsw_ale *ale, int allmulti, int port)
 		cpsw_ale_write(ale, idx, ale_entry);
 	}
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_set_allmulti);
 
 struct ale_control_info {
 	const char	*name;
@@ -1112,6 +1171,7 @@ int cpsw_ale_control_set(struct cpsw_ale *ale, int port, int control,
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_control_set);
 
 int cpsw_ale_control_get(struct cpsw_ale *ale, int port, int control)
 {
@@ -1135,10 +1195,57 @@ int cpsw_ale_control_get(struct cpsw_ale *ale, int port, int control)
 	tmp = readl_relaxed(ale->params.ale_regs + offset) >> shift;
 	return tmp & BITMASK(info->bits);
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_control_get);
+
+int cpsw_ale_rx_ratelimit_mc(struct cpsw_ale *ale, int port, unsigned int ratelimit_pps)
+
+{
+	int val = ratelimit_pps / ALE_RATE_LIMIT_MIN_PPS;
+	u32 remainder = ratelimit_pps % ALE_RATE_LIMIT_MIN_PPS;
+
+	if (ratelimit_pps && !val) {
+		dev_err(ale->params.dev, "ALE MC port:%d ratelimit min value 1000pps\n", port);
+		return -EINVAL;
+	}
+
+	if (remainder)
+		dev_info(ale->params.dev, "ALE port:%d MC ratelimit set to %dpps (requested %d)\n",
+			 port, ratelimit_pps - remainder, ratelimit_pps);
+
+	cpsw_ale_control_set(ale, port, ALE_PORT_MCAST_LIMIT, val);
+
+	dev_dbg(ale->params.dev, "ALE port:%d MC ratelimit set %d\n",
+		port, val * ALE_RATE_LIMIT_MIN_PPS);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(cpsw_ale_rx_ratelimit_mc);
+
+int cpsw_ale_rx_ratelimit_bc(struct cpsw_ale *ale, int port, unsigned int ratelimit_pps)
+
+{
+	int val = ratelimit_pps / ALE_RATE_LIMIT_MIN_PPS;
+	u32 remainder = ratelimit_pps % ALE_RATE_LIMIT_MIN_PPS;
+
+	if (ratelimit_pps && !val) {
+		dev_err(ale->params.dev, "ALE port:%d BC ratelimit min value 1000pps\n", port);
+		return -EINVAL;
+	}
+
+	if (remainder)
+		dev_info(ale->params.dev, "ALE port:%d BC ratelimit set to %dpps (requested %d)\n",
+			 port, ratelimit_pps - remainder, ratelimit_pps);
+
+	cpsw_ale_control_set(ale, port, ALE_PORT_BCAST_LIMIT, val);
+
+	dev_dbg(ale->params.dev, "ALE port:%d BC ratelimit set %d\n",
+		port, val * ALE_RATE_LIMIT_MIN_PPS);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(cpsw_ale_rx_ratelimit_bc);
 
 static void cpsw_ale_timer(struct timer_list *t)
 {
-	struct cpsw_ale *ale = from_timer(ale, t, timer);
+	struct cpsw_ale *ale = timer_container_of(ale, t, timer);
 
 	cpsw_ale_control_set(ale, 0, ALE_AGEOUT, 1);
 
@@ -1194,16 +1301,37 @@ static void cpsw_ale_aging_stop(struct cpsw_ale *ale)
 		return;
 	}
 
-	del_timer_sync(&ale->timer);
+	timer_delete_sync(&ale->timer);
 }
 
 void cpsw_ale_start(struct cpsw_ale *ale)
 {
+	unsigned long ale_prescale;
+
+	/* configure Broadcast and Multicast Rate Limit
+	 * number_of_packets = (Fclk / ALE_PRESCALE) * port.BCAST/MCAST_LIMIT
+	 * ALE_PRESCALE width is 19bit and min value 0x10
+	 * port.BCAST/MCAST_LIMIT is 8bit
+	 *
+	 * For multi port configuration support the ALE_PRESCALE is configured to 1ms interval,
+	 * which allows to configure port.BCAST/MCAST_LIMIT per port and achieve:
+	 * min number_of_packets = 1000 when port.BCAST/MCAST_LIMIT = 1
+	 * max number_of_packets = 1000 * 255 = 255000 when port.BCAST/MCAST_LIMIT = 0xFF
+	 */
+	ale_prescale = ale->params.bus_freq / ALE_RATE_LIMIT_MIN_PPS;
+	writel((u32)ale_prescale, ale->params.ale_regs + ALE_PRESCALE);
+
+	/* Allow MC/BC rate limiting globally.
+	 * The actual Rate Limit cfg enabled per-port by port.BCAST/MCAST_LIMIT
+	 */
+	cpsw_ale_control_set(ale, 0, ALE_RATE_LIMIT, 1);
+
 	cpsw_ale_control_set(ale, 0, ALE_ENABLE, 1);
 	cpsw_ale_control_set(ale, 0, ALE_CLEAR, 1);
 
 	cpsw_ale_aging_start(ale);
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_start);
 
 void cpsw_ale_stop(struct cpsw_ale *ale)
 {
@@ -1211,26 +1339,113 @@ void cpsw_ale_stop(struct cpsw_ale *ale)
 	cpsw_ale_control_set(ale, 0, ALE_CLEAR, 1);
 	cpsw_ale_control_set(ale, 0, ALE_ENABLE, 0);
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_stop);
+
+static const struct reg_field ale_fields_cpsw[] = {
+	/* CPSW_ALE_IDVER_REG */
+	[MINOR_VER]	= REG_FIELD(ALE_IDVER, 0, 7),
+	[MAJOR_VER]	= REG_FIELD(ALE_IDVER, 8, 15),
+};
+
+static const struct reg_field ale_fields_cpsw_nu[] = {
+	/* CPSW_ALE_IDVER_REG */
+	[MINOR_VER]	= REG_FIELD(ALE_IDVER, 0, 7),
+	[MAJOR_VER]	= REG_FIELD(ALE_IDVER, 8, 10),
+	/* CPSW_ALE_STATUS_REG */
+	[ALE_ENTRIES]	= REG_FIELD(ALE_STATUS, 0, 7),
+	[ALE_POLICERS]	= REG_FIELD(ALE_STATUS, 8, 15),
+	/* CPSW_ALE_POLICER_PORT_OUI_REG */
+	[POL_PORT_MEN]	= REG_FIELD(ALE_POLICER_PORT_OUI, 31, 31),
+	[POL_TRUNK_ID]	= REG_FIELD(ALE_POLICER_PORT_OUI, 30, 30),
+	[POL_PORT_NUM]	= REG_FIELD(ALE_POLICER_PORT_OUI, 25, 25),
+	[POL_PRI_MEN]	= REG_FIELD(ALE_POLICER_PORT_OUI, 19, 19),
+	[POL_PRI_VAL]	= REG_FIELD(ALE_POLICER_PORT_OUI, 16, 18),
+	[POL_OUI_MEN]	= REG_FIELD(ALE_POLICER_PORT_OUI, 15, 15),
+	[POL_OUI_INDEX]	= REG_FIELD(ALE_POLICER_PORT_OUI, 0, 5),
+
+	/* CPSW_ALE_POLICER_DA_SA_REG */
+	[POL_DST_MEN]	= REG_FIELD(ALE_POLICER_DA_SA, 31, 31),
+	[POL_DST_INDEX]	= REG_FIELD(ALE_POLICER_DA_SA, 16, 21),
+	[POL_SRC_MEN]	= REG_FIELD(ALE_POLICER_DA_SA, 15, 15),
+	[POL_SRC_INDEX]	= REG_FIELD(ALE_POLICER_DA_SA, 0, 5),
+
+	/* CPSW_ALE_POLICER_VLAN_REG */
+	[POL_OVLAN_MEN]		= REG_FIELD(ALE_POLICER_VLAN, 31, 31),
+	[POL_OVLAN_INDEX]	= REG_FIELD(ALE_POLICER_VLAN, 16, 21),
+	[POL_IVLAN_MEN]		= REG_FIELD(ALE_POLICER_VLAN, 15, 15),
+	[POL_IVLAN_INDEX]	= REG_FIELD(ALE_POLICER_VLAN, 0, 5),
+
+	/* CPSW_ALE_POLICER_ETHERTYPE_IPSA_REG */
+	[POL_ETHERTYPE_MEN]	= REG_FIELD(ALE_POLICER_ETHERTYPE_IPSA, 31, 31),
+	[POL_ETHERTYPE_INDEX]	= REG_FIELD(ALE_POLICER_ETHERTYPE_IPSA, 16, 21),
+	[POL_IPSRC_MEN]		= REG_FIELD(ALE_POLICER_ETHERTYPE_IPSA, 15, 15),
+	[POL_IPSRC_INDEX]	= REG_FIELD(ALE_POLICER_ETHERTYPE_IPSA, 0, 5),
+
+	/* CPSW_ALE_POLICER_IPDA_REG */
+	[POL_IPDST_MEN]		= REG_FIELD(ALE_POLICER_IPDA, 31, 31),
+	[POL_IPDST_INDEX]	= REG_FIELD(ALE_POLICER_IPDA, 16, 21),
+
+	/* CPSW_ALE_POLICER_TBL_CTL_REG */
+	/**
+	 * REG_FIELDS not defined for this as fields cannot be correctly
+	 * used independently
+	 */
+
+	/* CPSW_ALE_POLICER_CTL_REG */
+	[POL_EN]		= REG_FIELD(ALE_POLICER_CTL, 31, 31),
+	[POL_RED_DROP_EN]	= REG_FIELD(ALE_POLICER_CTL, 29, 29),
+	[POL_YELLOW_DROP_EN]	= REG_FIELD(ALE_POLICER_CTL, 28, 28),
+	[POL_YELLOW_THRESH]	= REG_FIELD(ALE_POLICER_CTL, 24, 26),
+	[POL_POL_MATCH_MODE]	= REG_FIELD(ALE_POLICER_CTL, 22, 23),
+	[POL_PRIORITY_THREAD_EN] = REG_FIELD(ALE_POLICER_CTL, 21, 21),
+	[POL_MAC_ONLY_DEF_DIS]	= REG_FIELD(ALE_POLICER_CTL, 20, 20),
+
+	/* CPSW_ALE_POLICER_TEST_CTL_REG */
+	[POL_TEST_CLR]		= REG_FIELD(ALE_POLICER_TEST_CTL, 31, 31),
+	[POL_TEST_CLR_RED]	= REG_FIELD(ALE_POLICER_TEST_CTL, 30, 30),
+	[POL_TEST_CLR_YELLOW]	= REG_FIELD(ALE_POLICER_TEST_CTL, 29, 29),
+	[POL_TEST_CLR_SELECTED]	= REG_FIELD(ALE_POLICER_TEST_CTL, 28, 28),
+	[POL_TEST_ENTRY]	= REG_FIELD(ALE_POLICER_TEST_CTL, 0, 4),
+
+	/* CPSW_ALE_POLICER_HIT_STATUS_REG */
+	[POL_STATUS_HIT]	= REG_FIELD(ALE_POLICER_HIT_STATUS, 31, 31),
+	[POL_STATUS_HIT_RED]	= REG_FIELD(ALE_POLICER_HIT_STATUS, 30, 30),
+	[POL_STATUS_HIT_YELLOW]	= REG_FIELD(ALE_POLICER_HIT_STATUS, 29, 29),
+
+	/* CPSW_ALE_THREAD_DEF_REG */
+	[ALE_DEFAULT_THREAD_EN]		= REG_FIELD(ALE_THREAD_DEF, 15, 15),
+	[ALE_DEFAULT_THREAD_VAL]	= REG_FIELD(ALE_THREAD_DEF, 0, 5),
+
+	/* CPSW_ALE_THREAD_CTL_REG */
+	[ALE_THREAD_CLASS_INDEX] = REG_FIELD(ALE_THREAD_CTL, 0, 4),
+
+	/* CPSW_ALE_THREAD_VAL_REG */
+	[ALE_THREAD_ENABLE]	= REG_FIELD(ALE_THREAD_VAL, 15, 15),
+	[ALE_THREAD_VALUE]	= REG_FIELD(ALE_THREAD_VAL, 0, 5),
+};
 
 static const struct cpsw_ale_dev_id cpsw_ale_id_match[] = {
 	{
 		/* am3/4/5, dra7. dm814x, 66ak2hk-gbe */
 		.dev_id = "cpsw",
 		.tbl_entries = 1024,
-		.major_ver_mask = 0xff,
+		.reg_fields = ale_fields_cpsw,
+		.num_fields = ARRAY_SIZE(ale_fields_cpsw),
 		.vlan_entry_tbl = vlan_entry_cpsw,
 	},
 	{
 		/* 66ak2h_xgbe */
 		.dev_id = "66ak2h-xgbe",
 		.tbl_entries = 2048,
-		.major_ver_mask = 0xff,
+		.reg_fields = ale_fields_cpsw,
+		.num_fields = ARRAY_SIZE(ale_fields_cpsw),
 		.vlan_entry_tbl = vlan_entry_cpsw,
 	},
 	{
 		.dev_id = "66ak2el",
 		.features = CPSW_ALE_F_STATUS_REG,
-		.major_ver_mask = 0x7,
+		.reg_fields = ale_fields_cpsw_nu,
+		.num_fields = ARRAY_SIZE(ale_fields_cpsw_nu),
 		.nu_switch_ale = true,
 		.vlan_entry_tbl = vlan_entry_nu,
 	},
@@ -1238,7 +1453,8 @@ static const struct cpsw_ale_dev_id cpsw_ale_id_match[] = {
 		.dev_id = "66ak2g",
 		.features = CPSW_ALE_F_STATUS_REG,
 		.tbl_entries = 64,
-		.major_ver_mask = 0x7,
+		.reg_fields = ale_fields_cpsw_nu,
+		.num_fields = ARRAY_SIZE(ale_fields_cpsw_nu),
 		.nu_switch_ale = true,
 		.vlan_entry_tbl = vlan_entry_nu,
 	},
@@ -1246,20 +1462,23 @@ static const struct cpsw_ale_dev_id cpsw_ale_id_match[] = {
 		.dev_id = "am65x-cpsw2g",
 		.features = CPSW_ALE_F_STATUS_REG | CPSW_ALE_F_HW_AUTOAGING,
 		.tbl_entries = 64,
-		.major_ver_mask = 0x7,
+		.reg_fields = ale_fields_cpsw_nu,
+		.num_fields = ARRAY_SIZE(ale_fields_cpsw_nu),
 		.nu_switch_ale = true,
 		.vlan_entry_tbl = vlan_entry_nu,
 	},
 	{
 		.dev_id = "j721e-cpswxg",
 		.features = CPSW_ALE_F_STATUS_REG | CPSW_ALE_F_HW_AUTOAGING,
-		.major_ver_mask = 0x7,
+		.reg_fields = ale_fields_cpsw_nu,
+		.num_fields = ARRAY_SIZE(ale_fields_cpsw_nu),
 		.vlan_entry_tbl = vlan_entry_k3_cpswxg,
 	},
 	{
 		.dev_id = "am64-cpswxg",
 		.features = CPSW_ALE_F_STATUS_REG | CPSW_ALE_F_HW_AUTOAGING,
-		.major_ver_mask = 0x7,
+		.reg_fields = ale_fields_cpsw_nu,
+		.num_fields = ARRAY_SIZE(ale_fields_cpsw_nu),
 		.vlan_entry_tbl = vlan_entry_k3_cpswxg,
 		.tbl_entries = 512,
 	},
@@ -1281,49 +1500,81 @@ cpsw_ale_dev_id *cpsw_ale_match_id(const struct cpsw_ale_dev_id *id,
 	return NULL;
 }
 
+static const struct regmap_config ale_regmap_cfg = {
+	.reg_bits = 32,
+	.val_bits = 32,
+	.reg_stride = 4,
+	.name = "cpsw-ale",
+};
+
+static int cpsw_ale_regfield_init(struct cpsw_ale *ale)
+{
+	const struct reg_field *reg_fields = ale->params.reg_fields;
+	struct device *dev = ale->params.dev;
+	struct regmap *regmap = ale->regmap;
+	int i;
+
+	for (i = 0; i < ale->params.num_fields; i++) {
+		ale->fields[i] = devm_regmap_field_alloc(dev, regmap,
+							 reg_fields[i]);
+		if (IS_ERR(ale->fields[i])) {
+			dev_err(dev, "Unable to allocate regmap field %d\n", i);
+			return PTR_ERR(ale->fields[i]);
+		}
+	}
+
+	return 0;
+}
+
 struct cpsw_ale *cpsw_ale_create(struct cpsw_ale_params *params)
 {
+	u32 ale_entries, rev_major, rev_minor, policers;
 	const struct cpsw_ale_dev_id *ale_dev_id;
 	struct cpsw_ale *ale;
-	u32 rev, ale_entries;
+	int ret;
 
 	ale_dev_id = cpsw_ale_match_id(cpsw_ale_id_match, params->dev_id);
 	if (!ale_dev_id)
 		return ERR_PTR(-EINVAL);
 
 	params->ale_entries = ale_dev_id->tbl_entries;
-	params->major_ver_mask = ale_dev_id->major_ver_mask;
 	params->nu_switch_ale = ale_dev_id->nu_switch_ale;
+	params->reg_fields = ale_dev_id->reg_fields;
+	params->num_fields = ale_dev_id->num_fields;
 
 	ale = devm_kzalloc(params->dev, sizeof(*ale), GFP_KERNEL);
 	if (!ale)
 		return ERR_PTR(-ENOMEM);
+	ale->regmap = devm_regmap_init_mmio(params->dev, params->ale_regs,
+					    &ale_regmap_cfg);
+	if (IS_ERR(ale->regmap)) {
+		dev_err(params->dev, "Couldn't create CPSW ALE regmap\n");
+		return ERR_PTR(-ENOMEM);
+	}
 
-	ale->p0_untag_vid_mask =
-		devm_kmalloc_array(params->dev, BITS_TO_LONGS(VLAN_N_VID),
-				   sizeof(unsigned long),
-				   GFP_KERNEL);
+	ale->params = *params;
+	ret = cpsw_ale_regfield_init(ale);
+	if (ret)
+		return ERR_PTR(ret);
+
+	ale->p0_untag_vid_mask = devm_bitmap_zalloc(params->dev, VLAN_N_VID,
+						    GFP_KERNEL);
 	if (!ale->p0_untag_vid_mask)
 		return ERR_PTR(-ENOMEM);
 
-	ale->params = *params;
 	ale->ageout = ale->params.ale_ageout * HZ;
 	ale->features = ale_dev_id->features;
 	ale->vlan_entry_tbl = ale_dev_id->vlan_entry_tbl;
 
-	rev = readl_relaxed(ale->params.ale_regs + ALE_IDVER);
-	ale->version =
-		(ALE_VERSION_MAJOR(rev, ale->params.major_ver_mask) << 8) |
-		 ALE_VERSION_MINOR(rev);
+	regmap_field_read(ale->fields[MINOR_VER], &rev_minor);
+	regmap_field_read(ale->fields[MAJOR_VER], &rev_major);
+	ale->version = rev_major << 8 | rev_minor;
 	dev_info(ale->params.dev, "initialized cpsw ale version %d.%d\n",
-		 ALE_VERSION_MAJOR(rev, ale->params.major_ver_mask),
-		 ALE_VERSION_MINOR(rev));
+		 rev_major, rev_minor);
 
 	if (ale->features & CPSW_ALE_F_STATUS_REG &&
 	    !ale->params.ale_entries) {
-		ale_entries =
-			readl_relaxed(ale->params.ale_regs + ALE_STATUS) &
-			ALE_STATUS_SIZE_MASK;
+		regmap_field_read(ale->fields[ALE_ENTRIES], &ale_entries);
 		/* ALE available on newer NetCP switches has introduced
 		 * a register, ALE_STATUS, to indicate the size of ALE
 		 * table which shows the size as a multiple of 1024 entries.
@@ -1337,8 +1588,20 @@ struct cpsw_ale *cpsw_ale_create(struct cpsw_ale_params *params)
 		ale_entries *= ALE_TABLE_SIZE_MULTIPLIER;
 		ale->params.ale_entries = ale_entries;
 	}
+
+	if (ale->features & CPSW_ALE_F_STATUS_REG &&
+	    !ale->params.num_policers) {
+		regmap_field_read(ale->fields[ALE_POLICERS], &policers);
+		if (!policers)
+			return ERR_PTR(-EINVAL);
+
+		policers *= ALE_POLICER_SIZE_MULTIPLIER;
+		ale->params.num_policers = policers;
+	}
+
 	dev_info(ale->params.dev,
-		 "ALE Table size %ld\n", ale->params.ale_entries);
+		 "ALE Table size %ld, Policers %ld\n", ale->params.ale_entries,
+		 ale->params.num_policers);
 
 	/* set default bits for existing h/w */
 	ale->port_mask_bits = ale->params.ale_ports;
@@ -1377,6 +1640,7 @@ struct cpsw_ale *cpsw_ale_create(struct cpsw_ale_params *params)
 	cpsw_ale_control_set(ale, 0, ALE_CLEAR, 1);
 	return ale;
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_create);
 
 void cpsw_ale_dump(struct cpsw_ale *ale, u32 *data)
 {
@@ -1387,8 +1651,127 @@ void cpsw_ale_dump(struct cpsw_ale *ale, u32 *data)
 		data += ALE_ENTRY_WORDS;
 	}
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_dump);
+
+void cpsw_ale_restore(struct cpsw_ale *ale, u32 *data)
+{
+	int i;
+
+	for (i = 0; i < ale->params.ale_entries; i++) {
+		cpsw_ale_write(ale, i, data);
+		data += ALE_ENTRY_WORDS;
+	}
+}
+EXPORT_SYMBOL_GPL(cpsw_ale_restore);
 
 u32 cpsw_ale_get_num_entries(struct cpsw_ale *ale)
 {
 	return ale ? ale->params.ale_entries : 0;
 }
+EXPORT_SYMBOL_GPL(cpsw_ale_get_num_entries);
+
+/* Reads the specified policer index into ALE POLICER registers */
+static void cpsw_ale_policer_read_idx(struct cpsw_ale *ale, u32 idx)
+{
+	idx &= ALE_POLICER_TBL_INDEX_MASK;
+	writel_relaxed(idx, ale->params.ale_regs + ALE_POLICER_TBL_CTL);
+}
+
+/* Writes the ALE POLICER registers into the specified policer index */
+static void cpsw_ale_policer_write_idx(struct cpsw_ale *ale, u32 idx)
+{
+	idx &= ALE_POLICER_TBL_INDEX_MASK;
+	idx |= ALE_POLICER_TBL_WRITE_ENABLE;
+	writel_relaxed(idx, ale->params.ale_regs + ALE_POLICER_TBL_CTL);
+}
+
+/* enables/disables the custom thread value for the specified policer index */
+static void cpsw_ale_policer_thread_idx_enable(struct cpsw_ale *ale, u32 idx,
+					       u32 thread_id, bool enable)
+{
+	regmap_field_write(ale->fields[ALE_THREAD_CLASS_INDEX], idx);
+	regmap_field_write(ale->fields[ALE_THREAD_VALUE], thread_id);
+	regmap_field_write(ale->fields[ALE_THREAD_ENABLE], enable ? 1 : 0);
+}
+
+/* Disable all policer entries and thread mappings */
+static void cpsw_ale_policer_reset(struct cpsw_ale *ale)
+{
+	int i;
+
+	for (i = 0; i < ale->params.num_policers ; i++) {
+		cpsw_ale_policer_read_idx(ale, i);
+		regmap_field_write(ale->fields[POL_PORT_MEN], 0);
+		regmap_field_write(ale->fields[POL_PRI_MEN], 0);
+		regmap_field_write(ale->fields[POL_OUI_MEN], 0);
+		regmap_field_write(ale->fields[POL_DST_MEN], 0);
+		regmap_field_write(ale->fields[POL_SRC_MEN], 0);
+		regmap_field_write(ale->fields[POL_OVLAN_MEN], 0);
+		regmap_field_write(ale->fields[POL_IVLAN_MEN], 0);
+		regmap_field_write(ale->fields[POL_ETHERTYPE_MEN], 0);
+		regmap_field_write(ale->fields[POL_IPSRC_MEN], 0);
+		regmap_field_write(ale->fields[POL_IPDST_MEN], 0);
+		regmap_field_write(ale->fields[POL_EN], 0);
+		regmap_field_write(ale->fields[POL_RED_DROP_EN], 0);
+		regmap_field_write(ale->fields[POL_YELLOW_DROP_EN], 0);
+		regmap_field_write(ale->fields[POL_PRIORITY_THREAD_EN], 0);
+
+		cpsw_ale_policer_thread_idx_enable(ale, i, 0, 0);
+	}
+}
+
+/* Default classifier is to map 8 user priorities to N receive channels */
+void cpsw_ale_classifier_setup_default(struct cpsw_ale *ale, int num_rx_ch)
+{
+	int pri, idx;
+
+	/* Reference:
+	 * IEEE802.1Q-2014, Standard for Local and metropolitan area networks
+	 *    Table I-2 - Traffic type acronyms
+	 *    Table I-3 - Defining traffic types
+	 * Section I.4 Traffic types and priority values, states:
+	 * "0 is thus used both for default priority and for Best Effort, and
+	 *  Background is associated with a priority value of 1. This means
+	 * that the value 1 effectively communicates a lower priority than 0."
+	 *
+	 * In the table below, Priority Code Point (PCP) 0 is assigned
+	 * to a higher priority thread than PCP 1 wherever possible.
+	 * The table maps which thread the PCP traffic needs to be
+	 * sent to for a given number of threads (RX channels). Upper threads
+	 * have higher priority.
+	 * e.g. if number of threads is 8 then user priority 0 will map to
+	 * pri_thread_map[8-1][0] i.e. thread 1
+	 */
+
+	int pri_thread_map[8][8] = {   /* BK,BE,EE,CA,VI,VO,IC,NC */
+					{ 0, 0, 0, 0, 0, 0, 0, 0, },
+					{ 0, 0, 0, 0, 1, 1, 1, 1, },
+					{ 0, 0, 0, 0, 1, 1, 2, 2, },
+					{ 0, 0, 1, 1, 2, 2, 3, 3, },
+					{ 0, 0, 1, 1, 2, 2, 3, 4, },
+					{ 1, 0, 2, 2, 3, 3, 4, 5, },
+					{ 1, 0, 2, 3, 4, 4, 5, 6, },
+					{ 1, 0, 2, 3, 4, 5, 6, 7 } };
+
+	cpsw_ale_policer_reset(ale);
+
+	/* use first 8 classifiers to map 8 (DSCP/PCP) priorities to channels */
+	for (pri = 0; pri < 8; pri++) {
+		idx = pri;
+
+		/* Classifier 'idx' match on priority 'pri' */
+		cpsw_ale_policer_read_idx(ale, idx);
+		regmap_field_write(ale->fields[POL_PRI_VAL], pri);
+		regmap_field_write(ale->fields[POL_PRI_MEN], 1);
+		cpsw_ale_policer_write_idx(ale, idx);
+
+		/* Map Classifier 'idx' to thread provided by the map */
+		cpsw_ale_policer_thread_idx_enable(ale, idx,
+						   pri_thread_map[num_rx_ch - 1][pri],
+						   1);
+	}
+}
+EXPORT_SYMBOL_GPL(cpsw_ale_classifier_setup_default);
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("TI N-Port Ethernet Switch Address Lookup Engine");

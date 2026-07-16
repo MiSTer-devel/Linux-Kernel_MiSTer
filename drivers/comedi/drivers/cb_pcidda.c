@@ -27,10 +27,8 @@
  */
 
 #include <linux/module.h>
-
-#include "../comedi_pci.h"
-
-#include "8255.h"
+#include <linux/comedi/comedi_pci.h>
+#include <linux/comedi/comedi_8255.h>
 
 #define EEPROM_SIZE	128	/*  number of entries in eeprom */
 /* maximum number of ao channels for supported boards */
@@ -367,7 +365,7 @@ static int cb_pcidda_auto_attach(struct comedi_device *dev,
 	/* two 8255 digital io subdevices */
 	for (i = 0; i < 2; i++) {
 		s = &dev->subdevices[1 + i];
-		ret = subdev_8255_init(dev, s, NULL, i * I8255_SIZE);
+		ret = subdev_8255_io_init(dev, s, i * I8255_SIZE);
 		if (ret)
 			return ret;
 	}

@@ -12,6 +12,7 @@
 #include <linux/clk.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
+#include <linux/dma/xilinx_dpdma.h>
 #include <linux/dmaengine.h>
 #include <linux/dmapool.h>
 #include <linux/interrupt.h>
@@ -148,7 +149,7 @@ struct xilinx_dpdma_chan;
  * @addr_ext: upper 16 bit of 48 bit address (next_desc and src_addr)
  * @next_desc: next descriptor 32 bit address
  * @src_addr: payload source address (1st page, 32 LSB)
- * @addr_ext_23: payload source address (3nd and 3rd pages, 16 LSBs)
+ * @addr_ext_23: payload source address (2nd and 3rd pages, 16 LSBs)
  * @addr_ext_45: payload source address (4th and 5th pages, 16 LSBs)
  * @src_addr2: payload source address (2nd page, 32 LSB)
  * @src_addr3: payload source address (3rd page, 32 LSB)
@@ -209,11 +210,12 @@ struct xilinx_dpdma_tx_desc {
  * @vchan: virtual DMA channel
  * @reg: register base address
  * @id: channel ID
- * @wait_to_stop: queue to wait for outstanding transacitons before stopping
+ * @wait_to_stop: queue to wait for outstanding transactions before stopping
  * @running: true if the channel is running
  * @first_frame: flag for the first frame of stream
  * @video_group: flag if multi-channel operation is needed for video channels
- * @lock: lock to access struct xilinx_dpdma_chan
+ * @lock: lock to access struct xilinx_dpdma_chan. Must be taken before
+ *        @vchan.lock, if both are to be held.
  * @desc_pool: descriptor allocation pool
  * @err_task: error IRQ bottom half handler
  * @desc: References to descriptors being processed
@@ -271,9 +273,6 @@ struct xilinx_dpdma_device {
 /* -----------------------------------------------------------------------------
  * DebugFS
  */
-
-#ifdef CONFIG_DEBUG_FS
-
 #define XILINX_DPDMA_DEBUGFS_READ_MAX_SIZE	32
 #define XILINX_DPDMA_DEBUGFS_UINT16_MAX_STR	"65535"
 
@@ -299,7 +298,7 @@ struct xilinx_dpdma_debugfs_request {
 
 static void xilinx_dpdma_debugfs_desc_done_irq(struct xilinx_dpdma_chan *chan)
 {
-	if (chan->id == dpdma_debugfs.chan_id)
+	if (IS_ENABLED(CONFIG_DEBUG_FS) && chan->id == dpdma_debugfs.chan_id)
 		dpdma_debugfs.xilinx_dpdma_irq_done_count++;
 }
 
@@ -311,7 +310,7 @@ static ssize_t xilinx_dpdma_debugfs_desc_done_irq_read(char *buf)
 
 	out_str_len = strlen(XILINX_DPDMA_DEBUGFS_UINT16_MAX_STR);
 	out_str_len = min_t(size_t, XILINX_DPDMA_DEBUGFS_READ_MAX_SIZE,
-			    out_str_len);
+			    out_str_len + 1);
 	snprintf(buf, out_str_len, "%d",
 		 dpdma_debugfs.xilinx_dpdma_irq_done_count);
 
@@ -378,7 +377,7 @@ static ssize_t xilinx_dpdma_debugfs_read(struct file *f, char __user *buf,
 		if (ret < 0)
 			goto done;
 	} else {
-		strlcpy(kern_buff, "No testcase executed",
+		strscpy(kern_buff, "No testcase executed",
 			XILINX_DPDMA_DEBUGFS_READ_MAX_SIZE);
 	}
 
@@ -461,16 +460,6 @@ static void xilinx_dpdma_debugfs_init(struct xilinx_dpdma_device *xdev)
 	if (IS_ERR(dent))
 		dev_err(xdev->dev, "Failed to create debugfs testcase file\n");
 }
-
-#else
-static void xilinx_dpdma_debugfs_init(struct xilinx_dpdma_device *xdev)
-{
-}
-
-static void xilinx_dpdma_debugfs_desc_done_irq(struct xilinx_dpdma_chan *chan)
-{
-}
-#endif /* CONFIG_DEBUG_FS */
 
 /* -----------------------------------------------------------------------------
  * I/O Accessors
@@ -679,6 +668,84 @@ static void xilinx_dpdma_chan_free_tx_desc(struct virt_dma_desc *vdesc)
 	}
 
 	kfree(desc);
+}
+
+/**
+ * xilinx_dpdma_chan_prep_cyclic - Prepare a cyclic dma descriptor
+ * @chan: DPDMA channel
+ * @buf_addr: buffer address
+ * @buf_len: buffer length
+ * @period_len: number of periods
+ * @flags: tx flags argument passed in to prepare function
+ *
+ * Prepare a tx descriptor incudling internal software/hardware descriptors
+ * for the given cyclic transaction.
+ *
+ * Return: A dma async tx descriptor on success, or NULL.
+ */
+static struct dma_async_tx_descriptor *
+xilinx_dpdma_chan_prep_cyclic(struct xilinx_dpdma_chan *chan,
+			      dma_addr_t buf_addr, size_t buf_len,
+			      size_t period_len, unsigned long flags)
+{
+	struct xilinx_dpdma_tx_desc *tx_desc;
+	struct xilinx_dpdma_sw_desc *sw_desc, *last = NULL;
+	unsigned int periods = buf_len / period_len;
+	unsigned int i;
+
+	tx_desc = xilinx_dpdma_chan_alloc_tx_desc(chan);
+	if (!tx_desc)
+		return NULL;
+
+	for (i = 0; i < periods; i++) {
+		struct xilinx_dpdma_hw_desc *hw_desc;
+
+		if (!IS_ALIGNED(buf_addr, XILINX_DPDMA_ALIGN_BYTES)) {
+			dev_err(chan->xdev->dev,
+				"buffer should be aligned at %d B\n",
+				XILINX_DPDMA_ALIGN_BYTES);
+			goto error;
+		}
+
+		sw_desc = xilinx_dpdma_chan_alloc_sw_desc(chan);
+		if (!sw_desc)
+			goto error;
+
+		xilinx_dpdma_sw_desc_set_dma_addrs(chan->xdev, sw_desc, last,
+						   &buf_addr, 1);
+		hw_desc = &sw_desc->hw;
+		hw_desc->xfer_size = period_len;
+		hw_desc->hsize_stride =
+			FIELD_PREP(XILINX_DPDMA_DESC_HSIZE_STRIDE_HSIZE_MASK,
+				   period_len) |
+			FIELD_PREP(XILINX_DPDMA_DESC_HSIZE_STRIDE_STRIDE_MASK,
+				   period_len);
+		hw_desc->control = XILINX_DPDMA_DESC_CONTROL_PREEMBLE |
+				   XILINX_DPDMA_DESC_CONTROL_IGNORE_DONE |
+				   XILINX_DPDMA_DESC_CONTROL_COMPLETE_INTR;
+
+		list_add_tail(&sw_desc->node, &tx_desc->descriptors);
+
+		buf_addr += period_len;
+		last = sw_desc;
+	}
+
+	sw_desc = list_first_entry(&tx_desc->descriptors,
+				   struct xilinx_dpdma_sw_desc, node);
+	last->hw.next_desc = lower_32_bits(sw_desc->dma_addr);
+	if (chan->xdev->ext_addr)
+		last->hw.addr_ext |=
+			FIELD_PREP(XILINX_DPDMA_DESC_ADDR_EXT_NEXT_ADDR_MASK,
+				   upper_32_bits(sw_desc->dma_addr));
+
+	last->hw.control |= XILINX_DPDMA_DESC_CONTROL_LAST_OF_FRAME;
+
+	return vchan_tx_prep(&chan->vchan, &tx_desc->vdesc, flags);
+
+error:
+	xilinx_dpdma_chan_free_tx_desc(&tx_desc->vdesc);
+
+	return NULL;
 }
 
 /**
@@ -1054,9 +1121,8 @@ static int xilinx_dpdma_chan_stop(struct xilinx_dpdma_chan *chan)
 static void xilinx_dpdma_chan_done_irq(struct xilinx_dpdma_chan *chan)
 {
 	struct xilinx_dpdma_tx_desc *active;
-	unsigned long flags;
 
-	spin_lock_irqsave(&chan->lock, flags);
+	spin_lock(&chan->lock);
 
 	xilinx_dpdma_debugfs_desc_done_irq(chan);
 
@@ -1068,7 +1134,7 @@ static void xilinx_dpdma_chan_done_irq(struct xilinx_dpdma_chan *chan)
 			 "chan%u: DONE IRQ with no active descriptor!\n",
 			 chan->id);
 
-	spin_unlock_irqrestore(&chan->lock, flags);
+	spin_unlock(&chan->lock);
 }
 
 /**
@@ -1083,10 +1149,9 @@ static void xilinx_dpdma_chan_vsync_irq(struct  xilinx_dpdma_chan *chan)
 {
 	struct xilinx_dpdma_tx_desc *pending;
 	struct xilinx_dpdma_sw_desc *sw_desc;
-	unsigned long flags;
 	u32 desc_id;
 
-	spin_lock_irqsave(&chan->lock, flags);
+	spin_lock(&chan->lock);
 
 	pending = chan->desc.pending;
 	if (!chan->running || !pending)
@@ -1109,15 +1174,17 @@ static void xilinx_dpdma_chan_vsync_irq(struct  xilinx_dpdma_chan *chan)
 	 * Complete the active descriptor, if any, promote the pending
 	 * descriptor to active, and queue the next transfer, if any.
 	 */
+	spin_lock(&chan->vchan.lock);
 	if (chan->desc.active)
 		vchan_cookie_complete(&chan->desc.active->vdesc);
 	chan->desc.active = pending;
 	chan->desc.pending = NULL;
 
 	xilinx_dpdma_chan_queue_transfer(chan);
+	spin_unlock(&chan->vchan.lock);
 
 out:
-	spin_unlock_irqrestore(&chan->lock, flags);
+	spin_unlock(&chan->lock);
 }
 
 /**
@@ -1200,6 +1267,23 @@ out_unlock:
 /* -----------------------------------------------------------------------------
  * DMA Engine Operations
  */
+static struct dma_async_tx_descriptor *
+xilinx_dpdma_prep_dma_cyclic(struct dma_chan *dchan, dma_addr_t buf_addr,
+			     size_t buf_len, size_t period_len,
+			     enum dma_transfer_direction direction,
+			     unsigned long flags)
+{
+	struct xilinx_dpdma_chan *chan = to_xilinx_chan(dchan);
+
+	if (direction != DMA_MEM_TO_DEV)
+		return NULL;
+
+	if (buf_len % period_len)
+		return NULL;
+
+	return xilinx_dpdma_chan_prep_cyclic(chan, buf_addr, buf_len,
+					     period_len, flags);
+}
 
 static struct dma_async_tx_descriptor *
 xilinx_dpdma_prep_interleaved_dma(struct dma_chan *dchan,
@@ -1276,16 +1360,19 @@ static void xilinx_dpdma_issue_pending(struct dma_chan *dchan)
 	struct xilinx_dpdma_chan *chan = to_xilinx_chan(dchan);
 	unsigned long flags;
 
-	spin_lock_irqsave(&chan->vchan.lock, flags);
+	spin_lock_irqsave(&chan->lock, flags);
+	spin_lock(&chan->vchan.lock);
 	if (vchan_issue_pending(&chan->vchan))
 		xilinx_dpdma_chan_queue_transfer(chan);
-	spin_unlock_irqrestore(&chan->vchan.lock, flags);
+	spin_unlock(&chan->vchan.lock);
+	spin_unlock_irqrestore(&chan->lock, flags);
 }
 
 static int xilinx_dpdma_config(struct dma_chan *dchan,
 			       struct dma_slave_config *config)
 {
 	struct xilinx_dpdma_chan *chan = to_xilinx_chan(dchan);
+	struct xilinx_dpdma_peripheral_config *pconfig;
 	unsigned long flags;
 
 	/*
@@ -1295,15 +1382,18 @@ static int xilinx_dpdma_config(struct dma_chan *dchan,
 	 * fixed both on the DPDMA side and on the DP controller side.
 	 */
 
-	spin_lock_irqsave(&chan->lock, flags);
-
 	/*
-	 * Abuse the slave_id to indicate that the channel is part of a video
-	 * group.
+	 * Use the peripheral_config to indicate that the channel is part
+	 * of a video group. This requires matching use of the custom
+	 * structure in each driver.
 	 */
-	if (chan->id <= ZYNQMP_DPDMA_VIDEO2)
-		chan->video_group = config->slave_id != 0;
+	pconfig = config->peripheral_config;
+	if (WARN_ON(pconfig && config->peripheral_size != sizeof(*pconfig)))
+		return -EINVAL;
 
+	spin_lock_irqsave(&chan->lock, flags);
+	if (chan->id <= ZYNQMP_DPDMA_VIDEO2 && pconfig)
+		chan->video_group = pconfig->video_group;
 	spin_unlock_irqrestore(&chan->lock, flags);
 
 	return 0;
@@ -1503,7 +1593,9 @@ static void xilinx_dpdma_chan_err_task(struct tasklet_struct *t)
 		    XILINX_DPDMA_EINTR_CHAN_ERR_MASK << chan->id);
 
 	spin_lock_irqsave(&chan->lock, flags);
+	spin_lock(&chan->vchan.lock);
 	xilinx_dpdma_chan_queue_transfer(chan);
+	spin_unlock(&chan->vchan.lock);
 	spin_unlock_irqrestore(&chan->lock, flags);
 }
 
@@ -1660,10 +1752,8 @@ static int xilinx_dpdma_probe(struct platform_device *pdev)
 	dpdma_hw_init(xdev);
 
 	xdev->irq = platform_get_irq(pdev, 0);
-	if (xdev->irq < 0) {
-		dev_err(xdev->dev, "failed to get platform irq\n");
+	if (xdev->irq < 0)
 		return xdev->irq;
-	}
 
 	ret = request_irq(xdev->irq, xilinx_dpdma_irq_handler, IRQF_SHARED,
 			  dev_name(xdev->dev), xdev);
@@ -1677,6 +1767,7 @@ static int xilinx_dpdma_probe(struct platform_device *pdev)
 
 	dma_cap_set(DMA_SLAVE, ddev->cap_mask);
 	dma_cap_set(DMA_PRIVATE, ddev->cap_mask);
+	dma_cap_set(DMA_CYCLIC, ddev->cap_mask);
 	dma_cap_set(DMA_INTERLEAVE, ddev->cap_mask);
 	dma_cap_set(DMA_REPEAT, ddev->cap_mask);
 	dma_cap_set(DMA_LOAD_EOT, ddev->cap_mask);
@@ -1684,6 +1775,7 @@ static int xilinx_dpdma_probe(struct platform_device *pdev)
 
 	ddev->device_alloc_chan_resources = xilinx_dpdma_alloc_chan_resources;
 	ddev->device_free_chan_resources = xilinx_dpdma_free_chan_resources;
+	ddev->device_prep_dma_cyclic = xilinx_dpdma_prep_dma_cyclic;
 	ddev->device_prep_interleaved_dma = xilinx_dpdma_prep_interleaved_dma;
 	/* TODO: Can we achieve better granularity ? */
 	ddev->device_tx_status = dma_cookie_status;
@@ -1746,7 +1838,7 @@ error:
 	return ret;
 }
 
-static int xilinx_dpdma_remove(struct platform_device *pdev)
+static void xilinx_dpdma_remove(struct platform_device *pdev)
 {
 	struct xilinx_dpdma_device *xdev = platform_get_drvdata(pdev);
 	unsigned int i;
@@ -1761,8 +1853,6 @@ static int xilinx_dpdma_remove(struct platform_device *pdev)
 
 	for (i = 0; i < ARRAY_SIZE(xdev->chan); i++)
 		xilinx_dpdma_chan_remove(xdev->chan[i]);
-
-	return 0;
 }
 
 static const struct of_device_id xilinx_dpdma_of_match[] = {

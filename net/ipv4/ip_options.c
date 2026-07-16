@@ -17,7 +17,7 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/skbuff.h>
 #include <linux/ip.h>
 #include <linux/icmp.h>
@@ -42,7 +42,7 @@
  */
 
 void ip_options_build(struct sk_buff *skb, struct ip_options *opt,
-		      __be32 daddr, struct rtable *rt, int is_frag)
+		      __be32 daddr, struct rtable *rt)
 {
 	unsigned char *iph = skb_network_header(skb);
 
@@ -53,28 +53,15 @@ void ip_options_build(struct sk_buff *skb, struct ip_options *opt,
 	if (opt->srr)
 		memcpy(iph + opt->srr + iph[opt->srr + 1] - 4, &daddr, 4);
 
-	if (!is_frag) {
-		if (opt->rr_needaddr)
-			ip_rt_get_source(iph + opt->rr + iph[opt->rr + 2] - 5, skb, rt);
-		if (opt->ts_needaddr)
-			ip_rt_get_source(iph + opt->ts + iph[opt->ts + 2] - 9, skb, rt);
-		if (opt->ts_needtime) {
-			__be32 midtime;
+	if (opt->rr_needaddr)
+		ip_rt_get_source(iph + opt->rr + iph[opt->rr + 2] - 5, skb, rt);
+	if (opt->ts_needaddr)
+		ip_rt_get_source(iph + opt->ts + iph[opt->ts + 2] - 9, skb, rt);
+	if (opt->ts_needtime) {
+		__be32 midtime;
 
-			midtime = inet_current_timestamp();
-			memcpy(iph + opt->ts + iph[opt->ts + 2] - 5, &midtime, 4);
-		}
-		return;
-	}
-	if (opt->rr) {
-		memset(iph + opt->rr, IPOPT_NOP, iph[opt->rr + 1]);
-		opt->rr = 0;
-		opt->rr_needaddr = 0;
-	}
-	if (opt->ts) {
-		memset(iph + opt->ts, IPOPT_NOP, iph[opt->ts + 1]);
-		opt->ts = 0;
-		opt->ts_needaddr = opt->ts_needtime = 0;
+		midtime = inet_current_timestamp();
+		memcpy(iph + opt->ts + iph[opt->ts + 2] - 5, &midtime, 4);
 	}
 }
 
@@ -543,6 +530,10 @@ int ip_options_get(struct net *net, struct ip_options_rcu **optp,
 		kfree(opt);
 		return -EINVAL;
 	}
+	if (opt->opt.srr && !ns_capable(net->user_ns, CAP_NET_RAW)) {
+		kfree(opt);
+		return -EPERM;
+	}
 	kfree(*optp);
 	*optp = opt;
 	return 0;
@@ -628,13 +619,13 @@ int ip_options_rcv_srr(struct sk_buff *skb, struct net_device *dev)
 		}
 		memcpy(&nexthop, &optptr[srrptr-1], 4);
 
-		orefdst = skb->_skb_refdst;
-		skb_dst_set(skb, NULL);
-		err = ip_route_input(skb, nexthop, iph->saddr, iph->tos, dev);
+		orefdst = skb_dstref_steal(skb);
+		err = ip_route_input(skb, nexthop, iph->saddr, ip4h_dscp(iph),
+				     dev) ? -EINVAL : 0;
 		rt2 = skb_rtable(skb);
 		if (err || (rt2->rt_type != RTN_UNICAST && rt2->rt_type != RTN_LOCAL)) {
 			skb_dst_drop(skb);
-			skb->_skb_refdst = orefdst;
+			skb_dstref_restore(skb, orefdst);
 			return -EINVAL;
 		}
 		refdst_drop(orefdst);

@@ -15,10 +15,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/delay.h>
-#include <linux/fs.h>
-#include <linux/io.h>
 #include <linux/parport.h>
-#include <linux/uaccess.h>
 #include <linux/ks0108.h>
 
 #define KS0108_NAME "ks0108"
@@ -165,7 +162,6 @@ static struct parport_driver ks0108_parport_driver = {
 	.name = "ks0108",
 	.match_port = ks0108_parport_attach,
 	.detach = ks0108_parport_detach,
-	.devmodel = true,
 };
 module_parport_driver(ks0108_parport_driver);
 

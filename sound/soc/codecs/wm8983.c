@@ -594,10 +594,10 @@ static int wm8983_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 			    WM8983_FMT_MASK, format << WM8983_FMT_SHIFT);
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		master = 1;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		master = 0;
 		break;
 	default:
@@ -987,7 +987,6 @@ static const struct snd_soc_component_driver soc_component_dev_wm8983 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config wm8983_regmap = {
@@ -996,7 +995,7 @@ static const struct regmap_config wm8983_regmap = {
 
 	.reg_defaults = wm8983_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8983_defaults),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.max_register = WM8983_MAX_REGISTER,
 
 	.writeable_reg = wm8983_writeable,
@@ -1035,8 +1034,7 @@ static struct spi_driver wm8983_spi_driver = {
 #endif
 
 #if IS_ENABLED(CONFIG_I2C)
-static int wm8983_i2c_probe(struct i2c_client *i2c,
-			    const struct i2c_device_id *id)
+static int wm8983_i2c_probe(struct i2c_client *i2c)
 {
 	struct wm8983_priv *wm8983;
 	int ret;
@@ -1061,7 +1059,7 @@ static int wm8983_i2c_probe(struct i2c_client *i2c,
 }
 
 static const struct i2c_device_id wm8983_i2c_id[] = {
-	{ "wm8983", 0 },
+	{ "wm8983" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm8983_i2c_id);

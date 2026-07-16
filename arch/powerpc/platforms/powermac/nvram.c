@@ -17,9 +17,9 @@
 #include <linux/memblock.h>
 #include <linux/completion.h>
 #include <linux/spinlock.h>
+#include <linux/of_address.h>
 #include <asm/sections.h>
 #include <asm/io.h>
-#include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/nvram.h>
 
@@ -71,7 +71,7 @@ struct core99_header {
 static int nvram_naddrs;
 static volatile unsigned char __iomem *nvram_data;
 static int is_core_99;
-static int core99_bank = 0;
+static int core99_bank;
 static int nvram_partitions[3];
 // XXX Turn that into a sem
 static DEFINE_RAW_SPINLOCK(nv_lock);
@@ -258,7 +258,7 @@ static u32 core99_calc_adler(u8 *buffer)
 	return (high << 16) | low;
 }
 
-static u32 core99_check(u8* datas)
+static u32 __init core99_check(u8 *datas)
 {
 	struct core99_header* hdr99 = (struct core99_header*)datas;
 
@@ -514,10 +514,7 @@ static int __init core99_nvram_setup(struct device_node *dp, unsigned long addr)
 		printk(KERN_ERR "nvram: no address\n");
 		return -EINVAL;
 	}
-	nvram_image = memblock_alloc(NVRAM_SIZE, SMP_CACHE_BYTES);
-	if (!nvram_image)
-		panic("%s: Failed to allocate %u bytes\n", __func__,
-		      NVRAM_SIZE);
+	nvram_image = memblock_alloc_or_panic(NVRAM_SIZE, SMP_CACHE_BYTES);
 	nvram_data = ioremap(addr, NVRAM_SIZE*2);
 	nvram_naddrs = 1; /* Make sure we get the correct case */
 

@@ -19,16 +19,17 @@ possible we decided to do following:
     platform devices.
 
   - Devices behind real busses where there is a connector resource
-    are represented as struct spi_device or struct i2c_device
-    (standard UARTs are not busses so there is no struct uart_device).
+    are represented as struct spi_device or struct i2c_client. Note
+    that standard UARTs are not busses so there is no struct uart_device,
+    although some of them may be represented by struct serdev_device.
 
 As both ACPI and Device Tree represent a tree of devices (and their
 resources) this implementation follows the Device Tree way as much as
 possible.
 
-The ACPI implementation enumerates devices behind busses (platform, SPI and
-I2C), creates the physical devices and binds them to their ACPI handle in
-the ACPI namespace.
+The ACPI implementation enumerates devices behind busses (platform, SPI,
+I2C, and in some cases UART), creates the physical devices and binds them
+to their ACPI handle in the ACPI namespace.
 
 This means that when ACPI_HANDLE(dev) returns non-NULL the device was
 enumerated from ACPI namespace. This handle can be used to extract other
@@ -46,24 +47,65 @@ some minor changes.
 Adding ACPI support for an existing driver should be pretty
 straightforward. Here is the simplest example::
 
-	#ifdef CONFIG_ACPI
 	static const struct acpi_device_id mydrv_acpi_match[] = {
 		/* ACPI IDs here */
 		{ }
 	};
 	MODULE_DEVICE_TABLE(acpi, mydrv_acpi_match);
-	#endif
 
 	static struct platform_driver my_driver = {
 		...
 		.driver = {
-			.acpi_match_table = ACPI_PTR(mydrv_acpi_match),
+			.acpi_match_table = mydrv_acpi_match,
 		},
 	};
 
 If the driver needs to perform more complex initialization like getting and
 configuring GPIOs it can get its ACPI handle and extract this information
 from ACPI tables.
+
+ACPI device objects
+===================
+
+Generally speaking, there are two categories of devices in a system in which
+ACPI is used as an interface between the platform firmware and the OS: Devices
+that can be discovered and enumerated natively, through a protocol defined for
+the specific bus that they are on (for example, configuration space in PCI),
+without the platform firmware assistance, and devices that need to be described
+by the platform firmware so that they can be discovered.  Still, for any device
+known to the platform firmware, regardless of which category it falls into,
+there can be a corresponding ACPI device object in the ACPI Namespace in which
+case the Linux kernel will create a struct acpi_device object based on it for
+that device.
+
+Those struct acpi_device objects are never used for binding drivers to natively
+discoverable devices, because they are represented by other types of device
+objects (for example, struct pci_dev for PCI devices) that are bound to by
+device drivers (the corresponding struct acpi_device object is then used as
+an additional source of information on the configuration of the given device).
+Moreover, the core ACPI device enumeration code creates struct platform_device
+objects for the majority of devices that are discovered and enumerated with the
+help of the platform firmware and those platform device objects can be bound to
+by platform drivers in direct analogy with the natively enumerable devices
+case.  Therefore it is logically inconsistent and so generally invalid to bind
+drivers to struct acpi_device objects, including drivers for devices that are
+discovered with the help of the platform firmware.
+
+Historically, ACPI drivers that bound directly to struct acpi_device objects
+were implemented for some devices enumerated with the help of the platform
+firmware, but this is not recommended for any new drivers.  As explained above,
+platform device objects are created for those devices as a rule (with a few
+exceptions that are not relevant here) and so platform drivers should be used
+for handling them, even though the corresponding ACPI device objects are the
+only source of device configuration information in that case.
+
+For every device having a corresponding struct acpi_device object, the pointer
+to it is returned by the ACPI_COMPANION() macro, so it is always possible to
+get to the device configuration information stored in the ACPI device object
+this way.  Accordingly, struct acpi_device can be regarded as a part of the
+interface between the kernel and the ACPI Namespace, whereas device objects of
+other types (for example, struct pci_dev or struct platform_device) are used
+for interacting with the rest of the system.
 
 DMA support
 ===========
@@ -143,6 +185,44 @@ In robust cases the client unfortunately needs to call
 acpi_dma_request_slave_chan_by_index() directly and therefore choose the
 specific FixedDMA resource by its index.
 
+Named Interrupts
+================
+
+Drivers enumerated via ACPI can have names to interrupts in the ACPI table
+which can be used to get the IRQ number in the driver.
+
+The interrupt name can be listed in _DSD as 'interrupt-names'. The names
+should be listed as an array of strings which will map to the Interrupt()
+resource in the ACPI table corresponding to its index.
+
+The table below shows an example of its usage::
+
+    Device (DEV0) {
+        ...
+        Name (_CRS, ResourceTemplate() {
+            ...
+            Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) {
+                0x20,
+                0x24
+            }
+        })
+
+        Name (_DSD, Package () {
+            ToUUID("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+            Package () {
+                Package () { "interrupt-names", Package () { "default", "alert" } },
+            }
+        ...
+        })
+    }
+
+The interrupt name 'default' will correspond to 0x20 in Interrupt()
+resource and 'alert' to 0x24. Note that only the Interrupt() resource
+is mapped and not GpioInt() or similar.
+
+The driver can call the function - fwnode_irq_get_byname() with the fwnode
+and interrupt name as arguments to get the corresponding IRQ number.
+
 SPI serial bus support
 ======================
 
@@ -155,7 +235,7 @@ Here is what the ACPI namespace for a SPI slave might look like::
 	Device (EEP0)
 	{
 		Name (_ADR, 1)
-		Name (_CID, Package() {
+		Name (_CID, Package () {
 			"ATML0025",
 			"AT25",
 		})
@@ -168,63 +248,55 @@ Here is what the ACPI namespace for a SPI slave might look like::
 		}
 		...
 
-The SPI device drivers only need to add ACPI IDs in a similar way than with
+The SPI device drivers only need to add ACPI IDs in a similar way to
 the platform device drivers. Below is an example where we add ACPI support
 to at25 SPI eeprom driver (this is meant for the above ACPI snippet)::
 
-	#ifdef CONFIG_ACPI
 	static const struct acpi_device_id at25_acpi_match[] = {
 		{ "AT25", 0 },
-		{ },
+		{ }
 	};
 	MODULE_DEVICE_TABLE(acpi, at25_acpi_match);
-	#endif
 
 	static struct spi_driver at25_driver = {
 		.driver = {
 			...
-			.acpi_match_table = ACPI_PTR(at25_acpi_match),
+			.acpi_match_table = at25_acpi_match,
 		},
 	};
 
 Note that this driver actually needs more information like page size of the
-eeprom etc. but at the time writing this there is no standard way of
-passing those. One idea is to return this in _DSM method like::
+eeprom, etc. This information can be passed via _DSD method like::
 
 	Device (EEP0)
 	{
 		...
-		Method (_DSM, 4, NotSerialized)
+		Name (_DSD, Package ()
 		{
-			Store (Package (6)
+			ToUUID("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+			Package ()
 			{
-				"byte-len", 1024,
-				"addr-mode", 2,
-				"page-size, 32
-			}, Local0)
+				Package () { "size", 1024 },
+				Package () { "pagesize", 32 },
+				Package () { "address-width", 16 },
+			}
+		})
+	}
 
-			// Check UUIDs etc.
+Then the at25 SPI driver can get this configuration by calling device property
+APIs during ->probe() phase like::
 
-			Return (Local0)
-		}
+	err = device_property_read_u32(dev, "size", &size);
+	if (err)
+		...error handling...
 
-Then the at25 SPI driver can get this configuration by calling _DSM on its
-ACPI handle like::
+	err = device_property_read_u32(dev, "pagesize", &page_size);
+	if (err)
+		...error handling...
 
-	struct acpi_buffer output = { ACPI_ALLOCATE_BUFFER, NULL };
-	struct acpi_object_list input;
-	acpi_status status;
-
-	/* Fill in the input buffer */
-
-	status = acpi_evaluate_object(ACPI_HANDLE(&spi->dev), "_DSM",
-				      &input, &output);
-	if (ACPI_FAILURE(status))
-		/* Handle the error */
-
-	/* Extract the data here */
-
-	kfree(output.pointer);
+	err = device_property_read_u32(dev, "address-width", &addr_width);
+	if (err)
+		...error handling...
 
 I2C serial bus support
 ======================
@@ -237,26 +309,24 @@ registered.
 Below is an example of how to add ACPI support to the existing mpu3050
 input driver::
 
-	#ifdef CONFIG_ACPI
 	static const struct acpi_device_id mpu3050_acpi_match[] = {
 		{ "MPU3050", 0 },
-		{ },
+		{ }
 	};
 	MODULE_DEVICE_TABLE(acpi, mpu3050_acpi_match);
-	#endif
 
 	static struct i2c_driver mpu3050_i2c_driver = {
 		.driver	= {
 			.name	= "mpu3050",
-			.owner	= THIS_MODULE,
 			.pm	= &mpu3050_pm,
 			.of_match_table = mpu3050_of_match,
-			.acpi_match_table = ACPI_PTR(mpu3050_acpi_match),
+			.acpi_match_table = mpu3050_acpi_match,
 		},
 		.probe		= mpu3050_probe,
 		.remove		= mpu3050_remove,
 		.id_table	= mpu3050_ids,
 	};
+	module_i2c_driver(mpu3050_i2c_driver);
 
 Reference to PWM device
 =======================
@@ -282,9 +352,9 @@ introduced, i.e.::
                     }
                 }
             }
-
         })
         ...
+    }
 
 In the above example the PWM-based LED driver references to the PWM channel 0
 of \_SB.PCI0.PWM device with initial period setting equal to 600 ms (note that
@@ -306,26 +376,13 @@ For example::
 		{
 			Name (SBUF, ResourceTemplate()
 			{
-				...
 				// Used to power on/off the device
-				GpioIo (Exclusive, PullDefault, 0x0000, 0x0000,
-					IoRestrictionOutputOnly, "\\_SB.PCI0.GPI0",
-					0x00, ResourceConsumer,,)
-				{
-					// Pin List
-					0x0055
-				}
+				GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionOutputOnly,
+					"\\_SB.PCI0.GPI0", 0, ResourceConsumer) { 85 }
 
 				// Interrupt for the device
-				GpioInt (Edge, ActiveHigh, ExclusiveAndWake, PullNone,
-					0x0000, "\\_SB.PCI0.GPI0", 0x00, ResourceConsumer,,)
-				{
-					// Pin list
-					0x0058
-				}
-
-				...
-
+				GpioInt (Edge, ActiveHigh, ExclusiveAndWake, PullNone, 0,
+					 "\\_SB.PCI0.GPI0", 0, ResourceConsumer) { 88 }
 			}
 
 			Return (SBUF)
@@ -337,17 +394,18 @@ For example::
 			ToUUID("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
 			Package ()
 			{
-				Package () {"power-gpios", Package() {^DEV, 0, 0, 0 }},
-				Package () {"irq-gpios", Package() {^DEV, 1, 0, 0 }},
+				Package () { "power-gpios", Package () { ^DEV, 0, 0, 0 } },
+				Package () { "irq-gpios", Package () { ^DEV, 1, 0, 0 } },
 			}
 		})
 		...
+	}
 
 These GPIO numbers are controller relative and path "\\_SB.PCI0.GPI0"
 specifies the path to the controller. In order to use these GPIOs in Linux
 we need to translate them to the corresponding Linux GPIO descriptors.
 
-There is a standard GPIO API for that and is documented in
+There is a standard GPIO API for that and it is documented in
 Documentation/admin-guide/gpio/.
 
 In the above example we can get the corresponding two GPIO descriptors with
@@ -373,6 +431,31 @@ descriptors once the device is released.
 
 See Documentation/firmware-guide/acpi/gpio-properties.rst for more information
 about the _DSD binding related to GPIOs.
+
+RS-485 support
+==============
+
+ACPI _DSD (Device Specific Data) can be used to describe RS-485 capability
+of UART.
+
+For example::
+
+	Device (DEV)
+	{
+		...
+
+		// ACPI 5.1 _DSD used for RS-485 capabilities
+		Name (_DSD, Package ()
+		{
+			ToUUID("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+			Package ()
+			{
+				Package () {"rs485-rts-active-low", Zero},
+				Package () {"rs485-rx-active-high", Zero},
+				Package () {"rs485-rx-during-tx", Zero},
+			}
+		})
+		...
 
 MFD devices
 ===========
@@ -460,10 +543,10 @@ namespace link::
 	Device (TMP0)
 	{
 		Name (_HID, "PRP0001")
-		Name (_DSD, Package() {
+		Name (_DSD, Package () {
 			ToUUID("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
 			Package () {
-				Package (2) { "compatible", "ti,tmp75" },
+				Package () { "compatible", "ti,tmp75" },
 			}
 		})
 		Method (_CRS, 0, Serialized)
@@ -498,8 +581,8 @@ information.
 PCI hierarchy representation
 ============================
 
-Sometimes could be useful to enumerate a PCI device, knowing its position on the
-PCI bus.
+Sometimes it could be useful to enumerate a PCI device, knowing its position on
+the PCI bus.
 
 For example, some systems use PCI devices soldered directly on the mother board,
 in a fixed position (ethernet, Wi-Fi, serial ports, etc.). In this conditions it
@@ -510,9 +593,9 @@ To identify a PCI device, a complete hierarchical description is required, from
 the chipset root port to the final device, through all the intermediate
 bridges/switches of the board.
 
-For example, let us assume to have a system with a PCIe serial port, an
+For example, let's assume we have a system with a PCIe serial port, an
 Exar XR17V3521, soldered on the main board. This UART chip also includes
-16 GPIOs and we want to add the property ``gpio-line-names`` [1] to these pins.
+16 GPIOs and we want to add the property ``gpio-line-names`` [1]_ to these pins.
 In this case, the ``lspci`` output for this component is::
 
 	07:00.0 Serial controller: Exar Corp. XR17V3521 Dual PCIe UART (rev 03)
@@ -553,8 +636,8 @@ of the chipset bridge (also called "root port") with address::
 
 	Bus: 0 - Device: 14 - Function: 1
 
-To find this information is necessary disassemble the BIOS ACPI tables, in
-particular the DSDT (see also [2])::
+To find this information, it is necessary to disassemble the BIOS ACPI tables,
+in particular the DSDT (see also [2]_)::
 
 	mkdir ~/tables/
 	cd ~/tables/
@@ -584,7 +667,7 @@ device::
 			}
 	... other definitions follow ...
 
-and the _ADR method [3] returns exactly the device/function couple that
+and the _ADR method [3]_ returns exactly the device/function couple that
 we are looking for. With this information and analyzing the above ``lspci``
 output (both the devices list and the devices tree), we can write the following
 ACPI description for the Exar PCIe UART, also adding the list of its GPIO line
@@ -641,10 +724,10 @@ created analyzing the position of the Exar UART in the PCI bus topology.
 References
 ==========
 
-[1] Documentation/firmware-guide/acpi/gpio-properties.rst
+.. [1] Documentation/firmware-guide/acpi/gpio-properties.rst
 
-[2] Documentation/admin-guide/acpi/initrd_table_override.rst
+.. [2] Documentation/admin-guide/acpi/initrd_table_override.rst
 
-[3] ACPI Specifications, Version 6.3 - Paragraph 6.1.1 _ADR Address)
+.. [3] ACPI Specifications, Version 6.3 - Paragraph 6.1.1 _ADR Address)
     https://uefi.org/sites/default/files/resources/ACPI_6_3_May16.pdf,
     referenced 2020-11-18

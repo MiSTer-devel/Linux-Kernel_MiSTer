@@ -5,7 +5,6 @@
 
 #include <linux/clk-provider.h>
 #include <linux/module.h>
-#include <linux/of_address.h>
 #include <linux/platform_device.h>
 
 #include "ccu_common.h"
@@ -167,7 +166,7 @@ static struct clk_hw_onecell_data sun50i_a100_r_hw_clks = {
 	.num	= CLK_NUMBER,
 };
 
-static struct ccu_reset_map sun50i_a100_r_ccu_resets[] = {
+static const struct ccu_reset_map sun50i_a100_r_ccu_resets[] = {
 	[RST_R_APB1_TIMER]	=  { 0x11c, BIT(16) },
 	[RST_R_APB1_BUS_PWM]	=  { 0x13c, BIT(16) },
 	[RST_R_APB1_PPU]	=  { 0x17c, BIT(16) },
@@ -196,19 +195,25 @@ static int sun50i_a100_r_ccu_probe(struct platform_device *pdev)
 	if (IS_ERR(reg))
 		return PTR_ERR(reg);
 
-	return sunxi_ccu_probe(pdev->dev.of_node, reg, &sun50i_a100_r_ccu_desc);
+	return devm_sunxi_ccu_probe(&pdev->dev, reg, &sun50i_a100_r_ccu_desc);
 }
 
 static const struct of_device_id sun50i_a100_r_ccu_ids[] = {
 	{ .compatible = "allwinner,sun50i-a100-r-ccu" },
 	{ }
 };
+MODULE_DEVICE_TABLE(of, sun50i_a100_r_ccu_ids);
 
 static struct platform_driver sun50i_a100_r_ccu_driver = {
 	.probe	= sun50i_a100_r_ccu_probe,
 	.driver	= {
 		.name	= "sun50i-a100-r-ccu",
+		.suppress_bind_attrs = true,
 		.of_match_table	= sun50i_a100_r_ccu_ids,
 	},
 };
 module_platform_driver(sun50i_a100_r_ccu_driver);
+
+MODULE_IMPORT_NS("SUNXI_CCU");
+MODULE_DESCRIPTION("Support for the Allwinner A100 PRCM CCU");
+MODULE_LICENSE("GPL");

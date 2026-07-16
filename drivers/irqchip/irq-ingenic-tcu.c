@@ -28,6 +28,7 @@ static void ingenic_tcu_intc_cascade(struct irq_desc *desc)
 	struct irq_chip_generic *gc = irq_get_domain_generic_chip(domain, 0);
 	struct regmap *map = gc->private;
 	uint32_t irq_reg, irq_mask;
+	unsigned long bits;
 	unsigned int i;
 
 	regmap_read(map, TCU_REG_TFR, &irq_reg);
@@ -36,8 +37,9 @@ static void ingenic_tcu_intc_cascade(struct irq_desc *desc)
 	chained_irq_enter(irq_chip, desc);
 
 	irq_reg &= ~irq_mask;
+	bits = irq_reg;
 
-	for_each_set_bit(i, (unsigned long *)&irq_reg, 32)
+	for_each_set_bit(i, &bits, 32)
 		generic_handle_domain_irq(domain, i);
 
 	chained_irq_exit(irq_chip, desc);
@@ -50,11 +52,10 @@ static void ingenic_tcu_gc_unmask_enable_reg(struct irq_data *d)
 	struct regmap *map = gc->private;
 	u32 mask = d->mask;
 
-	irq_gc_lock(gc);
+	guard(raw_spinlock)(&gc->lock);
 	regmap_write(map, ct->regs.ack, mask);
 	regmap_write(map, ct->regs.enable, mask);
 	*ct->mask_cache |= mask;
-	irq_gc_unlock(gc);
 }
 
 static void ingenic_tcu_gc_mask_disable_reg(struct irq_data *d)
@@ -64,10 +65,9 @@ static void ingenic_tcu_gc_mask_disable_reg(struct irq_data *d)
 	struct regmap *map = gc->private;
 	u32 mask = d->mask;
 
-	irq_gc_lock(gc);
+	guard(raw_spinlock)(&gc->lock);
 	regmap_write(map, ct->regs.disable, mask);
 	*ct->mask_cache &= ~mask;
-	irq_gc_unlock(gc);
 }
 
 static void ingenic_tcu_gc_mask_disable_reg_and_ack(struct irq_data *d)
@@ -77,10 +77,9 @@ static void ingenic_tcu_gc_mask_disable_reg_and_ack(struct irq_data *d)
 	struct regmap *map = gc->private;
 	u32 mask = d->mask;
 
-	irq_gc_lock(gc);
+	guard(raw_spinlock)(&gc->lock);
 	regmap_write(map, ct->regs.ack, mask);
 	regmap_write(map, ct->regs.disable, mask);
-	irq_gc_unlock(gc);
 }
 
 static int __init ingenic_tcu_irq_init(struct device_node *np,
@@ -112,8 +111,8 @@ static int __init ingenic_tcu_irq_init(struct device_node *np,
 
 	tcu->nb_parent_irqs = irqs;
 
-	tcu->domain = irq_domain_add_linear(np, 32, &irq_generic_chip_ops,
-					    NULL);
+	tcu->domain = irq_domain_create_linear(of_fwnode_handle(np), 32, &irq_generic_chip_ops,
+					       NULL);
 	if (!tcu->domain) {
 		ret = -ENOMEM;
 		goto err_free_tcu;

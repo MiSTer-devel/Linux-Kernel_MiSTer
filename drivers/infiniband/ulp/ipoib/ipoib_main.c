@@ -49,6 +49,8 @@
 #include <linux/jhash.h>
 #include <net/arp.h>
 #include <net/addrconf.h>
+#include <net/netdev_lock.h>
+#include <net/pkt_sched.h>
 #include <linux/inetdevice.h>
 #include <rdma/ib_cache.h>
 
@@ -131,6 +133,52 @@ static int ipoib_netdev_event(struct notifier_block *this,
 }
 #endif
 
+struct ipoib_ifupdown_work {
+	struct work_struct work;
+	struct net_device *dev;
+	netdevice_tracker dev_tracker;
+	bool up;
+};
+
+static void ipoib_ifupdown_task(struct work_struct *work)
+{
+	struct ipoib_ifupdown_work *pwork =
+		container_of(work, struct ipoib_ifupdown_work, work);
+	struct net_device *dev = pwork->dev;
+	unsigned int flags;
+
+	rtnl_lock();
+	flags = dev->flags;
+	if (pwork->up)
+		flags |= IFF_UP;
+	else
+		flags &= ~IFF_UP;
+
+	if (dev->flags != flags)
+		dev_change_flags(dev, flags, NULL);
+	rtnl_unlock();
+	netdev_put(dev, &pwork->dev_tracker);
+	kfree(pwork);
+}
+
+static void ipoib_schedule_ifupdown_task(struct net_device *dev, bool up)
+{
+	struct ipoib_ifupdown_work *work;
+
+	if ((up && (dev->flags & IFF_UP)) ||
+	    (!up && !(dev->flags & IFF_UP)))
+		return;
+
+	work = kmalloc(sizeof(*work), GFP_KERNEL);
+	if (!work)
+		return;
+	work->dev = dev;
+	netdev_hold(dev, &work->dev_tracker, GFP_KERNEL);
+	work->up = up;
+	INIT_WORK(&work->work, ipoib_ifupdown_task);
+	queue_work(ipoib_workqueue, &work->work);
+}
+
 int ipoib_open(struct net_device *dev)
 {
 	struct ipoib_dev_priv *priv = ipoib_priv(dev);
@@ -153,17 +201,10 @@ int ipoib_open(struct net_device *dev)
 		struct ipoib_dev_priv *cpriv;
 
 		/* Bring up any child interfaces too */
-		down_read(&priv->vlan_rwsem);
-		list_for_each_entry(cpriv, &priv->child_intfs, list) {
-			int flags;
-
-			flags = cpriv->dev->flags;
-			if (flags & IFF_UP)
-				continue;
-
-			dev_change_flags(cpriv->dev, flags | IFF_UP, NULL);
-		}
-		up_read(&priv->vlan_rwsem);
+		netdev_lock_ops_to_full(dev);
+		list_for_each_entry(cpriv, &priv->child_intfs, list)
+			ipoib_schedule_ifupdown_task(cpriv->dev, true);
+		netdev_unlock_full_to_ops(dev);
 	} else if (priv->parent) {
 		struct ipoib_dev_priv *ppriv = ipoib_priv(priv->parent);
 
@@ -198,17 +239,10 @@ static int ipoib_stop(struct net_device *dev)
 		struct ipoib_dev_priv *cpriv;
 
 		/* Bring down any child interfaces too */
-		down_read(&priv->vlan_rwsem);
-		list_for_each_entry(cpriv, &priv->child_intfs, list) {
-			int flags;
-
-			flags = cpriv->dev->flags;
-			if (!(flags & IFF_UP))
-				continue;
-
-			dev_change_flags(cpriv->dev, flags & ~IFF_UP, NULL);
-		}
-		up_read(&priv->vlan_rwsem);
+		netdev_lock_ops_to_full(dev);
+		list_for_each_entry(cpriv, &priv->child_intfs, list)
+			ipoib_schedule_ifupdown_task(cpriv->dev, false);
+		netdev_unlock_full_to_ops(dev);
 	}
 
 	return 0;
@@ -238,7 +272,7 @@ static int ipoib_change_mtu(struct net_device *dev, int new_mtu)
 			ipoib_warn(priv, "mtu > %d will cause multicast packet drops.\n",
 				   priv->mcast_mtu);
 
-		dev->mtu = new_mtu;
+		WRITE_ONCE(dev->mtu, new_mtu);
 		return 0;
 	}
 
@@ -265,7 +299,7 @@ static int ipoib_change_mtu(struct net_device *dev, int new_mtu)
 		if (carrier_status)
 			netif_carrier_on(dev);
 	} else {
-		dev->mtu = new_mtu;
+		WRITE_ONCE(dev->mtu, new_mtu);
 	}
 
 	return ret;
@@ -317,27 +351,27 @@ static bool ipoib_is_dev_match_addr_rcu(const struct sockaddr *addr,
 }
 
 /*
- * Find the master net_device on top of the given net_device.
+ * Find the L2 master net_device on top of the given net_device.
  * @dev: base IPoIB net_device
  *
- * Returns the master net_device with a reference held, or the same net_device
- * if no master exists.
+ * Returns the L2 master net_device with reference held if the L2 master
+ * exists (such as bond netdevice), or returns same netdev with reference
+ * held when master does not exist or when L3 master (such as VRF netdev).
  */
 static struct net_device *ipoib_get_master_net_dev(struct net_device *dev)
 {
 	struct net_device *master;
 
 	rcu_read_lock();
+
 	master = netdev_master_upper_dev_get_rcu(dev);
-	if (master)
-		dev_hold(master);
+	if (!master || netif_is_l3_master(master))
+		master = dev;
+
+	dev_hold(master);
 	rcu_read_unlock();
 
-	if (master)
-		return master;
-
-	dev_hold(dev);
-	return dev;
+	return master;
 }
 
 struct ipoib_walk_data {
@@ -426,17 +460,20 @@ static int ipoib_match_gid_pkey_addr(struct ipoib_dev_priv *priv,
 		}
 	}
 
+	if (test_bit(IPOIB_FLAG_SUBINTERFACE, &priv->flags))
+		return matches;
+
 	/* Check child interfaces */
-	down_read_nested(&priv->vlan_rwsem, nesting);
+	netdev_lock(priv->dev);
 	list_for_each_entry(child_priv, &priv->child_intfs, list) {
 		matches += ipoib_match_gid_pkey_addr(child_priv, gid,
-						    pkey_index, addr,
-						    nesting + 1,
-						    found_net_dev);
+						     pkey_index, addr,
+						     nesting + 1,
+						     found_net_dev);
 		if (matches > 1)
 			break;
 	}
-	up_read(&priv->vlan_rwsem);
+	netdev_unlock(priv->dev);
 
 	return matches;
 }
@@ -486,7 +523,7 @@ static struct net_device *ipoib_get_net_dev_by_params(
 	if (ret)
 		return NULL;
 
-	/* See if we can find a unique device matching the L2 parameters */
+	/* See if we can find a unique device matching the pkey and GID */
 	matches = __ipoib_get_net_dev_by_params(dev_list, port, pkey_index,
 						gid, NULL, &net_dev);
 
@@ -499,7 +536,7 @@ static struct net_device *ipoib_get_net_dev_by_params(
 
 	dev_put(net_dev);
 
-	/* Couldn't find a unique device with L2 parameters only. Use L3
+	/* Couldn't find a unique device with pkey and GID only. Use L3
 	 * address to uniquely match the net device */
 	matches = __ipoib_get_net_dev_by_params(dev_list, port, pkey_index,
 						gid, addr, &net_dev);
@@ -531,9 +568,11 @@ int ipoib_set_mode(struct net_device *dev, const char *buf)
 		set_bit(IPOIB_FLAG_ADMIN_CM, &priv->flags);
 		ipoib_warn(priv, "enabling connected mode "
 			   "will cause multicast packet drops\n");
+		netdev_lock_ops(dev);
 		netdev_update_features(dev);
-		dev_set_mtu(dev, ipoib_cm_max_mtu(dev));
+		netif_set_mtu(dev, ipoib_cm_max_mtu(dev));
 		netif_set_real_num_tx_queues(dev, 1);
+		netdev_unlock_ops(dev);
 		rtnl_unlock();
 		priv->tx_wr.wr.send_flags &= ~IB_SEND_IP_CSUM;
 
@@ -543,9 +582,11 @@ int ipoib_set_mode(struct net_device *dev, const char *buf)
 
 	if (!strcmp(buf, "datagram\n")) {
 		clear_bit(IPOIB_FLAG_ADMIN_CM, &priv->flags);
+		netdev_lock_ops(dev);
 		netdev_update_features(dev);
-		dev_set_mtu(dev, min(priv->mcast_mtu, dev->mtu));
+		netif_set_mtu(dev, min(priv->mcast_mtu, dev->mtu));
 		netif_set_real_num_tx_queues(dev, dev->num_tx_queues);
+		netdev_unlock_ops(dev);
 		rtnl_unlock();
 		ipoib_flush_paths(dev);
 		return (!rtnl_trylock()) ? -EBUSY : 0;
@@ -742,7 +783,7 @@ void ipoib_flush_paths(struct net_device *dev)
 
 static void path_rec_completion(int status,
 				struct sa_path_rec *pathrec,
-				void *path_ptr)
+				unsigned int num_prs, void *path_ptr)
 {
 	struct ipoib_path *path = path_ptr;
 	struct net_device *dev = path->dev;
@@ -1200,7 +1241,36 @@ static void ipoib_timeout(struct net_device *dev, unsigned int txqueue)
 		   netif_queue_stopped(dev), priv->tx_head, priv->tx_tail,
 		   priv->global_tx_head, priv->global_tx_tail);
 
-	/* XXX reset QP, etc. */
+
+	schedule_work(&priv->tx_timeout_work);
+}
+
+void ipoib_ib_tx_timeout_work(struct work_struct *work)
+{
+	struct ipoib_dev_priv *priv = container_of(work,
+						   struct ipoib_dev_priv,
+						   tx_timeout_work);
+	int err;
+
+	rtnl_lock();
+	netdev_lock_ops(priv->dev);
+
+	if (!test_bit(IPOIB_FLAG_ADMIN_UP, &priv->flags))
+		goto unlock;
+
+	ipoib_stop(priv->dev);
+	err = ipoib_open(priv->dev);
+	if (err) {
+		ipoib_warn(priv, "ipoib_open failed recovering from a tx_timeout, err(%d).\n",
+				err);
+		goto unlock;
+	}
+
+	netif_tx_wake_all_queues(priv->dev);
+unlock:
+	netdev_unlock_ops(priv->dev);
+	rtnl_unlock();
+
 }
 
 static int ipoib_hard_header(struct sk_buff *skb,
@@ -1245,10 +1315,10 @@ static int ipoib_get_iflink(const struct net_device *dev)
 
 	/* parent interface */
 	if (!test_bit(IPOIB_FLAG_SUBINTERFACE, &priv->flags))
-		return dev->ifindex;
+		return READ_ONCE(dev->ifindex);
 
 	/* child/vlan interface */
-	return priv->parent->ifindex;
+	return READ_ONCE(priv->parent->ifindex);
 }
 
 static u32 ipoib_addr_hash(struct ipoib_neigh_hash *htbl, u8 *daddr)
@@ -1664,8 +1734,10 @@ static void ipoib_napi_add(struct net_device *dev)
 {
 	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 
-	netif_napi_add(dev, &priv->recv_napi, ipoib_rx_poll, IPOIB_NUM_WC);
-	netif_napi_add(dev, &priv->send_napi, ipoib_tx_poll, MAX_SEND_CQE);
+	netif_napi_add_weight(dev, &priv->recv_napi, ipoib_rx_poll,
+			      IPOIB_NUM_WC);
+	netif_napi_add_weight(dev, &priv->send_napi, ipoib_tx_poll,
+			      MAX_SEND_CQE);
 }
 
 static void ipoib_napi_del(struct net_device *dev)
@@ -1696,6 +1768,7 @@ static void ipoib_dev_uninit_default(struct net_device *dev)
 static int ipoib_dev_init_default(struct net_device *dev)
 {
 	struct ipoib_dev_priv *priv = ipoib_priv(dev);
+	u8 addr_mod[3];
 
 	ipoib_napi_add(dev);
 
@@ -1723,9 +1796,10 @@ static int ipoib_dev_init_default(struct net_device *dev)
 	}
 
 	/* after qp created set dev address */
-	priv->dev->dev_addr[1] = (priv->qp->qp_num >> 16) & 0xff;
-	priv->dev->dev_addr[2] = (priv->qp->qp_num >>  8) & 0xff;
-	priv->dev->dev_addr[3] = (priv->qp->qp_num) & 0xff;
+	addr_mod[0] = (priv->qp->qp_num >> 16) & 0xff;
+	addr_mod[1] = (priv->qp->qp_num >>  8) & 0xff;
+	addr_mod[2] = (priv->qp->qp_num) & 0xff;
+	dev_addr_mod(priv->dev, 1, addr_mod, sizeof(addr_mod));
 
 	return 0;
 
@@ -1848,11 +1922,12 @@ static void ipoib_parent_unregister_pre(struct net_device *ndev)
 static void ipoib_set_dev_features(struct ipoib_dev_priv *priv)
 {
 	priv->hca_caps = priv->ca->attrs.device_cap_flags;
+	priv->kernel_caps = priv->ca->attrs.kernel_cap_flags;
 
 	if (priv->hca_caps & IB_DEVICE_UD_IP_CSUM) {
 		priv->dev->hw_features |= NETIF_F_IP_CSUM | NETIF_F_RXCSUM;
 
-		if (priv->hca_caps & IB_DEVICE_UD_TSO)
+		if (priv->kernel_caps & IBK_UD_TSO)
 			priv->dev->hw_features |= NETIF_F_TSO;
 
 		priv->dev->features |= priv->dev->hw_features;
@@ -1886,8 +1961,7 @@ static int ipoib_parent_init(struct net_device *ndev)
 			priv->ca->name, priv->port, result);
 		return result;
 	}
-	memcpy(priv->dev->dev_addr + 4, priv->local_gid.raw,
-	       sizeof(union ib_gid));
+	dev_addr_mod(priv->dev, 4, priv->local_gid.raw, sizeof(union ib_gid));
 
 	SET_NETDEV_DEV(priv->dev, priv->ca->dev.parent);
 	priv->dev->dev_port = priv->port - 1;
@@ -1908,8 +1982,8 @@ static void ipoib_child_init(struct net_device *ndev)
 		memcpy(&priv->local_gid, priv->dev->dev_addr + 4,
 		       sizeof(priv->local_gid));
 	else {
-		memcpy(priv->dev->dev_addr, ppriv->dev->dev_addr,
-		       INFINIBAND_ALEN);
+		__dev_addr_set(priv->dev, ppriv->dev->dev_addr,
+			       INFINIBAND_ALEN);
 		memcpy(&priv->local_gid, &ppriv->local_gid,
 		       sizeof(priv->local_gid));
 	}
@@ -1961,9 +2035,9 @@ static int ipoib_ndo_init(struct net_device *ndev)
 
 		dev_hold(priv->parent);
 
-		down_write(&ppriv->vlan_rwsem);
+		netdev_lock(priv->parent);
 		list_add_tail(&priv->list, &ppriv->child_intfs);
-		up_write(&ppriv->vlan_rwsem);
+		netdev_unlock(priv->parent);
 	}
 
 	return 0;
@@ -1972,8 +2046,6 @@ static int ipoib_ndo_init(struct net_device *ndev)
 static void ipoib_ndo_uninit(struct net_device *dev)
 {
 	struct ipoib_dev_priv *priv = ipoib_priv(dev);
-
-	ASSERT_RTNL();
 
 	/*
 	 * ipoib_remove_one guarantees the children are removed before the
@@ -1984,9 +2056,9 @@ static void ipoib_ndo_uninit(struct net_device *dev)
 	if (priv->parent) {
 		struct ipoib_dev_priv *ppriv = ipoib_priv(priv->parent);
 
-		down_write(&ppriv->vlan_rwsem);
+		netdev_lock(ppriv->dev);
 		list_del(&priv->list);
-		up_write(&ppriv->vlan_rwsem);
+		netdev_unlock(ppriv->dev);
 	}
 
 	ipoib_neigh_hash_uninit(dev);
@@ -1997,13 +2069,11 @@ static void ipoib_ndo_uninit(struct net_device *dev)
 	if (priv->wq) {
 		/* See ipoib_mcast_carrier_on_task() */
 		WARN_ON(test_bit(IPOIB_FLAG_OPER_UP, &priv->flags));
-		flush_workqueue(priv->wq);
 		destroy_workqueue(priv->wq);
 		priv->wq = NULL;
 	}
 
-	if (priv->parent)
-		dev_put(priv->parent);
+	dev_put(priv->parent);
 }
 
 static int ipoib_set_vf_link_state(struct net_device *dev, int vf, int link_state)
@@ -2110,14 +2180,14 @@ void ipoib_setup_common(struct net_device *dev)
 
 	ipoib_set_ethtool_ops(dev);
 
-	dev->watchdog_timeo	 = HZ;
+	dev->watchdog_timeo	 = 10 * HZ;
 
 	dev->flags		|= IFF_BROADCAST | IFF_MULTICAST;
 
 	dev->hard_header_len	 = IPOIB_HARD_LEN;
 	dev->addr_len		 = INFINIBAND_ALEN;
 	dev->type		 = ARPHRD_INFINIBAND;
-	dev->tx_queue_len	 = ipoib_sendq_size * 2;
+	dev->tx_queue_len	 = DEFAULT_TX_QUEUE_LEN;
 	dev->features		 = (NETIF_F_VLAN_CHALLENGED	|
 				    NETIF_F_HIGHDMA);
 	netif_keep_dst(dev);
@@ -2138,7 +2208,6 @@ static void ipoib_build_priv(struct net_device *dev)
 
 	priv->dev = dev;
 	spin_lock_init(&priv->lock);
-	init_rwsem(&priv->vlan_rwsem);
 	mutex_init(&priv->mcast_mutex);
 
 	INIT_LIST_HEAD(&priv->path_list);
@@ -2148,10 +2217,12 @@ static void ipoib_build_priv(struct net_device *dev)
 
 	INIT_DELAYED_WORK(&priv->mcast_task,   ipoib_mcast_join_task);
 	INIT_WORK(&priv->carrier_on_task, ipoib_mcast_carrier_on_task);
+	INIT_WORK(&priv->reschedule_napi_work, ipoib_napi_schedule_work);
 	INIT_WORK(&priv->flush_light,   ipoib_ib_dev_flush_light);
 	INIT_WORK(&priv->flush_normal,   ipoib_ib_dev_flush_normal);
 	INIT_WORK(&priv->flush_heavy,   ipoib_ib_dev_flush_heavy);
 	INIT_WORK(&priv->restart_task, ipoib_mcast_restart_task);
+	INIT_WORK(&priv->tx_timeout_work, ipoib_ib_tx_timeout_work);
 	INIT_DELAYED_WORK(&priv->ah_reap_task, ipoib_reap_ah);
 	INIT_DELAYED_WORK(&priv->neigh_reap_task, ipoib_reap_neigh);
 }
@@ -2197,11 +2268,19 @@ int ipoib_intf_init(struct ib_device *hca, u32 port, const char *name,
 		rn->attach_mcast = ipoib_mcast_attach;
 		rn->detach_mcast = ipoib_mcast_detach;
 		rn->hca = hca;
+
+		rc = netif_set_real_num_tx_queues(dev, 1);
+		if (rc)
+			goto out;
+
+		rc = netif_set_real_num_rx_queues(dev, 1);
+		if (rc)
+			goto out;
 	}
 
 	priv->rn_ops = dev->netdev_ops;
 
-	if (hca->attrs.device_cap_flags & IB_DEVICE_VIRTUAL_FUNCTION)
+	if (hca->attrs.kernel_cap_flags & IBK_VIRTUAL_FUNCTION)
 		dev->netdev_ops	= &ipoib_netdev_ops_vf;
 	else
 		dev->netdev_ops	= &ipoib_netdev_ops_pf;
@@ -2327,16 +2406,16 @@ static void set_base_guid(struct ipoib_dev_priv *priv, union ib_gid *gid)
 	memcpy(&priv->local_gid.global.interface_id,
 	       &gid->global.interface_id,
 	       sizeof(gid->global.interface_id));
-	memcpy(netdev->dev_addr + 4, &priv->local_gid, sizeof(priv->local_gid));
+	dev_addr_mod(netdev, 4, (u8 *)&priv->local_gid, sizeof(priv->local_gid));
 	clear_bit(IPOIB_FLAG_DEV_ADDR_SET, &priv->flags);
 
 	netif_addr_unlock_bh(netdev);
 
 	if (!test_bit(IPOIB_FLAG_SUBINTERFACE, &priv->flags)) {
-		down_read(&priv->vlan_rwsem);
+		netdev_lock_ops_to_full(priv->dev);
 		list_for_each_entry(child_priv, &priv->child_intfs, list)
 			set_base_guid(child_priv, gid);
-		up_read(&priv->vlan_rwsem);
+		netdev_unlock_full_to_ops(priv->dev);
 	}
 }
 
@@ -2376,6 +2455,14 @@ static int ipoib_set_mac(struct net_device *dev, void *addr)
 
 	set_base_guid(priv, (union ib_gid *)(ss->__data + 4));
 
+	if (!test_bit(IPOIB_FLAG_SUBINTERFACE, &priv->flags)) {
+		struct ipoib_dev_priv *cpriv;
+
+		netdev_lock_ops_to_full(dev);
+		list_for_each_entry(cpriv, &priv->child_intfs, list)
+			queue_work(ipoib_workqueue, &cpriv->flush_light);
+		netdev_unlock_full_to_ops(dev);
+	}
 	queue_work(ipoib_workqueue, &priv->flush_light);
 
 	return 0;
@@ -2487,9 +2574,11 @@ static struct net_device *ipoib_add_port(const char *format,
 	ib_register_event_handler(&priv->event_handler);
 
 	/* call event handler to ensure pkey in sync */
-	queue_work(ipoib_workqueue, &priv->flush_heavy);
+	ipoib_queue_work(priv, IPOIB_FLUSH_HEAVY);
 
 	ndev->rtnl_link_ops = ipoib_get_link_ops();
+
+	dev_net_set(ndev, rdma_dev_net(hca));
 
 	result = register_netdev(ndev);
 	if (result) {
@@ -2585,9 +2674,11 @@ static void ipoib_remove_one(struct ib_device *device, void *client_data)
 
 		rtnl_lock();
 
+		netdev_lock(priv->dev);
 		list_for_each_entry_safe(cpriv, tcpriv, &priv->child_intfs,
 					 list)
 			unregister_netdevice_queue(cpriv->dev, &head);
+		netdev_unlock(priv->dev);
 		unregister_netdevice_queue(priv->dev, &head);
 		unregister_netdevice_many(&head);
 

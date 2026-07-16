@@ -23,13 +23,6 @@ struct sl28cpld_hwmon {
 	u32 offset;
 };
 
-static umode_t sl28cpld_hwmon_is_visible(const void *data,
-					 enum hwmon_sensor_types type,
-					 u32 attr, int channel)
-{
-	return 0444;
-}
-
 static int sl28cpld_hwmon_read(struct device *dev,
 			       enum hwmon_sensor_types type, u32 attr,
 			       int channel, long *input)
@@ -54,7 +47,7 @@ static int sl28cpld_hwmon_read(struct device *dev,
 
 		/*
 		 * The counter period is 1000ms and the sysfs specification
-		 * says we should asssume 2 pulses per revolution.
+		 * says we should assume 2 pulses per revolution.
 		 */
 		value *= 60 / 2;
 
@@ -67,23 +60,13 @@ static int sl28cpld_hwmon_read(struct device *dev,
 	return 0;
 }
 
-static const u32 sl28cpld_hwmon_fan_config[] = {
-	HWMON_F_INPUT,
-	0
-};
-
-static const struct hwmon_channel_info sl28cpld_hwmon_fan = {
-	.type = hwmon_fan,
-	.config = sl28cpld_hwmon_fan_config,
-};
-
-static const struct hwmon_channel_info *sl28cpld_hwmon_info[] = {
-	&sl28cpld_hwmon_fan,
+static const struct hwmon_channel_info * const sl28cpld_hwmon_info[] = {
+	HWMON_CHANNEL_INFO(fan, HWMON_F_INPUT),
 	NULL
 };
 
 static const struct hwmon_ops sl28cpld_hwmon_ops = {
-	.is_visible = sl28cpld_hwmon_is_visible,
+	.visible = 0444,
 	.read = sl28cpld_hwmon_read,
 };
 

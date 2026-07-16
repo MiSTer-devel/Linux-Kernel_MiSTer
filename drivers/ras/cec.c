@@ -38,7 +38,7 @@
  * elements entered into the array, during which, we're decaying all elements.
  * If, after decay, an element gets inserted again, its generation is set to 11b
  * to make sure it has higher numerical count than other, older elements and
- * thus emulate an an LRU-like behavior when deleting elements to free up space
+ * thus emulate an LRU-like behavior when deleting elements to free up space
  * in the page.
  *
  * When an element reaches it's max count of action_threshold, we try to poison
@@ -480,9 +480,15 @@ DEFINE_SHOW_ATTRIBUTE(array);
 
 static int __init create_debugfs_nodes(void)
 {
-	struct dentry *d, *pfn, *decay, *count, *array;
+	struct dentry *d, *pfn, *decay, *count, *array, *dfs;
 
-	d = debugfs_create_dir("cec", ras_debugfs_dir);
+	dfs = ras_get_debugfs_root();
+	if (!dfs) {
+		pr_warn("Error getting RAS debugfs root!\n");
+		return -1;
+	}
+
+	d = debugfs_create_dir("cec", dfs);
 	if (!d) {
 		pr_warn("Error creating cec debugfs node!\n");
 		return -1;
@@ -555,6 +561,14 @@ static int __init cec_init(void)
 {
 	if (ce_arr.disabled)
 		return -ENODEV;
+
+	/*
+	 * Intel systems may avoid uncorrectable errors
+	 * if pages with corrected errors are aggressively
+	 * taken offline.
+	 */
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL)
+		action_threshold = 2;
 
 	ce_arr.array = (void *)get_zeroed_page(GFP_KERNEL);
 	if (!ce_arr.array) {

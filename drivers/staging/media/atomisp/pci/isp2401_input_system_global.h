@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 /* CSI reveiver has 3 ports. */
@@ -39,15 +30,9 @@
 typedef enum {
 	INPUT_SYSTEM_SOURCE_TYPE_UNDEFINED = 0,
 	INPUT_SYSTEM_SOURCE_TYPE_SENSOR,
-	INPUT_SYSTEM_SOURCE_TYPE_TPG,
 	INPUT_SYSTEM_SOURCE_TYPE_PRBS,
 	N_INPUT_SYSTEM_SOURCE_TYPE
 } input_system_source_type_t;
-
-typedef enum {
-	INPUT_SYSTEM_POLL_ON_WAIT_FOR_FRAME,
-	INPUT_SYSTEM_POLL_ON_CAPTURE_REQUEST,
-} input_system_polling_mode_t;
 
 typedef struct input_system_channel_s input_system_channel_t;
 struct input_system_channel_s {
@@ -111,9 +96,6 @@ struct isp2401_input_system_cfg_s {
 
 	input_system_source_type_t	mode;
 
-	/* ISP2401 */
-	input_system_polling_mode_t	polling_mode;
-
 	bool online;
 	bool raw_packed;
 	s8 linked_isys_stream_id;
@@ -165,10 +147,6 @@ struct virtual_input_system_stream_s {
 	u8 online;
 	s8 linked_isys_stream_id;
 	u8 valid;
-
-	/* ISP2401 */
-	input_system_polling_mode_t	polling_mode;
-	s32 subscr_index;
 };
 
 typedef struct virtual_input_system_stream_cfg_s

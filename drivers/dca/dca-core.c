@@ -17,6 +17,7 @@
 #define DCA_VERSION "1.12.1"
 
 MODULE_VERSION(DCA_VERSION);
+MODULE_DESCRIPTION("Intel Direct Cache Access (DCA) service module");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Intel Corporation");
 
@@ -294,9 +295,7 @@ EXPORT_SYMBOL_GPL(dca3_get_tag);
  */
 u8 dca_get_tag(int cpu)
 {
-	struct device *dev = NULL;
-
-	return dca_common_get_tag(dev, cpu);
+	return dca_common_get_tag(NULL, cpu);
 }
 EXPORT_SYMBOL_GPL(dca_get_tag);
 

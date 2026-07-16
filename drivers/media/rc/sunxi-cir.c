@@ -12,8 +12,10 @@
 
 #include <linux/clk.h>
 #include <linux/interrupt.h>
+#include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <media/rc-core.h>
 
@@ -126,7 +128,7 @@ static irqreturn_t sunxi_ir_irq(int irqno, void *dev_id)
 	}
 
 	if (status & REG_RXSTA_ROI) {
-		ir_raw_event_reset(ir->rc);
+		ir_raw_event_overflow(ir->rc);
 	} else if (status & REG_RXSTA_RPE) {
 		ir_raw_event_set_idle(ir->rc, true);
 		ir_raw_event_handle(ir->rc);
@@ -255,7 +257,6 @@ static int sunxi_ir_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct device_node *dn = dev->of_node;
 	const struct sunxi_ir_quirks *quirks;
-	struct resource *res;
 	struct sunxi_ir *ir;
 	u32 b_clk_freq = SUNXI_IR_BASE_CLK;
 
@@ -301,8 +302,7 @@ static int sunxi_ir_probe(struct platform_device *pdev)
 	dev_dbg(dev, "set base clock frequency to %d Hz.\n", b_clk_freq);
 
 	/* IO */
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	ir->base = devm_ioremap_resource(dev, res);
+	ir->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(ir->base)) {
 		return PTR_ERR(ir->base);
 	}
@@ -366,14 +366,13 @@ exit_free_dev:
 	return ret;
 }
 
-static int sunxi_ir_remove(struct platform_device *pdev)
+static void sunxi_ir_remove(struct platform_device *pdev)
 {
 	struct sunxi_ir *ir = platform_get_drvdata(pdev);
 
 	rc_unregister_device(ir->rc);
+	rc_free_device(ir->rc);
 	sunxi_ir_hw_exit(&pdev->dev);
-
-	return 0;
 }
 
 static void sunxi_ir_shutdown(struct platform_device *pdev)

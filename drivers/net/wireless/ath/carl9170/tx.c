@@ -189,7 +189,7 @@ static void carl9170_tx_accounting_free(struct ar9170 *ar, struct sk_buff *skb)
 
 static int carl9170_alloc_dev_space(struct ar9170 *ar, struct sk_buff *skb)
 {
-	struct _carl9170_tx_superframe *super = (void *) skb->data;
+	struct _carl9170_tx_superframe *super;
 	unsigned int chunks;
 	int cookie = -1;
 
@@ -275,12 +275,13 @@ static void carl9170_tx_release(struct kref *ref)
 	if (WARN_ON_ONCE(!ar))
 		return;
 
-	BUILD_BUG_ON(
-	    offsetof(struct ieee80211_tx_info, status.ack_signal) != 20);
-
-	memset(&txinfo->status.ack_signal, 0,
-	       sizeof(struct ieee80211_tx_info) -
-	       offsetof(struct ieee80211_tx_info, status.ack_signal));
+	/*
+	 * This does not call ieee80211_tx_info_clear_status() because
+	 * carl9170_tx_fill_rateinfo() has filled the rate information
+	 * before we get to this point.
+	 */
+	memset(&txinfo->pad, 0, sizeof(txinfo->pad));
+	memset(&txinfo->rate_driver_data, 0, sizeof(txinfo->rate_driver_data));
 
 	if (atomic_read(&ar->tx_total_queued))
 		ar->tx_schedule = true;
@@ -365,8 +366,7 @@ static void carl9170_tx_shift_bm(struct ar9170 *ar,
 	if (WARN_ON_ONCE(off >= CARL9170_BAW_BITS))
 		return;
 
-	if (!bitmap_empty(tid_info->bitmap, off))
-		off = find_first_bit(tid_info->bitmap, off);
+	off = min(off, find_first_bit(tid_info->bitmap, off));
 
 	tid_info->bsn += off;
 	tid_info->bsn &= 0x0fff;
@@ -1044,8 +1044,9 @@ static int carl9170_tx_prepare(struct ar9170 *ar,
 		if (unlikely(!sta || !cvif))
 			goto err_out;
 
-		factor = min_t(unsigned int, 1u, sta->ht_cap.ampdu_factor);
-		density = sta->ht_cap.ampdu_density;
+		factor = min_t(unsigned int, 1u,
+			       sta->deflink.ht_cap.ampdu_factor);
+		density = sta->deflink.ht_cap.ampdu_density;
 
 		if (density) {
 			/*
@@ -1558,6 +1559,9 @@ static struct carl9170_vif_info *carl9170_pick_beaconing_vif(struct ar9170 *ar)
 					goto out;
 			}
 		} while (ar->beacon_enabled && i--);
+
+		/* no entry found in list */
+		return NULL;
 	}
 
 out:
@@ -1624,7 +1628,7 @@ int carl9170_update_beacon(struct ar9170 *ar, const bool submit)
 		goto out_unlock;
 
 	skb = ieee80211_beacon_get_tim(ar->hw, carl9170_get_vif(cvif),
-		NULL, NULL);
+				       NULL, NULL, 0);
 
 	if (!skb) {
 		err = -ENOMEM;

@@ -32,8 +32,7 @@
 #include <linux/firmware.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 
 #define DRVNAME			"brcmstb-dpfe"
@@ -424,7 +423,7 @@ static void __finalize_command(struct brcmstb_dpfe_priv *priv)
 
 	/*
 	 * It depends on the API version which MBOX register we have to write to
-	 * to signal we are done.
+	 * signal we are done.
 	 */
 	release_mbox = (priv->dpfe_api->version < 2)
 			? REG_TO_HOST_MBOX : REG_TO_DCPU_MBOX;
@@ -434,14 +433,16 @@ static void __finalize_command(struct brcmstb_dpfe_priv *priv)
 static int __send_command(struct brcmstb_dpfe_priv *priv, unsigned int cmd,
 			  u32 result[])
 {
-	const u32 *msg = priv->dpfe_api->command[cmd];
 	void __iomem *regs = priv->regs;
 	unsigned int i, chksum, chksum_idx;
+	const u32 *msg;
 	int ret = 0;
 	u32 resp;
 
 	if (cmd >= DPFE_CMD_MAX)
 		return -1;
+
+	msg = priv->dpfe_api->command[cmd];
 
 	mutex_lock(&priv->lock);
 
@@ -857,7 +858,6 @@ static int brcmstb_dpfe_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct brcmstb_dpfe_priv *priv;
-	struct resource *res;
 	int ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
@@ -869,22 +869,19 @@ static int brcmstb_dpfe_probe(struct platform_device *pdev)
 	mutex_init(&priv->lock);
 	platform_set_drvdata(pdev, priv);
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "dpfe-cpu");
-	priv->regs = devm_ioremap_resource(dev, res);
+	priv->regs = devm_platform_ioremap_resource_byname(pdev, "dpfe-cpu");
 	if (IS_ERR(priv->regs)) {
 		dev_err(dev, "couldn't map DCPU registers\n");
 		return -ENODEV;
 	}
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "dpfe-dmem");
-	priv->dmem = devm_ioremap_resource(dev, res);
+	priv->dmem = devm_platform_ioremap_resource_byname(pdev, "dpfe-dmem");
 	if (IS_ERR(priv->dmem)) {
 		dev_err(dev, "Couldn't map DCPU data memory\n");
 		return -ENOENT;
 	}
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "dpfe-imem");
-	priv->imem = devm_ioremap_resource(dev, res);
+	priv->imem = devm_platform_ioremap_resource_byname(pdev, "dpfe-imem");
 	if (IS_ERR(priv->imem)) {
 		dev_err(dev, "Couldn't map DCPU instruction memory\n");
 		return -ENOENT;
@@ -912,13 +909,11 @@ static int brcmstb_dpfe_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int brcmstb_dpfe_remove(struct platform_device *pdev)
+static void brcmstb_dpfe_remove(struct platform_device *pdev)
 {
 	struct brcmstb_dpfe_priv *priv = dev_get_drvdata(&pdev->dev);
 
 	sysfs_remove_groups(&pdev->dev.kobj, priv->dpfe_api->sysfs_attrs);
-
-	return 0;
 }
 
 static const struct of_device_id brcmstb_dpfe_of_match[] = {
@@ -939,7 +934,7 @@ static struct platform_driver brcmstb_dpfe_driver = {
 		.of_match_table = brcmstb_dpfe_of_match,
 	},
 	.probe = brcmstb_dpfe_probe,
-	.remove	= brcmstb_dpfe_remove,
+	.remove = brcmstb_dpfe_remove,
 	.resume = brcmstb_dpfe_resume,
 };
 

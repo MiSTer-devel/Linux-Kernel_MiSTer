@@ -9,6 +9,7 @@
 #include <linux/module.h>
 #include <sound/core.h>
 #include "seq_clientmgr.h"
+#include "seq_memory.h"
 #include <sound/initval.h>
 #include <sound/asoundef.h>
 
@@ -58,6 +59,12 @@ MODULE_PARM_DESC(ports, "number of ports to be created");
 module_param(duplex, bool, 0444);
 MODULE_PARM_DESC(duplex, "create DUPLEX ports");
 
+#if IS_ENABLED(CONFIG_SND_SEQ_UMP)
+static int ump;
+module_param(ump, int, 0444);
+MODULE_PARM_DESC(ump, "UMP conversion (0: no convert, 1: MIDI 1.0, 2: MIDI 2.0)");
+#endif
+
 struct snd_seq_dummy_port {
 	int client;
 	int port;
@@ -75,19 +82,21 @@ dummy_input(struct snd_seq_event *ev, int direct, void *private_data,
 	    int atomic, int hop)
 {
 	struct snd_seq_dummy_port *p;
-	struct snd_seq_event tmpev;
+	union __snd_seq_event tmpev;
+	size_t size;
 
 	p = private_data;
 	if (ev->source.client == SNDRV_SEQ_CLIENT_SYSTEM ||
 	    ev->type == SNDRV_SEQ_EVENT_KERNEL_ERROR)
 		return 0; /* ignore system messages */
-	tmpev = *ev;
+	size = snd_seq_event_packet_size(ev);
+	memcpy(&tmpev, ev, size);
 	if (p->duplex)
-		tmpev.source.port = p->connect;
+		tmpev.legacy.source.port = p->connect;
 	else
-		tmpev.source.port = p->port;
-	tmpev.dest.client = SNDRV_SEQ_ADDRESS_SUBSCRIBERS;
-	return snd_seq_kernel_client_dispatch(p->client, &tmpev, atomic, hop);
+		tmpev.legacy.source.port = p->port;
+	tmpev.legacy.dest.client = SNDRV_SEQ_ADDRESS_SUBSCRIBERS;
+	return snd_seq_kernel_client_dispatch(p->client, &tmpev.legacy, atomic, hop);
 }
 
 /*
@@ -127,6 +136,7 @@ create_port(int idx, int type)
 	pinfo.capability |= SNDRV_SEQ_PORT_CAP_WRITE | SNDRV_SEQ_PORT_CAP_SUBS_WRITE;
 	if (duplex)
 		pinfo.capability |= SNDRV_SEQ_PORT_CAP_DUPLEX;
+	pinfo.direction = SNDRV_SEQ_PORT_DIR_BIDIRECTION;
 	pinfo.type = SNDRV_SEQ_PORT_TYPE_MIDI_GENERIC
 		| SNDRV_SEQ_PORT_TYPE_SOFTWARE
 		| SNDRV_SEQ_PORT_TYPE_PORT;
@@ -151,6 +161,9 @@ static int __init
 register_client(void)
 {
 	struct snd_seq_dummy_port *rec1, *rec2;
+#if IS_ENABLED(CONFIG_SND_SEQ_UMP)
+	struct snd_seq_client *client;
+#endif
 	int i;
 
 	if (ports < 1) {
@@ -163,6 +176,25 @@ register_client(void)
 						 "Midi Through");
 	if (my_client < 0)
 		return my_client;
+
+#if IS_ENABLED(CONFIG_SND_SEQ_UMP)
+	client = snd_seq_kernel_client_get(my_client);
+	if (!client)
+		return -EINVAL;
+	switch (ump) {
+	case 1:
+		client->midi_version = SNDRV_SEQ_CLIENT_UMP_MIDI_1_0;
+		break;
+	case 2:
+		client->midi_version = SNDRV_SEQ_CLIENT_UMP_MIDI_2_0;
+		break;
+	default:
+		/* don't convert events but just pass-through */
+		client->filter = SNDRV_SEQ_FILTER_NO_CONVERT;
+		break;
+	}
+	snd_seq_kernel_client_put(client);
+#endif
 
 	/* create ports */
 	for (i = 0; i < ports; i++) {

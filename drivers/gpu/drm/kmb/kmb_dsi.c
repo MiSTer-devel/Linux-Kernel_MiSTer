@@ -5,6 +5,7 @@
 
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/of.h>
 #include <linux/of_graph.h>
 #include <linux/mfd/syscon.h>
 #include <linux/platform_device.h>
@@ -817,7 +818,7 @@ static void test_mode_send(struct kmb_dsi *kmb_dsi, u32 dphy_no,
 	}
 }
 
-static inline void
+static inline __maybe_unused void
 	set_test_mode_src_osc_freq_target_low_bits(struct kmb_dsi *kmb_dsi,
 						   u32 dphy_no,
 						   u32 freq)
@@ -829,7 +830,7 @@ static inline void
 		       (freq & 0x7f));
 }
 
-static inline void
+static inline __maybe_unused void
 	set_test_mode_src_osc_freq_target_hi_bits(struct kmb_dsi *kmb_dsi,
 						  u32 dphy_no,
 						  u32 freq)

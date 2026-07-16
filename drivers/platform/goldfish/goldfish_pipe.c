@@ -61,7 +61,6 @@
 #include <linux/io.h>
 #include <linux/dma-mapping.h>
 #include <linux/mm.h>
-#include <linux/acpi.h>
 #include <linux/bug.h>
 #include "goldfish_pipe_qemu.h"
 
@@ -896,11 +895,9 @@ static int goldfish_pipe_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	r = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (!r)
-		return -EINVAL;
-
-	dev->irq = r->start;
+	dev->irq = platform_get_irq(pdev, 0);
+	if (dev->irq < 0)
+		return dev->irq;
 
 	/*
 	 * Exchange the versions with the host device
@@ -917,12 +914,11 @@ static int goldfish_pipe_probe(struct platform_device *pdev)
 	return goldfish_pipe_device_init(pdev, dev);
 }
 
-static int goldfish_pipe_remove(struct platform_device *pdev)
+static void goldfish_pipe_remove(struct platform_device *pdev)
 {
 	struct goldfish_pipe_dev *dev = platform_get_drvdata(pdev);
 
 	goldfish_pipe_device_deinit(pdev, dev);
-	return 0;
 }
 
 static const struct acpi_device_id goldfish_pipe_acpi_match[] = {
@@ -943,10 +939,11 @@ static struct platform_driver goldfish_pipe_driver = {
 	.driver = {
 		.name = "goldfish_pipe",
 		.of_match_table = goldfish_pipe_of_match,
-		.acpi_match_table = ACPI_PTR(goldfish_pipe_acpi_match),
+		.acpi_match_table = goldfish_pipe_acpi_match,
 	}
 };
 
 module_platform_driver(goldfish_pipe_driver);
 MODULE_AUTHOR("David Turner <digit@google.com>");
+MODULE_DESCRIPTION("Goldfish virtual device for QEMU pipes");
 MODULE_LICENSE("GPL v2");

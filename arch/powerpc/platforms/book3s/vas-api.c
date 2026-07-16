@@ -4,6 +4,8 @@
  * Copyright (C) 2019 Haren Myneni, IBM Corp
  */
 
+#define pr_fmt(fmt)	"vas-api: " fmt
+
 #include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/cdev.h>
@@ -30,7 +32,7 @@
  *
  * where "vas_copy" and "vas_paste" are defined in copy-paste.h.
  * copy/paste returns to the user space directly. So refer NX hardware
- * documententation for exact copy/paste usage and completion / error
+ * documentation for exact copy/paste usage and completion / error
  * conditions.
  */
 
@@ -53,7 +55,7 @@ struct coproc_instance {
 	struct vas_window *txwin;
 };
 
-static char *coproc_devnode(struct device *dev, umode_t *mode)
+static char *coproc_devnode(const struct device *dev, umode_t *mode)
 {
 	return kasprintf(GFP_KERNEL, "crypto/%s", dev_name(dev));
 }
@@ -78,7 +80,7 @@ int get_vas_user_win_ref(struct vas_user_win_ref *task_ref)
 	task_ref->mm = get_task_mm(current);
 	if (!task_ref->mm) {
 		put_pid(task_ref->pid);
-		pr_err("VAS: pid(%d): mm_struct is not found\n",
+		pr_err("pid(%d): mm_struct is not found\n",
 				current->pid);
 		return -EPERM;
 	}
@@ -235,8 +237,7 @@ void vas_update_csb(struct coprocessor_request_block *crb,
 	rc = kill_pid_info(SIGSEGV, &info, pid);
 	rcu_read_unlock();
 
-	pr_devel("%s(): pid %d kill_proc_info() rc %d\n", __func__,
-			pid_vnr(pid), rc);
+	pr_devel("pid %d kill_proc_info() rc %d\n", pid_vnr(pid), rc);
 }
 
 void vas_dump_crb(struct coprocessor_request_block *crb)
@@ -294,7 +295,7 @@ static int coproc_ioc_tx_win_open(struct file *fp, unsigned long arg)
 
 	rc = copy_from_user(&uattr, uptr, sizeof(uattr));
 	if (rc) {
-		pr_err("%s(): copy_from_user() returns %d\n", __func__, rc);
+		pr_err("copy_from_user() returns %d\n", rc);
 		return -EFAULT;
 	}
 
@@ -303,7 +304,7 @@ static int coproc_ioc_tx_win_open(struct file *fp, unsigned long arg)
 		return -EINVAL;
 	}
 
-	if (!cp_inst->coproc->vops && !cp_inst->coproc->vops->open_win) {
+	if (!cp_inst->coproc->vops || !cp_inst->coproc->vops->open_win) {
 		pr_err("VAS API is not registered\n");
 		return -EACCES;
 	}
@@ -311,11 +312,12 @@ static int coproc_ioc_tx_win_open(struct file *fp, unsigned long arg)
 	txwin = cp_inst->coproc->vops->open_win(uattr.vas_id, uattr.flags,
 						cp_inst->coproc->cop_type);
 	if (IS_ERR(txwin)) {
-		pr_err("%s() VAS window open failed, %ld\n", __func__,
+		pr_err_ratelimited("VAS window open failed rc=%ld\n",
 				PTR_ERR(txwin));
 		return PTR_ERR(txwin);
 	}
 
+	mutex_init(&txwin->task_ref.mmap_mutex);
 	cp_inst->txwin = txwin;
 
 	return 0;
@@ -350,6 +352,156 @@ static int coproc_release(struct inode *inode, struct file *fp)
 	return 0;
 }
 
+/*
+ * If the executed instruction that caused the fault was a paste, then
+ * clear regs CR0[EQ], advance NIP, and return 0. Else return error code.
+ */
+static int do_fail_paste(void)
+{
+	struct pt_regs *regs = current->thread.regs;
+	u32 instword;
+
+	if (WARN_ON_ONCE(!regs))
+		return -EINVAL;
+
+	if (WARN_ON_ONCE(!user_mode(regs)))
+		return -EINVAL;
+
+	/*
+	 * If we couldn't translate the instruction, the driver should
+	 * return success without handling the fault, it will be retried
+	 * or the instruction fetch will fault.
+	 */
+	if (get_user(instword, (u32 __user *)(regs->nip)))
+		return -EAGAIN;
+
+	/*
+	 * Not a paste instruction, driver may fail the fault.
+	 */
+	if ((instword & PPC_INST_PASTE_MASK) != PPC_INST_PASTE)
+		return -ENOENT;
+
+	regs->ccr &= ~0xe0000000;	/* Clear CR0[0-2] to fail paste */
+	regs_add_return_ip(regs, 4);	/* Emulate the paste */
+
+	return 0;
+}
+
+/*
+ * This fault handler is invoked when the core generates page fault on
+ * the paste address. Happens if the kernel closes window in hypervisor
+ * (on pseries) due to lost credit or the paste address is not mapped.
+ */
+static vm_fault_t vas_mmap_fault(struct vm_fault *vmf)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	struct file *fp = vma->vm_file;
+	struct coproc_instance *cp_inst = fp->private_data;
+	struct vas_window *txwin;
+	vm_fault_t fault;
+	u64 paste_addr;
+	int ret;
+
+	/*
+	 * window is not opened. Shouldn't expect this error.
+	 */
+	if (!cp_inst || !cp_inst->txwin) {
+		pr_err("Unexpected fault on paste address with TX window closed\n");
+		return VM_FAULT_SIGBUS;
+	}
+
+	txwin = cp_inst->txwin;
+	/*
+	 * When the LPAR lost credits due to core removal or during
+	 * migration, invalidate the existing mapping for the current
+	 * paste addresses and set windows in-active (zap_vma_pages in
+	 * reconfig_close_windows()).
+	 * New mapping will be done later after migration or new credits
+	 * available. So continue to receive faults if the user space
+	 * issue NX request.
+	 */
+	if (txwin->task_ref.vma != vmf->vma) {
+		pr_err("No previous mapping with paste address\n");
+		return VM_FAULT_SIGBUS;
+	}
+
+	/*
+	 * The window may be inactive due to lost credit (Ex: core
+	 * removal with DLPAR). If the window is active again when
+	 * the credit is available, map the new paste address at the
+	 * window virtual address.
+	 */
+	scoped_guard(mutex, &txwin->task_ref.mmap_mutex) {
+		if (txwin->status == VAS_WIN_ACTIVE) {
+			paste_addr = cp_inst->coproc->vops->paste_addr(txwin);
+			if (paste_addr) {
+				fault = vmf_insert_pfn(vma, vma->vm_start,
+						(paste_addr >> PAGE_SHIFT));
+				return fault;
+			}
+		}
+	}
+
+	/*
+	 * Received this fault due to closing the actual window.
+	 * It can happen during migration or lost credits.
+	 * Since no mapping, return the paste instruction failure
+	 * to the user space.
+	 */
+	ret = do_fail_paste();
+	/*
+	 * The user space can retry several times until success (needed
+	 * for migration) or should fallback to SW compression or
+	 * manage with the existing open windows if available.
+	 * Looking at sysfs interface, it can determine whether these
+	 * failures are coming during migration or core removal:
+	 * nr_used_credits > nr_total_credits when lost credits
+	 */
+	if (!ret || (ret == -EAGAIN))
+		return VM_FAULT_NOPAGE;
+
+	return VM_FAULT_SIGBUS;
+}
+
+/*
+ * During mmap() paste address, mapping VMA is saved in VAS window
+ * struct which is used to unmap during migration if the window is
+ * still open. But the user space can remove this mapping with
+ * munmap() before closing the window and the VMA address will
+ * be invalid. Set VAS window VMA to NULL in this function which
+ * is called before VMA free.
+ */
+static void vas_mmap_close(struct vm_area_struct *vma)
+{
+	struct file *fp = vma->vm_file;
+	struct coproc_instance *cp_inst = fp->private_data;
+	struct vas_window *txwin;
+
+	/* Should not happen */
+	if (!cp_inst || !cp_inst->txwin) {
+		pr_err("No attached VAS window for the paste address mmap\n");
+		return;
+	}
+
+	txwin = cp_inst->txwin;
+	/*
+	 * task_ref.vma is set in coproc_mmap() during mmap paste
+	 * address. So it has to be the same VMA that is getting freed.
+	 */
+	if (WARN_ON(txwin->task_ref.vma != vma)) {
+		pr_err("Invalid paste address mmaping\n");
+		return;
+	}
+
+	scoped_guard(mutex, &txwin->task_ref.mmap_mutex)
+		txwin->task_ref.vma = NULL;
+}
+
+static const struct vm_operations_struct vas_vm_ops = {
+	.close = vas_mmap_close,
+	.fault = vas_mmap_fault,
+};
+
 static int coproc_mmap(struct file *fp, struct vm_area_struct *vma)
 {
 	struct coproc_instance *cp_inst = fp->private_data;
@@ -362,32 +514,58 @@ static int coproc_mmap(struct file *fp, struct vm_area_struct *vma)
 	txwin = cp_inst->txwin;
 
 	if ((vma->vm_end - vma->vm_start) > PAGE_SIZE) {
-		pr_debug("%s(): size 0x%zx, PAGE_SIZE 0x%zx\n", __func__,
+		pr_debug("size 0x%zx, PAGE_SIZE 0x%zx\n",
 				(vma->vm_end - vma->vm_start), PAGE_SIZE);
+		return -EINVAL;
+	}
+
+	/*
+	 * Map complete page to the paste address. So the user
+	 * space should pass 0ULL to the offset parameter.
+	 */
+	if (vma->vm_pgoff) {
+		pr_debug("Page offset unsupported to map paste address\n");
 		return -EINVAL;
 	}
 
 	/* Ensure instance has an open send window */
 	if (!txwin) {
-		pr_err("%s(): No send window open?\n", __func__);
+		pr_err("No send window open?\n");
 		return -EINVAL;
 	}
 
-	if (!cp_inst->coproc->vops && !cp_inst->coproc->vops->paste_addr) {
-		pr_err("%s(): VAS API is not registered\n", __func__);
+	if (!cp_inst->coproc->vops || !cp_inst->coproc->vops->paste_addr) {
+		pr_err("VAS API is not registered\n");
+		return -EACCES;
+	}
+
+	/*
+	 * The initial mmap is done after the window is opened
+	 * with ioctl. But before mmap(), this window can be closed in
+	 * the hypervisor due to lost credit (core removal on pseries).
+	 * So if the window is not active, return mmap() failure with
+	 * -EACCES and expects the user space reissue mmap() when it
+	 * is active again or open new window when the credit is available.
+	 * mmap_mutex protects the paste address mmap() with DLPAR
+	 * close/open event and allows mmap() only when the window is
+	 * active.
+	 */
+	guard(mutex)(&txwin->task_ref.mmap_mutex);
+	if (txwin->status != VAS_WIN_ACTIVE) {
+		pr_err("Window is not active\n");
 		return -EACCES;
 	}
 
 	paste_addr = cp_inst->coproc->vops->paste_addr(txwin);
 	if (!paste_addr) {
-		pr_err("%s(): Window paste address failed\n", __func__);
+		pr_err("Window paste address failed\n");
 		return -EINVAL;
 	}
 
 	pfn = paste_addr >> PAGE_SHIFT;
 
 	/* flags, page_prot from cxl_mmap(), except we want cachable */
-	vma->vm_flags |= VM_IO | VM_PFNMAP;
+	vm_flags_set(vma, VM_IO | VM_PFNMAP);
 	vma->vm_page_prot = pgprot_cached(vma->vm_page_prot);
 
 	prot = __pgprot(pgprot_val(vma->vm_page_prot) | _PAGE_DIRTY);
@@ -395,8 +573,11 @@ static int coproc_mmap(struct file *fp, struct vm_area_struct *vma)
 	rc = remap_pfn_range(vma, vma->vm_start, pfn + vma->vm_pgoff,
 			vma->vm_end - vma->vm_start, prot);
 
-	pr_devel("%s(): paste addr %llx at %lx, rc %d\n", __func__,
-			paste_addr, vma->vm_start, rc);
+	pr_devel("paste addr %llx at %lx, rc %d\n", paste_addr,
+			vma->vm_start, rc);
+
+	txwin->task_ref.vma = vma;
+	vma->vm_ops = &vas_vm_ops;
 
 	return rc;
 }
@@ -438,7 +619,7 @@ int vas_register_coproc_api(struct module *mod, enum vas_cop_type cop_type,
 	pr_devel("%s device allocated, dev [%i,%i]\n", name,
 			MAJOR(coproc_device.devt), MINOR(coproc_device.devt));
 
-	coproc_device.class = class_create(mod, name);
+	coproc_device.class = class_create(name);
 	if (IS_ERR(coproc_device.class)) {
 		rc = PTR_ERR(coproc_device.class);
 		pr_err("Unable to create %s class %d\n", name, rc);
@@ -466,8 +647,7 @@ int vas_register_coproc_api(struct module *mod, enum vas_cop_type cop_type,
 		goto err;
 	}
 
-	pr_devel("%s: Added dev [%d,%d]\n", __func__, MAJOR(devno),
-			MINOR(devno));
+	pr_devel("Added dev [%d,%d]\n", MAJOR(devno), MINOR(devno));
 
 	return 0;
 

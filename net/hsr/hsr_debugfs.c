@@ -1,18 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * debugfs code for HSR & PRP
  * Copyright (C) 2019 Texas Instruments Incorporated
  *
  * Author(s):
  *	Murali Karicheri <m-karicheri2@ti.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 #include <linux/module.h>
 #include <linux/errno.h>
@@ -65,14 +57,11 @@ DEFINE_SHOW_ATTRIBUTE(hsr_node_table);
 void hsr_debugfs_rename(struct net_device *dev)
 {
 	struct hsr_priv *priv = netdev_priv(dev);
-	struct dentry *d;
+	int err;
 
-	d = debugfs_rename(hsr_debugfs_root_dir, priv->node_tbl_root,
-			   hsr_debugfs_root_dir, dev->name);
-	if (IS_ERR(d))
+	err = debugfs_change_name(priv->node_tbl_root, "%s", dev->name);
+	if (err)
 		netdev_warn(dev, "failed to rename\n");
-	else
-		priv->node_tbl_root = d;
 }
 
 /* hsr_debugfs_init - create hsr node_table file for dumping

@@ -6,7 +6,11 @@
 
 /******************* Firmware file definitions *******************/
 
-#define IMGU_FW_NAME			"intel/ipu3-fw.bin"
+#define IMGU_FW_NAME		"intel/ipu3-fw.bin"
+#define IMGU_FW_NAME_20161208	\
+	"intel/irci_irci_ecr-master_20161208_0213_20170112_1500.bin"
+#define IMGU_FW_NAME_IPU_20161208	\
+	"intel/ipu/irci_irci_ecr-master_20161208_0213_20170112_1500.bin"
 
 typedef u32 imgu_fw_ptr;
 
@@ -171,7 +175,7 @@ struct imgu_fw_bi_file_h {
 
 struct imgu_fw_header {
 	struct imgu_fw_bi_file_h file_header;
-	struct imgu_fw_info binary_header[1];	/* binary_nr items */
+	struct imgu_fw_info binary_header[];	/* binary_nr items */
 };
 
 /******************* Firmware functions *******************/

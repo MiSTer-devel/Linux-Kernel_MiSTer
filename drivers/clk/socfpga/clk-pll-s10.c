@@ -1,4 +1,4 @@
-// SPDX-License-Identifier:	GPL-2.0
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2017, Intel Corporation
  */
@@ -83,9 +83,9 @@ static unsigned long clk_pll_recalc_rate(struct clk_hw *hwclk,
 					 unsigned long parent_rate)
 {
 	struct socfpga_pll *socfpgaclk = to_socfpga_clk(hwclk);
-	unsigned long mdiv;
-	unsigned long refdiv;
-	unsigned long reg;
+	u32 mdiv;
+	u32 refdiv;
+	u32 reg;
 	unsigned long long vco_freq;
 
 	/* read VCO1 reg for numerator and denominator */
@@ -113,7 +113,7 @@ static unsigned long clk_boot_clk_recalc_rate(struct clk_hw *hwclk,
 		SWCTRLBTCLKSEL_MASK) >>
 		SWCTRLBTCLKSEL_SHIFT);
 	div += 1;
-	return parent_rate /= div;
+	return parent_rate / div;
 }
 
 

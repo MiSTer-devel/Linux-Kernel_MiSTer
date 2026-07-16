@@ -9,11 +9,13 @@
 #include <linux/bsearch.h>
 #include <linux/clk-provider.h>
 #include <linux/err.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
+#include <linux/firmware/imx/svc/rm.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
+#include <xen/xen.h>
 
 #include "clk-scu.h"
 
@@ -251,21 +253,20 @@ static unsigned long clk_scu_recalc_rate(struct clk_hw *hw,
 }
 
 /*
- * clk_scu_round_rate - Round clock rate for a SCU clock
+ * clk_scu_determine_rate - Returns the closest rate for a SCU clock
  * @hw: clock to round rate for
- * @rate: rate to round
- * @parent_rate: parent rate provided by common clock framework, not used
+ * @req: clock rate request
  *
- * Returns the current clock rate, or zero in failure.
+ * Returns 0 on success, a negative error on failure
  */
-static long clk_scu_round_rate(struct clk_hw *hw, unsigned long rate,
-			       unsigned long *parent_rate)
+static int clk_scu_determine_rate(struct clk_hw *hw,
+				  struct clk_rate_request *req)
 {
 	/*
 	 * Assume we support all the requested rate and let the SCU firmware
 	 * to handle the left work
 	 */
-	return rate;
+	return 0;
 }
 
 static int clk_scu_atf_set_cpu_rate(struct clk_hw *hw, unsigned long rate,
@@ -425,7 +426,7 @@ static void clk_scu_unprepare(struct clk_hw *hw)
 
 static const struct clk_ops clk_scu_ops = {
 	.recalc_rate = clk_scu_recalc_rate,
-	.round_rate = clk_scu_round_rate,
+	.determine_rate = clk_scu_determine_rate,
 	.set_rate = clk_scu_set_rate,
 	.get_parent = clk_scu_get_parent,
 	.set_parent = clk_scu_set_parent,
@@ -435,7 +436,7 @@ static const struct clk_ops clk_scu_ops = {
 
 static const struct clk_ops clk_scu_cpu_ops = {
 	.recalc_rate = clk_scu_recalc_rate,
-	.round_rate = clk_scu_round_rate,
+	.determine_rate = clk_scu_determine_rate,
 	.set_rate = clk_scu_atf_set_cpu_rate,
 	.prepare = clk_scu_prepare,
 	.unprepare = clk_scu_unprepare,
@@ -443,7 +444,7 @@ static const struct clk_ops clk_scu_cpu_ops = {
 
 static const struct clk_ops clk_scu_pi_ops = {
 	.recalc_rate = clk_scu_recalc_rate,
-	.round_rate  = clk_scu_round_rate,
+	.determine_rate = clk_scu_determine_rate,
 	.set_rate    = clk_scu_set_rate,
 };
 
@@ -528,7 +529,7 @@ static int imx_clk_scu_probe(struct platform_device *pdev)
 		pm_runtime_use_autosuspend(&pdev->dev);
 		pm_runtime_enable(dev);
 
-		ret = pm_runtime_get_sync(dev);
+		ret = pm_runtime_resume_and_get(dev);
 		if (ret) {
 			pm_genpd_remove_device(dev);
 			pm_runtime_disable(dev);
@@ -548,7 +549,6 @@ static int imx_clk_scu_probe(struct platform_device *pdev)
 
 	if (!((clk->rsrc == IMX_SC_R_A35) || (clk->rsrc == IMX_SC_R_A53) ||
 	    (clk->rsrc == IMX_SC_R_A72))) {
-		pm_runtime_mark_last_busy(&pdev->dev);
 		pm_runtime_put_autosuspend(&pdev->dev);
 	}
 
@@ -577,7 +577,7 @@ static int __maybe_unused imx_clk_scu_suspend(struct device *dev)
 		clk->rate = clk_scu_recalc_rate(&clk->hw, 0);
 	else
 		clk->rate = clk_hw_get_rate(&clk->hw);
-	clk->is_enabled = clk_hw_is_enabled(&clk->hw);
+	clk->is_enabled = clk_hw_is_prepared(&clk->hw);
 
 	if (clk->parent)
 		dev_dbg(dev, "save parent %s idx %u\n", clk_hw_get_name(clk->parent),
@@ -653,6 +653,18 @@ static int imx_clk_scu_attach_pd(struct device *dev, u32 rsrc_id)
 	return of_genpd_add_device(&genpdspec, dev);
 }
 
+static bool imx_clk_is_resource_owned(u32 rsrc)
+{
+	/*
+	 * A-core resources are special. SCFW reports they are not "owned" by
+	 * current partition but linux can still adjust them for cpufreq.
+	 */
+	if (rsrc == IMX_SC_R_A53 || rsrc == IMX_SC_R_A72 || rsrc == IMX_SC_R_A35)
+		return true;
+
+	return imx_sc_rm_is_resource_owned(ccm_ipc_handle, rsrc);
+}
+
 struct clk_hw *imx_clk_scu_alloc_dev(const char *name,
 				     const char * const *parents,
 				     int num_parents, u32 rsrc_id, u8 clk_type)
@@ -670,6 +682,9 @@ struct clk_hw *imx_clk_scu_alloc_dev(const char *name,
 	if (!imx_scu_clk_is_valid(rsrc_id))
 		return ERR_PTR(-EINVAL);
 
+	if (!imx_clk_is_resource_owned(rsrc_id))
+		return NULL;
+
 	pdev = platform_device_alloc(name, PLATFORM_DEVID_NONE);
 	if (!pdev) {
 		pr_err("%s: failed to allocate scu clk dev rsrc %d type %d\n",
@@ -678,31 +693,37 @@ struct clk_hw *imx_clk_scu_alloc_dev(const char *name,
 	}
 
 	ret = platform_device_add_data(pdev, &clk, sizeof(clk));
-	if (ret) {
-		platform_device_put(pdev);
-		return ERR_PTR(ret);
-	}
+	if (ret)
+		goto put_device;
 
-	pdev->driver_override = "imx-scu-clk";
+	ret = device_set_driver_override(&pdev->dev, "imx-scu-clk");
+	if (ret)
+		goto put_device;
 
 	ret = imx_clk_scu_attach_pd(&pdev->dev, rsrc_id);
 	if (ret)
 		pr_warn("%s: failed to attached the power domain %d\n",
 			name, ret);
 
-	platform_device_add(pdev);
+	ret = platform_device_add(pdev);
+	if (ret)
+		goto put_device;
 
-	/* For API backwards compatiblilty, simply return NULL for success */
+	/* For API backwards compatibility, simply return NULL for success */
 	return NULL;
+
+put_device:
+	platform_device_put(pdev);
+	return ERR_PTR(ret);
 }
 
 void imx_clk_scu_unregister(void)
 {
-	struct imx_scu_clk_node *clk;
+	struct imx_scu_clk_node *clk, *n;
 	int i;
 
 	for (i = 0; i < IMX_SC_R_LAST; i++) {
-		list_for_each_entry(clk, &imx_scu_clks[i], node) {
+		list_for_each_entry_safe(clk, n, &imx_scu_clks[i], node) {
 			clk_hw_unregister(clk->hw);
 			kfree(clk);
 		}
@@ -725,15 +746,15 @@ static unsigned long clk_gpr_div_scu_recalc_rate(struct clk_hw *hw,
 	return err ? 0 : rate;
 }
 
-static long clk_gpr_div_scu_round_rate(struct clk_hw *hw, unsigned long rate,
-				   unsigned long *prate)
+static int clk_gpr_div_scu_determine_rate(struct clk_hw *hw,
+					  struct clk_rate_request *req)
 {
-	if (rate < *prate)
-		rate = *prate / 2;
+	if (req->rate < req->best_parent_rate)
+		req->rate = req->best_parent_rate / 2;
 	else
-		rate = *prate;
+		req->rate = req->best_parent_rate;
 
-	return rate;
+	return 0;
 }
 
 static int clk_gpr_div_scu_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -752,7 +773,7 @@ static int clk_gpr_div_scu_set_rate(struct clk_hw *hw, unsigned long rate,
 
 static const struct clk_ops clk_gpr_div_scu_ops = {
 	.recalc_rate = clk_gpr_div_scu_recalc_rate,
-	.round_rate = clk_gpr_div_scu_round_rate,
+	.determine_rate = clk_gpr_div_scu_determine_rate,
 	.set_rate = clk_gpr_div_scu_set_rate,
 };
 
@@ -776,6 +797,7 @@ static int clk_gpr_mux_scu_set_parent(struct clk_hw *hw, u8 index)
 }
 
 static const struct clk_ops clk_gpr_mux_scu_ops = {
+	.determine_rate = clk_hw_determine_rate_no_reparent,
 	.get_parent = clk_gpr_mux_scu_get_parent,
 	.set_parent = clk_gpr_mux_scu_set_parent,
 };
@@ -837,8 +859,15 @@ struct clk_hw *__imx_clk_gpr_scu(const char *name, const char * const *parent_na
 	if (!clk_node)
 		return ERR_PTR(-ENOMEM);
 
-	if (!imx_scu_clk_is_valid(rsrc_id))
+	if (!imx_scu_clk_is_valid(rsrc_id)) {
+		kfree(clk_node);
 		return ERR_PTR(-EINVAL);
+	}
+
+	if (!imx_clk_is_resource_owned(rsrc_id)) {
+		kfree(clk_node);
+		return NULL;
+	}
 
 	clk = kzalloc(sizeof(*clk), GFP_KERNEL);
 	if (!clk) {

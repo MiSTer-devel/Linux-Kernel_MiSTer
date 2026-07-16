@@ -19,13 +19,19 @@
 
 #include "sysfs.h"
 
+static struct kobject *sysfs_file_kobj(struct kernfs_node *kn)
+{
+	guard(rcu)();
+	return rcu_dereference(kn->__parent)->priv;
+}
+
 /*
  * Determine ktype->sysfs_ops for the given kernfs_node.  This function
  * must be called while holding an active reference.
  */
 static const struct sysfs_ops *sysfs_file_ops(struct kernfs_node *kn)
 {
-	struct kobject *kobj = kn->parent->priv;
+	struct kobject *kobj = sysfs_file_kobj(kn);
 
 	if (kn->flags & KERNFS_LOCKDEP)
 		lockdep_assert_held(kn);
@@ -40,10 +46,13 @@ static const struct sysfs_ops *sysfs_file_ops(struct kernfs_node *kn)
 static int sysfs_kf_seq_show(struct seq_file *sf, void *v)
 {
 	struct kernfs_open_file *of = sf->private;
-	struct kobject *kobj = of->kn->parent->priv;
+	struct kobject *kobj = sysfs_file_kobj(of->kn);
 	const struct sysfs_ops *ops = sysfs_file_ops(of->kn);
 	ssize_t count;
 	char *buf;
+
+	if (WARN_ON_ONCE(!ops->show))
+		return -EINVAL;
 
 	/* acquire buffer and ensure that it's >= PAGE_SIZE and clear */
 	count = seq_get_buf(sf, &buf);
@@ -53,15 +62,9 @@ static int sysfs_kf_seq_show(struct seq_file *sf, void *v)
 	}
 	memset(buf, 0, PAGE_SIZE);
 
-	/*
-	 * Invoke show().  Control may reach here via seq file lseek even
-	 * if @ops->show() isn't implemented.
-	 */
-	if (ops->show) {
-		count = ops->show(kobj, of->kn->priv, buf);
-		if (count < 0)
-			return count;
-	}
+	count = ops->show(kobj, of->kn->priv, buf);
+	if (count < 0)
+		return count;
 
 	/*
 	 * The code works fine with PAGE_SIZE return but it's likely to
@@ -80,8 +83,8 @@ static int sysfs_kf_seq_show(struct seq_file *sf, void *v)
 static ssize_t sysfs_kf_bin_read(struct kernfs_open_file *of, char *buf,
 				 size_t count, loff_t pos)
 {
-	struct bin_attribute *battr = of->kn->priv;
-	struct kobject *kobj = of->kn->parent->priv;
+	const struct bin_attribute *battr = of->kn->priv;
+	struct kobject *kobj = sysfs_file_kobj(of->kn);
 	loff_t size = file_inode(of->file)->i_size;
 
 	if (!count)
@@ -105,7 +108,7 @@ static ssize_t sysfs_kf_read(struct kernfs_open_file *of, char *buf,
 			     size_t count, loff_t pos)
 {
 	const struct sysfs_ops *ops = sysfs_file_ops(of->kn);
-	struct kobject *kobj = of->kn->parent->priv;
+	struct kobject *kobj = sysfs_file_kobj(of->kn);
 	ssize_t len;
 
 	/*
@@ -131,7 +134,7 @@ static ssize_t sysfs_kf_write(struct kernfs_open_file *of, char *buf,
 			      size_t count, loff_t pos)
 {
 	const struct sysfs_ops *ops = sysfs_file_ops(of->kn);
-	struct kobject *kobj = of->kn->parent->priv;
+	struct kobject *kobj = sysfs_file_kobj(of->kn);
 
 	if (!count)
 		return 0;
@@ -143,8 +146,8 @@ static ssize_t sysfs_kf_write(struct kernfs_open_file *of, char *buf,
 static ssize_t sysfs_kf_bin_write(struct kernfs_open_file *of, char *buf,
 				  size_t count, loff_t pos)
 {
-	struct bin_attribute *battr = of->kn->priv;
-	struct kobject *kobj = of->kn->parent->priv;
+	const struct bin_attribute *battr = of->kn->priv;
+	struct kobject *kobj = sysfs_file_kobj(of->kn);
 	loff_t size = file_inode(of->file)->i_size;
 
 	if (size) {
@@ -164,15 +167,27 @@ static ssize_t sysfs_kf_bin_write(struct kernfs_open_file *of, char *buf,
 static int sysfs_kf_bin_mmap(struct kernfs_open_file *of,
 			     struct vm_area_struct *vma)
 {
-	struct bin_attribute *battr = of->kn->priv;
-	struct kobject *kobj = of->kn->parent->priv;
+	const struct bin_attribute *battr = of->kn->priv;
+	struct kobject *kobj = sysfs_file_kobj(of->kn);
 
 	return battr->mmap(of->file, kobj, battr, vma);
 }
 
+static loff_t sysfs_kf_bin_llseek(struct kernfs_open_file *of, loff_t offset,
+				  int whence)
+{
+	const struct bin_attribute *battr = of->kn->priv;
+	struct kobject *kobj = sysfs_file_kobj(of->kn);
+
+	if (battr->llseek)
+		return battr->llseek(of->file, kobj, battr, offset, whence);
+	else
+		return generic_file_llseek(of->file, offset, whence);
+}
+
 static int sysfs_kf_bin_open(struct kernfs_open_file *of)
 {
-	struct bin_attribute *battr = of->kn->priv;
+	const struct bin_attribute *battr = of->kn->priv;
 
 	if (battr->f_mapping)
 		of->file->f_mapping = battr->f_mapping();
@@ -252,62 +267,78 @@ static const struct kernfs_ops sysfs_bin_kfops_mmap = {
 	.write		= sysfs_kf_bin_write,
 	.mmap		= sysfs_kf_bin_mmap,
 	.open		= sysfs_kf_bin_open,
+	.llseek		= sysfs_kf_bin_llseek,
 };
 
 int sysfs_add_file_mode_ns(struct kernfs_node *parent,
-			   const struct attribute *attr, bool is_bin,
-			   umode_t mode, kuid_t uid, kgid_t gid, const void *ns)
+		const struct attribute *attr, umode_t mode, kuid_t uid,
+		kgid_t gid, const void *ns)
 {
+	struct kobject *kobj = parent->priv;
+	const struct sysfs_ops *sysfs_ops = kobj->ktype->sysfs_ops;
+	struct lock_class_key *key = NULL;
+	const struct kernfs_ops *ops = NULL;
+	struct kernfs_node *kn;
+
+	/* every kobject with an attribute needs a ktype assigned */
+	if (WARN(!sysfs_ops, KERN_ERR
+			"missing sysfs attribute operations for kobject: %s\n",
+			kobject_name(kobj)))
+		return -EINVAL;
+
+	if (mode & SYSFS_PREALLOC) {
+		if (sysfs_ops->show && sysfs_ops->store)
+			ops = &sysfs_prealloc_kfops_rw;
+		else if (sysfs_ops->show)
+			ops = &sysfs_prealloc_kfops_ro;
+		else if (sysfs_ops->store)
+			ops = &sysfs_prealloc_kfops_wo;
+	} else {
+		if (sysfs_ops->show && sysfs_ops->store)
+			ops = &sysfs_file_kfops_rw;
+		else if (sysfs_ops->show)
+			ops = &sysfs_file_kfops_ro;
+		else if (sysfs_ops->store)
+			ops = &sysfs_file_kfops_wo;
+	}
+
+	if (!ops)
+		ops = &sysfs_file_kfops_empty;
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	if (!attr->ignore_lockdep)
+		key = attr->key ?: (struct lock_class_key *)&attr->skey;
+#endif
+
+	kn = __kernfs_create_file(parent, attr->name, mode & 0777, uid, gid,
+				  PAGE_SIZE, ops, (void *)attr, ns, key);
+	if (IS_ERR(kn)) {
+		if (PTR_ERR(kn) == -EEXIST)
+			sysfs_warn_dup(parent, attr->name);
+		return PTR_ERR(kn);
+	}
+	return 0;
+}
+
+int sysfs_add_bin_file_mode_ns(struct kernfs_node *parent,
+		const struct bin_attribute *battr, umode_t mode, size_t size,
+		kuid_t uid, kgid_t gid, const void *ns)
+{
+	const struct attribute *attr = &battr->attr;
 	struct lock_class_key *key = NULL;
 	const struct kernfs_ops *ops;
 	struct kernfs_node *kn;
-	loff_t size;
 
-	if (!is_bin) {
-		struct kobject *kobj = parent->priv;
-		const struct sysfs_ops *sysfs_ops = kobj->ktype->sysfs_ops;
-
-		/* every kobject with an attribute needs a ktype assigned */
-		if (WARN(!sysfs_ops, KERN_ERR
-			 "missing sysfs attribute operations for kobject: %s\n",
-			 kobject_name(kobj)))
-			return -EINVAL;
-
-		if (sysfs_ops->show && sysfs_ops->store) {
-			if (mode & SYSFS_PREALLOC)
-				ops = &sysfs_prealloc_kfops_rw;
-			else
-				ops = &sysfs_file_kfops_rw;
-		} else if (sysfs_ops->show) {
-			if (mode & SYSFS_PREALLOC)
-				ops = &sysfs_prealloc_kfops_ro;
-			else
-				ops = &sysfs_file_kfops_ro;
-		} else if (sysfs_ops->store) {
-			if (mode & SYSFS_PREALLOC)
-				ops = &sysfs_prealloc_kfops_wo;
-			else
-				ops = &sysfs_file_kfops_wo;
-		} else
-			ops = &sysfs_file_kfops_empty;
-
-		size = PAGE_SIZE;
-	} else {
-		struct bin_attribute *battr = (void *)attr;
-
-		if (battr->mmap)
-			ops = &sysfs_bin_kfops_mmap;
-		else if (battr->read && battr->write)
-			ops = &sysfs_bin_kfops_rw;
-		else if (battr->read)
-			ops = &sysfs_bin_kfops_ro;
-		else if (battr->write)
-			ops = &sysfs_bin_kfops_wo;
-		else
-			ops = &sysfs_file_kfops_empty;
-
-		size = battr->size;
-	}
+	if (battr->mmap)
+		ops = &sysfs_bin_kfops_mmap;
+	else if (battr->read && battr->write)
+		ops = &sysfs_bin_kfops_rw;
+	else if (battr->read)
+		ops = &sysfs_bin_kfops_ro;
+	else if (battr->write)
+		ops = &sysfs_bin_kfops_wo;
+	else
+		ops = &sysfs_file_kfops_empty;
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	if (!attr->ignore_lockdep)
@@ -340,9 +371,7 @@ int sysfs_create_file_ns(struct kobject *kobj, const struct attribute *attr,
 		return -EINVAL;
 
 	kobject_get_ownership(kobj, &uid, &gid);
-	return sysfs_add_file_mode_ns(kobj->sd, attr, false, attr->mode,
-				      uid, gid, ns);
-
+	return sysfs_add_file_mode_ns(kobj->sd, attr, attr->mode, uid, gid, ns);
 }
 EXPORT_SYMBOL_GPL(sysfs_create_file_ns);
 
@@ -385,8 +414,8 @@ int sysfs_add_file_to_group(struct kobject *kobj,
 		return -ENOENT;
 
 	kobject_get_ownership(kobj, &uid, &gid);
-	error = sysfs_add_file_mode_ns(parent, attr, false,
-				       attr->mode, uid, gid, NULL);
+	error = sysfs_add_file_mode_ns(parent, attr, attr->mode, uid, gid,
+				       NULL);
 	kernfs_put(parent);
 
 	return error;
@@ -440,6 +469,8 @@ struct kernfs_node *sysfs_break_active_protection(struct kobject *kobj,
 	kn = kernfs_find_and_get(kobj->sd, attr->name);
 	if (kn)
 		kernfs_break_active_protection(kn);
+	else
+		kobject_put(kobj);
 	return kn;
 }
 EXPORT_SYMBOL_GPL(sysfs_break_active_protection);
@@ -457,7 +488,7 @@ EXPORT_SYMBOL_GPL(sysfs_break_active_protection);
  */
 void sysfs_unbreak_active_protection(struct kernfs_node *kn)
 {
-	struct kobject *kobj = kn->parent->priv;
+	struct kobject *kobj = sysfs_file_kobj(kn);
 
 	kernfs_unbreak_active_protection(kn);
 	kernfs_put(kn);
@@ -555,8 +586,8 @@ int sysfs_create_bin_file(struct kobject *kobj,
 		return -EINVAL;
 
 	kobject_get_ownership(kobj, &uid, &gid);
-	return sysfs_add_file_mode_ns(kobj->sd, &attr->attr, true,
-				      attr->attr.mode, uid, gid, NULL);
+	return sysfs_add_bin_file_mode_ns(kobj->sd, attr, attr->attr.mode,
+					  attr->size, uid, gid, NULL);
 }
 EXPORT_SYMBOL_GPL(sysfs_create_bin_file);
 
@@ -693,19 +724,6 @@ int sysfs_change_owner(struct kobject *kobj, kuid_t kuid, kgid_t kgid)
 
 	ktype = get_ktype(kobj);
 	if (ktype) {
-		struct attribute **kattr;
-
-		/*
-		 * Change owner of the default attributes associated with the
-		 * ktype of @kobj.
-		 */
-		for (kattr = ktype->default_attrs; kattr && *kattr; kattr++) {
-			error = sysfs_file_change_owner(kobj, (*kattr)->name,
-							kuid, kgid);
-			if (error)
-				return error;
-		}
-
 		/*
 		 * Change owner of the default groups associated with the
 		 * ktype of @kobj.
@@ -773,3 +791,30 @@ int sysfs_emit_at(char *buf, int at, const char *fmt, ...)
 	return len;
 }
 EXPORT_SYMBOL_GPL(sysfs_emit_at);
+
+/**
+ *	sysfs_bin_attr_simple_read - read callback to simply copy from memory.
+ *	@file:	attribute file which is being read.
+ *	@kobj:	object to which the attribute belongs.
+ *	@attr:	attribute descriptor.
+ *	@buf:	destination buffer.
+ *	@off:	offset in bytes from which to read.
+ *	@count:	maximum number of bytes to read.
+ *
+ * Simple ->read() callback for bin_attributes backed by a buffer in memory.
+ * The @private and @size members in struct bin_attribute must be set to the
+ * buffer's location and size before the bin_attribute is created in sysfs.
+ *
+ * Bounds check for @off and @count is done in sysfs_kf_bin_read().
+ * Negative value check for @off is done in vfs_setpos() and default_llseek().
+ *
+ * Returns number of bytes written to @buf.
+ */
+ssize_t sysfs_bin_attr_simple_read(struct file *file, struct kobject *kobj,
+				   const struct bin_attribute *attr, char *buf,
+				   loff_t off, size_t count)
+{
+	memcpy(buf, attr->private + off, count);
+	return count;
+}
+EXPORT_SYMBOL_GPL(sysfs_bin_attr_simple_read);

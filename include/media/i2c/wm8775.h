@@ -2,7 +2,7 @@
 /*
     wm8775.h - definition for wm8775 inputs and outputs
 
-    Copyright (C) 2006 Hans Verkuil (hverkuil@xs4all.nl)
+    Copyright (C) 2006 Hans Verkuil (hverkuil@kernel.org)
 
 */
 
@@ -23,7 +23,7 @@
 
 struct wm8775_platform_data {
 	/*
-	 * FIXME: Instead, we should parametrize the params
+	 * FIXME: Instead, we should parameterize the params
 	 * that need different settings between ivtv, pvrusb2, and Nova-S
 	 */
 	bool is_nova_s;

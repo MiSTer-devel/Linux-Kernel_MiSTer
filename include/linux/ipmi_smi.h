@@ -39,6 +39,59 @@ struct ipmi_smi;
 #define IPMI_WATCH_MASK_CHECK_COMMANDS	(1 << 2)
 
 /*
+ * SMI messages
+ *
+ * When communicating with an SMI, messages come in two formats:
+ *
+ * * Normal (to a BMC over a BMC interface)
+ *
+ * * IPMB (over a IPMB to another MC)
+ *
+ * When normal, commands are sent using the format defined by a
+ * standard message over KCS (NetFn must be even):
+ *
+ *   +-----------+-----+------+
+ *   | NetFn/LUN | Cmd | Data |
+ *   +-----------+-----+------+
+ *
+ * And responses, similarly, with an completion code added (NetFn must
+ * be odd):
+ *
+ *   +-----------+-----+------+------+
+ *   | NetFn/LUN | Cmd | CC   | Data |
+ *   +-----------+-----+------+------+
+ *
+ * With normal messages, only commands are sent and only responses are
+ * received.
+ *
+ * In IPMB mode, we are acting as an IPMB device. Commands will be in
+ * the following format (NetFn must be even):
+ *
+ *   +-------------+------+-------------+-----+------+
+ *   | NetFn/rsLUN | Addr | rqSeq/rqLUN | Cmd | Data |
+ *   +-------------+------+-------------+-----+------+
+ *
+ * Responses will using the following format:
+ *
+ *   +-------------+------+-------------+-----+------+------+
+ *   | NetFn/rqLUN | Addr | rqSeq/rsLUN | Cmd | CC   | Data |
+ *   +-------------+------+-------------+-----+------+------+
+ *
+ * This is similar to the format defined in the IPMB manual section
+ * 2.11.1 with the checksums and the first address removed.  Also, the
+ * address is always the remote address.
+ *
+ * IPMB messages can be commands and responses in both directions.
+ * Received commands are handled as received commands from the message
+ * queue.
+ */
+
+enum ipmi_smi_msg_type {
+	IPMI_SMI_MSG_TYPE_NORMAL = 0,
+	IPMI_SMI_MSG_TYPE_IPMB_DIRECT
+};
+
+/*
  * Messages to/from the lower layer.  The smi interface will take one
  * of these to send. After the send has occurred and a response has
  * been received, it will report this same data structure back up to
@@ -54,8 +107,11 @@ struct ipmi_smi;
 struct ipmi_smi_msg {
 	struct list_head link;
 
-	long    msgid;
-	void    *user_data;
+	enum ipmi_smi_msg_type type;
+
+	long msgid;
+	/* Response to this message, will be NULL if not from a user request. */
+	struct ipmi_recv_msg *recv_msg;
 
 	int           data_size;
 	unsigned char data[IPMI_MAX_MSG_LENGTH];
@@ -70,8 +126,18 @@ struct ipmi_smi_msg {
 	void (*done)(struct ipmi_smi_msg *msg);
 };
 
+#define INIT_IPMI_SMI_MSG(done_handler) \
+{						\
+	.done = done_handler,			\
+	.type = IPMI_SMI_MSG_TYPE_NORMAL	\
+}
+
 struct ipmi_smi_handlers {
 	struct module *owner;
+
+	/* Capabilities of the SMI. */
+#define IPMI_SMI_CAN_HANDLE_IPMB_DIRECT		(1 << 0)
+	unsigned int flags;
 
 	/*
 	 * The low-level interface cannot start sending messages to
@@ -103,9 +169,11 @@ struct ipmi_smi_handlers {
 	 * are held when this is run.  Message are delivered one at
 	 * a time by the message handler, a new message will not be
 	 * delivered until the previous message is returned.
+	 *
+	 * This can return an error if the SMI is not in a state where it
+	 * can send a message.
 	 */
-	void (*sender)(void                *send_info,
-		       struct ipmi_smi_msg *msg);
+	int (*sender)(void *send_info, struct ipmi_smi_msg *msg);
 
 	/*
 	 * Called by the upper layer to request that we try to get

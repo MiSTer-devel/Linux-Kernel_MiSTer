@@ -674,7 +674,8 @@ ehci_hub_status_data (struct usb_hcd *hcd, char *buf)
 
 		if ((temp & mask) != 0 || test_bit(i, &ehci->port_c_suspend)
 				|| (ehci->reset_done[i] && time_after_eq(
-					jiffies, ehci->reset_done[i]))) {
+					jiffies, ehci->reset_done[i]))
+				|| ehci_has_ci_pec_bug(ehci, temp)) {
 			if (i < 7)
 			    buf [0] |= 1 << (i + 1);
 			else
@@ -745,12 +746,13 @@ int ehci_hub_control(
 	unsigned	selector;
 
 	/*
-	 * Avoid underflow while calculating (wIndex & 0xff) - 1.
-	 * The compiler might deduce that wIndex can never be 0 and then
-	 * optimize away the tests for !wIndex below.
+	 * Avoid out-of-bounds values while calculating the port index
+	 * from wIndex.  The compiler doesn't like pointers to invalid
+	 * addresses, even if they are never used.
 	 */
-	temp = wIndex & 0xff;
-	temp -= (temp > 0);
+	temp = (wIndex - 1) & 0xff;
+	if (temp >= HCS_N_PORTS_MAX)
+		temp = 0;
 	status_reg = &ehci->regs->port_status[temp];
 	hostpc_reg = &ehci->regs->hostpc[temp];
 
@@ -873,6 +875,13 @@ int ehci_hub_control(
 			status |= USB_PORT_STAT_C_CONNECTION << 16;
 		if (temp & PORT_PEC)
 			status |= USB_PORT_STAT_C_ENABLE << 16;
+
+		if (ehci_has_ci_pec_bug(ehci, temp)) {
+			status |= USB_PORT_STAT_C_ENABLE << 16;
+			ehci_info(ehci,
+				"PE is cleared by HW port:%d PORTSC:%08x\n",
+				wIndex + 1, temp);
+		}
 
 		if ((temp & PORT_OCC) && (!ignore_oc && !ehci->spurious_oc)){
 			status |= USB_PORT_STAT_C_OVERCURRENT << 16;

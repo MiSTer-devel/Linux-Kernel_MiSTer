@@ -195,6 +195,7 @@ static int tc589_probe(struct pcmcia_device *link)
 {
 	struct el3_private *lp;
 	struct net_device *dev;
+	int ret;
 
 	dev_dbg(&link->dev, "3c589_attach()\n");
 
@@ -218,7 +219,15 @@ static int tc589_probe(struct pcmcia_device *link)
 
 	dev->ethtool_ops = &netdev_ethtool_ops;
 
-	return tc589_config(link);
+	ret = tc589_config(link);
+	if (ret)
+		goto err_free_netdev;
+
+	return 0;
+
+err_free_netdev:
+	free_netdev(dev);
+	return ret;
 }
 
 static void tc589_detach(struct pcmcia_device *link)
@@ -237,8 +246,8 @@ static void tc589_detach(struct pcmcia_device *link)
 static int tc589_config(struct pcmcia_device *link)
 {
 	struct net_device *dev = link->priv;
-	__be16 *phys_addr;
 	int ret, i, j, multi = 0, fifo;
+	__be16 addr[ETH_ALEN / 2];
 	unsigned int ioaddr;
 	static const char * const ram_split[] = {"5:3", "3:1", "1:1", "3:5"};
 	u8 *buf;
@@ -246,7 +255,6 @@ static int tc589_config(struct pcmcia_device *link)
 
 	dev_dbg(&link->dev, "3c589_config\n");
 
-	phys_addr = (__be16 *)dev->dev_addr;
 	/* Is this a 3c562? */
 	if (link->manf_id != MANFID_3COM)
 		dev_info(&link->dev, "hmmm, is this really a 3Com card??\n");
@@ -285,18 +293,19 @@ static int tc589_config(struct pcmcia_device *link)
 	len = pcmcia_get_tuple(link, 0x88, &buf);
 	if (buf && len >= 6) {
 		for (i = 0; i < 3; i++)
-			phys_addr[i] = htons(le16_to_cpu(buf[i*2]));
+			addr[i] = htons(le16_to_cpu(buf[i*2]));
 		kfree(buf);
 	} else {
 		kfree(buf); /* 0 < len < 6 */
 		for (i = 0; i < 3; i++)
-			phys_addr[i] = htons(read_eeprom(ioaddr, i));
-		if (phys_addr[0] == htons(0x6060)) {
+			addr[i] = htons(read_eeprom(ioaddr, i));
+		if (addr[0] == htons(0x6060)) {
 			dev_err(&link->dev, "IO port conflict at 0x%03lx-0x%03lx\n",
 					dev->base_addr, dev->base_addr+15);
 			goto failed;
 		}
 	}
+	eth_hw_addr_set(dev, (u8 *)addr);
 
 	/* The address and resource configuration register aren't loaded from
 	 * the EEPROM and *must* be set to 0 and IRQ3 for the PCMCIA version.
@@ -480,7 +489,7 @@ static void tc589_reset(struct net_device *dev)
 static void netdev_get_drvinfo(struct net_device *dev,
 			       struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
 	snprintf(info->bus_info, sizeof(info->bus_info),
 		"PCMCIA 0x%lx", dev->base_addr);
 }
@@ -493,7 +502,7 @@ static int el3_config(struct net_device *dev, struct ifmap *map)
 {
 	if ((map->port != (u_char)(-1)) && (map->port != dev->if_port)) {
 		if (map->port <= 3) {
-			dev->if_port = map->port;
+			WRITE_ONCE(dev->if_port, map->port);
 			netdev_info(dev, "switched to %s port\n", if_names[dev->if_port]);
 			tc589_set_xcvr(dev, dev->if_port);
 		} else {
@@ -676,7 +685,7 @@ static irqreturn_t el3_interrupt(int irq, void *dev_id)
 
 static void media_check(struct timer_list *t)
 {
-	struct el3_private *lp = from_timer(lp, t, media);
+	struct el3_private *lp = timer_container_of(lp, t, media);
 	struct net_device *dev = lp->p_dev->priv;
 	unsigned int ioaddr = dev->base_addr;
 	u16 media, errs;
@@ -937,7 +946,7 @@ static int el3_close(struct net_device *dev)
 
 	link->open--;
 	netif_stop_queue(dev);
-	del_timer_sync(&lp->media);
+	timer_delete_sync(&lp->media);
 
 	return 0;
 }

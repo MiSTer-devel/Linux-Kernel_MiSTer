@@ -24,17 +24,18 @@ static void mlxbf_gige_get_regs(struct net_device *netdev,
 	regs->version = MLXBF_GIGE_REGS_VERSION;
 
 	/* Read entire MMIO register space and store results
-	 * into the provided buffer. Each 64-bit word is converted
-	 * to big-endian to make the output more readable.
-	 *
-	 * NOTE: by design, a read to an offset without an existing
-	 *       register will be acknowledged and return zero.
+	 * into the provided buffer. By design, a read to an
+	 * offset without an existing register will be
+	 * acknowledged and return zero.
 	 */
 	memcpy_fromio(p, priv->base, MLXBF_GIGE_MMIO_REG_SZ);
 }
 
-static void mlxbf_gige_get_ringparam(struct net_device *netdev,
-				     struct ethtool_ringparam *ering)
+static void
+mlxbf_gige_get_ringparam(struct net_device *netdev,
+			 struct ethtool_ringparam *ering,
+			 struct kernel_ethtool_ringparam *kernel_ering,
+			 struct netlink_ext_ack *extack)
 {
 	struct mlxbf_gige *priv = netdev_priv(netdev);
 
@@ -123,6 +124,41 @@ static void mlxbf_gige_get_pauseparam(struct net_device *netdev,
 	pause->tx_pause = 1;
 }
 
+static bool mlxbf_gige_llu_counters_enabled(struct mlxbf_gige *priv)
+{
+	u32 data;
+
+	if (priv->hw_version == MLXBF_GIGE_VERSION_BF2) {
+		data = readl(priv->llu_base + MLXBF_GIGE_BF2_LLU_GENERAL_CONFIG);
+		if (data & MLXBF_GIGE_BF2_LLU_COUNTERS_EN)
+			return true;
+	} else {
+		data = readl(priv->llu_base + MLXBF_GIGE_BF3_LLU_GENERAL_CONFIG);
+		if (data & MLXBF_GIGE_BF3_LLU_COUNTERS_EN)
+			return true;
+	}
+
+	return false;
+}
+
+static void mlxbf_gige_get_pause_stats(struct net_device *netdev,
+				       struct ethtool_pause_stats *pause_stats)
+{
+	struct mlxbf_gige *priv = netdev_priv(netdev);
+	u64 data_lo, data_hi;
+
+	/* Read LLU counters to provide stats only if counters are enabled */
+	if (mlxbf_gige_llu_counters_enabled(priv)) {
+		data_lo = readl(priv->llu_base + MLXBF_GIGE_TX_PAUSE_CNT_LO);
+		data_hi = readl(priv->llu_base + MLXBF_GIGE_TX_PAUSE_CNT_HI);
+		pause_stats->tx_pause_frames = (data_hi << 32) | data_lo;
+
+		data_lo = readl(priv->llu_base + MLXBF_GIGE_RX_PAUSE_CNT_LO);
+		data_hi = readl(priv->llu_base + MLXBF_GIGE_RX_PAUSE_CNT_HI);
+		pause_stats->rx_pause_frames = (data_hi << 32) | data_lo;
+	}
+}
+
 const struct ethtool_ops mlxbf_gige_ethtool_ops = {
 	.get_link		= ethtool_op_get_link,
 	.get_ringparam		= mlxbf_gige_get_ringparam,
@@ -133,5 +169,7 @@ const struct ethtool_ops mlxbf_gige_ethtool_ops = {
 	.get_ethtool_stats      = mlxbf_gige_get_ethtool_stats,
 	.nway_reset		= phy_ethtool_nway_reset,
 	.get_pauseparam		= mlxbf_gige_get_pauseparam,
+	.get_pause_stats	= mlxbf_gige_get_pause_stats,
 	.get_link_ksettings	= phy_ethtool_get_link_ksettings,
+	.set_link_ksettings	= phy_ethtool_set_link_ksettings,
 };

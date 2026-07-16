@@ -393,6 +393,7 @@ static struct phy_driver dp83811_driver[] = {
 		.config_init = dp83811_config_init,
 		.config_aneg = dp83811_config_aneg,
 		.soft_reset = dp83811_phy_reset,
+		.get_features = genphy_c45_pma_read_ext_abilities,
 		.get_wol = dp83811_get_wol,
 		.set_wol = dp83811_set_wol,
 		.config_intr = dp83811_config_intr,
@@ -403,7 +404,7 @@ static struct phy_driver dp83811_driver[] = {
 };
 module_phy_driver(dp83811_driver);
 
-static struct mdio_device_id __maybe_unused dp83811_tbl[] = {
+static const struct mdio_device_id __maybe_unused dp83811_tbl[] = {
 	{ DP83TC811_PHY_ID, 0xfffffff0 },
 	{ },
 };

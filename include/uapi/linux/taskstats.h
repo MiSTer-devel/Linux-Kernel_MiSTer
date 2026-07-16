@@ -34,7 +34,7 @@
  */
 
 
-#define TASKSTATS_VERSION	10
+#define TASKSTATS_VERSION	16
 #define TS_COMM_LEN		32	/* should be >= TASK_COMM_LEN
 					 * in linux/sched.h */
 
@@ -48,7 +48,8 @@ struct taskstats {
 	__u32	ac_exitcode;		/* Exit status */
 
 	/* The accounting flags of a task as defined in <linux/acct.h>
-	 * Defined values are AFORK, ASU, ACOMPAT, ACORE, and AXSIG.
+	 * Defined values are AFORK, ASU, ACOMPAT, ACORE, AXSIG, and AGROUP.
+	 * (AGROUP since version 12).
 	 */
 	__u8	ac_flag;		/* Record flags */
 	__u8	ac_nice;		/* task_nice */
@@ -166,12 +167,69 @@ struct taskstats {
 	__u64	freepages_count;
 	__u64	freepages_delay_total;
 
+
 	/* Delay waiting for thrashing page */
 	__u64	thrashing_count;
 	__u64	thrashing_delay_total;
 
 	/* v10: 64-bit btime to avoid overflow */
 	__u64	ac_btime64;		/* 64-bit begin time */
+
+	/* v11: Delay waiting for memory compact */
+	__u64	compact_count;
+	__u64	compact_delay_total;
+
+	/* v12 begin */
+	__u32   ac_tgid;	/* thread group ID */
+	/* Thread group walltime up to now. This is total process walltime if
+	 * AGROUP flag is set.
+	 */
+	__u64	ac_tgetime __attribute__((aligned(8)));
+	/* Lightweight information to identify process binary files.
+	 * This leaves userspace to match this to a file system path, using
+	 * MAJOR() and MINOR() macros to identify a device and mount point,
+	 * the inode to identify the executable file. This is /proc/self/exe
+	 * at the end, so matching the most recent exec(). Values are zero
+	 * for kernel threads.
+	 */
+	__u64   ac_exe_dev;     /* program binary device ID */
+	__u64   ac_exe_inode;   /* program binary inode number */
+	/* v12 end */
+
+	/* v13: Delay waiting for write-protect copy */
+	__u64    wpcopy_count;
+	__u64    wpcopy_delay_total;
+
+	/* v14: Delay waiting for IRQ/SOFTIRQ */
+	__u64    irq_count;
+	__u64    irq_delay_total;
+
+	/* v15: add Delay max and Delay min */
+
+	/* v16: move Delay max and Delay min to the end of taskstat */
+	__u64	cpu_delay_max;
+	__u64	cpu_delay_min;
+
+	__u64	blkio_delay_max;
+	__u64	blkio_delay_min;
+
+	__u64	swapin_delay_max;
+	__u64	swapin_delay_min;
+
+	__u64	freepages_delay_max;
+	__u64	freepages_delay_min;
+
+	__u64	thrashing_delay_max;
+	__u64	thrashing_delay_min;
+
+	__u64	compact_delay_max;
+	__u64	compact_delay_min;
+
+	__u64	wpcopy_delay_max;
+	__u64	wpcopy_delay_min;
+
+	__u64	irq_delay_max;
+	__u64	irq_delay_min;
 };
 
 

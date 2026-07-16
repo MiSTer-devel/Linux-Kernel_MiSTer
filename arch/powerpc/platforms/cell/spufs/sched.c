@@ -340,8 +340,7 @@ static struct spu *aff_ref_location(struct spu_context *ctx, int mem_aff,
 static void aff_set_ref_point_location(struct spu_gang *gang)
 {
 	int mem_aff, gs, lowest_offset;
-	struct spu_context *ctx;
-	struct spu *tmp;
+	struct spu_context *tmp, *ctx;
 
 	mem_aff = gang->aff_ref_ctx->flags & SPU_CREATE_AFFINITY_MEM;
 	lowest_offset = 0;
@@ -509,7 +508,7 @@ static void __spu_del_from_rq(struct spu_context *ctx)
 
 	if (!list_empty(&ctx->rq)) {
 		if (!--spu_prio->nr_waiting)
-			del_timer(&spusched_timer);
+			timer_delete(&spusched_timer);
 		list_del_init(&ctx->rq);
 
 		if (list_empty(&spu_prio->runq[prio]))
@@ -869,7 +868,7 @@ static int __spu_deactivate(struct spu_context *ctx, int force, int max_prio)
 }
 
 /**
- * spu_deactivate - unbind a context from it's physical spu
+ * spu_deactivate - unbind a context from its physical spu
  * @ctx:	spu context to unbind
  *
  * Unbind @ctx from the physical spu it is running on and schedule
@@ -1053,6 +1052,7 @@ void spuctx_switch_state(struct spu_context *ctx,
 	}
 }
 
+#ifdef CONFIG_PROC_FS
 static int show_spu_loadavg(struct seq_file *s, void *private)
 {
 	int a, b, c;
@@ -1074,7 +1074,8 @@ static int show_spu_loadavg(struct seq_file *s, void *private)
 		atomic_read(&nr_spu_contexts),
 		idr_get_cursor(&task_active_pid_ns(current)->idr) - 1);
 	return 0;
-};
+}
+#endif
 
 int __init spu_sched_init(void)
 {
@@ -1125,8 +1126,8 @@ void spu_sched_exit(void)
 
 	remove_proc_entry("spu_loadavg", NULL);
 
-	del_timer_sync(&spusched_timer);
-	del_timer_sync(&spuloadavg_timer);
+	timer_delete_sync(&spusched_timer);
+	timer_delete_sync(&spuloadavg_timer);
 	kthread_stop(spusched_task);
 
 	for (node = 0; node < MAX_NUMNODES; node++) {

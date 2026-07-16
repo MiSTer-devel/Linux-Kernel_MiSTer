@@ -75,6 +75,7 @@ struct bcm_sf2_priv {
 	unsigned int			core_reg_align;
 	unsigned int			num_cfp_rules;
 	unsigned int			num_crossbar_int_ports;
+	unsigned int			num_crossbar_ext_bits;
 
 	/* spinlock protecting access to the indirect registers */
 	spinlock_t			indir_lock;
@@ -107,8 +108,7 @@ struct bcm_sf2_priv {
 
 	/* Master and slave MDIO bus controller */
 	unsigned int			indir_phy_mask;
-	struct device_node		*master_mii_dn;
-	struct mii_bus			*slave_mii_bus;
+	struct mii_bus			*user_mii_bus;
 	struct mii_bus			*master_mii_bus;
 
 	/* Bitmask of ports needing BRCM tags */
@@ -210,6 +210,16 @@ SF2_IO_MACRO(acb);
 SWITCH_INTR_L2(0);
 SWITCH_INTR_L2(1);
 
+static inline u32 reg_led_readl(struct bcm_sf2_priv *priv, u16 off, u16 reg)
+{
+	return readl_relaxed(priv->reg + priv->reg_offsets[off] + reg);
+}
+
+static inline void reg_led_writel(struct bcm_sf2_priv *priv, u32 val, u16 off, u16 reg)
+{
+	writel_relaxed(val, priv->reg + priv->reg_offsets[off] + reg);
+}
+
 /* RXNFC */
 int bcm_sf2_get_rxnfc(struct dsa_switch *ds, int port,
 		      struct ethtool_rxnfc *nfc, u32 *rule_locs);
@@ -218,8 +228,8 @@ int bcm_sf2_set_rxnfc(struct dsa_switch *ds, int port,
 int bcm_sf2_cfp_rst(struct bcm_sf2_priv *priv);
 void bcm_sf2_cfp_exit(struct dsa_switch *ds);
 int bcm_sf2_cfp_resume(struct dsa_switch *ds);
-void bcm_sf2_cfp_get_strings(struct dsa_switch *ds, int port,
-			     u32 stringset, uint8_t *data);
+void bcm_sf2_cfp_get_strings(struct dsa_switch *ds, int port, u32 stringset,
+			     uint8_t **data);
 void bcm_sf2_cfp_get_ethtool_stats(struct dsa_switch *ds, int port,
 				   uint64_t *data);
 int bcm_sf2_cfp_get_sset_count(struct dsa_switch *ds, int port, int sset);

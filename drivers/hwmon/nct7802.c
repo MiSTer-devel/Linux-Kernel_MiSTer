@@ -52,6 +52,23 @@ static const u8 REG_VOLTAGE_LIMIT_MSB_SHIFT[2][5] = {
 #define REG_VERSION_ID		0xff
 
 /*
+ * Resistance temperature detector (RTD) modes according to 7.2.32 Mode
+ * Selection Register
+ */
+#define RTD_MODE_CURRENT	0x1
+#define RTD_MODE_THERMISTOR	0x2
+#define RTD_MODE_VOLTAGE	0x3
+
+#define MODE_RTD_MASK		0x3
+#define MODE_LTD_EN		0x40
+
+/*
+ * Bit offset for sensors modes in REG_MODE.
+ * Valid for index 0..2, indicating RTD1..3.
+ */
+#define MODE_BIT_OFFSET_RTD(index) ((index) * 2)
+
+/*
  * Data structures and manipulation thereof
  */
 
@@ -212,41 +229,34 @@ abort:
 
 static int nct7802_read_fan(struct nct7802_data *data, u8 reg_fan)
 {
-	unsigned int f1, f2;
+	unsigned int regs[2] = {reg_fan, REG_FANCOUNT_LOW};
+	u8 f[2];
 	int ret;
 
-	mutex_lock(&data->access_lock);
-	ret = regmap_read(data->regmap, reg_fan, &f1);
-	if (ret < 0)
-		goto abort;
-	ret = regmap_read(data->regmap, REG_FANCOUNT_LOW, &f2);
-	if (ret < 0)
-		goto abort;
-	ret = (f1 << 5) | (f2 >> 3);
+	ret = regmap_multi_reg_read(data->regmap, regs, f, 2);
+	if (ret)
+		return ret;
+	ret = (f[0] << 5) | (f[1] >> 3);
 	/* convert fan count to rpm */
 	if (ret == 0x1fff)	/* maximum value, assume fan is stopped */
 		ret = 0;
 	else if (ret)
 		ret = DIV_ROUND_CLOSEST(1350000U, ret);
-abort:
-	mutex_unlock(&data->access_lock);
 	return ret;
 }
 
 static int nct7802_read_fan_min(struct nct7802_data *data, u8 reg_fan_low,
 				u8 reg_fan_high)
 {
-	unsigned int f1, f2;
+	unsigned int regs[2] = {reg_fan_low, reg_fan_high};
+	u8 f[2];
 	int ret;
 
-	mutex_lock(&data->access_lock);
-	ret = regmap_read(data->regmap, reg_fan_low, &f1);
+	ret = regmap_multi_reg_read(data->regmap, regs, f, 2);
 	if (ret < 0)
-		goto abort;
-	ret = regmap_read(data->regmap, reg_fan_high, &f2);
-	if (ret < 0)
-		goto abort;
-	ret = f1 | ((f2 & 0xf8) << 5);
+		return ret;
+
+	ret = f[0] | ((f[1] & 0xf8) << 5);
 	/* convert fan count to rpm */
 	if (ret == 0x1fff)	/* maximum value, assume no limit */
 		ret = 0;
@@ -254,8 +264,6 @@ static int nct7802_read_fan_min(struct nct7802_data *data, u8 reg_fan_low,
 		ret = DIV_ROUND_CLOSEST(1350000U, ret);
 	else
 		ret = 1350000U;
-abort:
-	mutex_unlock(&data->access_lock);
 	return ret;
 }
 
@@ -285,33 +293,26 @@ static u8 nct7802_vmul[] = { 4, 2, 2, 2, 2 };
 
 static int nct7802_read_voltage(struct nct7802_data *data, int nr, int index)
 {
-	unsigned int v1, v2;
+	u8 v[2];
 	int ret;
 
-	mutex_lock(&data->access_lock);
 	if (index == 0) {	/* voltage */
-		ret = regmap_read(data->regmap, REG_VOLTAGE[nr], &v1);
+		unsigned int regs[2] = {REG_VOLTAGE[nr], REG_VOLTAGE_LOW};
+
+		ret = regmap_multi_reg_read(data->regmap, regs, v, 2);
 		if (ret < 0)
-			goto abort;
-		ret = regmap_read(data->regmap, REG_VOLTAGE_LOW, &v2);
-		if (ret < 0)
-			goto abort;
-		ret = ((v1 << 2) | (v2 >> 6)) * nct7802_vmul[nr];
+			return ret;
+		ret = ((v[0] << 2) | (v[1] >> 6)) * nct7802_vmul[nr];
 	}  else {	/* limit */
 		int shift = 8 - REG_VOLTAGE_LIMIT_MSB_SHIFT[index - 1][nr];
+		unsigned int regs[2] = {REG_VOLTAGE_LIMIT_LSB[index - 1][nr],
+					REG_VOLTAGE_LIMIT_MSB[nr]};
 
-		ret = regmap_read(data->regmap,
-				  REG_VOLTAGE_LIMIT_LSB[index - 1][nr], &v1);
+		ret = regmap_multi_reg_read(data->regmap, regs, v, 2);
 		if (ret < 0)
-			goto abort;
-		ret = regmap_read(data->regmap, REG_VOLTAGE_LIMIT_MSB[nr],
-				  &v2);
-		if (ret < 0)
-			goto abort;
-		ret = (v1 | ((v2 << shift) & 0x300)) * nct7802_vmul[nr];
+			return ret;
+		ret = (v[0] | ((v[1] << shift) & 0x300)) * nct7802_vmul[nr];
 	}
-abort:
-	mutex_unlock(&data->access_lock);
 	return ret;
 }
 
@@ -708,7 +709,7 @@ static umode_t nct7802_temp_is_visible(struct kobject *kobj,
 	if (index >= 38 && index < 46 && !(reg & 0x01))		/* PECI 0 */
 		return 0;
 
-	if (index >= 0x46 && (!(reg & 0x02)))			/* PECI 1 */
+	if (index >= 46 && !(reg & 0x02))			/* PECI 1 */
 		return 0;
 
 	return attr->mode;
@@ -1021,7 +1022,7 @@ static int nct7802_detect(struct i2c_client *client,
 	if (reg < 0 || (reg & 0x3f))
 		return -ENODEV;
 
-	strlcpy(info->type, "nct7802", I2C_NAME_SIZE);
+	strscpy(info->type, "nct7802", I2C_NAME_SIZE);
 	return 0;
 }
 
@@ -1034,11 +1035,115 @@ static bool nct7802_regmap_is_volatile(struct device *dev, unsigned int reg)
 static const struct regmap_config nct7802_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.volatile_reg = nct7802_regmap_is_volatile,
 };
 
-static int nct7802_init_chip(struct nct7802_data *data)
+static int nct7802_get_channel_config(struct device *dev,
+				      struct device_node *node, u8 *mode_mask,
+				      u8 *mode_val)
+{
+	u32 reg;
+	const char *type_str, *md_str;
+	u8 md;
+
+	if (!node->name || of_node_cmp(node->name, "channel"))
+		return 0;
+
+	if (of_property_read_u32(node, "reg", &reg)) {
+		dev_err(dev, "Could not read reg value for '%s'\n",
+			node->full_name);
+		return -EINVAL;
+	}
+
+	if (reg > 3) {
+		dev_err(dev, "Invalid reg (%u) in '%s'\n", reg,
+			node->full_name);
+		return -EINVAL;
+	}
+
+	if (reg == 0) {
+		if (!of_device_is_available(node))
+			*mode_val &= ~MODE_LTD_EN;
+		else
+			*mode_val |= MODE_LTD_EN;
+		*mode_mask |= MODE_LTD_EN;
+		return 0;
+	}
+
+	/* At this point we have reg >= 1 && reg <= 3 */
+
+	if (!of_device_is_available(node)) {
+		*mode_val &= ~(MODE_RTD_MASK << MODE_BIT_OFFSET_RTD(reg - 1));
+		*mode_mask |= MODE_RTD_MASK << MODE_BIT_OFFSET_RTD(reg - 1);
+		return 0;
+	}
+
+	if (of_property_read_string(node, "sensor-type", &type_str)) {
+		dev_err(dev, "No type for '%s'\n", node->full_name);
+		return -EINVAL;
+	}
+
+	if (!strcmp(type_str, "voltage")) {
+		*mode_val |= (RTD_MODE_VOLTAGE & MODE_RTD_MASK)
+			     << MODE_BIT_OFFSET_RTD(reg - 1);
+		*mode_mask |= MODE_RTD_MASK << MODE_BIT_OFFSET_RTD(reg - 1);
+		return 0;
+	}
+
+	if (strcmp(type_str, "temperature")) {
+		dev_err(dev, "Invalid type '%s' for '%s'\n", type_str,
+			node->full_name);
+		return -EINVAL;
+	}
+
+	if (reg == 3) {
+		/* RTD3 only supports thermistor mode */
+		md = RTD_MODE_THERMISTOR;
+	} else {
+		if (of_property_read_string(node, "temperature-mode",
+					    &md_str)) {
+			dev_err(dev, "No mode for '%s'\n", node->full_name);
+			return -EINVAL;
+		}
+
+		if (!strcmp(md_str, "thermal-diode"))
+			md = RTD_MODE_CURRENT;
+		else if (!strcmp(md_str, "thermistor"))
+			md = RTD_MODE_THERMISTOR;
+		else {
+			dev_err(dev, "Invalid mode '%s' for '%s'\n", md_str,
+				node->full_name);
+			return -EINVAL;
+		}
+	}
+
+	*mode_val |= (md & MODE_RTD_MASK) << MODE_BIT_OFFSET_RTD(reg - 1);
+	*mode_mask |= MODE_RTD_MASK << MODE_BIT_OFFSET_RTD(reg - 1);
+
+	return 0;
+}
+
+static int nct7802_configure_channels(struct device *dev,
+				      struct nct7802_data *data)
+{
+	/* Enable local temperature sensor by default */
+	u8 mode_mask = MODE_LTD_EN, mode_val = MODE_LTD_EN;
+	int err;
+
+	if (dev->of_node) {
+		for_each_child_of_node_scoped(dev->of_node, node) {
+			err = nct7802_get_channel_config(dev, node, &mode_mask,
+							 &mode_val);
+			if (err)
+				return err;
+		}
+	}
+
+	return regmap_update_bits(data->regmap, REG_MODE, mode_mask, mode_val);
+}
+
+static int nct7802_init_chip(struct device *dev, struct nct7802_data *data)
 {
 	int err;
 
@@ -1047,8 +1152,7 @@ static int nct7802_init_chip(struct nct7802_data *data)
 	if (err)
 		return err;
 
-	/* Enable local temperature sensor */
-	err = regmap_update_bits(data->regmap, REG_MODE, 0x40, 0x40);
+	err = nct7802_configure_channels(dev, data);
 	if (err)
 		return err;
 
@@ -1074,7 +1178,7 @@ static int nct7802_probe(struct i2c_client *client)
 	mutex_init(&data->access_lock);
 	mutex_init(&data->in_alarm_lock);
 
-	ret = nct7802_init_chip(data);
+	ret = nct7802_init_chip(dev, data);
 	if (ret < 0)
 		return ret;
 
@@ -1089,7 +1193,7 @@ static const unsigned short nct7802_address_list[] = {
 };
 
 static const struct i2c_device_id nct7802_idtable[] = {
-	{ "nct7802", 0 },
+	{ "nct7802" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, nct7802_idtable);
@@ -1100,7 +1204,7 @@ static struct i2c_driver nct7802_driver = {
 		.name = DRVNAME,
 	},
 	.detect = nct7802_detect,
-	.probe_new = nct7802_probe,
+	.probe = nct7802_probe,
 	.id_table = nct7802_idtable,
 	.address_list = nct7802_address_list,
 };

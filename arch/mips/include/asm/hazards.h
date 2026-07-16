@@ -160,7 +160,7 @@ do {									\
 
 #elif defined(CONFIG_MIPS_ALCHEMY) || defined(CONFIG_CPU_CAVIUM_OCTEON) || \
 	defined(CONFIG_CPU_LOONGSON2EF) || defined(CONFIG_CPU_LOONGSON64) || \
-	defined(CONFIG_CPU_R10000) || defined(CONFIG_CPU_R5500) || defined(CONFIG_CPU_XLR)
+	defined(CONFIG_CPU_R10000) || defined(CONFIG_CPU_R5500)
 
 /*
  * R10000 rocks - all hazards handled in hardware, so this becomes a nobrainer.
@@ -301,7 +301,7 @@ do {									\
 
 #endif
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 
 #define _ssnop ___ssnop
 #define	_ehb ___ehb
@@ -417,6 +417,6 @@ do {									\
  */
 extern void mips_ihb(void);
 
-#endif /* __ASSEMBLY__  */
+#endif /* __ASSEMBLER__  */
 
 #endif /* _ASM_HAZARDS_H */

@@ -14,17 +14,28 @@ static int libperf_print(enum libperf_print_level level,
 int test_cpumap(int argc, char **argv)
 {
 	struct perf_cpu_map *cpus;
+	struct perf_cpu cpu;
+	int idx;
 
 	__T_START;
 
 	libperf_init(libperf_print);
 
-	cpus = perf_cpu_map__dummy_new();
+	cpus = perf_cpu_map__new_any_cpu();
 	if (!cpus)
 		return -1;
 
 	perf_cpu_map__get(cpus);
 	perf_cpu_map__put(cpus);
+	perf_cpu_map__put(cpus);
+
+	cpus = perf_cpu_map__new_online_cpus();
+	if (!cpus)
+		return -1;
+
+	perf_cpu_map__for_each_cpu(cpu, idx, cpus)
+		__T("wrong cpu number", cpu.cpu != -1);
+
 	perf_cpu_map__put(cpus);
 
 	__T_END;

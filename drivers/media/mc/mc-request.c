@@ -6,7 +6,7 @@
  * Copyright (C) 2018 Intel Corporation
  * Copyright (C) 2018 Google, Inc.
  *
- * Author: Hans Verkuil <hans.verkuil@cisco.com>
+ * Author: Hans Verkuil <hverkuil@kernel.org>
  * Author: Sakari Ailus <sakari.ailus@linux.intel.com>
  */
 
@@ -190,6 +190,8 @@ static long media_request_ioctl_reinit(struct media_request *req)
 	struct media_device *mdev = req->mdev;
 	unsigned long flags;
 
+	mutex_lock(&mdev->req_queue_mutex);
+
 	spin_lock_irqsave(&req->lock, flags);
 	if (req->state != MEDIA_REQUEST_STATE_IDLE &&
 	    req->state != MEDIA_REQUEST_STATE_COMPLETE) {
@@ -197,6 +199,7 @@ static long media_request_ioctl_reinit(struct media_request *req)
 			"request: %s not in idle or complete state, cannot reinit\n",
 			req->debug_str);
 		spin_unlock_irqrestore(&req->lock, flags);
+		mutex_unlock(&mdev->req_queue_mutex);
 		return -EBUSY;
 	}
 	if (req->access_count) {
@@ -204,6 +207,7 @@ static long media_request_ioctl_reinit(struct media_request *req)
 			"request: %s is being accessed, cannot reinit\n",
 			req->debug_str);
 		spin_unlock_irqrestore(&req->lock, flags);
+		mutex_unlock(&mdev->req_queue_mutex);
 		return -EBUSY;
 	}
 	req->state = MEDIA_REQUEST_STATE_CLEANING;
@@ -214,6 +218,7 @@ static long media_request_ioctl_reinit(struct media_request *req)
 	spin_lock_irqsave(&req->lock, flags);
 	req->state = MEDIA_REQUEST_STATE_IDLE;
 	spin_unlock_irqrestore(&req->lock, flags);
+	mutex_unlock(&mdev->req_queue_mutex);
 
 	return 0;
 }
@@ -246,22 +251,21 @@ static const struct file_operations request_fops = {
 struct media_request *
 media_request_get_by_fd(struct media_device *mdev, int request_fd)
 {
-	struct fd f;
 	struct media_request *req;
 
 	if (!mdev || !mdev->ops ||
 	    !mdev->ops->req_validate || !mdev->ops->req_queue)
 		return ERR_PTR(-EBADR);
 
-	f = fdget(request_fd);
-	if (!f.file)
-		goto err_no_req_fd;
+	CLASS(fd, f)(request_fd);
+	if (fd_empty(f))
+		goto err;
 
-	if (f.file->f_op != &request_fops)
-		goto err_fput;
-	req = f.file->private_data;
+	if (fd_file(f)->f_op != &request_fops)
+		goto err;
+	req = fd_file(f)->private_data;
 	if (req->mdev != mdev)
-		goto err_fput;
+		goto err;
 
 	/*
 	 * Note: as long as someone has an open filehandle of the request,
@@ -272,14 +276,9 @@ media_request_get_by_fd(struct media_device *mdev, int request_fd)
 	 * before media_request_get() is called.
 	 */
 	media_request_get(req);
-	fdput(f);
-
 	return req;
 
-err_fput:
-	fdput(f);
-
-err_no_req_fd:
+err:
 	dev_dbg(mdev->dev, "cannot find request_fd %d\n", request_fd);
 	return ERR_PTR(-EINVAL);
 }

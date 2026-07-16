@@ -57,9 +57,19 @@
 
 #include <asm-generic/signal-defs.h>
 
-# ifndef __ASSEMBLY__
+#define _NSIG		64
+#define _NSIG_BPW	(sizeof(unsigned long) * 8)
+#define _NSIG_WORDS	(_NSIG / _NSIG_BPW)
+
+# ifndef __ASSEMBLER__
 
 #  include <linux/types.h>
+
+typedef unsigned long old_sigset_t;	/* at least 32 bits */
+
+typedef struct {
+	unsigned long sig[_NSIG_WORDS];
+} sigset_t;
 
 /* Avoid too many header ordering problems.  */
 struct siginfo;
@@ -67,8 +77,8 @@ struct siginfo;
 typedef struct sigaltstack {
 	void __user *ss_sp;
 	int ss_flags;
-	size_t ss_size;
+	__kernel_size_t ss_size;
 } stack_t;
 
-#endif /* !__ASSEMBLY */
+#endif /* !__ASSEMBLER__ */
 #endif /* _UAPI_ASM_PARISC_SIGNAL_H */

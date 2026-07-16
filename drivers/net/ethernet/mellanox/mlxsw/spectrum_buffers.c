@@ -160,7 +160,7 @@ static bool mlxsw_sp_sb_cm_exists(u8 pg_buff, enum mlxsw_reg_sbxx_dir dir)
 }
 
 static struct mlxsw_sp_sb_cm *mlxsw_sp_sb_cm_get(struct mlxsw_sp *mlxsw_sp,
-						 u8 local_port, u8 pg_buff,
+						 u16 local_port, u8 pg_buff,
 						 enum mlxsw_reg_sbxx_dir dir)
 {
 	struct mlxsw_sp_sb_port *sb_port = &mlxsw_sp->sb->ports[local_port];
@@ -173,7 +173,7 @@ static struct mlxsw_sp_sb_cm *mlxsw_sp_sb_cm_get(struct mlxsw_sp *mlxsw_sp,
 }
 
 static struct mlxsw_sp_sb_pm *mlxsw_sp_sb_pm_get(struct mlxsw_sp *mlxsw_sp,
-						 u8 local_port, u16 pool_index)
+						 u16 local_port, u16 pool_index)
 {
 	return &mlxsw_sp->sb->ports[local_port].pms[pool_index];
 }
@@ -202,7 +202,22 @@ static int mlxsw_sp_sb_pr_write(struct mlxsw_sp *mlxsw_sp, u16 pool_index,
 	return 0;
 }
 
-static int mlxsw_sp_sb_cm_write(struct mlxsw_sp *mlxsw_sp, u8 local_port,
+static int mlxsw_sp_sb_pr_desc_write(struct mlxsw_sp *mlxsw_sp,
+				     enum mlxsw_reg_sbxx_dir dir,
+				     enum mlxsw_reg_sbpr_mode mode,
+				     u32 size, bool infi_size)
+{
+	char sbpr_pl[MLXSW_REG_SBPR_LEN];
+
+	/* The FW default descriptor buffer configuration uses only pool 14 for
+	 * descriptors.
+	 */
+	mlxsw_reg_sbpr_pack(sbpr_pl, 14, dir, mode, size, infi_size);
+	mlxsw_reg_sbpr_desc_set(sbpr_pl, true);
+	return mlxsw_reg_write(mlxsw_sp->core, MLXSW_REG(sbpr), sbpr_pl);
+}
+
+static int mlxsw_sp_sb_cm_write(struct mlxsw_sp *mlxsw_sp, u16 local_port,
 				u8 pg_buff, u32 min_buff, u32 max_buff,
 				bool infi_max, u16 pool_index)
 {
@@ -232,7 +247,7 @@ static int mlxsw_sp_sb_cm_write(struct mlxsw_sp *mlxsw_sp, u8 local_port,
 	return 0;
 }
 
-static int mlxsw_sp_sb_pm_write(struct mlxsw_sp *mlxsw_sp, u8 local_port,
+static int mlxsw_sp_sb_pm_write(struct mlxsw_sp *mlxsw_sp, u16 local_port,
 				u16 pool_index, u32 min_buff, u32 max_buff)
 {
 	const struct mlxsw_sp_sb_pool_des *des =
@@ -253,7 +268,7 @@ static int mlxsw_sp_sb_pm_write(struct mlxsw_sp *mlxsw_sp, u8 local_port,
 	return 0;
 }
 
-static int mlxsw_sp_sb_pm_occ_clear(struct mlxsw_sp *mlxsw_sp, u8 local_port,
+static int mlxsw_sp_sb_pm_occ_clear(struct mlxsw_sp *mlxsw_sp, u16 local_port,
 				    u16 pool_index, struct list_head *bulk_list)
 {
 	const struct mlxsw_sp_sb_pool_des *des =
@@ -279,7 +294,7 @@ static void mlxsw_sp_sb_pm_occ_query_cb(struct mlxsw_core *mlxsw_core,
 	mlxsw_reg_sbpm_unpack(sbpm_pl, &pm->occ.cur, &pm->occ.max);
 }
 
-static int mlxsw_sp_sb_pm_occ_query(struct mlxsw_sp *mlxsw_sp, u8 local_port,
+static int mlxsw_sp_sb_pm_occ_query(struct mlxsw_sp *mlxsw_sp, u16 local_port,
 				    u16 pool_index, struct list_head *bulk_list)
 {
 	const struct mlxsw_sp_sb_pool_des *des =
@@ -384,11 +399,13 @@ void mlxsw_sp_hdroom_bufs_reset_sizes(struct mlxsw_sp_port *mlxsw_sp_port,
 				      struct mlxsw_sp_hdroom *hdroom)
 {
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
+	unsigned int max_mtu = mlxsw_sp_port->dev->max_mtu;
 	u16 reserve_cells;
 	int i;
 
+	max_mtu += MLXSW_PORT_ETH_FRAME_HDR;
 	/* Internal buffer. */
-	reserve_cells = mlxsw_sp_hdroom_int_buf_size_get(mlxsw_sp, mlxsw_sp_port->max_mtu,
+	reserve_cells = mlxsw_sp_hdroom_int_buf_size_get(mlxsw_sp, max_mtu,
 							 mlxsw_sp_port->max_speed);
 	reserve_cells = mlxsw_sp_port_headroom_8x_adjust(mlxsw_sp_port, reserve_cells);
 	hdroom->int_buf.reserve_cells = reserve_cells;
@@ -598,7 +615,9 @@ static int mlxsw_sp_port_headroom_init(struct mlxsw_sp_port *mlxsw_sp_port)
 	mlxsw_sp_hdroom_bufs_reset_sizes(mlxsw_sp_port, &hdroom);
 
 	/* Buffer 9 is used for control traffic. */
-	size9 = mlxsw_sp_port_headroom_8x_adjust(mlxsw_sp_port, mlxsw_sp_port->max_mtu);
+	size9 = mlxsw_sp_port_headroom_8x_adjust(mlxsw_sp_port,
+						 mlxsw_sp_port->dev->max_mtu +
+						 MLXSW_PORT_ETH_FRAME_HDR);
 	hdroom.bufs.buf[9].size_cells = mlxsw_sp_bytes_cells(mlxsw_sp, size9);
 
 	return __mlxsw_sp_hdroom_configure(mlxsw_sp_port, &hdroom, true);
@@ -775,6 +794,17 @@ static int mlxsw_sp_sb_prs_init(struct mlxsw_sp *mlxsw_sp,
 		if (err)
 			return err;
 	}
+
+	err = mlxsw_sp_sb_pr_desc_write(mlxsw_sp, MLXSW_REG_SBXX_DIR_INGRESS,
+					MLXSW_REG_SBPR_MODE_DYNAMIC, 0, true);
+	if (err)
+		return err;
+
+	err = mlxsw_sp_sb_pr_desc_write(mlxsw_sp, MLXSW_REG_SBXX_DIR_EGRESS,
+					MLXSW_REG_SBPR_MODE_DYNAMIC, 0, true);
+	if (err)
+		return err;
+
 	return 0;
 }
 
@@ -919,7 +949,7 @@ mlxsw_sp_sb_pool_is_static(struct mlxsw_sp *mlxsw_sp, u16 pool_index)
 	return pr->mode == MLXSW_REG_SBPR_MODE_STATIC;
 }
 
-static int __mlxsw_sp_sb_cms_init(struct mlxsw_sp *mlxsw_sp, u8 local_port,
+static int __mlxsw_sp_sb_cms_init(struct mlxsw_sp *mlxsw_sp, u16 local_port,
 				  enum mlxsw_reg_sbxx_dir dir,
 				  const struct mlxsw_sp_sb_cm *cms,
 				  size_t cms_len)
@@ -1037,7 +1067,7 @@ static const struct mlxsw_sp_sb_pm mlxsw_sp_cpu_port_sb_pms[] = {
 	MLXSW_SP_SB_PM(0, MLXSW_REG_SBXX_DYN_MAX_BUFF_MAX),
 };
 
-static int mlxsw_sp_sb_pms_init(struct mlxsw_sp *mlxsw_sp, u8 local_port,
+static int mlxsw_sp_sb_pms_init(struct mlxsw_sp *mlxsw_sp, u16 local_port,
 				const struct mlxsw_sp_sb_pm *pms,
 				bool skip_ingress)
 {
@@ -1264,12 +1294,12 @@ int mlxsw_sp_buffers_init(struct mlxsw_sp *mlxsw_sp)
 	if (err)
 		goto err_sb_mms_init;
 	mlxsw_sp_pool_count(mlxsw_sp, &ing_pool_count, &eg_pool_count);
-	err = devlink_sb_register(priv_to_devlink(mlxsw_sp->core), 0,
-				  mlxsw_sp->sb->sb_size,
-				  ing_pool_count,
-				  eg_pool_count,
-				  MLXSW_SP_SB_ING_TC_COUNT,
-				  MLXSW_SP_SB_EG_TC_COUNT);
+	err = devl_sb_register(priv_to_devlink(mlxsw_sp->core), 0,
+			       mlxsw_sp->sb->sb_size,
+			       ing_pool_count,
+			       eg_pool_count,
+			       MLXSW_SP_SB_ING_TC_COUNT,
+			       MLXSW_SP_SB_EG_TC_COUNT);
 	if (err)
 		goto err_devlink_sb_register;
 
@@ -1288,7 +1318,7 @@ err_sb_ports_init:
 
 void mlxsw_sp_buffers_fini(struct mlxsw_sp *mlxsw_sp)
 {
-	devlink_sb_unregister(priv_to_devlink(mlxsw_sp->core), 0);
+	devl_sb_unregister(priv_to_devlink(mlxsw_sp->core), 0);
 	mlxsw_sp_sb_ports_fini(mlxsw_sp);
 	kfree(mlxsw_sp->sb);
 }
@@ -1416,7 +1446,7 @@ int mlxsw_sp_sb_port_pool_get(struct mlxsw_core_port *mlxsw_core_port,
 	struct mlxsw_sp_port *mlxsw_sp_port =
 			mlxsw_core_port_driver_priv(mlxsw_core_port);
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
-	u8 local_port = mlxsw_sp_port->local_port;
+	u16 local_port = mlxsw_sp_port->local_port;
 	struct mlxsw_sp_sb_pm *pm = mlxsw_sp_sb_pm_get(mlxsw_sp, local_port,
 						       pool_index);
 
@@ -1432,7 +1462,7 @@ int mlxsw_sp_sb_port_pool_set(struct mlxsw_core_port *mlxsw_core_port,
 	struct mlxsw_sp_port *mlxsw_sp_port =
 			mlxsw_core_port_driver_priv(mlxsw_core_port);
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
-	u8 local_port = mlxsw_sp_port->local_port;
+	u16 local_port = mlxsw_sp_port->local_port;
 	u32 max_buff;
 	int err;
 
@@ -1458,7 +1488,7 @@ int mlxsw_sp_sb_tc_pool_bind_get(struct mlxsw_core_port *mlxsw_core_port,
 	struct mlxsw_sp_port *mlxsw_sp_port =
 			mlxsw_core_port_driver_priv(mlxsw_core_port);
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
-	u8 local_port = mlxsw_sp_port->local_port;
+	u16 local_port = mlxsw_sp_port->local_port;
 	u8 pg_buff = tc_index;
 	enum mlxsw_reg_sbxx_dir dir = (enum mlxsw_reg_sbxx_dir) pool_type;
 	struct mlxsw_sp_sb_cm *cm = mlxsw_sp_sb_cm_get(mlxsw_sp, local_port,
@@ -1479,7 +1509,7 @@ int mlxsw_sp_sb_tc_pool_bind_set(struct mlxsw_core_port *mlxsw_core_port,
 	struct mlxsw_sp_port *mlxsw_sp_port =
 			mlxsw_core_port_driver_priv(mlxsw_core_port);
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
-	u8 local_port = mlxsw_sp_port->local_port;
+	u16 local_port = mlxsw_sp_port->local_port;
 	const struct mlxsw_sp_sb_cm *cm;
 	u8 pg_buff = tc_index;
 	enum mlxsw_reg_sbxx_dir dir = (enum mlxsw_reg_sbxx_dir) pool_type;
@@ -1526,7 +1556,7 @@ int mlxsw_sp_sb_tc_pool_bind_set(struct mlxsw_core_port *mlxsw_core_port,
 
 struct mlxsw_sp_sb_sr_occ_query_cb_ctx {
 	u8 masked_count;
-	u8 local_port_1;
+	u16 local_port_1;
 };
 
 static void mlxsw_sp_sb_sr_occ_query_cb(struct mlxsw_core *mlxsw_core,
@@ -1536,7 +1566,7 @@ static void mlxsw_sp_sb_sr_occ_query_cb(struct mlxsw_core *mlxsw_core,
 	struct mlxsw_sp *mlxsw_sp = mlxsw_core_driver_priv(mlxsw_core);
 	struct mlxsw_sp_sb_sr_occ_query_cb_ctx cb_ctx;
 	u8 masked_count;
-	u8 local_port;
+	u16 local_port;
 	int rec_index = 0;
 	struct mlxsw_sp_sb_cm *cm;
 	int i;
@@ -1581,14 +1611,13 @@ static void mlxsw_sp_sb_sr_occ_query_cb(struct mlxsw_core *mlxsw_core,
 int mlxsw_sp_sb_occ_snapshot(struct mlxsw_core *mlxsw_core,
 			     unsigned int sb_index)
 {
+	u16 local_port, local_port_1, first_local_port, last_local_port;
 	struct mlxsw_sp *mlxsw_sp = mlxsw_core_driver_priv(mlxsw_core);
 	struct mlxsw_sp_sb_sr_occ_query_cb_ctx cb_ctx;
-	unsigned long cb_priv;
+	u8 masked_count, current_page = 0;
+	unsigned long cb_priv = 0;
 	LIST_HEAD(bulk_list);
 	char *sbsr_pl;
-	u8 masked_count;
-	u8 local_port_1;
-	u8 local_port;
 	int i;
 	int err;
 	int err2;
@@ -1602,6 +1631,11 @@ next_batch:
 	local_port_1 = local_port;
 	masked_count = 0;
 	mlxsw_reg_sbsr_pack(sbsr_pl, false);
+	mlxsw_reg_sbsr_port_page_set(sbsr_pl, current_page);
+	first_local_port = current_page * MLXSW_REG_SBSR_NUM_PORTS_IN_PAGE;
+	last_local_port = current_page * MLXSW_REG_SBSR_NUM_PORTS_IN_PAGE +
+			  MLXSW_REG_SBSR_NUM_PORTS_IN_PAGE - 1;
+
 	for (i = 0; i < MLXSW_SP_SB_ING_TC_COUNT; i++)
 		mlxsw_reg_sbsr_pg_buff_mask_set(sbsr_pl, i, 1);
 	for (i = 0; i < MLXSW_SP_SB_EG_TC_COUNT; i++)
@@ -1609,12 +1643,19 @@ next_batch:
 	for (; local_port < mlxsw_core_max_ports(mlxsw_core); local_port++) {
 		if (!mlxsw_sp->ports[local_port])
 			continue;
+		if (local_port > last_local_port) {
+			current_page++;
+			goto do_query;
+		}
 		if (local_port != MLXSW_PORT_CPU_PORT) {
 			/* Ingress quotas are not supported for the CPU port */
 			mlxsw_reg_sbsr_ingress_port_mask_set(sbsr_pl,
-							     local_port, 1);
+							     local_port - first_local_port,
+							     1);
 		}
-		mlxsw_reg_sbsr_egress_port_mask_set(sbsr_pl, local_port, 1);
+		mlxsw_reg_sbsr_egress_port_mask_set(sbsr_pl,
+						    local_port - first_local_port,
+						    1);
 		for (i = 0; i < mlxsw_sp->sb_vals->pool_count; i++) {
 			err = mlxsw_sp_sb_pm_occ_query(mlxsw_sp, local_port, i,
 						       &bulk_list);
@@ -1651,10 +1692,11 @@ int mlxsw_sp_sb_occ_max_clear(struct mlxsw_core *mlxsw_core,
 			      unsigned int sb_index)
 {
 	struct mlxsw_sp *mlxsw_sp = mlxsw_core_driver_priv(mlxsw_core);
+	u16 local_port, first_local_port, last_local_port;
 	LIST_HEAD(bulk_list);
-	char *sbsr_pl;
 	unsigned int masked_count;
-	u8 local_port;
+	u8 current_page = 0;
+	char *sbsr_pl;
 	int i;
 	int err;
 	int err2;
@@ -1667,6 +1709,11 @@ int mlxsw_sp_sb_occ_max_clear(struct mlxsw_core *mlxsw_core,
 next_batch:
 	masked_count = 0;
 	mlxsw_reg_sbsr_pack(sbsr_pl, true);
+	mlxsw_reg_sbsr_port_page_set(sbsr_pl, current_page);
+	first_local_port = current_page * MLXSW_REG_SBSR_NUM_PORTS_IN_PAGE;
+	last_local_port = current_page * MLXSW_REG_SBSR_NUM_PORTS_IN_PAGE +
+			  MLXSW_REG_SBSR_NUM_PORTS_IN_PAGE - 1;
+
 	for (i = 0; i < MLXSW_SP_SB_ING_TC_COUNT; i++)
 		mlxsw_reg_sbsr_pg_buff_mask_set(sbsr_pl, i, 1);
 	for (i = 0; i < MLXSW_SP_SB_EG_TC_COUNT; i++)
@@ -1674,12 +1721,19 @@ next_batch:
 	for (; local_port < mlxsw_core_max_ports(mlxsw_core); local_port++) {
 		if (!mlxsw_sp->ports[local_port])
 			continue;
+		if (local_port > last_local_port) {
+			current_page++;
+			goto do_query;
+		}
 		if (local_port != MLXSW_PORT_CPU_PORT) {
 			/* Ingress quotas are not supported for the CPU port */
 			mlxsw_reg_sbsr_ingress_port_mask_set(sbsr_pl,
-							     local_port, 1);
+							     local_port - first_local_port,
+							     1);
 		}
-		mlxsw_reg_sbsr_egress_port_mask_set(sbsr_pl, local_port, 1);
+		mlxsw_reg_sbsr_egress_port_mask_set(sbsr_pl,
+						    local_port - first_local_port,
+						    1);
 		for (i = 0; i < mlxsw_sp->sb_vals->pool_count; i++) {
 			err = mlxsw_sp_sb_pm_occ_clear(mlxsw_sp, local_port, i,
 						       &bulk_list);
@@ -1715,7 +1769,7 @@ int mlxsw_sp_sb_occ_port_pool_get(struct mlxsw_core_port *mlxsw_core_port,
 	struct mlxsw_sp_port *mlxsw_sp_port =
 			mlxsw_core_port_driver_priv(mlxsw_core_port);
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
-	u8 local_port = mlxsw_sp_port->local_port;
+	u16 local_port = mlxsw_sp_port->local_port;
 	struct mlxsw_sp_sb_pm *pm = mlxsw_sp_sb_pm_get(mlxsw_sp, local_port,
 						       pool_index);
 
@@ -1732,7 +1786,7 @@ int mlxsw_sp_sb_occ_tc_port_bind_get(struct mlxsw_core_port *mlxsw_core_port,
 	struct mlxsw_sp_port *mlxsw_sp_port =
 			mlxsw_core_port_driver_priv(mlxsw_core_port);
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
-	u8 local_port = mlxsw_sp_port->local_port;
+	u16 local_port = mlxsw_sp_port->local_port;
 	u8 pg_buff = tc_index;
 	enum mlxsw_reg_sbxx_dir dir = (enum mlxsw_reg_sbxx_dir) pool_type;
 	struct mlxsw_sp_sb_cm *cm = mlxsw_sp_sb_cm_get(mlxsw_sp, local_port,

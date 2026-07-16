@@ -104,17 +104,14 @@ static int alloc_pending_queues(struct pending_qinfo *pqinfo, u32 qlen,
 				u32 nr_queues)
 {
 	u32 i;
-	size_t size;
 	int ret;
 	struct pending_queue *queue = NULL;
 
 	pqinfo->nr_queues = nr_queues;
 	pqinfo->qlen = qlen;
 
-	size = (qlen * sizeof(struct pending_entry));
-
 	for_each_pending_queue(pqinfo, queue, i) {
-		queue->head = kzalloc((size), GFP_KERNEL);
+		queue->head = kcalloc(qlen, sizeof(*queue->head), GFP_KERNEL);
 		if (!queue->head) {
 			ret = -ENOMEM;
 			goto pending_qfail;
@@ -183,7 +180,8 @@ static void free_command_queues(struct cpt_vf *cptvf,
 
 		hlist_for_each_entry_safe(chunk, node, &cqinfo->queue[i].chead,
 					  nextchunk) {
-			dma_free_coherent(&pdev->dev, chunk->size,
+			dma_free_coherent(&pdev->dev,
+					  chunk->size + CPT_NEXT_CHUNK_PTR_SIZE,
 					  chunk->head,
 					  chunk->dma_addr);
 			chunk->head = NULL;

@@ -55,29 +55,27 @@ struct ks8851_net_par {
 /**
  * ks8851_lock_par - register access lock
  * @ks: The chip state
- * @flags: Spinlock flags
  *
  * Claim chip register access lock
  */
-static void ks8851_lock_par(struct ks8851_net *ks, unsigned long *flags)
+static void ks8851_lock_par(struct ks8851_net *ks)
 {
 	struct ks8851_net_par *ksp = to_ks8851_par(ks);
 
-	spin_lock_irqsave(&ksp->lock, *flags);
+	spin_lock_bh(&ksp->lock);
 }
 
 /**
  * ks8851_unlock_par - register access unlock
  * @ks: The chip state
- * @flags: Spinlock flags
  *
  * Release chip register access lock
  */
-static void ks8851_unlock_par(struct ks8851_net *ks, unsigned long *flags)
+static void ks8851_unlock_par(struct ks8851_net *ks)
 {
 	struct ks8851_net_par *ksp = to_ks8851_par(ks);
 
-	spin_unlock_irqrestore(&ksp->lock, *flags);
+	spin_unlock_bh(&ksp->lock);
 }
 
 /**
@@ -210,16 +208,6 @@ static void ks8851_wrfifo_par(struct ks8851_net *ks, struct sk_buff *txp,
 	iowrite16_rep(ksp->hw_addr, txp->data, len / 2);
 }
 
-/**
- * ks8851_rx_skb_par - receive skbuff
- * @ks: The device state.
- * @skb: The skbuff
- */
-static void ks8851_rx_skb_par(struct ks8851_net *ks, struct sk_buff *skb)
-{
-	netif_rx(skb);
-}
-
 static unsigned int ks8851_rdreg16_par_txqcr(struct ks8851_net *ks)
 {
 	return ks8851_rdreg16_par(ks, KS_TXQCR);
@@ -243,7 +231,6 @@ static netdev_tx_t ks8851_start_xmit_par(struct sk_buff *skb,
 {
 	struct ks8851_net *ks = netdev_priv(dev);
 	netdev_tx_t ret = NETDEV_TX_OK;
-	unsigned long flags;
 	unsigned int txqcr;
 	u16 txmir;
 	int err;
@@ -251,7 +238,7 @@ static netdev_tx_t ks8851_start_xmit_par(struct sk_buff *skb,
 	netif_dbg(ks, tx_queued, ks->netdev,
 		  "%s: skb %p, %d@%p\n", __func__, skb, skb->len, skb->data);
 
-	ks8851_lock_par(ks, &flags);
+	ks8851_lock_par(ks);
 
 	txmir = ks8851_rdreg16_par(ks, KS_TXMIR) & 0x1fff;
 
@@ -272,7 +259,7 @@ static netdev_tx_t ks8851_start_xmit_par(struct sk_buff *skb,
 		ret = NETDEV_TX_BUSY;
 	}
 
-	ks8851_unlock_par(ks, &flags);
+	ks8851_unlock_par(ks);
 
 	return ret;
 }
@@ -298,7 +285,6 @@ static int ks8851_probe_par(struct platform_device *pdev)
 	ks->rdfifo = ks8851_rdfifo_par;
 	ks->wrfifo = ks8851_wrfifo_par;
 	ks->start_xmit = ks8851_start_xmit_par;
-	ks->rx_skb = ks8851_rx_skb_par;
 
 #define STD_IRQ (IRQ_LCI |	/* Link Change */	\
 		 IRQ_RXI |	/* RX done */		\
@@ -321,13 +307,15 @@ static int ks8851_probe_par(struct platform_device *pdev)
 		return ret;
 
 	netdev->irq = platform_get_irq(pdev, 0);
+	if (netdev->irq < 0)
+		return netdev->irq;
 
 	return ks8851_probe_common(netdev, dev, msg_enable);
 }
 
-static int ks8851_remove_par(struct platform_device *pdev)
+static void ks8851_remove_par(struct platform_device *pdev)
 {
-	return ks8851_remove_common(&pdev->dev);
+	ks8851_remove_common(&pdev->dev);
 }
 
 static const struct of_device_id ks8851_match_table[] = {

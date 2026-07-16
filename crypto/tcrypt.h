@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Quick & dirty crypto testing module.
+ * Quick & dirty crypto benchmarking module.
  *
- * This will only exist until we have a better testing mechanism
+ * This will only exist until we have a better benchmarking mechanism
  * (e.g. a char device).
  *
  * Copyright (c) 2002 James Morris <jmorris@intercode.com.au>
@@ -62,7 +62,7 @@ static u8 speed_template_32[] = {32, 0};
  * AEAD speed tests
  */
 static u8 aead_speed_template_19[] = {19, 0};
-static u8 aead_speed_template_20[] = {20, 0};
+static u8 aead_speed_template_20_28_36[] = {20, 28, 36, 0};
 static u8 aead_speed_template_36[] = {36, 0};
 
 /*

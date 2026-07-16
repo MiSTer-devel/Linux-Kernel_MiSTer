@@ -284,15 +284,13 @@ static void pic32_rtc_enable(struct pic32_rtc_dev *pdata, int en)
 	clk_disable(pdata->clk);
 }
 
-static int pic32_rtc_remove(struct platform_device *pdev)
+static void pic32_rtc_remove(struct platform_device *pdev)
 {
 	struct pic32_rtc_dev *pdata = platform_get_drvdata(pdev);
 
 	pic32_rtc_setaie(&pdev->dev, 0);
 	clk_unprepare(pdata->clk);
 	pdata->clk = NULL;
-
-	return 0;
 }
 
 static int pic32_rtc_probe(struct platform_device *pdev)
@@ -324,15 +322,15 @@ static int pic32_rtc_probe(struct platform_device *pdev)
 
 	spin_lock_init(&pdata->alarm_lock);
 
+	pdata->rtc = devm_rtc_allocate_device(&pdev->dev);
+	if (IS_ERR(pdata->rtc))
+		return PTR_ERR(pdata->rtc);
+
 	clk_prepare_enable(pdata->clk);
 
 	pic32_rtc_enable(pdata, 1);
 
-	device_init_wakeup(&pdev->dev, 1);
-
-	pdata->rtc = devm_rtc_allocate_device(&pdev->dev);
-	if (IS_ERR(pdata->rtc))
-		return PTR_ERR(pdata->rtc);
+	device_init_wakeup(&pdev->dev, true);
 
 	pdata->rtc->ops = &pic32_rtcops;
 	pdata->rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;

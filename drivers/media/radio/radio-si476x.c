@@ -313,12 +313,6 @@ struct si476x_radio {
 };
 
 static inline struct si476x_radio *
-v4l2_dev_to_radio(struct v4l2_device *d)
-{
-	return container_of(d, struct si476x_radio, v4l2dev);
-}
-
-static inline struct si476x_radio *
 v4l2_ctrl_handler_to_radio(struct v4l2_ctrl_handler *d)
 {
 	return container_of(d, struct si476x_radio, ctrl_handler);
@@ -334,9 +328,7 @@ static int si476x_radio_querycap(struct file *file, void *priv,
 
 	strscpy(capability->driver, radio->v4l2dev.name,
 		sizeof(capability->driver));
-	strscpy(capability->card,   DRIVER_CARD, sizeof(capability->card));
-	snprintf(capability->bus_info, sizeof(capability->bus_info),
-		 "platform:%s", radio->v4l2dev.name);
+	strscpy(capability->card, DRIVER_CARD, sizeof(capability->card));
 	return 0;
 }
 
@@ -1078,7 +1070,6 @@ done:
 
 static int si476x_radio_fops_release(struct file *file)
 {
-	int err;
 	struct si476x_radio *radio = video_drvdata(file);
 
 	if (v4l2_fh_is_singular_file(file) &&
@@ -1086,9 +1077,7 @@ static int si476x_radio_fops_release(struct file *file)
 		si476x_core_set_power_state(radio->core,
 					    SI476X_POWER_DOWN);
 
-	err = v4l2_fh_release(file);
-
-	return err;
+	return v4l2_fh_release(file);
 }
 
 static ssize_t si476x_radio_fops_read(struct file *file, char __user *buf,
@@ -1507,7 +1496,7 @@ exit:
 	return rval;
 }
 
-static int si476x_radio_remove(struct platform_device *pdev)
+static void si476x_radio_remove(struct platform_device *pdev)
 {
 	struct si476x_radio *radio = platform_get_drvdata(pdev);
 
@@ -1515,8 +1504,6 @@ static int si476x_radio_remove(struct platform_device *pdev)
 	video_unregister_device(&radio->videodev);
 	v4l2_device_unregister(&radio->v4l2dev);
 	debugfs_remove_recursive(radio->debugfs);
-
-	return 0;
 }
 
 MODULE_ALIAS("platform:si476x-radio");

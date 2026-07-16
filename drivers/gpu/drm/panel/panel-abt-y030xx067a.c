@@ -11,7 +11,8 @@
 #include <linux/gpio/consumer.h>
 #include <linux/media-bus-format.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
@@ -140,7 +141,7 @@ static const struct reg_sequence y030xx067a_init_sequence[] = {
 	{ 0x03, REG03_VPOSITION(0x0a) },
 	{ 0x04, REG04_HPOSITION1(0xd2) },
 	{ 0x05, REG05_CLIP | REG05_NVM_VREFRESH | REG05_SLBRCHARGE(0x2) },
-	{ 0x06, REG06_XPSAVE | REG06_NT },
+	{ 0x06, REG06_NT },
 	{ 0x07, 0 },
 	{ 0x08, REG08_PANEL(0x1) | REG08_CLOCK_DIV(0x2) },
 	{ 0x09, REG09_SUB_BRIGHT_R(0x20) },
@@ -183,8 +184,6 @@ static int y030xx067a_prepare(struct drm_panel *panel)
 		goto err_disable_regulator;
 	}
 
-	msleep(120);
-
 	return 0;
 
 err_disable_regulator:
@@ -198,6 +197,29 @@ static int y030xx067a_unprepare(struct drm_panel *panel)
 
 	gpiod_set_value_cansleep(priv->reset_gpio, 1);
 	regulator_disable(priv->supply);
+
+	return 0;
+}
+
+static int y030xx067a_enable(struct drm_panel *panel)
+{
+	struct y030xx067a *priv = to_y030xx067a(panel);
+
+	regmap_set_bits(priv->map, 0x06, REG06_XPSAVE);
+
+	if (panel->backlight) {
+		/* Wait for the picture to be ready before enabling backlight */
+		msleep(120);
+	}
+
+	return 0;
+}
+
+static int y030xx067a_disable(struct drm_panel *panel)
+{
+	struct y030xx067a *priv = to_y030xx067a(panel);
+
+	regmap_clear_bits(priv->map, 0x06, REG06_XPSAVE);
 
 	return 0;
 }
@@ -239,6 +261,8 @@ static int y030xx067a_get_modes(struct drm_panel *panel,
 static const struct drm_panel_funcs y030xx067a_funcs = {
 	.prepare	= y030xx067a_prepare,
 	.unprepare	= y030xx067a_unprepare,
+	.enable		= y030xx067a_enable,
+	.disable	= y030xx067a_disable,
 	.get_modes	= y030xx067a_get_modes,
 };
 
@@ -246,6 +270,7 @@ static const struct regmap_config y030xx067a_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = 0x15,
+	.cache_type = REGCACHE_FLAT,
 };
 
 static int y030xx067a_probe(struct spi_device *spi)
@@ -254,9 +279,10 @@ static int y030xx067a_probe(struct spi_device *spi)
 	struct y030xx067a *priv;
 	int err;
 
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
-	if (!priv)
-		return -ENOMEM;
+	priv = devm_drm_panel_alloc(dev, struct y030xx067a, panel,
+				    &y030xx067a_funcs, DRM_MODE_CONNECTOR_DPI);
+	if (IS_ERR(priv))
+		return PTR_ERR(priv);
 
 	priv->spi = spi;
 	spi_set_drvdata(spi, priv);
@@ -272,19 +298,14 @@ static int y030xx067a_probe(struct spi_device *spi)
 		return -EINVAL;
 
 	priv->supply = devm_regulator_get(dev, "power");
-	if (IS_ERR(priv->supply)) {
-		dev_err(dev, "Failed to get power supply\n");
-		return PTR_ERR(priv->supply);
-	}
+	if (IS_ERR(priv->supply))
+		return dev_err_probe(dev, PTR_ERR(priv->supply),
+				     "Failed to get power supply\n");
 
 	priv->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
-	if (IS_ERR(priv->reset_gpio)) {
-		dev_err(dev, "Failed to get reset GPIO\n");
-		return PTR_ERR(priv->reset_gpio);
-	}
-
-	drm_panel_init(&priv->panel, dev, &y030xx067a_funcs,
-		       DRM_MODE_CONNECTOR_DPI);
+	if (IS_ERR(priv->reset_gpio))
+		return dev_err_probe(dev, PTR_ERR(priv->reset_gpio),
+				     "Failed to get reset GPIO\n");
 
 	err = drm_panel_of_backlight(&priv->panel);
 	if (err)
@@ -295,15 +316,13 @@ static int y030xx067a_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int y030xx067a_remove(struct spi_device *spi)
+static void y030xx067a_remove(struct spi_device *spi)
 {
 	struct y030xx067a *priv = spi_get_drvdata(spi);
 
 	drm_panel_remove(&priv->panel);
 	drm_panel_disable(&priv->panel);
 	drm_panel_unprepare(&priv->panel);
-
-	return 0;
 }
 
 static const struct drm_display_mode y030xx067a_modes[] = {
@@ -360,4 +379,5 @@ module_spi_driver(y030xx067a_driver);
 
 MODULE_AUTHOR("Paul Cercueil <paul@crapouillou.net>");
 MODULE_AUTHOR("Christophe Branchereau <cbranchereau@gmail.com>");
+MODULE_DESCRIPTION("Asia Better Technology Ltd. Y030XX067A IPS LCD panel driver");
 MODULE_LICENSE("GPL v2");

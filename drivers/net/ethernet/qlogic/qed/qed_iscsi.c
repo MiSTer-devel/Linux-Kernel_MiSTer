@@ -29,6 +29,7 @@
 #include "qed_hsi.h"
 #include "qed_hw.h"
 #include "qed_int.h"
+#include "qed_iro_hsi.h"
 #include "qed_iscsi.h"
 #include "qed_ll2.h"
 #include "qed_mcp.h"
@@ -627,10 +628,9 @@ static void __iomem *qed_iscsi_get_primary_bdq_prod(struct qed_hwfn *p_hwfn,
 {
 	if (RESC_NUM(p_hwfn, QED_BDQ)) {
 		return (u8 __iomem *)p_hwfn->regview +
-		       GTT_BAR0_MAP_REG_MSDM_RAM +
-		       MSTORM_SCSI_BDQ_EXT_PROD_OFFSET(RESC_START(p_hwfn,
-								  QED_BDQ),
-						       bdq_id);
+		    GET_GTT_BDQ_REG_ADDR(GTT_BAR0_MAP_REG_MSDM_RAM,
+					 MSTORM_SCSI_BDQ_EXT_PROD,
+					 RESC_START(p_hwfn, QED_BDQ), bdq_id);
 	} else {
 		DP_NOTICE(p_hwfn, "BDQ is not allocated!\n");
 		return NULL;
@@ -642,10 +642,9 @@ static void __iomem *qed_iscsi_get_secondary_bdq_prod(struct qed_hwfn *p_hwfn,
 {
 	if (RESC_NUM(p_hwfn, QED_BDQ)) {
 		return (u8 __iomem *)p_hwfn->regview +
-		       GTT_BAR0_MAP_REG_TSDM_RAM +
-		       TSTORM_SCSI_BDQ_EXT_PROD_OFFSET(RESC_START(p_hwfn,
-								  QED_BDQ),
-						       bdq_id);
+		    GET_GTT_BDQ_REG_ADDR(GTT_BAR0_MAP_REG_TSDM_RAM,
+					 TSTORM_SCSI_BDQ_EXT_PROD,
+					 RESC_START(p_hwfn, QED_BDQ), bdq_id);
 	} else {
 		DP_NOTICE(p_hwfn, "BDQ is not allocated!\n");
 		return NULL;
@@ -1000,13 +999,14 @@ static void _qed_iscsi_get_pstats(struct qed_hwfn *p_hwfn,
 }
 
 static int qed_iscsi_get_stats(struct qed_hwfn *p_hwfn,
-			       struct qed_iscsi_stats *stats)
+			       struct qed_iscsi_stats *stats,
+			       bool is_atomic)
 {
 	struct qed_ptt *p_ptt;
 
 	memset(stats, 0, sizeof(*stats));
 
-	p_ptt = qed_ptt_acquire(p_hwfn);
+	p_ptt = qed_ptt_acquire_context(p_hwfn, is_atomic);
 	if (!p_ptt) {
 		DP_ERR(p_hwfn, "Failed to acquire ptt\n");
 		return -EAGAIN;
@@ -1337,9 +1337,16 @@ static int qed_iscsi_destroy_conn(struct qed_dev *cdev,
 					   QED_SPQ_MODE_EBLOCK, NULL);
 }
 
+static int qed_iscsi_stats_context(struct qed_dev *cdev,
+				   struct qed_iscsi_stats *stats,
+				   bool is_atomic)
+{
+	return qed_iscsi_get_stats(QED_AFFIN_HWFN(cdev), stats, is_atomic);
+}
+
 static int qed_iscsi_stats(struct qed_dev *cdev, struct qed_iscsi_stats *stats)
 {
-	return qed_iscsi_get_stats(QED_AFFIN_HWFN(cdev), stats);
+	return qed_iscsi_stats_context(cdev, stats, false);
 }
 
 static int qed_iscsi_change_mac(struct qed_dev *cdev,
@@ -1359,13 +1366,14 @@ static int qed_iscsi_change_mac(struct qed_dev *cdev,
 }
 
 void qed_get_protocol_stats_iscsi(struct qed_dev *cdev,
-				  struct qed_mcp_iscsi_stats *stats)
+				  struct qed_mcp_iscsi_stats *stats,
+				  bool is_atomic)
 {
 	struct qed_iscsi_stats proto_stats;
 
 	/* Retrieve FW statistics */
 	memset(&proto_stats, 0, sizeof(proto_stats));
-	if (qed_iscsi_stats(cdev, &proto_stats)) {
+	if (qed_iscsi_stats_context(cdev, &proto_stats, is_atomic)) {
 		DP_VERBOSE(cdev, QED_MSG_STORAGE,
 			   "Failed to collect ISCSI statistics\n");
 		return;

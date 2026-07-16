@@ -61,7 +61,7 @@ static u32 bcma_get_cfgspace_addr(struct bcma_drv_pci *pc, unsigned int dev,
 {
 	u32 addr = 0;
 
-	/* Issue config commands only when the data link is up (atleast
+	/* Issue config commands only when the data link is up (at least
 	 * one external pcie device is present).
 	 */
 	if (dev >= 2 || !(bcma_pcie_read(pc, BCMA_CORE_PCI_DLLP_LSREG)
@@ -280,7 +280,7 @@ static u8 bcma_find_pci_capability(struct bcma_drv_pci *pc, unsigned int dev,
 	/* check for Header type 0 */
 	bcma_extpci_read_config(pc, dev, func, PCI_HEADER_TYPE, &byte_val,
 				sizeof(u8));
-	if ((byte_val & 0x7F) != PCI_HEADER_TYPE_NORMAL)
+	if ((byte_val & PCI_HEADER_TYPE_MASK) != PCI_HEADER_TYPE_NORMAL)
 		return cap_ptr;
 
 	/* check if the capability pointer field exists */
@@ -295,7 +295,7 @@ static u8 bcma_find_pci_capability(struct bcma_drv_pci *pc, unsigned int dev,
 	if (cap_ptr == 0x00)
 		return cap_ptr;
 
-	/* loop thr'u the capability list and see if the requested capabilty
+	/* loop through the capability list and see if the requested capability
 	 * exists */
 	bcma_extpci_read_config(pc, dev, func, cap_ptr, &cap_id, sizeof(u8));
 	while (cap_id != req_cap_id) {
@@ -317,7 +317,7 @@ static u8 bcma_find_pci_capability(struct bcma_drv_pci *pc, unsigned int dev,
 
 		*buflen = 0;
 
-		/* copy the cpability data excluding cap ID and next ptr */
+		/* copy the capability data excluding cap ID and next ptr */
 		cap_data = cap_ptr + 2;
 		if ((bufsize + cap_data)  > PCI_CONFIG_SPACE_SIZE)
 			bufsize = PCI_CONFIG_SPACE_SIZE - cap_data;
@@ -334,7 +334,7 @@ static u8 bcma_find_pci_capability(struct bcma_drv_pci *pc, unsigned int dev,
 }
 
 /* If the root port is capable of returning Config Request
- * Retry Status (CRS) Completion Status to software then
+ * Retry Status (RRS) Completion Status to software then
  * enable the feature.
  */
 static void bcma_core_pci_enable_crs(struct bcma_drv_pci *pc)
@@ -348,10 +348,10 @@ static void bcma_core_pci_enable_crs(struct bcma_drv_pci *pc)
 					   NULL);
 	root_cap = cap_ptr + PCI_EXP_RTCAP;
 	bcma_extpci_read_config(pc, 0, 0, root_cap, &val16, sizeof(u16));
-	if (val16 & BCMA_CORE_PCI_RC_CRS_VISIBILITY) {
-		/* Enable CRS software visibility */
+	if (val16 & BCMA_CORE_PCI_RC_RRS_VISIBILITY) {
+		/* Enable Configuration RRS Software Visibility */
 		root_ctrl = cap_ptr + PCI_EXP_RTCTL;
-		val16 = PCI_EXP_RTCTL_CRSSVE;
+		val16 = PCI_EXP_RTCTL_RRS_SVE;
 		bcma_extpci_read_config(pc, 0, 0, root_ctrl, &val16,
 					sizeof(u16));
 
@@ -360,7 +360,7 @@ static void bcma_core_pci_enable_crs(struct bcma_drv_pci *pc)
 		 * 100 ms wait time from the end of Reset. If the device is
 		 * not done with its internal initialization, it must at
 		 * least return a completion TLP, with a completion status
-		 * of "Configuration Request Retry Status (CRS)". The root
+		 * of "Configuration Request Retry Status (RRS)". The root
 		 * complex must complete the request to the host by returning
 		 * a read-data value of 0001h for the Vendor ID field and
 		 * all 1s for any additional bytes included in the request.

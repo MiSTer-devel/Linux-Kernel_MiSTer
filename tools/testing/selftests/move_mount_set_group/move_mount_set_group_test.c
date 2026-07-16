@@ -191,7 +191,7 @@ static bool is_shared_mount(const char *path)
 #define SET_GROUP_FROM	"/tmp/move_mount_set_group_supported_from"
 #define SET_GROUP_TO	"/tmp/move_mount_set_group_supported_to"
 
-static int move_mount_set_group_supported(void)
+static bool move_mount_set_group_supported(void)
 {
 	int ret;
 
@@ -218,11 +218,11 @@ static int move_mount_set_group_supported(void)
 	if (mount(NULL, SET_GROUP_FROM, NULL, MS_SHARED, 0))
 		return -1;
 
-	ret = syscall(SYS_move_mount, AT_FDCWD, SET_GROUP_FROM,
+	ret = syscall(__NR_move_mount, AT_FDCWD, SET_GROUP_FROM,
 		      AT_FDCWD, SET_GROUP_TO, MOVE_MOUNT_SET_GROUP);
 	umount2("/tmp", MNT_DETACH);
 
-	return ret < 0 ? false : true;
+	return ret >= 0;
 }
 
 FIXTURE(move_mount_set_group) {
@@ -232,7 +232,7 @@ FIXTURE(move_mount_set_group) {
 
 FIXTURE_SETUP(move_mount_set_group)
 {
-	int ret;
+	bool ret;
 
 	ASSERT_EQ(prepare_unpriv_mountns(), 0);
 
@@ -254,7 +254,7 @@ FIXTURE_SETUP(move_mount_set_group)
 
 FIXTURE_TEARDOWN(move_mount_set_group)
 {
-	int ret;
+	bool ret;
 
 	ret = move_mount_set_group_supported();
 	ASSERT_GE(ret, 0);
@@ -348,7 +348,7 @@ TEST_F(move_mount_set_group, complex_sharing_copying)
 		.shared = false,
 	};
 	pid_t pid;
-	int ret;
+	bool ret;
 
 	ret = move_mount_set_group_supported();
 	ASSERT_GE(ret, 0);
@@ -363,7 +363,7 @@ TEST_F(move_mount_set_group, complex_sharing_copying)
 		       CLONE_VM | CLONE_FILES); ASSERT_GT(pid, 0);
 	ASSERT_EQ(wait_for_pid(pid), 0);
 
-	ASSERT_EQ(syscall(SYS_move_mount, ca_from.mntfd, "",
+	ASSERT_EQ(syscall(__NR_move_mount, ca_from.mntfd, "",
 			  ca_to.mntfd, "", MOVE_MOUNT_SET_GROUP
 			  | MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH),
 		  0);

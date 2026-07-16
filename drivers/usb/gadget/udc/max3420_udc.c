@@ -19,9 +19,7 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/bitfield.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/prefetch.h>
 #include <linux/usb/ch9.h>
@@ -1044,22 +1042,26 @@ static int max3420_ep_queue(struct usb_ep *_ep, struct usb_request *_req,
 
 static int max3420_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 {
-	struct max3420_req *t, *req = to_max3420_req(_req);
+	struct max3420_req *t = NULL;
+	struct max3420_req *req = to_max3420_req(_req);
+	struct max3420_req *iter;
 	struct max3420_ep *ep = to_max3420_ep(_ep);
 	unsigned long flags;
 
 	spin_lock_irqsave(&ep->lock, flags);
 
 	/* Pluck the descriptor from queue */
-	list_for_each_entry(t, &ep->queue, queue)
-		if (t == req) {
-			list_del_init(&req->queue);
-			break;
-		}
+	list_for_each_entry(iter, &ep->queue, queue) {
+		if (iter != req)
+			continue;
+		list_del_init(&req->queue);
+		t = iter;
+		break;
+	}
 
 	spin_unlock_irqrestore(&ep->lock, flags);
 
-	if (t == req)
+	if (t)
 		max3420_req_done(req, -ECONNRESET);
 
 	return 0;
@@ -1104,7 +1106,6 @@ static int max3420_udc_start(struct usb_gadget *gadget,
 
 	spin_lock_irqsave(&udc->lock, flags);
 	/* hook up the driver */
-	driver->driver.bus = NULL;
 	udc->driver = driver;
 	udc->gadget.speed = USB_SPEED_FULL;
 
@@ -1200,7 +1201,7 @@ static int max3420_probe(struct spi_device *spi)
 	int err, irq;
 	u8 reg[8];
 
-	if (spi->master->flags & SPI_MASTER_HALF_DUPLEX) {
+	if (spi->controller->flags & SPI_CONTROLLER_HALF_DUPLEX) {
 		dev_err(&spi->dev, "UDC needs full duplex to work\n");
 		return -EINVAL;
 	}
@@ -1292,7 +1293,7 @@ del_gadget:
 	return err;
 }
 
-static int max3420_remove(struct spi_device *spi)
+static void max3420_remove(struct spi_device *spi)
 {
 	struct max3420_udc *udc = spi_get_drvdata(spi);
 	unsigned long flags;
@@ -1304,8 +1305,6 @@ static int max3420_remove(struct spi_device *spi)
 	kthread_stop(udc->thread_task);
 
 	spin_unlock_irqrestore(&udc->lock, flags);
-
-	return 0;
 }
 
 static const struct of_device_id max3420_udc_of_match[] = {
@@ -1318,7 +1317,7 @@ MODULE_DEVICE_TABLE(of, max3420_udc_of_match);
 static struct spi_driver max3420_driver = {
 	.driver = {
 		.name = "max3420-udc",
-		.of_match_table = of_match_ptr(max3420_udc_of_match),
+		.of_match_table = max3420_udc_of_match,
 	},
 	.probe = max3420_probe,
 	.remove = max3420_remove,

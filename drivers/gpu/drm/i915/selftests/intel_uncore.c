@@ -24,6 +24,8 @@
 
 #include "../i915_selftest.h"
 
+#include "gt/intel_gt.h"
+
 static int intel_fw_table_check(const struct intel_forcewake_range *ranges,
 				unsigned int num_ranges,
 				bool is_watertight)
@@ -62,30 +64,42 @@ static int intel_fw_table_check(const struct intel_forcewake_range *ranges,
 static int intel_shadow_table_check(void)
 {
 	struct {
-		const i915_reg_t *regs;
+		const struct i915_range *regs;
 		unsigned int size;
-	} reg_lists[] = {
+	} range_lists[] = {
 		{ gen8_shadowed_regs, ARRAY_SIZE(gen8_shadowed_regs) },
 		{ gen11_shadowed_regs, ARRAY_SIZE(gen11_shadowed_regs) },
 		{ gen12_shadowed_regs, ARRAY_SIZE(gen12_shadowed_regs) },
-		{ xehp_shadowed_regs, ARRAY_SIZE(xehp_shadowed_regs) },
+		{ dg2_shadowed_regs, ARRAY_SIZE(dg2_shadowed_regs) },
+		{ mtl_shadowed_regs, ARRAY_SIZE(mtl_shadowed_regs) },
+		{ xelpmp_shadowed_regs, ARRAY_SIZE(xelpmp_shadowed_regs) },
 	};
-	const i915_reg_t *reg;
+	const struct i915_range *range;
 	unsigned int i, j;
 	s32 prev;
 
-	for (j = 0; j < ARRAY_SIZE(reg_lists); ++j) {
-		reg = reg_lists[j].regs;
-		for (i = 0, prev = -1; i < reg_lists[j].size; i++, reg++) {
-			u32 offset = i915_mmio_reg_offset(*reg);
-
-			if (prev >= (s32)offset) {
-				pr_err("%s: entry[%d]:(%x) is before previous (%x)\n",
-				       __func__, i, offset, prev);
+	for (j = 0; j < ARRAY_SIZE(range_lists); ++j) {
+		range = range_lists[j].regs;
+		for (i = 0, prev = -1; i < range_lists[j].size; i++, range++) {
+			if (range->end < range->start) {
+				pr_err("%s: range[%d]:(%06x-%06x) has end before start\n",
+				       __func__, i, range->start, range->end);
 				return -EINVAL;
 			}
 
-			prev = offset;
+			if (prev >= (s32)range->start) {
+				pr_err("%s: range[%d]:(%06x-%06x) is before end of previous (%06x)\n",
+				       __func__, i, range->start, range->end, prev);
+				return -EINVAL;
+			}
+
+			if (range->start % 4) {
+				pr_err("%s: range[%d]:(%06x-%06x) has non-dword-aligned start\n",
+				       __func__, i, range->start, range->end);
+				return -EINVAL;
+			}
+
+			prev = range->end;
 		}
 	}
 
@@ -104,7 +118,8 @@ int intel_uncore_mock_selftests(void)
 		{ __gen9_fw_ranges, ARRAY_SIZE(__gen9_fw_ranges), true },
 		{ __gen11_fw_ranges, ARRAY_SIZE(__gen11_fw_ranges), true },
 		{ __gen12_fw_ranges, ARRAY_SIZE(__gen12_fw_ranges), true },
-		{ __xehp_fw_ranges, ARRAY_SIZE(__xehp_fw_ranges), true },
+		{ __mtl_fw_ranges, ARRAY_SIZE(__mtl_fw_ranges), true },
+		{ __xelpmp_fw_ranges, ARRAY_SIZE(__xelpmp_fw_ranges), true },
 	};
 	int err, i;
 
@@ -194,7 +209,7 @@ static int live_forcewake_ops(void *arg)
 
 	for_each_engine(engine, gt, id) {
 		i915_reg_t mmio = _MMIO(engine->mmio_base + r->offset);
-		u32 __iomem *reg = uncore->regs + engine->mmio_base + r->offset;
+		u32 __iomem *reg = intel_uncore_regs(uncore) + engine->mmio_base + r->offset;
 		enum forcewake_domains fw_domains;
 		u32 val;
 
@@ -262,13 +277,15 @@ static int live_forcewake_domains(void *arg)
 #define FW_RANGE 0x40000
 	struct intel_gt *gt = arg;
 	struct intel_uncore *uncore = gt->uncore;
+	struct drm_i915_private *i915 = gt->i915;
+	struct intel_display *display = i915->display;
 	unsigned long *valid;
 	u32 offset;
 	int err;
 
-	if (!HAS_FPGA_DBG_UNCLAIMED(gt->i915) &&
-	    !IS_VALLEYVIEW(gt->i915) &&
-	    !IS_CHERRYVIEW(gt->i915))
+	if (!HAS_FPGA_DBG_UNCLAIMED(display) &&
+	    !IS_VALLEYVIEW(i915) &&
+	    !IS_CHERRYVIEW(i915))
 		return 0;
 
 	/*
@@ -334,5 +351,5 @@ int intel_uncore_live_selftests(struct drm_i915_private *i915)
 		SUBTEST(live_forcewake_domains),
 	};
 
-	return intel_gt_live_subtests(tests, &i915->gt);
+	return intel_gt_live_subtests(tests, to_gt(i915));
 }
