@@ -5,24 +5,30 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include "pci.h"
-#include "rtw8822be.h"
+#include "rtw8822b.h"
+
+static const struct rtw_pci_info rtw_8822be_pci_info = {
+	.chip_info = &rtw8822b_hw_spec,
+	.pci_gen = &rtw_pci_gen_new,
+};
 
 static const struct pci_device_id rtw_8822be_id_table[] = {
 	{
 		PCI_DEVICE(PCI_VENDOR_ID_REALTEK, 0xB822),
-		.driver_data = (kernel_ulong_t)&rtw8822b_hw_spec
+		.driver_data = (kernel_ulong_t)&rtw_8822be_pci_info
 	},
 	{}
 };
 MODULE_DEVICE_TABLE(pci, rtw_8822be_id_table);
 
 static struct pci_driver rtw_8822be_driver = {
-	.name = "rtw_8822be",
+	.name = KBUILD_MODNAME,
 	.id_table = rtw_8822be_id_table,
 	.probe = rtw_pci_probe,
 	.remove = rtw_pci_remove,
 	.driver.pm = &rtw_pm_ops,
 	.shutdown = rtw_pci_shutdown,
+	.err_handler  = &rtw_pci_err_handler,
 };
 module_pci_driver(rtw_8822be_driver);
 
