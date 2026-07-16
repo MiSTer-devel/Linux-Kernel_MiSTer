@@ -5,24 +5,30 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include "pci.h"
-#include "rtw8723de.h"
+#include "rtw8723d.h"
+
+static const struct rtw_pci_info rtw_8723de_pci_info = {
+	.chip_info = &rtw8723d_hw_spec,
+	.pci_gen = &rtw_pci_gen_new,
+};
 
 static const struct pci_device_id rtw_8723de_id_table[] = {
 	{
 		PCI_DEVICE(PCI_VENDOR_ID_REALTEK, 0xD723),
-		.driver_data = (kernel_ulong_t)&rtw8723d_hw_spec
+		.driver_data = (kernel_ulong_t)&rtw_8723de_pci_info
 	},
 	{}
 };
 MODULE_DEVICE_TABLE(pci, rtw_8723de_id_table);
 
 static struct pci_driver rtw_8723de_driver = {
-	.name = "rtw_8723de",
+	.name = KBUILD_MODNAME,
 	.id_table = rtw_8723de_id_table,
 	.probe = rtw_pci_probe,
 	.remove = rtw_pci_remove,
 	.driver.pm = &rtw_pm_ops,
 	.shutdown = rtw_pci_shutdown,
+	.err_handler  = &rtw_pci_err_handler,
 };
 module_pci_driver(rtw_8723de_driver);
 
