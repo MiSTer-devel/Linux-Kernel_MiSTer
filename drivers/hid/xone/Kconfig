@@ -1,0 +1,7 @@
+#
+# XOne wireless adapter
+#
+config JOYSTICK_XONE
+	tristate "XOne"
+	depends on INPUT && INPUT_JOYSTICK
+

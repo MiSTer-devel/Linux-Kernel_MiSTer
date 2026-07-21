@@ -1470,6 +1470,8 @@ config HID_KUNIT_TEST
 
 	  If in doubt, say "N".
 
+source "drivers/hid/xone/Kconfig"
+
 endmenu
 
 source "drivers/hid/bpf/Kconfig"
