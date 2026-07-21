@@ -422,6 +422,12 @@ static int exfat_ioctl_set_attributes(struct file *file, u32 __user *user_attr)
 		goto out_unlock_inode;
 	}
 
+	if (!is_dir &&
+	    exfat_attr_is_symlink(attr) != exfat_attr_is_symlink(oldattr)) {
+		err = -EINVAL;
+		goto out_unlock_inode;
+	}
+
 	/*
 	 * The security check is questionable...  We single
 	 * out the RO attribute for checking by the security

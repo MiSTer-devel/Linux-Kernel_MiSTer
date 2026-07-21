@@ -362,6 +362,12 @@ static inline int exfat_mode_can_hold_ro(struct inode *inode)
 	return 0;
 }
 
+static inline bool exfat_attr_is_symlink(unsigned short attr)
+{
+	return !(attr & EXFAT_ATTR_SUBDIR) &&
+		(attr & (EXFAT_ATTR_SYMLINK | EXFAT_ATTR_SYMLINK_OLD));
+}
+
 /* Convert attribute bits and a mask to the UNIX mode. */
 static inline mode_t exfat_make_mode(struct exfat_sb_info *sbi,
 		unsigned short attr, mode_t mode)
@@ -371,6 +377,9 @@ static inline mode_t exfat_make_mode(struct exfat_sb_info *sbi,
 
 	if (attr & EXFAT_ATTR_SUBDIR)
 		return (mode & ~sbi->options.fs_dmask) | S_IFDIR;
+
+	if (exfat_attr_is_symlink(attr))
+		return (mode & ~sbi->options.fs_dmask) | S_IFLNK;
 
 	return (mode & ~sbi->options.fs_fmask) | S_IFREG;
 }
@@ -382,6 +391,8 @@ static inline unsigned short exfat_make_attr(struct inode *inode)
 
 	if (S_ISDIR(inode->i_mode))
 		attr |= EXFAT_ATTR_SUBDIR;
+	if (S_ISLNK(inode->i_mode))
+		attr |= EXFAT_ATTR_ARCHIVE | EXFAT_ATTR_SYMLINK;
 	if (exfat_mode_can_hold_ro(inode) && !(inode->i_mode & 0222))
 		attr |= EXFAT_ATTR_READONLY;
 	return attr;
@@ -389,10 +400,12 @@ static inline unsigned short exfat_make_attr(struct inode *inode)
 
 static inline void exfat_save_attr(struct inode *inode, unsigned short attr)
 {
+	unsigned short mask = EXFAT_ATTR_RWMASK | EXFAT_ATTR_SYMLINK_OLD;
+
 	if (exfat_mode_can_hold_ro(inode))
-		EXFAT_I(inode)->attr = attr & (EXFAT_ATTR_RWMASK | EXFAT_ATTR_READONLY);
+		EXFAT_I(inode)->attr = attr & (mask | EXFAT_ATTR_READONLY);
 	else
-		EXFAT_I(inode)->attr = attr & EXFAT_ATTR_RWMASK;
+		EXFAT_I(inode)->attr = attr & mask;
 }
 
 static inline bool exfat_is_last_sector_in_cluster(struct exfat_sb_info *sbi,

@@ -649,6 +649,13 @@ static int exfat_fill_inode(struct inode *inode, struct exfat_dir_entry *info)
 		inode->i_op = &exfat_dir_inode_operations;
 		inode->i_fop = &exfat_dir_operations;
 		set_nlink(inode, info->num_subdirs);
+	} else if (exfat_attr_is_symlink(info->attr)) {
+		inode->i_generation |= 1;
+		inode->i_mode = exfat_make_mode(sbi, info->attr, 0777);
+		inode->i_op = &page_symlink_inode_operations;
+		inode_nohighmem(inode);
+		inode->i_mapping->a_ops = &exfat_aops;
+		inode->i_mapping->nrpages = 0;
 	} else { /* regular file */
 		inode->i_generation |= 1;
 		inode->i_mode = exfat_make_mode(sbi, info->attr, 0777);

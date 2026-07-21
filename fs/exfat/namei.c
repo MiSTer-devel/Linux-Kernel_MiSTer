@@ -465,7 +465,7 @@ static inline loff_t exfat_make_i_pos(struct exfat_dir_entry *info)
 }
 
 static int exfat_add_entry(struct inode *inode, const char *path,
-		unsigned int type, struct exfat_dir_entry *info)
+		unsigned int type, unsigned short attr, struct exfat_dir_entry *info)
 {
 	int ret, dentry, num_entries;
 	struct super_block *sb = inode->i_sb;
@@ -509,6 +509,12 @@ static int exfat_add_entry(struct inode *inode, const char *path,
 	 * the first cluster is not determined yet. (0)
 	 */
 	exfat_init_dir_entry(&es, type, start_clu, clu_size, &ts);
+	if (type == TYPE_FILE) {
+		struct exfat_dentry *ep;
+
+		ep = exfat_get_dentry_cached(&es, ES_IDX_FILE);
+		ep->dentry.file.attr = cpu_to_le16(attr);
+	}
 	exfat_init_ext_entry(&es, num_entries, &uniname);
 
 	ret = exfat_put_dentry_set(&es, IS_DIRSYNC(inode));
@@ -520,7 +526,7 @@ static int exfat_add_entry(struct inode *inode, const char *path,
 	info->type = type;
 
 	if (type == TYPE_FILE) {
-		info->attr = EXFAT_ATTR_ARCHIVE;
+		info->attr = attr;
 		info->start_clu = EXFAT_EOF_CLUSTER;
 		info->size = 0;
 		info->num_subdirs = 0;
@@ -557,7 +563,8 @@ static int exfat_create(struct mnt_idmap *idmap, struct inode *dir,
 
 	mutex_lock(&EXFAT_SB(sb)->s_lock);
 	exfat_set_volume_dirty(sb);
-	err = exfat_add_entry(dir, dentry->d_name.name, TYPE_FILE, &info);
+	err = exfat_add_entry(dir, dentry->d_name.name, TYPE_FILE,
+			      EXFAT_ATTR_ARCHIVE, &info);
 	if (err)
 		goto unlock;
 
@@ -581,6 +588,91 @@ static int exfat_create(struct mnt_idmap *idmap, struct inode *dir,
 	/* timestamp is already written, so mark_inode_dirty() is unneeded. */
 
 	d_instantiate(dentry, inode);
+unlock:
+	mutex_unlock(&EXFAT_SB(sb)->s_lock);
+	return err;
+}
+
+static void exfat_cleanup_symlink(struct inode *dir, struct inode *inode)
+{
+	struct super_block *sb = dir->i_sb;
+	struct exfat_inode_info *ei = EXFAT_I(inode);
+	struct exfat_entry_set_cache es;
+
+	mutex_lock(&EXFAT_SB(sb)->s_lock);
+	if (ei->dir.dir != DIR_DELETED &&
+	    !exfat_get_dentry_set(&es, sb, &ei->dir, ei->entry,
+				  ES_ALL_ENTRIES)) {
+		exfat_set_volume_dirty(sb);
+		exfat_remove_entries(inode, &es, ES_IDX_FILE);
+		exfat_put_dentry_set(&es, IS_DIRSYNC(dir));
+		ei->dir.dir = DIR_DELETED;
+	}
+
+	clear_nlink(inode);
+	simple_inode_init_ts(inode);
+	exfat_truncate_inode_atime(inode);
+	exfat_unhash_inode(inode);
+
+	inode_inc_iversion(dir);
+	simple_inode_init_ts(dir);
+	exfat_truncate_inode_atime(dir);
+	mark_inode_dirty(dir);
+	mutex_unlock(&EXFAT_SB(sb)->s_lock);
+}
+
+static int exfat_symlink(struct mnt_idmap *idmap, struct inode *dir,
+			 struct dentry *dentry, const char *target)
+{
+	struct super_block *sb = dir->i_sb;
+	struct inode *inode;
+	struct exfat_dir_entry info;
+	unsigned int len = strlen(target) + 1;
+	loff_t i_pos;
+	loff_t size = i_size_read(dir);
+	int err;
+
+	if (unlikely(exfat_forced_shutdown(sb)))
+		return -EIO;
+
+	if (len > PAGE_SIZE)
+		return -ENAMETOOLONG;
+
+	mutex_lock(&EXFAT_SB(sb)->s_lock);
+	exfat_set_volume_dirty(sb);
+	err = exfat_add_entry(dir, dentry->d_name.name, TYPE_FILE,
+			      EXFAT_ATTR_ARCHIVE | EXFAT_ATTR_SYMLINK, &info);
+	if (err)
+		goto unlock;
+
+	inode_inc_iversion(dir);
+	inode_set_mtime_to_ts(dir, inode_set_ctime_current(dir));
+	if (IS_DIRSYNC(dir) && size != i_size_read(dir))
+		exfat_sync_inode(dir);
+	else
+		mark_inode_dirty(dir);
+
+	i_pos = exfat_make_i_pos(&info);
+	inode = exfat_build_inode(sb, &info, i_pos);
+	err = PTR_ERR_OR_ZERO(inode);
+	if (err)
+		goto unlock;
+
+	inode_inc_iversion(inode);
+	EXFAT_I(inode)->i_crtime = simple_inode_init_ts(inode);
+	exfat_truncate_inode_atime(inode);
+	mutex_unlock(&EXFAT_SB(sb)->s_lock);
+
+	err = page_symlink(inode, target, len);
+	if (err) {
+		exfat_cleanup_symlink(dir, inode);
+		iput(inode);
+		return err;
+	}
+
+	d_instantiate(dentry, inode);
+	return 0;
+
 unlock:
 	mutex_unlock(&EXFAT_SB(sb)->s_lock);
 	return err;
@@ -859,7 +951,8 @@ static struct dentry *exfat_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 
 	mutex_lock(&EXFAT_SB(sb)->s_lock);
 	exfat_set_volume_dirty(sb);
-	err = exfat_add_entry(dir, dentry->d_name.name, TYPE_DIR, &info);
+	err = exfat_add_entry(dir, dentry->d_name.name, TYPE_DIR,
+			      EXFAT_ATTR_SUBDIR, &info);
 	if (err)
 		goto unlock;
 
@@ -1318,6 +1411,7 @@ const struct inode_operations exfat_dir_inode_operations = {
 	.create		= exfat_create,
 	.lookup		= exfat_lookup,
 	.unlink		= exfat_unlink,
+	.symlink	= exfat_symlink,
 	.mkdir		= exfat_mkdir,
 	.rmdir		= exfat_rmdir,
 	.rename		= exfat_rename,

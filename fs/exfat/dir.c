@@ -269,7 +269,8 @@ get_new:
 
 	mutex_unlock(&EXFAT_SB(sb)->s_lock);
 	if (!dir_emit(ctx, nb->lfn, strlen(nb->lfn), inum,
-			(de.attr & EXFAT_ATTR_SUBDIR) ? DT_DIR : DT_REG))
+		      (de.attr & EXFAT_ATTR_SUBDIR) ? DT_DIR :
+		      exfat_attr_is_symlink(de.attr) ? DT_LNK : DT_REG))
 		goto out;
 	ctx->pos = cpos;
 	goto get_new;
