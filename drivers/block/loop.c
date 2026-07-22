@@ -137,6 +137,14 @@ static void loop_global_unlock(struct loop_device *lo, bool global)
 static int max_part;
 static int part_shift;
 
+int loop_max_part(void);
+int loop_max_part(void)
+{
+	return max_part;
+}
+
+EXPORT_SYMBOL(loop_max_part);
+
 static loff_t lo_calculate_size(struct loop_device *lo, struct file *file)
 {
 	loff_t loopsize;
