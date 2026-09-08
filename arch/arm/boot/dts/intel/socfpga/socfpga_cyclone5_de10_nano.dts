@@ -203,3 +203,13 @@
 &fpga_bridge2 {
 	status = "okay";
 };
+
+&ocram {
+	#address-cells = <1>;
+	#size-cells = <1>;
+	ranges = <0 0xffff0000 0x10000>;
+
+	flags-sram@f000 {
+		reg = <0xf000 0x1000>;
+	};
+};

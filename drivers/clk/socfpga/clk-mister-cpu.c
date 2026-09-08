@@ -41,6 +41,9 @@
 #define CM_L4_PERIPH	(BIT(0) | BIT(1))
 #define CM_TIMEOUT_US	1000
 
+#define MISTER_OCRAM_BASE	0xffff0000ULL
+#define MISTER_OCRAM_FLAGS	0xfffff000ULL
+
 struct mister_cpu_rate {
 	unsigned long rate;
 	u32 numer;
@@ -219,6 +222,12 @@ static int __init mister_setup_ocram(void)
 	if (!allocation)
 		return -ENOMEM;
 	physical = gen_pool_virt_to_phys(pool, allocation);
+	if (physical < MISTER_OCRAM_BASE ||
+	    physical > MISTER_OCRAM_FLAGS - PAGE_SIZE) {
+		gen_pool_free(pool, allocation, PAGE_SIZE);
+		pr_err("MiSTer CPU: OCRAM allocation outside the usable area\n");
+		return -ERANGE;
+	}
 	mapping = __arm_ioremap_exec(physical, PAGE_SIZE, false);
 	if (!mapping) {
 		gen_pool_free(pool, allocation, PAGE_SIZE);
