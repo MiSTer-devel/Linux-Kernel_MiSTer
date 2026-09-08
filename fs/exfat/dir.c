@@ -6,6 +6,7 @@
 #include <linux/slab.h>
 #include <linux/compat.h>
 #include <linux/bio.h>
+#include <linux/blkdev.h>
 #include <linux/buffer_head.h>
 
 #include "exfat_raw.h"
@@ -644,9 +645,12 @@ static int exfat_dir_readahead(struct super_block *sb, sector_t sec)
 	bh = sb_find_get_block(sb, sec);
 	if (!bh || !buffer_uptodate(bh)) {
 		unsigned int i;
+		struct blk_plug plug;
 
+		blk_start_plug(&plug);
 		for (i = 0; i < ra_count; i++)
 			sb_breadahead(sb, (sector_t)(sec + i));
+		blk_finish_plug(&plug);
 	}
 	brelse(bh);
 	return 0;
