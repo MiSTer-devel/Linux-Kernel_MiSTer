@@ -133,11 +133,14 @@ static int fb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
 
 static struct fb_ops ops = {
 	.owner = THIS_MODULE,
+	.fb_read = fb_sys_read,
+	.fb_write = fb_sys_write,
 	.fb_fillrect = sys_fillrect,
 	.fb_copyarea = sys_copyarea,
 	.fb_imageblit = sys_imageblit,
 	.fb_setcolreg = fb_setcolreg,
 	.fb_ioctl = fb_ioctl,
+	.fb_mmap = fb_io_mmap,
 };
 
 static int setup_fb_info(struct fb_dev *fbdev)
