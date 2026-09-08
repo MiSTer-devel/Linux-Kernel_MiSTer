@@ -26,6 +26,9 @@
 #define SYSMGR_SDMMC_CTRL_SET_AS10(smplsel, drvsel) \
 	((((smplsel) & 0x7) << 4) | (((drvsel) & 0x7) << 0))
 
+extern const struct clk_ops socfpga_mister_cpu_ops;
+bool __init socfpga_mister_cpu_clock(struct device_node *node);
+
 extern void __iomem *clk_mgr_base_addr;
 extern void __iomem *clk_mgr_a10_base_addr;
 

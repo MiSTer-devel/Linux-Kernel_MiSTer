@@ -19,7 +19,7 @@
 
 / {
 	model = "Terasic DE10-nano";
-	compatible = "altr,socfpga-cyclone5", "altr,socfpga";
+	compatible = "terasic,de10-nano", "altr,socfpga-cyclone5", "altr,socfpga";
 
 	chosen {
 		bootargs = "earlyprintk";
