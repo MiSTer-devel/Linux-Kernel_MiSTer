@@ -228,6 +228,16 @@ config ARM_STI_CPUFREQ
 	  this config option if you wish to add CPUFreq support for STi based
 	  SoCs.
 
+config ARM_SOCFPGA_CPUFREQ
+	tristate "MiSTer Cyclone V CPUFreq support"
+	depends on CPU_FREQ && CLK_INTEL_SOCFPGA32 && SRAM
+	help
+	  CPU frequency control for the DE10-Nano/MiSTer 25 MHz clock plan.
+	  400 and 800 MHz are available by default. 1.0 and 1.2 GHz require
+	  explicitly enabling CPUFreq boost; these are unsupported overclocks.
+	  The bootloader must start at 400 or 800 MHz with the supported plan.
+	  Leave disabled until clock transitions have been tested on your board.
+
 config ARM_TEGRA20_CPUFREQ
 	tristate "Tegra20/30 CPUFreq support"
 	depends on ARCH_TEGRA || COMPILE_TEST

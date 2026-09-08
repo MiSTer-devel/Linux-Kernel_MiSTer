@@ -86,8 +86,9 @@ static void __init __socfpga_periph_init(struct device_node *node,
 	of_property_read_string(node, "clock-output-names", &clk_name);
 
 	init.name = clk_name;
-	init.ops = ops;
-	init.flags = 0;
+	init.ops = socfpga_mister_cpu_clock(node) ? &socfpga_mister_cpu_ops : ops;
+	init.flags = IS_ENABLED(CONFIG_ARM_SOCFPGA_CPUFREQ) ?
+		     CLK_GET_RATE_NOCACHE : 0;
 
 	init.num_parents = of_clk_parent_fill(node, parent_name,
 					      SOCFPGA_MAX_PARENTS);

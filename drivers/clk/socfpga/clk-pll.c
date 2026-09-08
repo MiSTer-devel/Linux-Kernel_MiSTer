@@ -98,7 +98,8 @@ static void __init __socfpga_pll_init(struct device_node *node,
 
 	init.name = clk_name;
 	init.ops = ops;
-	init.flags = 0;
+	init.flags = IS_ENABLED(CONFIG_ARM_SOCFPGA_CPUFREQ) ?
+		     CLK_GET_RATE_NOCACHE : 0;
 
 	init.num_parents = of_clk_parent_fill(node, parent_name, SOCFPGA_MAX_PARENTS);
 	init.parent_names = parent_name;
