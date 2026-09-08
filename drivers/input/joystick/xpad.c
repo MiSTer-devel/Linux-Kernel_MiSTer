@@ -129,6 +129,11 @@ static unsigned int cpoll = 0;
 module_param(cpoll, uint, S_IWUSR | S_IRUGO);
 MODULE_PARM_DESC(cpoll, "Polling interval of XInput controllers");
 
+static bool skip_8bitdo_init;
+module_param(skip_8bitdo_init, bool, 0644);
+MODULE_PARM_DESC(skip_8bitdo_init,
+		"Skip Xbox 360 initialization request for 2dc8:3106 (experimental)");
+
 static const struct xpad_device {
 	u16 idVendor;
 	u16 idProduct;
@@ -2094,7 +2099,10 @@ static int xpad_start_input(struct usb_xpad *xpad)
 			return error;
 		}
 	}
-	if (xpad->xtype == XTYPE_XBOX360) {
+	if (xpad->xtype == XTYPE_XBOX360 &&
+	    !(skip_8bitdo_init &&
+	      le16_to_cpu(xpad->udev->descriptor.idVendor) == 0x2dc8 &&
+	      le16_to_cpu(xpad->udev->descriptor.idProduct) == 0x3106)) {
 		/*
 		 * Some third-party controllers Xbox 360-style controllers
 		 * require this message to finish initialization.
