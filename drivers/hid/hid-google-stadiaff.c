@@ -143,6 +143,8 @@ static void stadia_remove(struct hid_device *hid)
 static const struct hid_device_id stadia_devices[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_GOOGLE, USB_DEVICE_ID_GOOGLE_STADIA) },
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_GOOGLE, USB_DEVICE_ID_GOOGLE_STADIA) },
+	{ HID_DEVICE(BUS_USB, HID_GROUP_GENERIC, 0x16d0, 0x1460) }, /* Classic2USB */
+	{ HID_DEVICE(BUS_USB, HID_GROUP_GENERIC, 0x1209, 0x595a) }, /* RetroZord */
 	{ }
 };
 MODULE_DEVICE_TABLE(hid, stadia_devices);
