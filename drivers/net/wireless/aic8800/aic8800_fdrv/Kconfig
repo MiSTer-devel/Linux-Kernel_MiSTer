@@ -1,0 +1,16 @@
+config AIC8800_WLAN_SUPPORT
+	tristate "AIC8800 wlan Support"
+	depends on USB
+	depends on CFG80211
+	help
+	  This is support for aic wifi driver.
+
+#config USE_5G
+#	bool "AIC8800 force enable 5G"
+#        ---help---
+#          This is parameter that force enable 5G.
+#
+#config HE_FOR_OLD_KERNEL
+#	bool "AIC8800 support AX for old kernel"
+#        ---help---
+#          This is parameter that enable AX for old kernel.

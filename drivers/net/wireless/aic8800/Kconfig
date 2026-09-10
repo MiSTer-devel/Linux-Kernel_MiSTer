@@ -1,0 +1,17 @@
+menuconfig AIC8800
+	bool "AIC wireless Support"
+	depends on USB
+	help
+	  Support for AIC8800D80 USB wireless devices.
+
+if AIC8800
+source "drivers/net/wireless/aic8800/aic8800_fdrv/Kconfig"
+source "drivers/net/wireless/aic8800/aic_load_fw/Kconfig"
+
+config AIC_ZLP_QUIRK
+	tristate "AIC8800D80 Bluetooth USB ZLP workaround"
+	depends on KPROBES
+	help
+	  Work around the USB zero-length-packet issue in the AIC8800D80
+	  Bluetooth interface.
+endif
