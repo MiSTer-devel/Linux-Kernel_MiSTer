@@ -2106,7 +2106,8 @@ static int joycon_imu_input_create(struct joycon_ctlr *ctlr)
 	ctlr->imu_input->uniq = ctlr->mac_addr_str;
 	ctlr->imu_input->phys = hdev->phys;
 
-	imu_name = devm_kasprintf(&hdev->dev, GFP_KERNEL, "%s (IMU)", ctlr->input->name);
+	/* MiSTer: Main_MiSTer filters the motion device on the " IMU" suffix */
+	imu_name = devm_kasprintf(&hdev->dev, GFP_KERNEL, "%s IMU", ctlr->input->name);
 	if (!imu_name)
 		return -ENOMEM;
 
