@@ -2179,7 +2179,6 @@ static int dualshock4_get_mac_address(struct dualshock4 *ds4)
 		return 0;
 	}
 
-err_free:
 	kfree(buf);
 	return ret;
 }
