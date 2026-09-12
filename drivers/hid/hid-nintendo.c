@@ -563,13 +563,7 @@ struct joycon_input_report {
 #define JC_RUMBLE_DATA_SIZE	8
 #define JC_RUMBLE_QUEUE_SIZE	8
 
-static const char * const joycon_player_led_names[] = {
-	LED_FUNCTION_PLAYER1,
-	LED_FUNCTION_PLAYER2,
-	LED_FUNCTION_PLAYER3,
-	LED_FUNCTION_PLAYER4,
-};
-#define JC_NUM_LEDS		ARRAY_SIZE(joycon_player_led_names)
+#define JC_NUM_LEDS		4
 #define JC_NUM_LED_PATTERNS 8
 /* Taken from https://www.nintendo.com/my/support/qa/detail/33822 */
 static const enum led_brightness joycon_player_led_patterns[JC_NUM_LED_PATTERNS][JC_NUM_LEDS] = {
@@ -2314,10 +2308,8 @@ static int joycon_leds_create(struct joycon_ctlr *ctlr)
 	hid_info(ctlr->hdev, "assigned player %d led pattern", player_led_pattern + 1);
 
 	for (i = 0; i < JC_NUM_LEDS; i++) {
-		name = devm_kasprintf(dev, GFP_KERNEL, "%s:%s:%s",
-				      d_name,
-				      "green",
-				      joycon_player_led_names[i]);
+		/* MiSTer: 5.15 names, Main_MiSTer opens "<dev>:player1"..4 by path */
+		name = devm_kasprintf(dev, GFP_KERNEL, "%s:player%d", d_name, i + 1);
 		if (!name)
 			return -ENOMEM;
 
@@ -2351,10 +2343,8 @@ static int joycon_leds_create(struct joycon_ctlr *ctlr)
 home_led:
 	/* configure the home LED */
 	if (jc_type_has_right(ctlr)) {
-		name = devm_kasprintf(dev, GFP_KERNEL, "%s:%s:%s",
-				      d_name,
-				      "blue",
-				      LED_FUNCTION_PLAYER5);
+		/* MiSTer: 5.15 name, Main_MiSTer opens "<dev>:home" by path */
+		name = devm_kasprintf(dev, GFP_KERNEL, "%s:home", d_name);
 		if (!name)
 			return -ENOMEM;
 
