@@ -477,32 +477,34 @@ static const struct joycon_ctlr_button_mapping snescon_button_mappings[] = {
 	{ /* sentinel */ },
 };
 
+/* MiSTer: button mapping from MiSTer 5.15 (#50), not mainline's */
 static const struct joycon_ctlr_button_mapping gencon_button_mappings[] = {
-	{ BTN_WEST,	JC_BTN_A,	}, /* A */
+	{ BTN_EAST,	JC_BTN_A,	}, /* A */
 	{ BTN_SOUTH,	JC_BTN_B,	}, /* B */
-	{ BTN_EAST,	JC_BTN_R,	}, /* C */
-	{ BTN_TL,	JC_BTN_X,	}, /* X MD/GEN 6B Only */
-	{ BTN_NORTH,	JC_BTN_Y,	}, /* Y MD/GEN 6B Only */
-	{ BTN_TR,	JC_BTN_L,	}, /* Z MD/GEN 6B Only */
-	{ BTN_SELECT,	JC_BTN_ZR,	}, /* Mode */
+	{ BTN_TR,	JC_BTN_R,	}, /* C */
+	{ BTN_NORTH,	JC_BTN_X,	}, /* X MD/GEN 6B Only */
+	{ BTN_WEST,	JC_BTN_Y,	}, /* Y MD/GEN 6B Only */
+	{ BTN_TL,	JC_BTN_L,	}, /* Z MD/GEN 6B Only */
+	{ BTN_TR2,	JC_BTN_ZR,	}, /* Mode */
 	{ BTN_START,	JC_BTN_PLUS,	},
 	{ BTN_MODE,	JC_BTN_HOME,	},
 	{ BTN_Z,	JC_BTN_CAP,	},
 	{ /* sentinel */ },
 };
 
+/* MiSTer: button mapping from MiSTer 5.15 (#49), not mainline's */
 static const struct joycon_ctlr_button_mapping n64con_button_mappings[] = {
-	{ BTN_A,		JC_BTN_A,	},
-	{ BTN_B,		JC_BTN_B,	},
+	{ BTN_EAST,		JC_BTN_A,	},
+	{ BTN_SOUTH,		JC_BTN_B,	},
 	{ BTN_TL2,		JC_BTN_ZL,	}, /* Z */
 	{ BTN_TL,		JC_BTN_L,	},
 	{ BTN_TR,		JC_BTN_R,	},
 	{ BTN_TR2,		JC_BTN_LSTICK,	}, /* ZR */
 	{ BTN_START,		JC_BTN_PLUS,	},
-	{ BTN_SELECT,		JC_BTN_Y,	}, /* C UP */
-	{ BTN_X,		JC_BTN_ZR,	}, /* C DOWN */
-	{ BTN_Y,		JC_BTN_X,	}, /* C LEFT */
-	{ BTN_C,		JC_BTN_MINUS,	}, /* C RIGHT */
+	{ BTN_NORTH,		JC_BTN_Y,	}, /* C UP */
+	{ BTN_THUMBL,		JC_BTN_ZR,	}, /* C DOWN */
+	{ BTN_WEST,		JC_BTN_X,	}, /* C LEFT */
+	{ BTN_THUMBR,		JC_BTN_MINUS,	}, /* C RIGHT */
 	{ BTN_MODE,		JC_BTN_HOME,	},
 	{ BTN_Z,		JC_BTN_CAP,	},
 	{ /* sentinel */ },
