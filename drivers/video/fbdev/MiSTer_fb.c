@@ -258,11 +258,12 @@ static int fb_probe(struct platform_device *pdev)
 	fbdev->fb_res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!fbdev->fb_res) return -ENODEV;
 
+	/* MiSTer: memremap() returns NULL on failure, never an ERR_PTR */
 	fbdev->fb_base = memremap(fbdev->fb_res->start, resource_size(fbdev->fb_res), MEMREMAP_WT);
-	if (IS_ERR(fbdev->fb_base))
+	if (!fbdev->fb_base)
 	{
-		dev_err(&pdev->dev, "devm_ioremap_resource fb failed\n");
-		return PTR_ERR(fbdev->fb_base);
+		dev_err(&pdev->dev, "memremap fb failed\n");
+		return -ENOMEM;
 	}
 
 	retval = setup_fb_info(fbdev);
