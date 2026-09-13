@@ -565,7 +565,6 @@ static const int ps_gamepad_buttons[] = {
 	BTN_THUMBL, /* L3 */
 	BTN_THUMBR, /* R3 */
 	BTN_MODE, /* PS Home */
-	BTN_Z
 };
 
 static const struct {int x; int y; } ps_gamepad_hat_mapping[] = {
@@ -743,7 +742,7 @@ static bool ps_check_crc32(u8 seed, u8 *data, size_t len, u32 report_crc)
 }
 
 static struct input_dev *
-ps_gamepad_create(struct hid_device *hdev,
+ps_gamepad_create(struct hid_device *hdev, bool has_mute_button,
 		  int (*play_effect)(struct input_dev *, void *, struct ff_effect *))
 {
 	struct input_dev *gamepad;
@@ -771,6 +770,10 @@ ps_gamepad_create(struct hid_device *hdev,
 
 	for (i = 0; i < ARRAY_SIZE(ps_gamepad_buttons); i++)
 		input_set_capability(gamepad, EV_KEY, ps_gamepad_buttons[i]);
+
+	/* The microphone mute button exists only on DualSense. */
+	if (has_mute_button)
+		input_set_capability(gamepad, EV_KEY, BTN_Z);
 
 #if IS_ENABLED(CONFIG_PLAYSTATION_FF)
 	if (play_effect) {
@@ -1825,7 +1828,7 @@ static struct ps_device *dualsense_create(struct hid_device *hdev)
 		goto err;
 	}
 
-	ds->gamepad = ps_gamepad_create(hdev, dualsense_play_effect);
+	ds->gamepad = ps_gamepad_create(hdev, true, dualsense_play_effect);
 	if (IS_ERR(ds->gamepad)) {
 		ret = PTR_ERR(ds->gamepad);
 		goto err;
@@ -2790,7 +2793,7 @@ static struct ps_device *dualshock4_create(struct hid_device *hdev)
 		hid_warn(hdev, "Gyroscope and accelerometer will be inaccurate.\n");
 	}
 
-	ds4->gamepad = ps_gamepad_create(hdev, dualshock4_play_effect);
+	ds4->gamepad = ps_gamepad_create(hdev, false, dualshock4_play_effect);
 	if (IS_ERR(ds4->gamepad)) {
 		ret = PTR_ERR(ds4->gamepad);
 		goto err;
