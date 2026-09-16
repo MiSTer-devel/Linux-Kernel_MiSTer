@@ -619,11 +619,12 @@ static int exfat_find_location(struct super_block *sb, struct exfat_chain *p_dir
 }
 
 #define EXFAT_MAX_RA_SIZE     (128*1024)
-static int exfat_dir_readahead(struct super_block *sb, sector_t sec)
+static int exfat_dir_readahead(struct super_block *sb, sector_t sec,
+			       unsigned int max_ra_bytes)
 {
 	struct exfat_sb_info *sbi = EXFAT_SB(sb);
 	struct buffer_head *bh;
-	unsigned int max_ra_count = EXFAT_MAX_RA_SIZE >> sb->s_blocksize_bits;
+	unsigned int max_ra_count = max_ra_bytes >> sb->s_blocksize_bits;
 	unsigned int page_ra_count = PAGE_SIZE >> sb->s_blocksize_bits;
 	unsigned int adj_ra_count = max(sbi->sect_per_clus, page_ra_count);
 	unsigned int ra_count = min(adj_ra_count, max_ra_count);
@@ -656,8 +657,10 @@ static int exfat_dir_readahead(struct super_block *sb, sector_t sec)
 	return 0;
 }
 
-struct exfat_dentry *exfat_get_dentry(struct super_block *sb,
-		struct exfat_chain *p_dir, int entry, struct buffer_head **bh)
+static struct exfat_dentry *exfat_get_dentry_ra(struct super_block *sb,
+						struct exfat_chain *p_dir, int entry,
+						struct buffer_head **bh,
+						unsigned int max_ra_bytes)
 {
 	unsigned int dentries_per_page = EXFAT_B_TO_DEN(PAGE_SIZE);
 	int off;
@@ -673,13 +676,20 @@ struct exfat_dentry *exfat_get_dentry(struct super_block *sb,
 
 	if (p_dir->dir != EXFAT_FREE_CLUSTER &&
 			!(entry & (dentries_per_page - 1)))
-		exfat_dir_readahead(sb, sec);
+		exfat_dir_readahead(sb, sec, max_ra_bytes);
 
 	*bh = sb_bread(sb, sec);
 	if (!*bh)
 		return NULL;
 
 	return (struct exfat_dentry *)((*bh)->b_data + off);
+}
+
+struct exfat_dentry *exfat_get_dentry(struct super_block *sb,
+				      struct exfat_chain *p_dir, int entry,
+				      struct buffer_head **bh)
+{
+	return exfat_get_dentry_ra(sb, p_dir, entry, bh, EXFAT_MAX_RA_SIZE);
 }
 
 enum exfat_validate_dentry_mode {
@@ -1219,7 +1229,7 @@ int exfat_count_dir_entries(struct super_block *sb, struct exfat_chain *p_dir)
 
 	while (clu.dir != EXFAT_EOF_CLUSTER) {
 		for (i = 0; i < dentries_per_clu; i++) {
-			ep = exfat_get_dentry(sb, &clu, i, &bh);
+			ep = exfat_get_dentry_ra(sb, &clu, i, &bh, PAGE_SIZE);
 			if (!ep)
 				return -EIO;
 			entry_type = exfat_get_entry_type(ep);
