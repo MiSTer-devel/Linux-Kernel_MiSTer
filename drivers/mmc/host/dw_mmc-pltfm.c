@@ -96,8 +96,18 @@ static int dw_mci_socfpga_priv_init(struct dw_mci *host)
 	return 0;
 }
 
+static void dw_mci_socfpga_set_data_timeout(struct dw_mci *host,
+					    unsigned int timeout_ns)
+{
+	/*
+	 * Pre-v5.17 behaviour: 100 ms is too short for a whole SD read request.
+	 */
+	mci_writel(host, TMOUT, 0xFFFFFFFF);
+}
+
 static const struct dw_mci_drv_data socfpga_drv_data = {
-	.init		= dw_mci_socfpga_priv_init,
+	.init			= dw_mci_socfpga_priv_init,
+	.set_data_timeout	= dw_mci_socfpga_set_data_timeout,
 };
 
 static const struct of_device_id dw_mci_pltfm_match[] = {
