@@ -87,7 +87,8 @@ static int rtw8821c_read_efuse(struct rtw_dev *rtwdev, u8 *log_map)
 	for (i = 0; i < 4; i++)
 		efuse->txpwr_idx_table[i] = map->txpwr_idx_table[i];
 
-	if (rtwdev->efuse.rfe_option == 2 || rtwdev->efuse.rfe_option == 4)
+	if (rtwdev->efuse.rfe_option == 2 || rtwdev->efuse.rfe_option == 4 ||
+	    rtwdev->efuse.rfe_option == 7)
 		efuse->txpwr_idx_table[0].pwr_idx_2g = map->txpwr_idx_table[1].pwr_idx_2g;
 
 	switch (rtw_hci_type(rtwdev)) {
@@ -1943,6 +1944,7 @@ static const struct rtw_rfe_def rtw8821c_rfe_defs[] = {
 	[2] = RTW_DEF_RFE_EXT(8821c, 0, 0, 0, 2),
 	[4] = RTW_DEF_RFE_EXT(8821c, 0, 0, 0, 2),
 	[6] = RTW_DEF_RFE(8821c, 0, 0, 0),
+	[7] = RTW_DEF_RFE_EXT(8821c, 0, 0, 0, 2),
 };
 
 static const struct rtw_reg_domain coex_info_hw_regs_8821c[] = {
