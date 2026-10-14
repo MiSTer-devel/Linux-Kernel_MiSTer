@@ -1314,6 +1314,9 @@ static void dwc2_hc_start_transfer(struct dwc2_hsotg *hsotg,
 	hctsiz |= num_packets << TSIZ_PKTCNT_SHIFT & TSIZ_PKTCNT_MASK;
 	hctsiz |= chan->data_pid_start << TSIZ_SC_MC_PID_SHIFT &
 		  TSIZ_SC_MC_PID_MASK;
+
+	dwc2_writel(hsotg, 0xffffffff, HCINT(chan->hc_num));
+
 	dwc2_writel(hsotg, hctsiz, HCTSIZ(chan->hc_num));
 	if (dbg_hc(chan)) {
 		dev_vdbg(hsotg->dev, "Wrote %08x to HCTSIZ(%d)\n",
