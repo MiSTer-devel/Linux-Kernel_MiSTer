@@ -2030,7 +2030,7 @@ static void dwc2_hc_n_intr(struct dwc2_hsotg *hsotg, int chnum)
 	hcintraw = dwc2_readl(hsotg, HCINT(chnum));
 	hcintmsk = dwc2_readl(hsotg, HCINTMSK(chnum));
 	hcint = hcintraw & hcintmsk;
-	dwc2_writel(hsotg, hcint, HCINT(chnum));
+	dwc2_writel(hsotg, hcintraw, HCINT(chnum));
 
 	if (!chan) {
 		dev_err(hsotg->dev, "## hc_ptr_array for channel is NULL ##\n");
