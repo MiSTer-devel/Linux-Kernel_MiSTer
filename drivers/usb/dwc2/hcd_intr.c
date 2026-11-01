@@ -1459,6 +1459,9 @@ static void dwc2_hc_nyet_intr(struct dwc2_hsotg *hsotg,
 				qtd->error_count++;
 #endif
 				qtd->complete_split = 0;
+				if (chan->ep_type == USB_ENDPOINT_XFER_INT &&
+				    chan->ep_is_in && qtd->urb)
+					qtd->urb->actual_length = 0;
 				dwc2_halt_channel(hsotg, chan, qtd,
 						  DWC2_HC_XFER_XACT_ERR);
 				/* Todo: add support for isoc release */
