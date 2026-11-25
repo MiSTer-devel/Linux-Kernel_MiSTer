@@ -279,6 +279,15 @@ fields of ``struct uio_mem``:
    with :c:func:`__get_free_pages()` but not kmalloc()). There's also
    ``UIO_MEM_VIRTUAL`` for virtual memory.
 
+   ``UIO_MEM_PHYS_WC`` is ``UIO_MEM_PHYS`` mapped write-combining rather
+   than uncached, for memory-like regions such as buffers, framebuffers
+   and shared apertures. Stores to such a mapping may be merged and
+   reordered, so user space must place a barrier between a write and
+   whatever publishes it, and a device that also has ordered registers
+   must describe those as a separate ``UIO_MEM_PHYS`` mapping. Do not use
+   it for a region where reads have side effects or may not complete:
+   write-combining memory may be read speculatively.
+
 -  ``phys_addr_t addr``: Required if the mapping is used. Fill in the
    address of your memory block. This address is the one that appears in
    sysfs.

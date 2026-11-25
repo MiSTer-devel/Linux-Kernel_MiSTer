@@ -113,6 +113,7 @@ static int uio_pdrv_genirq_probe(struct platform_device *pdev)
 	struct fwnode_handle *node = dev_fwnode(&pdev->dev);
 	struct uio_pdrv_genirq_platdata *priv;
 	struct uio_mem *uiomem;
+	bool map_wc;
 	int ret = -EINVAL;
 	int i;
 
@@ -186,6 +187,9 @@ static int uio_pdrv_genirq_probe(struct platform_device *pdev)
 		}
 	}
 
+	/* Per device, not per region: ordered registers go in a separate node. */
+	map_wc = device_property_read_bool(&pdev->dev, "mister,map-writecombine");
+
 	uiomem = &uioinfo->mem[0];
 
 	for (i = 0; i < pdev->num_resources; ++i) {
@@ -201,7 +205,7 @@ static int uio_pdrv_genirq_probe(struct platform_device *pdev)
 			break;
 		}
 
-		uiomem->memtype = UIO_MEM_PHYS;
+		uiomem->memtype = map_wc ? UIO_MEM_PHYS_WC : UIO_MEM_PHYS;
 		uiomem->addr = r->start & PAGE_MASK;
 		uiomem->offs = r->start & ~PAGE_MASK;
 		uiomem->size = (uiomem->offs + resource_size(r)

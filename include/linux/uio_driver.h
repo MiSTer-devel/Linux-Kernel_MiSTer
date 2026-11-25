@@ -171,6 +171,8 @@ extern int __must_check
  * Do not use in new drivers.
  */
 #define UIO_MEM_DMA_COHERENT	5
+/* UIO_MEM_PHYS, write-combined: not for registers or side-effect reads */
+#define UIO_MEM_PHYS_WC	6
 
 /* defines for uio_port->porttype */
 #define UIO_PORT_NONE	0
