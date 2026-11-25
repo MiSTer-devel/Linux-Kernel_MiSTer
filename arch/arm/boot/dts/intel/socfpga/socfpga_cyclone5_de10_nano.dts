@@ -16,6 +16,7 @@
 
 #include "socfpga_cyclone5.dtsi"
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
 
 / {
 	model = "Terasic DE10-nano";
@@ -211,5 +212,491 @@
 
 	flags-sram@f000 {
 		reg = <0xf000 0x1000>;
+	};
+};
+
+/* MiSTer HPS<->FPGA interface */
+/ {
+	/* FPGA-shared DDR, kept from the kernel by the DTB, not only mem=511M. */
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		mister_ddr_low: mister-ddr-low@1ff00000 {
+			reg = <0x1ff00000 0x000ff000>;
+			no-map;
+		};
+
+		mister_handoff: mister-handoff@1ffff000 {
+			reg = <0x1ffff000 0x00001000>;
+			no-map;
+		};
+
+		mister_scaler: mister-scaler@20000000 {
+			reg = <0x20000000 0x01800000>;
+			no-map;
+		};
+
+		mister_core_lo: mister-core@21800000 {
+			reg = <0x21800000 0x00800000>;
+			no-map;
+		};
+
+		/* Upper 16 MiB shared: SS20 PROM/RAM; stock SNES/SGB MSU, menu bg. */
+		mister_fb_mem: mister-fb@22000000 {
+			reg = <0x22000000 0x01800000>;
+			no-map;
+		};
+
+		mister_core_hi: mister-core@23800000 {
+			reg = <0x23800000 0x1c800000>;
+			no-map;
+		};
+	};
+
+	MiSTer_fb {
+		memory-region = <&mister_fb_mem>;
+	};
+
+	/* Map-only UIO nodes, uio name mister_<name>; MAP_SHARED only. */
+	mister {
+		compatible = "simple-mfd";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/* H-1: an undecoded offset hangs the SoC; touch only declared offsets. */
+		lw-bridge@ff200000 {
+			compatible = "generic-uio";
+			linux,uio-name = "mister_lw_bridge";
+			reg = <0xff200000 0x00200000>;
+		};
+
+		/* H-1: no published core decodes any offset of this window. */
+		h2f-bridge@c0000000 {
+			compatible = "generic-uio";
+			linux,uio-name = "mister_h2f_bridge";
+			reg = <0xc0000000 0x3c000000>;
+		};
+
+		/* Shared with fpgamgr0; GPO +0x10, GPI +0x14. */
+		fpga-mgr@ff706000 {
+			compatible = "generic-uio";
+			linux,uio-name = "mister_fpga_mgr";
+			reg = <0xff706000 0x00001000>;
+		};
+
+		ddr-aperture@20000000 {
+			compatible = "generic-uio";
+			linux,uio-name = "mister_ddr_aperture";
+			reg = <0x20000000 0x20000000>;
+			mister,map-writecombine;
+		};
+
+		ddr-low@1ff00000 {
+			compatible = "generic-uio";
+			linux,uio-name = "mister_ddr_low";
+			reg = <0x1ff00000 0x000ff000>,
+			      <0x1ffff000 0x00001000>;
+		};
+
+		/* Warm boot runs the SPL image at +0: clear warmramgrp.enable before a store. */
+		ocram@ffff0000 {
+			compatible = "generic-uio";
+			linux,uio-name = "mister_ocram";
+			reg = <0xffff0000 0x0000f000>;
+		};
+
+		/* f2h_irq[N] = GIC SPI 40+N; N=0 is MiSTer_fb's vsync. */
+		fabric-irqs {
+			compatible = "simple-mfd";
+			interrupt-parent = <&intc>;
+
+			f2h-irq1 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq1";
+				interrupts = <0 41 IRQ_TYPE_EDGE_RISING>;	/* video_sync, a pulse */
+			};
+
+			f2h-irq2 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq2";
+				interrupts = <0 42 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq3 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq3";
+				interrupts = <0 43 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq4 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq4";
+				interrupts = <0 44 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq5 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq5";
+				interrupts = <0 45 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq6 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq6";
+				interrupts = <0 46 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq7 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq7";
+				interrupts = <0 47 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq8 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq8";
+				interrupts = <0 48 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq9 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq9";
+				interrupts = <0 49 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq10 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq10";
+				interrupts = <0 50 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq11 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq11";
+				interrupts = <0 51 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq12 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq12";
+				interrupts = <0 52 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq13 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq13";
+				interrupts = <0 53 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq14 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq14";
+				interrupts = <0 54 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq15 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq15";
+				interrupts = <0 55 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq16 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq16";
+				interrupts = <0 56 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq17 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq17";
+				interrupts = <0 57 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq18 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq18";
+				interrupts = <0 58 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq19 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq19";
+				interrupts = <0 59 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq20 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq20";
+				interrupts = <0 60 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq21 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq21";
+				interrupts = <0 61 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq22 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq22";
+				interrupts = <0 62 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq23 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq23";
+				interrupts = <0 63 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq24 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq24";
+				interrupts = <0 64 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq25 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq25";
+				interrupts = <0 65 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq26 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq26";
+				interrupts = <0 66 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq27 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq27";
+				interrupts = <0 67 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq28 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq28";
+				interrupts = <0 68 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq29 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq29";
+				interrupts = <0 69 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq30 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq30";
+				interrupts = <0 70 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq31 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq31";
+				interrupts = <0 71 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq32 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq32";
+				interrupts = <0 72 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq33 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq33";
+				interrupts = <0 73 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq34 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq34";
+				interrupts = <0 74 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq35 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq35";
+				interrupts = <0 75 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq36 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq36";
+				interrupts = <0 76 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq37 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq37";
+				interrupts = <0 77 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq38 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq38";
+				interrupts = <0 78 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq39 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq39";
+				interrupts = <0 79 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq40 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq40";
+				interrupts = <0 80 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq41 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq41";
+				interrupts = <0 81 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq42 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq42";
+				interrupts = <0 82 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq43 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq43";
+				interrupts = <0 83 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq44 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq44";
+				interrupts = <0 84 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq45 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq45";
+				interrupts = <0 85 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq46 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq46";
+				interrupts = <0 86 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq47 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq47";
+				interrupts = <0 87 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq48 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq48";
+				interrupts = <0 88 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq49 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq49";
+				interrupts = <0 89 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq50 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq50";
+				interrupts = <0 90 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq51 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq51";
+				interrupts = <0 91 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq52 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq52";
+				interrupts = <0 92 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq53 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq53";
+				interrupts = <0 93 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq54 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq54";
+				interrupts = <0 94 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq55 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq55";
+				interrupts = <0 95 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq56 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq56";
+				interrupts = <0 96 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq57 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq57";
+				interrupts = <0 97 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq58 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq58";
+				interrupts = <0 98 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq59 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq59";
+				interrupts = <0 99 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq60 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq60";
+				interrupts = <0 100 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq61 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq61";
+				interrupts = <0 101 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq62 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq62";
+				interrupts = <0 102 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			f2h-irq63 {
+				compatible = "generic-uio";
+				linux,uio-name = "mister_f2h_irq63";
+				interrupts = <0 103 IRQ_TYPE_LEVEL_HIGH>;
+			};
+		};
+	};
+};
+
+/* OCRAM below flags-sram is mister_ocram's: keep it out of the mmio-sram pool. */
+&ocram {
+	mister-ocram@0 {
+		reg = <0x0 0xf000>;
 	};
 };
